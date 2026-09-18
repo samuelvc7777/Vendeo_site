@@ -782,3 +782,273 @@ test('15. Fluxo Completo: Agente da Conversa roteia para Descoberta e subagente 
   assert.equal(convData.stage_completed_rules.orchestration.lastProcessingStatus, 'sent');
   assert.equal(convData.stage_completed_rules.active_cycle_token, null);
 });
+
+// =========================================================================
+// TESTES ADICIONAIS: SEÇÃO 5.6 - FORMATO TXT COMPACTO (.agents/CONTEXT_SERIALIZATION_SPEC.md)
+// =========================================================================
+
+// TESTE 16 (Critério 1): Múltiplas mensagens permanecem separadas no texto
+test('16. Formato TXT: múltiplas mensagens permanecem separadas no texto com quebras e autoria', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_rotina',
+    newMessages: [
+      { id: 'm1', sender: 'pretendente', text: 'Oi' },
+      { id: 'm2', sender: 'pretendente', text: 'Tudo bem?' },
+      { id: 'm3', sender: 'pretendente', text: 'Trabalho muito' },
+      { id: 'm4', sender: 'pretendente', text: 'Também gosto disso' },
+    ],
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  // Não deve amassar em uma linha só
+  assert.equal(output.includes('Oi Tudo bem? Trabalho muito'), false);
+
+  // Cada mensagem deve ter seu próprio bloco separado
+  assert.match(output, /PRETENDENTE \| m1\nOi/);
+  assert.match(output, /PRETENDENTE \| m2\nTudo bem\?/);
+  assert.match(output, /PRETENDENTE \| m3\nTrabalho muito/);
+  assert.match(output, /PRETENDENTE \| m4\nTambém gosto disso/);
+});
+
+// TESTE 17 (Critério 2): Autoria Larissa/Pretendente fica inequívoca
+test('17. Formato TXT: autoria Larissa/Pretendente fica inequívoca e claramente rotulada', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_feita',
+    newMessages: [
+      { id: 'm1', sender: 'larissa', text: 'Oi, tudo bem por aí?' },
+      { id: 'm2', sender: 'pretendente', text: 'Tudo ótimo e com você?' },
+    ],
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  assert.match(output, /LARISSA \| m1\nOi, tudo bem por aí\?/);
+  assert.match(output, /PRETENDENTE \| m2\nTudo ótimo e com você\?/);
+});
+
+// TESTE 18 (Critério 3): Reply aparece associada à mensagem correta
+test('18. Formato TXT: reply aparece associada à mensagem correta no cabeçalho', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_profissao',
+    newMessages: [
+      { id: 'm10', sender: 'pretendente', text: 'Eu trabalho na área de TI' },
+      { id: 'm11', sender: 'pretendente', text: 'Também gosto kkk', replyToId: 'm05' },
+    ],
+    referencedMessages: {
+      m05: { id: 'm05', sender: 'larissa', text: 'Eu amo praia' },
+    },
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  assert.match(output, /PRETENDENTE \| m11 \| RESPONDENDO_A: m05/);
+  assert.equal(output.includes('PRETENDENTE | m10 | RESPONDENDO_A'), false);
+});
+
+// TESTE 19 (Critério 4): Mensagem antiga usada como referência fica separada das mensagens novas
+test('19. Formato TXT: mensagem antiga referenciada fica em seção [REFERÊNCIAS] separada de [MENSAGENS_NOVAS]', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_cidade',
+    newMessages: [
+      { id: 'm_nova_1', sender: 'pretendente', text: 'Sou de BH', replyToId: 'm_antiga_99' },
+    ],
+    referencedMessages: {
+      m_antiga_99: { id: 'm_antiga_99', sender: 'larissa', text: 'De qual cidade você é?' },
+    },
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  const idxNovas = output.indexOf('[MENSAGENS_NOVAS]');
+  const idxRefs = output.indexOf('[REFERÊNCIAS]');
+  const idxFim = output.indexOf('[FIM]');
+
+  assert.ok(idxNovas !== -1, 'Deve conter [MENSAGENS_NOVAS]');
+  assert.ok(idxRefs !== -1, 'Deve conter [REFERÊNCIAS]');
+  assert.ok(idxRefs > idxNovas, '[REFERÊNCIAS] deve vir após [MENSAGENS_NOVAS]');
+  assert.ok(idxFim > idxRefs, '[FIM] deve vir após [REFERÊNCIAS]');
+
+  // Mensagem antiga não deve estar em novas
+  const sectionNovas = output.slice(idxNovas, idxRefs);
+  assert.equal(sectionNovas.includes('De qual cidade você é?'), false);
+
+  // Mensagem antiga deve estar em referências
+  const sectionRefs = output.slice(idxRefs, idxFim);
+  assert.match(sectionRefs, /m_antiga_99\nLARISSA:\nDe qual cidade você é\?/);
+});
+
+// TESTE 20 (Critério 5): Não existe duplicação da mensagem referenciada
+test('20. Formato TXT: deduplicação de referências quando múltiplos replies apontam para a mesma mensagem', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_hobbies',
+    newMessages: [
+      { id: 'm21', sender: 'pretendente', text: 'Sim, concordo muito', replyToId: 'm_ref_larissa' },
+      { id: 'm22', sender: 'pretendente', text: 'Praia é a melhor coisa', replyToId: 'm_ref_larissa' },
+    ],
+    referencedMessages: {
+      m_ref_larissa: { id: 'm_ref_larissa', sender: 'larissa', text: 'Eu amo praia, principalmente lugar calmo' },
+    },
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  // A mensagem m_ref_larissa só pode aparecer 1 única vez dentro do bloco [REFERÊNCIAS]
+  const countInOutput = (output.match(/m_ref_larissa\nLARISSA:\nEu amo praia/g) || []).length;
+  assert.equal(countInOutput, 1, 'Referência não pode ser duplicada');
+});
+
+// TESTE 21 (Critério 6): 20 mensagens novas são serializadas integralmente
+test('21. Formato TXT: 20 mensagens novas são serializadas integralmente sem omissões', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const msgs = [];
+  for (let i = 1; i <= 20; i++) {
+    msgs.push({
+      id: `msg_${i}`,
+      sender: i % 2 === 0 ? 'larissa' : 'pretendente',
+      text: `Conteúdo da mensagem ${i}`,
+    });
+  }
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_profundo',
+    newMessages: msgs,
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  for (let i = 1; i <= 20; i++) {
+    assert.ok(output.includes(`msg_${i}`), `msg_${i} deve estar presente`);
+    assert.ok(output.includes(`Conteúdo da mensagem ${i}`), `Texto ${i} deve estar presente`);
+  }
+});
+
+// TESTE 22 (Critério 7): Campos internos desnecessários não aparecem no prompt
+test('22. Formato TXT: campos internos de banco (is_echo, deliver_at, created_at) não vazam no prompt', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'conexao_inicial',
+    checkpoint: 'chk_inicio',
+    newMessages: [
+      {
+        id: 'msg_privada',
+        sender: 'pretendente',
+        text: 'Olá tudo bem',
+        // Campos que NÃO devem vazar
+        is_echo: false,
+        deliver_at: '2026-09-18T05:00:00Z',
+        created_at: '2026-09-18T04:00:00Z',
+        audio_transcription_error: null,
+      },
+    ],
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  assert.equal(output.includes('is_echo'), false);
+  assert.equal(output.includes('deliver_at'), false);
+  assert.equal(output.includes('audio_transcription_error'), false);
+  assert.equal(output.includes('2026-09-18T05:00:00Z'), false);
+});
+
+// TESTE 23 (Critério 8): IDs necessários para rastreabilidade permanecem disponíveis
+test('23. Formato TXT: IDs de mensagem e referências permanecem disponíveis no texto gerado', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_trabalho',
+    newMessages: [
+      { id: 'id_rastreavel_100', sender: 'pretendente', text: 'Trabalho em hospital', replyToId: 'id_ref_200' },
+    ],
+    referencedMessages: {
+      id_ref_200: { id: 'id_ref_200', sender: 'larissa', text: 'Você trabalha em quê?' },
+    },
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  assert.ok(output.includes('id_rastreavel_100'), 'ID da mensagem deve estar explícito');
+  assert.ok(output.includes('id_ref_200'), 'ID da mensagem referenciada deve estar explícito');
+});
+
+// TESTE 24 (Critério 9): Caracteres especiais e quebras de linha não quebram o formato
+test('24. Formato TXT: quebras de linha, aspas e emojis preservam a integridade estrutural', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao',
+    newMessages: [
+      {
+        id: 'msg_complexa',
+        sender: 'pretendente',
+        text: 'Linha 1 com "aspas" e \'simples\'\nLinha 2 com emojis 🥰❤️ e pipes | | |\nLinha 3!',
+      },
+    ],
+  };
+
+  const output = formatConversationContextForModel(payload);
+
+  assert.ok(output.startsWith('[ESTADO]'));
+  assert.ok(output.endsWith('[FIM]'));
+  assert.ok(output.includes('Linha 1 com "aspas" e \'simples\''));
+  assert.ok(output.includes('Linha 2 com emojis 🥰❤️ e pipes | | |'));
+  assert.ok(output.includes('Linha 3!'));
+});
+
+// TESTE 25 (Critério 10): A representação textual gerada é 100% determinística para a mesma entrada
+test('25. Formato TXT: saída é 100% determinística e idêntica para a mesma entrada', () => {
+  const { load } = createRuntime();
+  const { formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const payload = {
+    phase: 'descoberta',
+    checkpoint: 'chk_rotina',
+    knownFacts: {
+      profissao: 'Engenheiro Civil',
+      cidade: 'Belo Horizonte',
+    },
+    newMessages: [
+      { id: 'm1', sender: 'pretendente', text: 'Boa noite', replyToId: 'm0' },
+      { id: 'm2', sender: 'larissa', text: 'Boa noite, tudo bem?' },
+    ],
+    referencedMessages: {
+      m0: { id: 'm0', sender: 'larissa', text: 'Oi!' },
+    },
+  };
+
+  const run1 = formatConversationContextForModel(payload, { layer: 'descoberta' });
+  const run2 = formatConversationContextForModel(payload, { layer: 'descoberta' });
+  const run3 = formatConversationContextForModel(payload, { layer: 'descoberta' });
+
+  assert.equal(run1, run2, 'Run 1 e Run 2 devem ser idênticos');
+  assert.equal(run2, run3, 'Run 2 e Run 3 devem ser idênticos');
+});

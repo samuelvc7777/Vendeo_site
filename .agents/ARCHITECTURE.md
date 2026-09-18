@@ -51,3 +51,12 @@ src/
 * **Touch Targets:** Mínimo de 44x44px em botões e elementos interativos.
 * **Física & Gestos:** Framer Motion para arraste de baixo para cima (*drag to dismiss*) e feedback tátil.
 * **Desktop Showcase:** Contêiner simulador de smartphone de última geração no desktop, com chave para expansão de tela.
+
+---
+
+## 4. Orquestração e Projeção de Contexto para Modelos de IA
+> **O backend deve trabalhar internamente com dados estruturados e tipados; somente o contexto entregue aos modelos de IA deve ser projetado para uma representação textual compacta, semelhante a TXT.**
+
+* **Backend Operacional:** PostgreSQL/Supabase com TypeScript puro, IDs reais, locks atômicos e validação determinística de regras.
+* **Projeção de Entrada para IA:** Serialização em formato TXT enxuto via `formatConversationContextForModel(...)`, conforme especificado em `.agents/CONTEXT_SERIALIZATION_SPEC.md`.
+* **Projeção Mínima por Camada:** O `ConversationAgent` recebe apenas o estado do turno e novas mensagens para roteamento; subagentes especializados recebem apenas as projeções necessárias para suas tarefas.

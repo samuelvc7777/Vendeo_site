@@ -62,28 +62,48 @@ export interface ConversationOrchestrationState {
   updatedAt: string;
 }
 
+export interface StructuredConversationMessage {
+  id: string;
+  sender: "pretendente" | "larissa";
+  text: string;
+  replyToId?: string | null;
+  timestamp?: string;
+}
+
+export interface ConversationContextPayload {
+  phase: OrchestrationPhase;
+  checkpoint: string;
+  newMessages: StructuredConversationMessage[];
+  referencedMessages?: Record<string, StructuredConversationMessage>;
+  knownFacts?: Record<string, string>;
+}
+
 export interface ConversationAgentInput {
   conversationId: string;
   currentPhase: OrchestrationPhase;
-  newMessage: {
+  checkpoint?: string;
+  contextText?: string;
+  newMessage?: {
     id: string;
     text: string;
     timestamp: string;
     sender: string;
   };
-  recentHistory: string;
+  recentHistory?: string;
 }
 
 export interface SubagentInput {
   conversationId: string;
   currentPhase: OrchestrationPhase;
-  newMessage: {
+  checkpoint?: string;
+  contextText?: string;
+  newMessage?: {
     id: string;
     text: string;
     timestamp: string;
     sender: string;
   };
-  recentHistory: string;
+  recentHistory?: string;
 }
 
 // Mantido para compatibilidade retroativa
@@ -338,9 +358,121 @@ export function getRulesForPhase(phase: OrchestrationPhase): string[] {
 }
 
 // ----------------------------------------------------------------------------
+// 5.1. Função Central de Formatação e Projeção em TXT Compacto (.agents/CONTEXT_SERIALIZATION_SPEC.md)
+// ----------------------------------------------------------------------------
+export function formatConversationContextForModel(
+  payload: ConversationContextPayload,
+  options?: {
+    layer?: "router" | "conexao_inicial" | "descoberta";
+    includeKnownFacts?: boolean;
+  }
+): string {
+  const lines: string[] = [];
+  const layer = options?.layer || "router";
+
+  // 1. [ESTADO]
+  lines.push("[ESTADO]");
+  lines.push(`fase: ${payload.phase}`);
+  lines.push(`checkpoint: ${payload.checkpoint}`);
+
+  // 2. [FATOS_CONHECIDOS] - apenas se solicitado ou na camada 'descoberta'
+  const shouldIncludeFacts =
+    options?.includeKnownFacts ??
+    (layer === "descoberta" && payload.knownFacts && Object.keys(payload.knownFacts).length > 0);
+
+  if (shouldIncludeFacts && payload.knownFacts) {
+    const factKeys = Object.keys(payload.knownFacts).sort();
+    if (factKeys.length > 0) {
+      lines.push("");
+      lines.push("[FATOS_CONHECIDOS]");
+      for (const k of factKeys) {
+        const val = payload.knownFacts[k];
+        if (val) lines.push(`${k}: ${val}`);
+      }
+    }
+  }
+
+  // 3. [MENSAGENS_NOVAS]
+  lines.push("");
+  lines.push("[MENSAGENS_NOVAS]");
+
+  const usedReferenceIds = new Set<string>();
+
+  for (const msg of payload.newMessages) {
+    lines.push("");
+    const author = msg.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
+    const headerParts = [author, msg.id];
+    if (msg.replyToId) {
+      headerParts.push(`RESPONDENDO_A: ${msg.replyToId}`);
+      usedReferenceIds.add(msg.replyToId);
+    }
+    lines.push(headerParts.join(" | "));
+    lines.push(msg.text || "");
+  }
+
+  // 4. [REFERÊNCIAS] (deduplicadas e ordenadas deterministicamente)
+  if (payload.referencedMessages && usedReferenceIds.size > 0) {
+    const refIds = Array.from(usedReferenceIds).sort();
+    const validRefs = refIds.filter((id) => payload.referencedMessages![id]);
+
+    if (validRefs.length > 0) {
+      lines.push("");
+      lines.push("[REFERÊNCIAS]");
+      for (const refId of validRefs) {
+        const refMsg = payload.referencedMessages![refId];
+        lines.push("");
+        lines.push(refId);
+        const refAuthor = refMsg.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
+        lines.push(`${refAuthor}:`);
+        lines.push(refMsg.text || "");
+      }
+    }
+  }
+
+  // 5. [FIM]
+  lines.push("");
+  lines.push("[FIM]");
+
+  return lines.join("\n");
+}
+
+export function formatContextForConversationAgent(
+  payload: ConversationContextPayload
+): string {
+  return formatConversationContextForModel(payload, {
+    layer: "router",
+    includeKnownFacts: false,
+  });
+}
+
+export function formatContextForConexaoInicial(
+  payload: ConversationContextPayload
+): string {
+  return formatConversationContextForModel(payload, {
+    layer: "conexao_inicial",
+    includeKnownFacts: false,
+  });
+}
+
+export function formatContextForDescoberta(
+  payload: ConversationContextPayload
+): string {
+  return formatConversationContextForModel(payload, {
+    layer: "descoberta",
+    includeKnownFacts: true,
+  });
+}
+
+// ----------------------------------------------------------------------------
 // 6. Construtor de Prompt do Agente da Conversa (Camada 1 - Roteador Enxuto)
 // ----------------------------------------------------------------------------
 export function buildConversationAgentPrompt(input: ConversationAgentInput): string {
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da interação");
+
   return `Você é o Agente da Conversa da Larissa no Vendeo.
 Sua missão é estritamente de roteamento: analisar o estágio do diálogo e decidir qual subagente especializado deve responder ao pretendente.
 
@@ -349,13 +481,8 @@ Sua missão é estritamente de roteamento: analisar o estágio do diálogo e dec
 2. "descoberta": Quando o contato inicial já foi correspondido e o diálogo deve aprofundar em quem ele é (profissão/trabalho, cidade onde mora, rotina, gostos).
 3. "none": Mensagem não exige resposta imediata ou deve aguardar.
 
-### DADOS ESSENCIAIS DA CONVERSA
-- ID da Conversa: ${input.conversationId}
-- Fase Atual Registrada: ${input.currentPhase}
-- Remetente: ${input.newMessage.sender}
-- Última Mensagem do Pretendente: "${input.newMessage.text}"
-- Histórico Recente:
-${input.recentHistory || "Início da interação"}
+### CONTEXTO DA CONVERSA
+${contextBlock}
 
 ### DIRETRIZ DE DECISÃO
 - Se a fase atual for 'conexao_inicial' e o pretendente estiver apenas cumprimentando ou trocando amenidades, direcione para "conexao_inicial".
@@ -373,6 +500,12 @@ Responda ESTRITAMENTE em JSON puro com as seguintes chaves:
 // 7. Construtores de Prompt dos Subagentes Especializados (Camada 2 - Enxutos)
 // ----------------------------------------------------------------------------
 export function buildConexaoInicialPrompt(input: SubagentInput): string {
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da conversa");
+
   return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
 Seu objetivo é acolher com carinho, simpatia e validação de reciprocidade.
 
@@ -384,10 +517,8 @@ Seu objetivo é acolher com carinho, simpatia e validação de reciprocidade.
 - Responda ao que ele falou antes de fazer qualquer pergunta leve.
 - Mantenha o balão curto e natural de celular.
 
-### CONTEXTO
-- Última Mensagem do Pretendente: "${input.newMessage.text}"
-- Histórico Recente:
-${input.recentHistory || "Início da conversa"}
+### CONTEXTO DA CONVERSA
+${contextBlock}
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_saudacao_feita': Se ainda for troca de cumprimento ou reciprocidade inicial. Próxima fase: 'conexao_inicial'.
@@ -405,6 +536,12 @@ Responda ESTRITAMENTE em JSON puro:
 }
 
 export function buildDescobertaPrompt(input: SubagentInput): string {
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_pergunta_sobre_ele"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da conversa");
+
   return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
 Seu objetivo é descobrir suavemente o que o pretendente faz da vida, onde mora e sua rotina.
 
@@ -415,10 +552,8 @@ Seu objetivo é descobrir suavemente o que o pretendente faz da vida, onde mora 
 - PROIBIDO usar ponto de exclamação (!)
 - Uma pergunta leve por vez, sem interrogatório. Balão curto de celular.
 
-### CONTEXTO
-- Última Mensagem do Pretendente: "${input.newMessage.text}"
-- Histórico Recente:
-${input.recentHistory || "Início da conversa"}
+### CONTEXTO DA CONVERSA
+${contextBlock}
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
@@ -666,18 +801,83 @@ export async function runExperimentalOrchestration(
 
     const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
 
-    // 6. BACKEND DETERMINÍSTICO: Extração Mínima de Contexto (máximo 5 mensagens)
+    // 6. BACKEND DETERMINÍSTICO: Extração de Contexto Estruturado
     const { data: recentMsgs } = await supabase
       .from("instagram_messages")
-      .select("sender_id, is_mine, text")
+      .select("id, sender_id, is_mine, text, reply_to_message_id, created_at")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
-      .limit(5);
+      .limit(10);
 
-    const recentSnippet = (recentMsgs || [])
+    // Mapeamento de referências citadas em reply_to_message_id
+    const replyIdsToFetch = (recentMsgs || [])
+      .map((m: any) => m.reply_to_message_id)
+      .filter((id: any) => id && !recentMsgs?.some((rm: any) => rm.id === id));
+
+    const referencedMap: Record<string, StructuredConversationMessage> = {};
+    if (replyIdsToFetch.length > 0) {
+      const { data: refRows } = await supabase
+        .from("instagram_messages")
+        .select("id, sender_id, is_mine, text")
+        .in("id", replyIdsToFetch);
+      for (const r of refRows || []) {
+        referencedMap[r.id] = {
+          id: r.id,
+          sender: r.is_mine ? "larissa" : "pretendente",
+          text: r.text || "",
+        };
+      }
+    }
+
+    for (const m of recentMsgs || []) {
+      if (m.reply_to_message_id && !referencedMap[m.reply_to_message_id]) {
+        const found = (recentMsgs || []).find((rm: any) => rm.id === m.reply_to_message_id);
+        if (found) {
+          referencedMap[found.id] = {
+            id: found.id,
+            sender: found.is_mine ? "larissa" : "pretendente",
+            text: found.text || "",
+          };
+        }
+      }
+    }
+
+    // Mensagens em ordem cronológica
+    const structuredMessages: StructuredConversationMessage[] = (recentMsgs || [])
+      .slice()
       .reverse()
-      .map((m: any) => `${m.is_mine ? "Larissa" : "Pretendente"}: ${m.text || ""}`)
-      .join("\n");
+      .map((m: any) => ({
+        id: m.id,
+        sender: m.is_mine ? "larissa" : "pretendente",
+        text: m.text || "",
+        replyToId: m.reply_to_message_id || null,
+        timestamp: m.created_at,
+      }));
+
+    if (structuredMessages.length === 0 || !structuredMessages.some((m) => m.id === newMessage.id)) {
+      structuredMessages.push({
+        id: newMessage.id,
+        sender: "pretendente",
+        text: newMessage.text,
+        timestamp: newMessage.timestamp,
+      });
+    }
+
+    const currentCheckpoint =
+      orchState.checkpoint ||
+      (currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita");
+
+    const baseContextPayload: ConversationContextPayload = {
+      phase: currentPhase,
+      checkpoint: currentCheckpoint,
+      newMessages: structuredMessages,
+      referencedMessages: referencedMap,
+      knownFacts: stageRules.known_facts || {},
+    };
+
+    const routerContextText = formatContextForConversationAgent(baseContextPayload);
+    const conexaoContextText = formatContextForConexaoInicial(baseContextPayload);
+    const descobertaContextText = formatContextForDescoberta(baseContextPayload);
 
     let totalTokens = 0;
 
@@ -702,8 +902,9 @@ export async function runExperimentalOrchestration(
     const routingPrompt = buildConversationAgentPrompt({
       conversationId,
       currentPhase,
+      checkpoint: currentCheckpoint,
+      contextText: routerContextText,
       newMessage,
-      recentHistory: recentSnippet,
     });
 
     const routingRes = await callModelOrAtria(routingPrompt, { runtime, supabase });
@@ -739,15 +940,17 @@ export async function runExperimentalOrchestration(
         subagentPrompt = buildDescobertaPrompt({
           conversationId,
           currentPhase: "descoberta",
+          checkpoint: "chk_pergunta_sobre_ele",
+          contextText: descobertaContextText,
           newMessage,
-          recentHistory: recentSnippet,
         });
       } else {
         subagentPrompt = buildConexaoInicialPrompt({
           conversationId,
           currentPhase: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          contextText: conexaoContextText,
           newMessage,
-          recentHistory: recentSnippet,
         });
       }
 
