@@ -80,13 +80,16 @@ export function useChatStages(activeConversationId?: string) {
   // Ações de Gestão de Etapas
   const createStage = async (data: {
     name: string;
-    folderId: string;
+    folderId?: string;
     color?: string;
     icon?: string;
     description?: string;
   }) => {
     try {
-      const created = await stagesUseCase.createStage(data);
+      const created = await stagesUseCase.createStage({
+        ...data,
+        folderId: data.folderId || "",
+      });
       toast.success(`Etapa "${created.name}" criada com sucesso!`);
       await refresh();
       return created;
@@ -248,6 +251,38 @@ export function useChatStages(activeConversationId?: string) {
     }
   };
 
+  const toggleObjective = async (objectiveId: string, isCompleted: boolean) => {
+    if (!activeConversationId) return;
+    try {
+      if (chatDetail) {
+        setChatDetail((prev) => {
+          if (!prev) return prev;
+          const newObjs = prev.objectives.map((o) =>
+            o.id === objectiveId
+              ? { ...o, status: isCompleted ? ("completed" as const) : ("pending" as const) }
+              : o
+          );
+          const totalObjs = newObjs.length;
+          const compCount = newObjs.filter((o) => o.status === "completed").length;
+          const reqPending = newObjs.filter((o) => o.required && o.status !== "completed").length;
+          return {
+            ...prev,
+            objectives: newObjs,
+            completedObjectivesCount: compCount,
+            requiredPendingCount: reqPending,
+            is100Percent: totalObjs > 0 ? reqPending === 0 : prev.is100Percent,
+          };
+        });
+      }
+      await progressUseCase.toggleObjective(activeConversationId, objectiveId, isCompleted);
+      await fetchAllProgresses();
+      await fetchChatDetail(activeConversationId);
+    } catch (err: any) {
+      toast.error("Erro ao atualizar objetivo.");
+      if (activeConversationId) await fetchChatDetail(activeConversationId);
+    }
+  };
+
   const advanceStage = async () => {
     if (!activeConversationId) return;
     try {
@@ -329,6 +364,7 @@ export function useChatStages(activeConversationId?: string) {
     moveGoalUp,
     moveGoalDown,
     toggleItem,
+    toggleObjective,
     advanceStage,
     setStage,
     toggleConverted,

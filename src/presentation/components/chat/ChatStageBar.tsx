@@ -6,36 +6,32 @@ import {
   ChevronUp,
   CheckCircle2,
   Circle,
-  Send,
   Sparkles,
   Trophy,
   ArrowRight,
-  Image as ImageIcon,
-  Mic,
-  FileText,
-  Layers,
+  Target,
   Check,
-  Link2,
 } from "lucide-react";
-import { ChatStageDetail } from "@/application/use-cases/ManageChatProgressUseCase";
+import { ChatStageDetail, StageObjectiveItem } from "@/application/use-cases/ManageChatProgressUseCase";
 import { StageChecklistItem } from "@/domain/entities/ChatStage";
 
 interface ChatStageBarProps {
   detail: ChatStageDetail | null;
-  onToggleItem: (itemId: string, isCompleted: boolean) => void;
+  onToggleItem?: (itemId: string, isCompleted: boolean) => void;
+  onToggleObjective?: (objectiveId: string, isCompleted: boolean) => void;
   onAdvanceStage: () => void;
   onSetStage: (stageId: string) => void;
   onToggleConverted: (isConverted: boolean) => void;
-  onQuickSendItem: (item: StageChecklistItem) => void;
+  onQuickSendItem?: (item: StageChecklistItem) => void;
 }
 
 export function ChatStageBar({
   detail,
   onToggleItem,
+  onToggleObjective,
   onAdvanceStage,
   onSetStage,
   onToggleConverted,
-  onQuickSendItem,
 }: ChatStageBarProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSelectingStage, setIsSelectingStage] = useState(false);
@@ -49,17 +45,30 @@ export function ChatStageBar({
     stageIndex,
     totalStages,
     isLastStage,
-    nextStage,
-    checklist,
-    totalItems,
-    completedItemsCount,
+    objectives = [],
+    totalObjectives = 0,
+    completedObjectivesCount = 0,
+    requiredPendingCount = 0,
     is100Percent,
     isConverted,
     allStages,
   } = detail;
 
-  const percentage = totalItems > 0 ? Math.round((completedItemsCount / totalItems) * 100) : 0;
+  const percentage =
+    totalObjectives > 0
+      ? Math.round((completedObjectivesCount / totalObjectives) * 100)
+      : 0;
   const stageColor = stage.color || "#3b82f6";
+
+  const handleToggle = (obj: StageObjectiveItem) => {
+    const isComp = obj.status === "completed";
+    if (onToggleObjective) {
+      onToggleObjective(obj.id, !isComp);
+    } else if (onToggleItem) {
+      // Fallback compatível
+      onToggleItem(obj.id, !isComp);
+    }
+  };
 
   return (
     <div className="w-full bg-[#121214] border-b border-[#262626] transition-all duration-200 z-20 shrink-0">
@@ -88,7 +97,7 @@ export function ChatStageBar({
           )}
         </div>
 
-        {/* Lado Direito: Progresso & Botão de Expansão */}
+        {/* Lado Direito: Progresso dos Objetivos & Botão de Expansão */}
         <div className="flex items-center gap-2 shrink-0">
           {is100Percent ? (
             <span className="text-[11px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/40 px-2 py-0.5 rounded-full flex items-center gap-1 animate-pulse">
@@ -107,7 +116,7 @@ export function ChatStageBar({
                 />
               </div>
               <span className="text-[11px] font-medium text-zinc-400">
-                {completedItemsCount}/{totalItems}
+                {completedObjectivesCount}/{totalObjectives}
               </span>
             </div>
           )}
@@ -115,7 +124,7 @@ export function ChatStageBar({
           <button
             type="button"
             className="p-1 text-zinc-400 hover:text-white rounded-md active:bg-white/10"
-            aria-label={isExpanded ? "Recolher checklist" : "Expandir checklist"}
+            aria-label={isExpanded ? "Recolher objetivos" : "Expandir objetivos"}
           >
             {isExpanded ? (
               <ChevronUp className="w-4 h-4" />
@@ -126,14 +135,19 @@ export function ChatStageBar({
         </div>
       </div>
 
-      {/* Visão Expandida com Itens do Checklist */}
+      {/* Visão Expandida com os Objetivos da Etapa (Sem arquivos do Cofre) */}
       {isExpanded && (
-        <div className="px-3.5 pt-1 pb-3 space-y-2.5 border-t border-[#1c1c1f] bg-[#0d0d0f]/95">
+        <div className="px-3.5 pt-1 pb-3 space-y-2.5 border-t border-[#1c1c1f] bg-[#0d0d0f]/95 animate-fade-in">
           {/* Cabeçalho da Visão Expandida */}
           <div className="flex items-center justify-between text-xs text-zinc-400 pt-1">
-            <span className="font-medium flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-zinc-400" />
-              Checklist da Pasta Vinculada ({completedItemsCount}/{totalItems})
+            <span className="font-medium flex items-center gap-1.5 text-zinc-200">
+              <Target className="w-3.5 h-3.5 text-sky-400" />
+              Objetivos da Etapa ({completedObjectivesCount}/{totalObjectives})
+              {requiredPendingCount > 0 && (
+                <span className="text-[10px] text-amber-400 font-semibold ml-1">
+                  • {requiredPendingCount} obrigatório{requiredPendingCount > 1 ? "s" : ""}
+                </span>
+              )}
             </span>
 
             {/* Alternador manual de etapa */}
@@ -184,96 +198,85 @@ export function ChatStageBar({
             </div>
           )}
 
-          {/* Lista de Itens do Checklist */}
-          {checklist.length === 0 ? (
+          {/* Lista de Objetivos da Etapa */}
+          {objectives.length === 0 ? (
             <div className="py-2.5 px-3 rounded-lg bg-zinc-900/60 border border-zinc-800 text-center text-xs text-zinc-400">
-              Nenhum arquivo encontrado na pasta deste cofre. Adicione mídias na pasta para compor o checklist.
+              Nenhum objetivo cadastrado nesta etapa. Configure objetivos em Configurações &gt; Etapas do Chat.
             </div>
           ) : (
-            <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
-              {checklist.map((item) => {
+            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              {objectives.map((obj) => {
+                const isCompleted = obj.status === "completed";
+
                 return (
                   <div
-                    key={item.id}
-                    className={`flex items-center justify-between p-2 rounded-lg border transition-colors ${
-                      item.isCompleted
+                    key={obj.id}
+                    className={`flex items-center justify-between p-2.5 rounded-lg border transition-colors ${
+                      isCompleted
                         ? "bg-emerald-950/20 border-emerald-900/40 text-zinc-300"
                         : "bg-zinc-900/80 border-zinc-800/80 text-white hover:border-zinc-700"
                     }`}
                   >
-                    {/* Checkbox + Ícone do Tipo + Título */}
+                    {/* Checkbox + Rótulo + Valor Conhecido */}
                     <div
-                      onClick={() => onToggleItem(item.id, !item.isCompleted)}
-                      className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer select-none"
+                      onClick={() => handleToggle(obj)}
+                      className="flex items-start gap-2.5 min-w-0 flex-1 cursor-pointer select-none"
                     >
                       <button
                         type="button"
-                        className="shrink-0 text-zinc-400 hover:text-white"
-                        aria-label={item.isCompleted ? "Desmarcar item" : "Marcar item como concluído"}
+                        className="shrink-0 mt-0.5 text-zinc-400 hover:text-white"
+                        aria-label={isCompleted ? "Reabrir objetivo" : "Marcar objetivo como concluído"}
                       >
-                        {item.isCompleted ? (
+                        {isCompleted ? (
                           <CheckCircle2 className="w-4 h-4 text-emerald-400 fill-emerald-400/20" />
                         ) : (
                           <Circle className="w-4 h-4 text-zinc-500" />
                         )}
                       </button>
 
-                      <div className="shrink-0 text-zinc-400">
-                        {item.type === "image" && <ImageIcon className="w-3.5 h-3.5 text-pink-400" />}
-                        {item.type === "audio" && <Mic className="w-3.5 h-3.5 text-sky-400" />}
-                        {item.type === "text" && <FileText className="w-3.5 h-3.5 text-amber-400" />}
-                      </div>
-
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <p
-                            className={`text-xs font-medium truncate ${
-                              item.isCompleted ? "line-through text-zinc-400" : "text-zinc-100"
+                            className={`text-xs font-semibold truncate ${
+                              isCompleted ? "line-through text-zinc-400" : "text-zinc-100"
                             }`}
                           >
-                            {item.title}
+                            {obj.title}
                           </p>
-                          {(() => {
-                            const linked = item.linkedItemId
-                              ? checklist.find((i) => i.id === item.linkedItemId)
-                              : null;
-                            if (!linked) return null;
-                            return (
-                              <span
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 border border-blue-500/30 text-[10px] text-blue-300 font-semibold shrink-0"
-                                title={`Enviado junto com: "${linked.title}"`}
-                              >
-                                <Link2 className="w-2.5 h-2.5 text-blue-400" />
-                                <span className="max-w-[110px] truncate">Junto: {linked.title}</span>
-                              </span>
-                            );
-                          })()}
+                          {obj.required ? (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 text-[10px] font-bold border border-amber-500/20">
+                              Obrigatório
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 text-[10px] font-medium">
+                              Opcional
+                            </span>
+                          )}
                         </div>
-                        {item.content && item.type === "text" && (
-                          <p className="text-[10px] text-zinc-400 truncate max-w-xs">
-                            &ldquo;{item.content}&rdquo;
+
+                        {/* Valor descoberto pela memória */}
+                        {obj.value !== null && obj.value !== undefined && (
+                          <p className="text-[11px] font-medium text-emerald-400 mt-0.5 flex items-center gap-1">
+                            <span>✓</span>
+                            <span>{String(obj.value)}</span>
+                          </p>
+                        )}
+
+                        {/* Descrição orientativa sutil */}
+                        {obj.description && !obj.value && (
+                          <p className="text-[10px] text-zinc-400 truncate mt-0.5">
+                            {obj.description}
                           </p>
                         )}
                       </div>
                     </div>
-
-                    {/* Botão de Disparo Rápido com 1 Toque */}
-                    <button
-                      type="button"
-                      onClick={() => onQuickSendItem(item)}
-                      title="Disparar no chat agora"
-                      className="shrink-0 ml-2 px-2 py-1 rounded-md bg-[#27272a] hover:bg-[#3f3f46] text-zinc-200 active:scale-95 text-[11px] font-medium flex items-center gap-1 transition-all border border-zinc-700/60"
-                    >
-                      <Send className="w-3 h-3 text-sky-400" />
-                      <span className="hidden sm:inline">Enviar</span>
-                    </button>
                   </div>
                 );
               })}
             </div>
           )}
 
-          {/* Barra de Ações: Avançar de Etapa ou Concluir Objetivo */}
+          {/* Barra de Ações: Avançar de Etapa ou Finalizar Objetivo */}
           <div className="pt-1.5 flex items-center justify-between gap-2">
             {/* Toggle de Conversão/Finalizado */}
             <button
@@ -289,7 +292,7 @@ export function ChatStageBar({
               <span>{isConverted ? "Finalizado" : "Marcar como Finalizado"}</span>
             </button>
 
-            {/* Botão de Avanço Consciente */}
+            {/* Botão de Avanço de Etapa */}
             {isLastStage ? (
               <button
                 type="button"
@@ -323,3 +326,4 @@ export function ChatStageBar({
     </div>
   );
 }
+

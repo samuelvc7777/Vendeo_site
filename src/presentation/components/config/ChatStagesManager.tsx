@@ -25,12 +25,13 @@ import {
 import { ChatStage, ConversationGoal } from "@/domain/entities/ChatStage";
 import { VaultFolderWithStats } from "@/domain/entities/Vault";
 import { useVault } from "@/presentation/hooks/useVault";
+import { toast } from "sonner";
 
 interface ChatStagesManagerProps {
   stages: ChatStage[];
   onCreateStage: (data: {
     name: string;
-    folderId: string;
+    folderId?: string;
     color?: string;
     description?: string;
   }) => Promise<any>;
@@ -143,7 +144,7 @@ export function ChatStagesManager({
   const openEditGoalModal = (stageId: string, goal: ConversationGoal) => {
     setActiveGoalStageId(stageId);
     setEditingGoal(goal);
-    setGoalLabel(goal.label);
+    setGoalLabel(goal.label || goal.title || "");
     setGoalMemoryEntity(goal.memoryEntity || "self");
     setGoalMemoryField(goal.memoryField || "");
     setGoalDescription(goal.description || "");
@@ -182,6 +183,7 @@ export function ChatStagesManager({
               g.id === editingGoal.id
                 ? {
                     ...g,
+                    title: goalLabel.trim(),
                     label: goalLabel.trim(),
                     memoryEntity: (goalMemoryEntity || "self").trim().toLowerCase(),
                     memoryField: goalMemoryField.trim().toLowerCase(),
@@ -212,6 +214,7 @@ export function ChatStagesManager({
             const newG: ConversationGoal = {
               id: "goal_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
               stageId: activeGoalStageId,
+              title: goalLabel.trim(),
               label: goalLabel.trim(),
               memoryEntity: (goalMemoryEntity || "self").trim().toLowerCase(),
               memoryField: goalMemoryField.trim().toLowerCase(),
@@ -225,6 +228,7 @@ export function ChatStagesManager({
         }
       }
       closeGoalModal();
+
     } finally {
       setIsGoalSubmitting(false);
     }
@@ -294,6 +298,79 @@ export function ChatStagesManager({
     }
   };
 
+  const handleSuggestAiObjectives = async (stageId: string) => {
+    const stage = stages.find((s) => s.id === stageId);
+    if (!stage) return;
+
+    const defaultSuggestions = [
+      {
+        label: "Descobrir cidade",
+        memoryEntity: "self",
+        memoryField: "city",
+        description: "Descobrir onde o pretendente mora de forma natural",
+        required: true,
+      },
+      {
+        label: "Descobrir profissão",
+        memoryEntity: "self",
+        memoryField: "profession",
+        description: "Entender no que ele trabalha ou estuda",
+        required: true,
+      },
+      {
+        label: "Descobrir idade",
+        memoryEntity: "self",
+        memoryField: "age",
+        description: "Descobrir a faixa etária ou quantos anos tem",
+        required: false,
+      },
+      {
+        label: "Entender rotina",
+        memoryEntity: "self",
+        memoryField: "routine",
+        description: "Entender horários e dinâmica do dia a dia",
+        required: false,
+      },
+      {
+        label: "Descobrir hobbies",
+        memoryEntity: "self",
+        memoryField: "hobbies",
+        description: "Descobrir o que ele gosta de fazer no tempo livre",
+        required: false,
+      },
+      {
+        label: "Entender estilo de vida",
+        memoryEntity: "self",
+        memoryField: "lifestyle",
+        description: "Preferências de passeios, esportes e gostos pessoais",
+        required: false,
+      },
+    ];
+
+    const current = stage.goals || [];
+    const existingFields = new Set(current.map((g) => g.memoryField));
+    const toAdd = defaultSuggestions.filter((s) => !existingFields.has(s.memoryField));
+
+    if (toAdd.length === 0) {
+      toast.info("Todos os objetivos padrão já foram adicionados a esta etapa.");
+      return;
+    }
+
+    for (const sug of toAdd) {
+      if (onAddGoal) {
+        await onAddGoal(stageId, {
+          label: sug.label,
+          memoryEntity: sug.memoryEntity,
+          memoryField: sug.memoryField,
+          description: sug.description,
+          required: sug.required,
+          enabled: true,
+        });
+      }
+    }
+    toast.success(`✨ ${toAdd.length} objetivos sugeridos com IA adicionados!`);
+  };
+
   const openCreateModal = () => {
     setEditingStage(null);
     setName("");
@@ -306,7 +383,7 @@ export function ChatStagesManager({
   const openEditModal = (stage: ChatStage) => {
     setEditingStage(stage);
     setName(stage.name);
-    setSelectedFolderId(stage.folderId);
+    setSelectedFolderId(stage.folderId || "");
     setSelectedColor(stage.color || PRESET_COLORS[0]);
     setDescription(stage.description || "");
     setIsModalOpen(true);
@@ -320,21 +397,20 @@ export function ChatStagesManager({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    if (!selectedFolderId) return;
 
     setIsSubmitting(true);
     try {
       if (editingStage) {
         await onUpdateStage(editingStage.id, {
           name: name.trim(),
-          folderId: selectedFolderId,
+          folderId: selectedFolderId || undefined,
           color: selectedColor,
           description: description.trim(),
         });
       } else {
         await onCreateStage({
           name: name.trim(),
-          folderId: selectedFolderId,
+          folderId: selectedFolderId || undefined,
           color: selectedColor,
           description: description.trim(),
         });
@@ -345,15 +421,18 @@ export function ChatStagesManager({
     }
   };
 
-  const getFolderName = (folderId: string) => {
+  const getFolderName = (folderId?: string) => {
+    if (!folderId) return "Sem pasta associada";
     const f = folders.find((item) => item.id === folderId);
     return f ? f.name : "Pasta não encontrada";
   };
 
-  const getFolderItemCount = (folderId: string) => {
+  const getFolderItemCount = (folderId?: string) => {
+    if (!folderId) return 0;
     const f = folders.find((item) => item.id === folderId);
     return f ? f.totalItems : 0;
   };
+
 
   return (
     <div className="space-y-4">
@@ -538,14 +617,25 @@ export function ChatStagesManager({
                           (Bússola para subagentes, sem interrogatório)
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => openAddGoalModal(stage.id)}
-                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 text-xs font-semibold active:scale-95 transition-all"
-                      >
-                        <Plus className="w-3 h-3" />
-                        <span>Adicionar Objetivo</span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleSuggestAiObjectives(stage.id)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold active:scale-95 transition-all"
+                          title="Sugerir objetivos padrão com IA"
+                        >
+                          <Sparkles className="w-3 h-3 text-amber-400" />
+                          <span>Sugerir com IA</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openAddGoalModal(stage.id)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 text-xs font-semibold active:scale-95 transition-all"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Adicionar Objetivo</span>
+                        </button>
+                      </div>
                     </div>
 
                     {stageGoals.length === 0 ? (
@@ -707,35 +797,42 @@ export function ChatStagesManager({
                 />
               </div>
 
-              {/* Pasta do Cofre Vinculada */}
+              {/* Descrição / Orientação da Etapa */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-300">
+                  Descrição / Orientação para a Persona
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Ex: Conhecer o pretendente naturalmente, criar conexão inicial e entender seu estilo de vida."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none"
+                />
+              </div>
+
+              {/* Pasta do Cofre (Opcional) */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
-                  <span>Pasta do Cofre Vinculada (Checklist) *</span>
+                  <span>Pasta do Cofre de Arquivos (Opcional)</span>
+                  <span className="text-[10px] text-zinc-500">Opcional</span>
                 </label>
-                {folders.length === 0 ? (
-                  <p className="text-xs text-amber-400 flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                    Você precisa ter ao menos uma pasta criada no Cofre de Arquivos.
-                  </p>
-                ) : (
-                  <select
-                    required
-                    value={selectedFolderId}
-                    onChange={(e) => setSelectedFolderId(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-sky-500"
-                  >
-                    <option value="" disabled>
-                      Selecione uma pasta do cofre...
+                <select
+                  value={selectedFolderId}
+                  onChange={(e) => setSelectedFolderId(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-sky-500"
+                >
+                  <option value="">
+                    Nenhuma pasta vinculada (opcional)
+                  </option>
+                  {folders.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      📁 {f.name} ({f.totalItems} arquivos)
                     </option>
-                    {folders.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        📁 {f.name} ({f.totalItems} arquivos)
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <p className="text-[11px] text-zinc-400">
-                  Todos os arquivos existentes (e os que você adicionar depois) nesta pasta se tornam automaticamente o checklist desta etapa.
+                  ))}
+                </select>
+                <p className="text-[11px] text-zinc-500">
+                  Etapas agora funcionam de forma autônoma baseadas em Objetivos Semânticos. A vinculação de pasta é opcional.
                 </p>
               </div>
 

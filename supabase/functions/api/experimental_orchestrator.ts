@@ -8,7 +8,7 @@ import { publishAutoPilotState, activity } from "./cloud_autopilot.ts";
 
 export type OrchestrationMode = "legacy" | "shadow" | "experimental";
 export type OrchestrationPhase = "conexao_inicial" | "descoberta";
-export type OrchestrationAction = "reply" | "wait" | "advance_phase" | "escalate";
+export type OrchestrationAction = "reply" | "send_audio" | "wait" | "advance_phase" | "escalate";
 export type SubagentTarget = "conexao_inicial" | "descoberta" | "none";
 export type ProcessingStatus =
   | "idle"
@@ -17,6 +17,52 @@ export type ProcessingStatus =
   | "sent"
   | "shadow_logged"
   | "failed";
+
+export interface StageObjective {
+  id: string;
+  stageId?: string;
+  title: string;
+  label?: string;
+  description?: string;
+  required: boolean;
+  enabled: boolean;
+  order: number;
+  memoryEntity?: string;
+  memoryField?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ConversationObjectiveProgress {
+  conversationId: string;
+  stageId: string;
+  objectiveId: string;
+  status: "pending" | "completed" | "skipped";
+  value?: any;
+  evidenceMessageId?: string;
+  completedAt?: string;
+}
+
+export interface PersonaAudioAsset {
+  id: string;
+  stageId?: string;
+  title: string;
+  audioUrl: string;
+  duration?: number;
+  transcript: string;
+  usageInstruction: string;
+  enabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AudioDeliveryHistory {
+  id: string;
+  conversationId: string;
+  audioId: string;
+  sentAt: string;
+  providerMessageId?: string;
+}
 
 export interface ConversationRoutingDecision {
   targetSubagent: SubagentTarget;
@@ -32,6 +78,13 @@ export interface SubagentDecision {
   nextPhase: OrchestrationPhase;
   reasoning: string;
   requiredTools?: string[];
+  audioId?: string;
+  audioUrl?: string;
+  objectiveCompletion?: {
+    objectiveId: string;
+    evidenceMessageId?: string;
+    value?: any;
+  };
 }
 
 export interface OrchestratorDecision {
@@ -44,6 +97,13 @@ export interface OrchestratorDecision {
   requiredTools: string[];
   reasoning: string;
   routedSubagent?: SubagentTarget;
+  audioId?: string;
+  audioUrl?: string;
+  objectiveCompletion?: {
+    objectiveId: string;
+    evidenceMessageId?: string;
+    value?: any;
+  };
 }
 
 export type MessageProcessingStatus =
@@ -323,8 +383,17 @@ export function validateSubagentDecision(
   }
   const obj = data as Record<string, any>;
 
+  const rawAudioId =
+    typeof obj.audioId === "string" && obj.audioId.trim()
+      ? obj.audioId.trim()
+      : typeof obj.audio_id === "string" && obj.audio_id.trim()
+      ? obj.audio_id.trim()
+      : undefined;
+
   const action: OrchestrationAction =
-    obj.action === "wait" || obj.action === "advance_phase" || obj.action === "escalate"
+    obj.action === "send_audio" || (rawAudioId && obj.action !== "wait" && obj.action !== "advance_phase" && obj.action !== "escalate")
+      ? "send_audio"
+      : obj.action === "wait" || obj.action === "advance_phase" || obj.action === "escalate"
       ? obj.action
       : "reply";
 
@@ -345,6 +414,16 @@ export function validateSubagentDecision(
       ? obj.reasoning.trim()
       : "Execução especializada do subagente";
 
+  let objectiveCompletion: { objectiveId: string; evidenceMessageId?: string; value?: any } | undefined;
+  const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
+  if (rawObjComp && typeof rawObjComp === "object" && rawObjComp.objectiveId) {
+    objectiveCompletion = {
+      objectiveId: String(rawObjComp.objectiveId || rawObjComp.goalId || "").trim(),
+      evidenceMessageId: rawObjComp.evidenceMessageId ? String(rawObjComp.evidenceMessageId).trim() : undefined,
+      value: rawObjComp.value !== undefined ? rawObjComp.value : true,
+    };
+  }
+
   return {
     action,
     checkpoint,
@@ -352,7 +431,10 @@ export function validateSubagentDecision(
     suggestedResponse,
     nextPhase,
     reasoning,
-    requiredTools: Array.isArray(obj.requiredTools) ? obj.requiredTools.map(String) : ["send_text"],
+    requiredTools: Array.isArray(obj.requiredTools) ? obj.requiredTools.map(String) : [action === "send_audio" ? "send_audio" : "send_text"],
+    audioId: rawAudioId,
+    audioUrl: typeof obj.audioUrl === "string" ? obj.audioUrl.trim() : undefined,
+    objectiveCompletion,
   };
 }
 
@@ -365,7 +447,7 @@ export function validateOrchestratorDecision(data: unknown): OrchestratorDecisio
   }
   const obj = data as Record<string, any>;
 
-  const validActions: OrchestrationAction[] = ["reply", "wait", "advance_phase", "escalate"];
+  const validActions: OrchestrationAction[] = ["reply", "send_audio", "wait", "advance_phase", "escalate"];
   if (!validActions.includes(obj.action)) {
     throw new Error(`Ação inválida: "${obj.action}". Esperado: ${validActions.join(", ")}`);
   }
@@ -1104,8 +1186,8 @@ export async function dispatchOutboxEntry(
   const { supabase, outboxEntry, recipientId, runtime, claimToken } = params;
 
   // 1. Idempotência estrita: se já foi enviada com sucesso, não repete envio
-  if (outboxEntry.status === "sent" && outboxEntry.providerMessageId) {
-    return { success: true, providerMessageId: outboxEntry.providerMessageId };
+  if (outboxEntry.status === "sent") {
+    return { success: true, providerMessageId: outboxEntry.providerMessageId || "already_sent" };
   }
 
   // 2. Proteção contra duplo dispatch concorrente e sending stale:
@@ -1294,16 +1376,18 @@ Seu objetivo é acolher com carinho, simpatia e validação de reciprocidade.
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
-### FERRAMENTAS DE MEMÓRIA SOB DEMANDA
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-Se para compreender corretamente a mensagem ou produzir uma resposta natural faltar um fato relevante que possa ter sido informado anteriormente, consulte a memória:
-- memory_get_fact: consulta fato estruturado exato. Ex: {"entity": "self" | "<nome_terceiro>", "field": "age" | "city" | "profession"}
-- memory_search: busca aberta por trechos relevantes. Ex: {"entity": "self", "query": "..."}
+Se precisar checar fatos já descobertos, consultar biblioteca de áudios ou validar informações:
+- persona_audio_search: busca áudios da Larissa no cofre por tema/intenção. Ex: {"action": "call_tool", "tool": "persona_audio_search", "parameters": {"intent": "saudação calorosa"}}
+- persona_get_fact: consulta fatos sobre a Larissa (PersonaMemory). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "age" | "city" | "profession"}}
+- memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
+- memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+
 Regras:
-- Não consulte memória por curiosidade.
-- Não consulte memória se o contexto atual já for suficiente.
-- Se a memória não possuir o dado, não invente.
-- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age"}, "reasoning": "..."}
+- Não consulte memória por curiosidade ou se o contexto atual já for suficiente.
+- A Larissa NUNCA tem os dados do pretendente e o pretendente NUNCA tem os dados da Larissa.
+- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "persona_audio_search", "parameters": {"intent": "oi tudo bem"}, "reasoning": "..."}
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_saudacao_feita': Se ainda for troca de cumprimento ou reciprocidade inicial. Próxima fase: 'conexao_inicial'.
@@ -1311,10 +1395,11 @@ Regras:
 
 Responda ESTRITAMENTE em JSON puro:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "chk_saudacao_feita" | "chk_rapport_estabelecido",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou observação do áudio)",
   "nextPhase": "conexao_inicial" | "descoberta",
   "reasoning": "análise analítica da resposta"
 }`;
@@ -1420,7 +1505,19 @@ export async function resolveStageChecklistGoals(params: {
   }
 
   let rawGoals: SemanticGoalDefinition[] = [];
-  if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
+  if (matchedStage?.objectives && Array.isArray(matchedStage.objectives) && matchedStage.objectives.length > 0) {
+    rawGoals = matchedStage.objectives.map((o: any) => ({
+      id: o.id,
+      stageId: o.stageId,
+      label: o.title || o.label,
+      memoryEntity: o.memoryEntity || "self",
+      memoryField: o.memoryField || "",
+      description: o.description,
+      required: o.required,
+      order: o.order,
+      enabled: o.enabled,
+    }));
+  } else if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
     rawGoals = matchedStage.goals;
   } else if (targetStageQuery.includes("descoberta") || targetStageQuery === "descoberta") {
     rawGoals = DEFAULT_DESCOBERTA_GOALS;
@@ -1471,7 +1568,179 @@ export async function resolveStageChecklistGoals(params: {
   return {
     stage: matchedStage?.name || targetStageQuery,
     goals: resolvedGoals,
+    objectives: resolvedGoals.map((g) => ({
+      id: g.id,
+      title: g.label,
+      label: g.label,
+      status: g.status,
+      value: g.value,
+      required: g.required,
+    })),
   };
+}
+
+export const resolveStageObjectives = resolveStageChecklistGoals;
+
+// ----------------------------------------------------------------------------
+// Persona Memory da Larissa (Dossiê Canônico)
+// ----------------------------------------------------------------------------
+export const LARISSA_PERSONA_FACTS: Record<string, any> = {
+  name: "Larissa",
+  age: 23,
+  city: "São João del Rei / BH e região (Minas Gerais)",
+  location: "Minas Gerais",
+  profession: "Estudante de enfermagem (estágio hospitalar) e trabalha com vendas em casa",
+  occupation: "Estudante de enfermagem (estágio hospitalar) e trabalha com vendas em casa",
+  studies: "Faculdade de enfermagem no período noturno com estágio de dia no hospital",
+  job: "Vendas online e digitais em casa pelo celular e computador",
+  work: "Trabalho em casa com vendas online",
+  hobbies: "Filmes de terror e suspense, filmes de tubarão, doces e chocolates, vinho suave, passeios ao pôr do sol em mirantes",
+  music: "Música brasileira, Tribo da Periferia, Marília Mendonça e sertanejo romântico",
+  favorite_food: "Doces, chocolate, sorvete, café com pão de queijo quentinho, pizza e hambúrguer à noite",
+  values: "Moça certinha de família, de igreja, honra pai, mãe e avó",
+  dislikes: "Odeia pessoa seca ou respostas monossilábicas, odeia baladas lotadas e barulhentas com bebida jogada, não tolera vulgaridade de primeira",
+};
+
+export function getPersonaFact(field: string): { found: boolean; field: string; value: any } {
+  const normField = (field || "").trim().toLowerCase();
+  if (normField in LARISSA_PERSONA_FACTS) {
+    return { found: true, field: normField, value: LARISSA_PERSONA_FACTS[normField] };
+  }
+  if (normField === "idade") return { found: true, field: "age", value: LARISSA_PERSONA_FACTS.age };
+  if (normField === "cidade") return { found: true, field: "city", value: LARISSA_PERSONA_FACTS.city };
+  if (normField === "trabalho" || normField === "profissao") return { found: true, field: "profession", value: LARISSA_PERSONA_FACTS.profession };
+  if (normField === "faculdade" || normField === "estudos") return { found: true, field: "studies", value: LARISSA_PERSONA_FACTS.studies };
+  if (normField === "gostos" || normField === "interesses") return { found: true, field: "hobbies", value: LARISSA_PERSONA_FACTS.hobbies };
+
+  return { found: false, field: normField, value: null };
+}
+
+// ----------------------------------------------------------------------------
+// Busca Semântica na Biblioteca de Áudios da Larissa
+// ----------------------------------------------------------------------------
+export async function searchPersonaAudios(params: {
+  supabase: any;
+  conversationId: string;
+  intent: string;
+  stageId?: string;
+}): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean }>> {
+  const { supabase, conversationId, intent, stageId } = params;
+  let audios: PersonaAudioAsset[] = [];
+
+  try {
+    const { data: row } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", "__persona_audios__")
+      .maybeSingle();
+
+    if (row?.stage_completed_rules?.audios && Array.isArray(row.stage_completed_rules.audios)) {
+      audios = row.stage_completed_rules.audios;
+    }
+  } catch {}
+
+  if (audios.length === 0 && (supabase as any)?.__mockPersonaAudios) {
+    audios = (supabase as any).__mockPersonaAudios;
+  }
+
+  let sentAudioIds = new Set<string>();
+  try {
+    const { data: histRow } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", "__audio_history__")
+      .maybeSingle();
+
+    const histList: AudioDeliveryHistory[] = histRow?.stage_completed_rules?.history || [];
+    histList
+      .filter((h) => h.conversationId === conversationId)
+      .forEach((h) => sentAudioIds.add(h.audioId));
+  } catch {}
+
+  if ((supabase as any)?.__mockAudioHistory) {
+    const mockHist: AudioDeliveryHistory[] = (supabase as any).__mockAudioHistory;
+    mockHist
+      .filter((h) => h.conversationId === conversationId)
+      .forEach((h) => sentAudioIds.add(h.audioId));
+  }
+
+  const queryTerms = (intent || "").toLowerCase().split(/\s+/).filter(Boolean);
+
+  const matched = audios
+    .filter((a) => a.enabled !== false)
+    .filter((a) => {
+      if (stageId && a.stageId && a.stageId !== stageId) {
+        return false;
+      }
+      return true;
+    })
+    .map((a) => {
+      const searchHaystack = `${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""}`.toLowerCase();
+      let matchScore = 0;
+      for (const term of queryTerms) {
+        if (searchHaystack.includes(term)) {
+          matchScore += 1;
+        }
+      }
+      const alreadySent = sentAudioIds.has(a.id);
+      return {
+        ...a,
+        matchScore,
+        alreadySentInConversation: alreadySent,
+      };
+    })
+    .filter((a) => queryTerms.length === 0 || a.matchScore > 0)
+    .sort((a, b) => {
+      if (a.alreadySentInConversation !== b.alreadySentInConversation) {
+        return a.alreadySentInConversation ? 1 : -1;
+      }
+      return b.matchScore - a.matchScore;
+    })
+    .map(({ matchScore, ...cleanAudio }) => cleanAudio);
+
+  return matched;
+}
+
+export async function recordAudioDeliveryHistory(params: {
+  supabase: any;
+  conversationId: string;
+  audioId: string;
+  providerMessageId?: string;
+}): Promise<void> {
+  const { supabase, conversationId, audioId, providerMessageId } = params;
+  try {
+    const { data: row } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", "__audio_history__")
+      .maybeSingle();
+
+    const currentHistory: AudioDeliveryHistory[] = row?.stage_completed_rules?.history || [];
+    const newEntry: AudioDeliveryHistory = {
+      id: `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      conversationId,
+      audioId,
+      sentAt: new Date().toISOString(),
+      providerMessageId,
+    };
+    currentHistory.push(newEntry);
+
+    await supabase
+      .from("instagram_conversations")
+      .upsert({
+        id: "__audio_history__",
+        stage_completed_rules: {
+          history: currentHistory,
+          updated_at: new Date().toISOString(),
+        },
+      });
+
+    if ((supabase as any)?.__mockAudioHistory) {
+      (supabase as any).__mockAudioHistory.push(newEntry);
+    }
+  } catch (err) {
+    console.warn("[Orchestrator] Falha ao gravar histórico de áudio:", err);
+  }
 }
 
 export function buildDescobertaPrompt(input: SubagentInput): string {
@@ -1491,28 +1760,31 @@ Seu objetivo é conduzir um diálogo afetuoso, recíproco e natural para conhece
 - PROIBIDO usar ponto de exclamação (!)
 - Uma pergunta leve por vez, sem interrogatório. Balão curto de celular.
 
-### REGRAS DE OURO DO CHECKLIST SEMÂNTICO (BÚSSOLA DE CONVERSA)
-1. O checklist é uma **BÚSSOLA DE ORIENTAÇÃO** para a conversa, **NUNCA UM INTERROGATÓRIO**.
+### REGRAS DE OURO DOS OBJETIVOS SEMÂNTICOS (BÚSSOLA DE CONVERSA)
+1. Os objetivos da etapa são uma **BÚSSOLA DE ORIENTAÇÃO** para a conversa, **NUNCA UM INTERROGATÓRIO**.
 2. **Máximo 1 pergunta leve por turno**: Jamais dispare múltiplas perguntas ou perguntas em sequência se ele não respondeu.
 3. Responda e acolha com afeto o que o pretendente acabou de falar ANTES de qualquer pergunta.
 4. Se o pretendente mudou de assunto, fez outra pergunta ou ignorou sua curiosidade anterior, **NÃO INSISTA**; acompanhe o fluxo dele com naturalidade.
 5. Se ele já informou espontaneamente algo (ex: cidade, idade ou trabalho), registre como conhecido e **NÃO PERGUNTE DE NOVO**.
 6. Você decide organicamente qual tópico abordar ou se neste turno deve apenas acolher sem fazer pergunta alguma.
+7. PRIORIZAÇÃO DE ÁUDIO: Se ele fez uma pergunta sobre você (ex: hobbies, rotina, dia a dia) e houver um áudio no cofre com transcrição perfeita e ainda não enviado, priorize o envio do áudio via action: "send_audio" sem texto redundante.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-Se precisar checar fatos já descobertos ou verificar os objetivos da fase:
-- checklist_get_stage_state: consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}}
-- memory_get_fact: consulta fato estruturado exato. Ex: {"entity": "self" | "<nome_terceiro>", "field": "age" | "city" | "job"}
-- memory_search: busca aberta por trechos relevantes. Ex: {"entity": "self", "query": "..."}
-Regras:
-- Não consulte memória por curiosidade.
-- Não consulte memória se o contexto atual já for suficiente.
-- Se a memória não possuir o dado, não invente.
-- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}, "reasoning": "..."}
+Se precisar checar fatos já descobertos, consultar a biblioteca de voz ou verificar objetivos da fase:
+- stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
+- persona_audio_search: busca áudios da Larissa no cofre por tema/intenção. Ex: {"action": "call_tool", "tool": "persona_audio_search", "parameters": {"intent": "hobbies finais de semana"}}
+- persona_get_fact: consulta fatos sobre a Larissa (PersonaMemory). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "age" | "city" | "profession" | "hobbies"}}
+- memory_get_fact: consulta fatos estruturados sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
+- memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+
+Regras de Uso de Ferramentas:
+- Não consulte ferramentas por curiosidade ou se o contexto atual já for suficiente.
+- A Larissa NUNCA tem os fatos do pretendente e o pretendente NUNCA tem os fatos da Larissa.
+- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}, "reasoning": "..."}
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
@@ -1520,10 +1792,11 @@ Regras:
 
 Responda ESTRITAMENTE em JSON puro:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "chk_pergunta_sobre_ele" | "chk_troca_cidade",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou observação do áudio)",
   "nextPhase": "descoberta",
   "reasoning": "análise analítica da resposta"
 }`;
@@ -2672,18 +2945,22 @@ export async function runExperimentalOrchestration(
           const toolField = String(toolParams.field || "").trim();
 
           currentCycle.trace.push(
-            toolName === "checklist_get_stage_state"
+            toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state"
               ? `checklist_tool_requested: ${toolParams.stage || currentPhase}`
+              : toolName === "persona_audio_search"
+              ? `persona_audio_search_requested: ${toolParams.intent || toolParams.query}`
+              : toolName === "persona_get_fact"
+              ? `persona_fact_requested: ${toolParams.field || toolField}`
               : `memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`
           );
           const tStart = Date.now();
 
           let toolResult: any;
-          if (toolName === "checklist_get_stage_state") {
+          if (toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state") {
             const requestedStage = String(toolParams.stage || currentPhase).trim();
             // BACKEND-BOUND SECURITY: O conversationId é injetado pelo runtime, ignorando qualquer valor externo
             const completedGoalIds = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
-            const stageChecklist = await resolveStageChecklistGoals({
+            const stageChecklist = await resolveStageObjectives({
               supabase,
               conversationId, // Backend-bound estrito
               stageNameOrId: requestedStage,
@@ -2692,9 +2969,35 @@ export async function runExperimentalOrchestration(
             });
 
             toolResult = {
-              tool: "checklist_get_stage_state",
+              tool: toolName,
               stage: stageChecklist.stage,
               goals: stageChecklist.goals,
+              objectives: stageChecklist.objectives,
+            };
+          } else if (toolName === "persona_audio_search") {
+            const intent = String(toolParams.intent || toolParams.query || "").trim();
+            const stageId = toolParams.stageId || toolParams.stage;
+            const results = await searchPersonaAudios({
+              supabase,
+              conversationId, // Backend-bound estrito
+              intent,
+              stageId,
+            });
+
+            toolResult = {
+              tool: "persona_audio_search",
+              found: results.length > 0,
+              audios: results,
+            };
+          } else if (toolName === "persona_get_fact") {
+            const fieldToQuery = String(toolParams.field || toolField || "").trim();
+            const pFact = getPersonaFact(fieldToQuery);
+
+            toolResult = {
+              tool: "persona_get_fact",
+              found: pFact.found,
+              field: pFact.field,
+              value: pFact.value,
             };
           } else if (toolName === "memory_search") {
             const query = String(toolParams.query || "").trim();
@@ -2708,7 +3011,7 @@ export async function runExperimentalOrchestration(
               results,
             };
           } else {
-            // memory_get_fact
+            // memory_get_fact (ContactMemory do pretendente)
             const res = await memoryProvider.getFact(conversationId, toolEntity, toolField);
             toolResult = {
               tool: "memory_get_fact",
@@ -2722,8 +3025,12 @@ export async function runExperimentalOrchestration(
 
           const toolDuration = Date.now() - tStart;
           currentCycle.trace.push(
-            toolName === "checklist_get_stage_state"
+            toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state"
               ? `checklist_tool_goals_count: ${toolResult.goals?.length || 0}`
+              : toolName === "persona_audio_search"
+              ? `persona_audio_count: ${toolResult.audios?.length || 0}`
+              : toolName === "persona_get_fact"
+              ? `persona_fact_found: ${toolResult.found}`
               : `memory_tool_found: ${toolResult.found}`
           );
           currentCycle.trace.push(`tool_duration_ms: ${toolDuration}`);
@@ -2736,17 +3043,18 @@ export async function runExperimentalOrchestration(
 
           currentSubagentPrompt = `${subagentPrompt}
 
-### RETORNO DA CONSULTA DE MEMÓRIA (Tool Call #${toolCallsCount})
+### RETORNO DA CONSULTA DE FERRAMENTA (Tool Call #${toolCallsCount})
 \`\`\`json
 ${JSON.stringify(toolResult, null, 2)}
 \`\`\`
 
 Agora prossiga e gere sua resposta final em JSON:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou observação do áudio)",
   "nextPhase": "${targetSubagent}",
   "reasoning": "análise analítica da resposta"
 }`;
@@ -2788,10 +3096,11 @@ AVISO OBRIGATÓRIO:
 Não solicite mais ferramentas. Responda agora com o que sabe e não invente fatos.
 Gere sua resposta final estritamente no formato JSON abaixo:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou observação do áudio)",
   "nextPhase": "${targetSubagent}",
   "reasoning": "análise analítica da resposta"
 }`;
@@ -2807,7 +3116,7 @@ Gere sua resposta final estritamente no formato JSON abaixo:
             !rawFinalJson.tool
           ) {
             const validated = validateSubagentDecision(rawFinalJson, currentPhase);
-            if (validated.suggestedResponse || validated.action === "wait") {
+            if (validated.suggestedResponse || validated.action === "wait" || validated.action === "send_audio" || validated.audioId) {
               finalSubDecision = validated;
               currentCycle.trace.push(`tool_loop_final_call_success: ${finalSubDecision.action}`);
             }
@@ -2937,6 +3246,18 @@ Gere sua resposta final estritamente no formato JSON abaixo:
     // ------------------------------------------------------------------------
     // OUTBOX PATTERN: Criação da Intenção de Envio com IdempotencyKey
     // ------------------------------------------------------------------------
+    const isAudioAction = decision.action === "send_audio" || Boolean(decision.audioId);
+    let resolvedAudio: PersonaAudioAsset | undefined;
+    if (isAudioAction && decision.audioId) {
+      const allAudios = await searchPersonaAudios({ supabase, conversationId, intent: "", stageId: undefined });
+      resolvedAudio = allAudios.find((a) => a.id === decision.audioId);
+    }
+
+    const initialContentType = isAudioAction && (resolvedAudio?.audioUrl || decision.audioUrl) ? "audio" : "text";
+    const initialContent = initialContentType === "audio"
+      ? (resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${decision.audioUrl}]`)
+      : decision.suggestedResponse;
+
     const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
     let outboxEntry = outboxMap[idempotencyKey];
 
@@ -2946,8 +3267,8 @@ Gere sua resposta final estritamente no formato JSON abaixo:
         cycleId: correlationId,
         conversationId,
         idempotencyKey,
-        content: decision.suggestedResponse,
-        messageType: "text",
+        content: initialContent,
+        messageType: initialContentType,
         status: "pending",
         attempts: 0,
         maxAttempts: 3,
@@ -3072,11 +3393,25 @@ Gere sua resposta final estritamente no formato JSON abaixo:
     if (orchState.mode === "experimental") {
       sentSuccessfully = false;
 
+      const isAudioAction = decision.action === "send_audio" || Boolean(decision.audioId);
+      let audioPayload: PersonaAudioAsset | undefined;
+      if (isAudioAction && decision.audioId) {
+        const allAudios = await searchPersonaAudios({ supabase, conversationId, intent: "", stageId: undefined });
+        audioPayload = allAudios.find((a) => a.id === decision.audioId);
+      }
+
       if (
-        (decision.action === "reply" || decision.action === "advance_phase") &&
-        decision.suggestedResponse
+        (decision.action === "reply" || decision.action === "send_audio" || decision.action === "advance_phase") &&
+        (decision.suggestedResponse || isAudioAction)
       ) {
-        balloons = splitIntoBalloons(decision.suggestedResponse);
+        if (isAudioAction && (audioPayload?.audioUrl || decision.audioUrl)) {
+          const aUrl = audioPayload?.audioUrl || decision.audioUrl;
+          balloons = [`[audio:${aUrl}]`];
+        } else if (decision.suggestedResponse) {
+          balloons = splitIntoBalloons(decision.suggestedResponse);
+        } else {
+          balloons = [];
+        }
         sentBalloonsCount = 0;
 
         for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
@@ -3184,6 +3519,9 @@ Gere sua resposta final estritamente no formato JSON abaixo:
           const balloonKey = balloons.length > 1 ? `${idempotencyKey}_b${bIndex}` : idempotencyKey;
           let balloonOutbox = outboxMap[balloonKey];
 
+          const isAudioBalloon = balloonText.startsWith("[audio:");
+          const balloonMessageType = isAudioBalloon ? "audio" : "text";
+
           if (!balloonOutbox) {
             balloonOutbox = {
               id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_b${bIndex}`,
@@ -3191,7 +3529,7 @@ Gere sua resposta final estritamente no formato JSON abaixo:
               conversationId,
               idempotencyKey: balloonKey,
               content: balloonText,
-              messageType: "text",
+              messageType: balloonMessageType,
               status: "pending",
               attempts: 0,
               maxAttempts: 3,
@@ -3331,6 +3669,16 @@ Gere sua resposta final estritamente no formato JSON abaixo:
             sentBalloonsCount++;
             currentCycle.trace.push(`meta_dispatched_b${bIndex + 1}: ${dispatchRes.providerMessageId}`);
 
+            if (isAudioBalloon && audioPayload) {
+              await recordAudioDeliveryHistory({
+                supabase,
+                conversationId,
+                audioId: audioPayload.id,
+                providerMessageId: dispatchRes.providerMessageId,
+              });
+              currentCycle.trace.push(`audio_delivered: ${audioPayload.id}`);
+            }
+
             const nowIso = new Date().toISOString();
             const messageId = dispatchRes.providerMessageId || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -3421,6 +3769,42 @@ Gere sua resposta final estritamente no formato JSON abaixo:
           });
         } catch (memErr: any) {
           currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
+        }
+
+        // Validação e conclusão de objetivo proposto semânticamente pelo agente
+        if (decision.objectiveCompletion && decision.objectiveCompletion.objectiveId) {
+          const comp = decision.objectiveCompletion;
+          const validEvidence = comp.evidenceMessageId
+            ? claimedMessages.some((m) => m.id === comp.evidenceMessageId) ||
+              rawInbounds.some((m: any) => m.id === comp.evidenceMessageId)
+            : true;
+
+          if (validEvidence) {
+            const currentCompletedGoals: string[] = [
+              ...((orchState as any).completedGoalIds || stageRules.completed_goals || []),
+            ];
+            if (!currentCompletedGoals.includes(comp.objectiveId)) {
+              currentCompletedGoals.push(comp.objectiveId);
+            }
+            (orchState as any).completedGoalIds = currentCompletedGoals;
+            stageRules.completed_goals = currentCompletedGoals;
+
+            const objProg: Record<string, any> = (orchState as any).objectiveProgress || {};
+            objProg[comp.objectiveId] = {
+              conversationId,
+              stageId: currentPhase,
+              objectiveId: comp.objectiveId,
+              status: "completed",
+              value: comp.value !== undefined ? comp.value : true,
+              evidenceMessageId: comp.evidenceMessageId,
+              completedAt: new Date().toISOString(),
+            };
+            (orchState as any).objectiveProgress = objProg;
+
+            currentCycle.trace.push(`objective_completed_by_agent: ${comp.objectiveId}`);
+          } else {
+            currentCycle.trace.push(`objective_completion_rejected_invalid_evidence: ${comp.objectiveId}`);
+          }
         }
       } else {
         currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");

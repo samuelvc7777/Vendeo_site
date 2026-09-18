@@ -1,6 +1,19 @@
 import { IChatStageRepository } from "@/domain/repositories/IChatStageRepository";
 import { IVaultRepository } from "@/domain/repositories/IVaultRepository";
-import { ChatStage, ChatProgress, StageChecklistItem } from "@/domain/entities/ChatStage";
+import {
+  ChatStage,
+  ChatProgress,
+  StageChecklistItem,
+  StageObjective,
+  ConversationObjectiveProgress,
+} from "@/domain/entities/ChatStage";
+
+export interface StageObjectiveItem extends StageObjective {
+  status: "pending" | "completed" | "skipped";
+  value?: string | number | boolean | null;
+  evidenceMessageId?: string;
+  completedAt?: string;
+}
 
 export interface ChatStageDetail {
   conversationId: string;
@@ -10,6 +23,13 @@ export interface ChatStageDetail {
   isFirstStage: boolean;
   isLastStage: boolean;
   nextStage: ChatStage | null;
+  // Nova coleção canônica de objetivos da etapa
+  objectives: StageObjectiveItem[];
+  totalObjectives: number;
+  completedObjectivesCount: number;
+  requiredPendingCount: number;
+  optionalPendingCount: number;
+  // Compatibilidade legada transitória
   checklist: StageChecklistItem[];
   totalItems: number;
   completedItemsCount: number;
@@ -38,6 +58,11 @@ export class ManageChatProgressUseCase {
         isFirstStage: false,
         isLastStage: false,
         nextStage: null,
+        objectives: [],
+        totalObjectives: 0,
+        completedObjectivesCount: 0,
+        requiredPendingCount: 0,
+        optionalPendingCount: 0,
         checklist: [],
         totalItems: 0,
         completedItemsCount: 0,
@@ -53,6 +78,7 @@ export class ManageChatProgressUseCase {
         conversationId,
         currentStageId: stages[0].id,
         completedItemIds: [],
+        completedGoalIds: [],
         isConverted: false,
         updatedAt: new Date().toISOString(),
       };
@@ -73,25 +99,62 @@ export class ManageChatProgressUseCase {
     const isLastStage = stageIndex === stages.length - 1;
     const nextStage = !isLastStage ? stages[stageIndex + 1] : null;
 
-    // Busca os itens reais da pasta do cofre vinculada
-    const vaultItems = await this.vaultRepository.getItems(currentStage.folderId);
-    const completedSet = new Set(progress.completedItemIds || []);
+    // Resolução dos Objetivos Semânticos da Etapa
+    const rawObjectives = (currentStage.objectives || currentStage.goals || [])
+      .filter((o) => o.enabled !== false)
+      .sort((a, b) => a.order - b.order);
 
-    const checklist: StageChecklistItem[] = vaultItems.map((item) => ({
-      id: item.id,
-      folderId: item.folderId,
-      type: item.type,
-      title: item.title,
-      content: item.content,
-      mediaUrl: item.mediaUrl,
-      duration: item.duration,
-      linkedItemId: item.linkedItemId,
-      isCompleted: completedSet.has(item.id),
-    }));
+    const completedGoalSet = new Set(progress.completedGoalIds || []);
+    const objectivesProgressMap = progress.objectiveProgress || {};
+
+    const objectives: StageObjectiveItem[] = rawObjectives.map((obj) => {
+      const prog = objectivesProgressMap[obj.id];
+      const isCompleted = completedGoalSet.has(obj.id) || prog?.status === "completed";
+      return {
+        ...obj,
+        title: obj.title || obj.label || "Objetivo",
+        status: isCompleted ? "completed" : "pending",
+        value: prog?.value ?? null,
+        evidenceMessageId: prog?.evidenceMessageId,
+        completedAt: prog?.completedAt,
+      };
+    });
+
+    const totalObjectives = objectives.length;
+    const completedObjectivesCount = objectives.filter((o) => o.status === "completed").length;
+    const requiredPendingCount = objectives.filter((o) => o.required && o.status !== "completed").length;
+    const optionalPendingCount = objectives.filter((o) => !o.required && o.status !== "completed").length;
+
+    // Busca os itens legados da pasta do cofre vinculada (se folderId existir)
+    let checklist: StageChecklistItem[] = [];
+    if (currentStage.folderId) {
+      try {
+        const vaultItems = await this.vaultRepository.getItems(currentStage.folderId);
+        const completedSet = new Set(progress.completedItemIds || []);
+        checklist = vaultItems.map((item) => ({
+          id: item.id,
+          folderId: item.folderId,
+          type: item.type,
+          title: item.title,
+          content: item.content,
+          mediaUrl: item.mediaUrl,
+          duration: item.duration,
+          linkedItemId: item.linkedItemId,
+          isCompleted: completedSet.has(item.id),
+        }));
+      } catch {
+        checklist = [];
+      }
+    }
 
     const totalItems = checklist.length;
     const completedItemsCount = checklist.filter((i) => i.isCompleted).length;
-    const is100Percent = totalItems > 0 && completedItemsCount === totalItems;
+
+    // A etapa é 100% apta quando todos os objetivos obrigatórios foram atingidos
+    const is100Percent =
+      totalObjectives > 0
+        ? requiredPendingCount === 0
+        : totalItems > 0 && completedItemsCount === totalItems;
 
     return {
       conversationId,
@@ -101,6 +164,11 @@ export class ManageChatProgressUseCase {
       isFirstStage,
       isLastStage,
       nextStage,
+      objectives,
+      totalObjectives,
+      completedObjectivesCount,
+      requiredPendingCount,
+      optionalPendingCount,
       checklist,
       totalItems,
       completedItemsCount,
@@ -108,6 +176,17 @@ export class ManageChatProgressUseCase {
       isConverted: progress.isConverted || false,
       allStages: stages,
     };
+  }
+
+  async toggleObjective(
+    conversationId: string,
+    objectiveId: string,
+    isCompleted: boolean
+  ): Promise<ChatProgress> {
+    if (this.stageRepository.toggleGoalCompletion) {
+      return this.stageRepository.toggleGoalCompletion(conversationId, objectiveId, isCompleted);
+    }
+    throw new Error("Método toggleGoalCompletion não disponível no repositório.");
   }
 
   async toggleItem(

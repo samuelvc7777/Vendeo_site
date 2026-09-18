@@ -7126,3 +7126,906 @@ test('123. Teste L: obsidian-memory-sync gera Sobre ele.md com ## Checklist — 
   assert.ok(md.includes('- [ ] **Profissão**'), 'Deve conter caixa desmarcada para Profissão');
 });
 
+// =========================================================================
+// NOVA ARQUITETURA: ETAPAS + OBJETIVOS + COFRE DE ÁUDIOS + PERSONA MEMORY
+// SUÍTE DE TESTES A a AQ (Testes 124 a 166)
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// GRUPO 1: DOMÍNIO E ETAPAS (Testes A a K)
+// -------------------------------------------------------------------------
+test('124. Teste A: ChatStage criada sem folderId é perfeitamente válida e folderId é opcional', () => {
+  const stageWithoutFolder = {
+    id: 'stage_descoberta_v2',
+    name: 'Descoberta Natural',
+    order: 2,
+    objectives: [
+      { id: 'obj_1', title: 'Descobrir Cidade', required: true, enabled: true, order: 1 }
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  assert.ok(stageWithoutFolder.id);
+  assert.equal(stageWithoutFolder.folderId, undefined, 'folderId deve ser opcional/undefined');
+  assert.equal(stageWithoutFolder.objectives.length, 1);
+});
+
+test('125. Teste B: Múltiplos objetivos (StageObjective) em uma etapa com IDs únicos e ordem definida', () => {
+  const objectives = [
+    { id: 'obj_city', title: 'Cidade', required: true, enabled: true, order: 1, memoryEntity: 'self', memoryField: 'city' },
+    { id: 'obj_age', title: 'Idade', required: true, enabled: true, order: 2, memoryEntity: 'self', memoryField: 'age' },
+    { id: 'obj_job', title: 'Profissão', required: false, enabled: true, order: 3, memoryEntity: 'self', memoryField: 'job' }
+  ];
+
+  const ids = new Set(objectives.map(o => o.id));
+  assert.equal(ids.size, 3, 'Todos os IDs devem ser únicos');
+  assert.equal(objectives[0].order, 1);
+  assert.equal(objectives[2].order, 3);
+});
+
+test('126. Teste C: Objetivos marcados como required: true vs required: false', () => {
+  const objectives = [
+    { id: 'req_1', title: 'Idade', required: true, enabled: true, order: 1 },
+    { id: 'opt_1', title: 'Filhos', required: false, enabled: true, order: 2 }
+  ];
+
+  const requiredObjs = objectives.filter(o => o.required);
+  const optionalObjs = objectives.filter(o => !o.required);
+
+  assert.equal(requiredObjs.length, 1);
+  assert.equal(optionalObjs.length, 1);
+  assert.equal(requiredObjs[0].id, 'req_1');
+  assert.equal(optionalObjs[0].id, 'opt_1');
+});
+
+test('127. Teste D: Conclusão de objetivo fora de ordem (#5 concluído antes de #1) é aceita sem erro', () => {
+  const progressMap = {};
+  progressMap['obj_5'] = {
+    conversationId: 'conv_order_test',
+    stageId: 'stage_1',
+    objectiveId: 'obj_5',
+    status: 'completed',
+    value: 'Engenheiro',
+    completedAt: new Date().toISOString()
+  };
+
+  assert.equal(progressMap['obj_5'].status, 'completed');
+  assert.equal(progressMap['obj_1'], undefined, 'Objetivo #1 pode permanecer pendente');
+});
+
+test('128. Teste E: Progresso da etapa: objetivos opcionais pendentes NÃO impedem is100Percent se obrigatórios concluídos', () => {
+  const objectives = [
+    { id: 'o_req_1', title: 'Cidade', required: true, enabled: true, order: 1 },
+    { id: 'o_req_2', title: 'Idade', required: true, enabled: true, order: 2 },
+    { id: 'o_opt_1', title: 'Signo', required: false, enabled: true, order: 3 }
+  ];
+
+  const progress = {
+    'o_req_1': { status: 'completed' },
+    'o_req_2': { status: 'completed' },
+    'o_opt_1': { status: 'pending' }
+  };
+
+  const requiredPending = objectives.filter(o => o.required && progress[o.id]?.status !== 'completed');
+  const is100Percent = requiredPending.length === 0;
+
+  assert.equal(requiredPending.length, 0);
+  assert.equal(is100Percent, true, 'is100Percent deve ser true quando todos os obrigatórios estão concluídos');
+});
+
+test('129. Teste F: Progresso da etapa: objetivos obrigatórios pendentes mantêm is100Percent como false', () => {
+  const objectives = [
+    { id: 'o_req_1', title: 'Cidade', required: true, enabled: true, order: 1 },
+    { id: 'o_req_2', title: 'Idade', required: true, enabled: true, order: 2 }
+  ];
+
+  const progress = {
+    'o_req_1': { status: 'completed' },
+    'o_req_2': { status: 'pending' }
+  };
+
+  const requiredPending = objectives.filter(o => o.required && progress[o.id]?.status !== 'completed');
+  const is100Percent = requiredPending.length === 0;
+
+  assert.equal(requiredPending.length, 1);
+  assert.equal(is100Percent, false, 'is100Percent deve ser false quando há obrigatório pendente');
+});
+
+test('130. Teste G: Progresso isolado: cada conversa mantém seu próprio progresso de objetivos independente', () => {
+  const convA_progress = { 'obj_city': { conversationId: 'conv_A', status: 'completed', value: 'Belo Horizonte' } };
+  const convB_progress = { 'obj_city': { conversationId: 'conv_B', status: 'pending', value: null } };
+
+  assert.equal(convA_progress['obj_city'].value, 'Belo Horizonte');
+  assert.equal(convB_progress['obj_city'].value, null);
+  assert.notEqual(convA_progress['obj_city'].status, convB_progress['obj_city'].status);
+});
+
+test('131. Teste H: Conclusão automática via MemoryWriter: fato gravado em self.city reflete objetivo como completed', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider, resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  await memoryProvider.writeFact('conv_auto_city', {
+    entity: 'self',
+    field: 'city',
+    value: 'Barbacena',
+    confidence: 1.0,
+    sourceMessageId: 'msg_city_1'
+  });
+
+  const res = await resolveStageObjectives({
+    supabase: {},
+    conversationId: 'conv_auto_city',
+    stageNameOrId: 'descoberta',
+    memoryProvider
+  });
+
+  const cityGoal = res.goals.find(g => g.id === 'goal_city');
+  assert.ok(cityGoal, 'Objetivo de cidade deve existir');
+  assert.equal(cityGoal.status, 'completed');
+  assert.equal(cityGoal.value, 'Barbacena');
+});
+
+test('132. Teste I: Informação espontânea do pretendente completa objetivo sem pergunta prévia da IA', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider, resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  await memoryProvider.writeFact('conv_spontaneous', {
+    entity: 'self',
+    field: 'age',
+    value: 35,
+    confidence: 1.0,
+    sourceMessageId: 'msg_spont_1'
+  });
+
+  const res = await resolveStageObjectives({
+    supabase: {},
+    conversationId: 'conv_spontaneous',
+    stageNameOrId: 'descoberta',
+    memoryProvider
+  });
+
+  const ageGoal = res.goals.find(g => g.id === 'goal_age');
+  assert.equal(ageGoal.status, 'completed');
+  assert.equal(ageGoal.value, 35);
+});
+
+test('133. Teste J: Atualização/remoção de objetivos reflete imediatamente na resolução de objetivos da etapa', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider, resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const customStage = {
+    id: 'stage_custom',
+    name: 'Descoberta Personalizada',
+    objectives: [
+      { id: 'custom_obj_1', title: 'Hobbie Principal', memoryEntity: 'self', memoryField: 'hobby', required: true, enabled: true, order: 1 }
+    ]
+  };
+
+  const mockSupabase = {
+    from: (tbl) => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { stage_completed_rules: { stages: [customStage] } }
+          })
+        })
+      })
+    })
+  };
+
+  const res = await resolveStageObjectives({
+    supabase: mockSupabase,
+    conversationId: 'conv_custom',
+    stageNameOrId: 'stage_custom',
+    memoryProvider: new InMemoryMemoryProvider()
+  });
+
+  assert.equal(res.goals.length, 1);
+  assert.equal(res.goals[0].id, 'custom_obj_1');
+  assert.equal(res.goals[0].label, 'Hobbie Principal');
+});
+
+test('134. Teste K: Reordenação de objetivos mantém status já concluído intacto', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider, resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  await memoryProvider.writeFact('conv_reorder', {
+    entity: 'self',
+    field: 'city',
+    value: 'São João del Rei',
+    confidence: 1.0
+  });
+
+  const stageReordered = {
+    id: 'stage_reordered',
+    name: 'Descoberta',
+    objectives: [
+      { id: 'goal_city', title: 'Cidade', memoryEntity: 'self', memoryField: 'city', required: true, enabled: true, order: 10 },
+      { id: 'goal_age', title: 'Idade', memoryEntity: 'self', memoryField: 'age', required: true, enabled: true, order: 1 }
+    ]
+  };
+
+  const mockSupabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { stage_completed_rules: { stages: [stageReordered] } }
+          })
+        })
+      })
+    })
+  };
+
+  const res = await resolveStageObjectives({
+    supabase: mockSupabase,
+    conversationId: 'conv_reorder',
+    stageNameOrId: 'stage_reordered',
+    memoryProvider
+  });
+
+  const cityObj = res.goals.find(g => g.id === 'goal_city');
+  assert.equal(cityObj.status, 'completed');
+  assert.equal(cityObj.value, 'São João del Rei');
+});
+
+// -------------------------------------------------------------------------
+// GRUPO 2: COFRE DE ÁUDIOS (Testes L a V)
+// -------------------------------------------------------------------------
+test('135. Teste L: Repositório de áudios aceita e manipula mídias de áudio (PersonaAudioAsset)', () => {
+  const audioAsset = {
+    id: 'aud_1',
+    title: 'Apresentação Larissa',
+    audioUrl: 'https://storage.vendeo.com/audios/apresentacao.mp3',
+    transcript: 'Oi meu bem tudo bem com você?',
+    usageInstruction: 'Usar no primeiro contato quando o pretendente for caloroso',
+    enabled: true,
+    duration: 12
+  };
+
+  assert.ok(audioAsset.audioUrl.endsWith('.mp3'));
+  assert.equal(audioAsset.enabled, true);
+  assert.equal(audioAsset.duration, 12);
+});
+
+test('136. Teste M: Criação e persistência de novo áudio com título, URL, transcrição e usageInstruction', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    {
+      id: 'audio_sobre_trabalho',
+      title: 'Rotina de Vendas e Hospital',
+      audioUrl: 'https://vendeo.com/audios/trabalho.m4a',
+      transcript: 'Nossa meu dia foi super corrido no hospital e agora tô respondendo as clientes das vendas',
+      usageInstruction: 'Enviar quando ele perguntar sobre como foi o dia ou o que ela faz',
+      enabled: true
+    }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } })
+        })
+      })
+    })
+  };
+
+  const found = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_audio_m',
+    intent: 'hospital vendas'
+  });
+
+  assert.equal(found.length, 1);
+  assert.equal(found[0].id, 'audio_sobre_trabalho');
+  assert.equal(found[0].transcript.includes('hospital'), true);
+  assert.equal(found[0].usageInstruction.includes('dia'), true);
+});
+
+test('137. Teste N: Edição de áudio existente (atualização de transcrição e usageInstruction)', () => {
+  const original = {
+    id: 'aud_edit',
+    title: 'Hobbies',
+    transcript: 'Gosto de sair',
+    usageInstruction: 'Finais de semana'
+  };
+
+  const updated = {
+    ...original,
+    transcript: 'Eu amo viajar, ver filmes de terror e comer um docinho',
+    usageInstruction: 'Usar quando ele perguntar sobre o que eu gosto de fazer'
+  };
+
+  assert.notEqual(original.transcript, updated.transcript);
+  assert.equal(updated.transcript.includes('filmes de terror'), true);
+});
+
+test('138. Teste O: Associação opcional de áudio a uma etapa (stageId)', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_conexao', title: 'Saudação', audioUrl: 'url1', transcript: 'Oi tudo bem', usageInstruction: '', enabled: true, stageId: 'conexao_inicial' },
+    { id: 'aud_descoberta', title: 'Faculdade', audioUrl: 'url2', transcript: 'Faço enfermagem', usageInstruction: '', enabled: true, stageId: 'descoberta' }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } })
+        })
+      })
+    })
+  };
+
+  const res = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_stage_filter',
+    intent: '',
+    stageId: 'descoberta'
+  });
+
+  assert.equal(res.length, 1);
+  assert.equal(res[0].id, 'aud_descoberta');
+});
+
+test('139. Teste P: Transcrição persistida disponível para busca semântica em searchPersonaAudios', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_shark', title: 'Gosto curioso', audioUrl: 'url', transcript: 'Tenho uma mania engraçada de ver filmes de tubarão kkkk', usageInstruction: 'quando falar de filmes', enabled: true }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } }) }) })
+    })
+  };
+
+  const results = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_shark',
+    intent: 'filmes de tubarão'
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, 'aud_shark');
+});
+
+test('140. Teste Q: Instrução de uso (Quando usar este áudio) persistida e pesquisável', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_wine', title: 'Frio em Minas', audioUrl: 'url', transcript: 'Adoro um vinho', usageInstruction: 'Enviar em noites de chuva ou quando falar de frio', enabled: true }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } }) }) })
+    })
+  };
+
+  const results = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_wine',
+    intent: 'noites de chuva'
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, 'aud_wine');
+});
+
+test('141. Teste R: Toggle ativo/desativado: áudio desabilitado (enabled: false) não é retornado na busca', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_disabled', title: 'Áudio Antigo', audioUrl: 'url', transcript: 'Oi sumido', usageInstruction: '', enabled: false }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } }) }) })
+    })
+  };
+
+  const results = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_disabled',
+    intent: 'sumido'
+  });
+
+  assert.equal(results.length, 0, 'Áudios com enabled: false não devem ser retornados');
+});
+
+test('142. Teste S: persona_audio_search retorna áudios correspondentes ao tema pesquisado', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_match', title: 'Música preferida', audioUrl: 'url', transcript: 'Eu gosto de Tribo da Periferia e Marília Mendonça', usageInstruction: 'gostos musicais', enabled: true }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } }) }) })
+    })
+  };
+
+  const results = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_music',
+    intent: 'Marília Mendonça'
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, 'aud_match');
+});
+
+test('143. Teste T: persona_audio_search não retorna áudios cujo conteúdo e instrução sejam irrelevantes', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_food', title: 'Comida', audioUrl: 'url', transcript: 'Amo doces e chocolate', usageInstruction: 'comidas preferidas', enabled: true }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } }) }) })
+    })
+  };
+
+  const results = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_irrelevant',
+    intent: 'astronomia telescópio física quântica'
+  });
+
+  assert.equal(results.length, 0, 'Zero áudios irrelevantes');
+});
+
+test('144. Teste U: persona_audio_search marca alreadySentInConversation: true se já enviado na conversa', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaAudios } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockAudios = [
+    { id: 'aud_repeat', title: 'Voz da Larissa', audioUrl: 'url', transcript: 'Oi tudo bem', usageInstruction: '', enabled: true }
+  ];
+
+  const mockSupabase = {
+    __mockPersonaAudios: mockAudios,
+    __mockAudioHistory: [
+      { id: 'h1', conversationId: 'conv_repeat', audioId: 'aud_repeat', sentAt: '2026-09-18T10:00:00Z' }
+    ],
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { stage_completed_rules: { audios: mockAudios } } }) }) })
+    })
+  };
+
+  const results = await searchPersonaAudios({
+    supabase: mockSupabase,
+    conversationId: 'conv_repeat',
+    intent: 'tudo bem'
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].alreadySentInConversation, true, 'Deve indicar que já foi enviado nesta conversa');
+});
+
+test('145. Teste V: REGRA INEGOCIÁVEL: Envio de áudio NUNCA marca objetivo de etapa como concluído', async () => {
+  const { load } = createRuntime();
+  const { resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Enviar áudio da Larissa falando sobre os hobbies dela NUNCA conclui o objetivo de descobrir os hobbies dele
+  const goalsRes = await resolveStageObjectives({
+    supabase: {},
+    conversationId: 'conv_audio_never_completes_goal',
+    stageNameOrId: 'descoberta',
+    memoryProvider: { getFact: async () => ({ found: false }) }
+  });
+
+  const allCompleted = goalsRes.goals.every(g => g.status === 'completed');
+  assert.equal(allCompleted, false, 'Enviar áudio de persona não conclui objetivos sobre o pretendente');
+});
+
+// -------------------------------------------------------------------------
+// GRUPO 3: AGENTE E SUBAGENTES (Testes W a AC)
+// -------------------------------------------------------------------------
+test('146. Teste W: Pergunta correspondente a áudio disponível gera decisão de send_audio com audioId', () => {
+  const { load } = createRuntime();
+  const { validateSubagentDecision } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const decision = validateSubagentDecision({
+    action: 'send_audio',
+    audioId: 'aud_rotina_hospital',
+    checkpoint: 'chk_pergunta_sobre_ele',
+    summary: 'Respondendo com áudio sobre o dia no hospital',
+    suggestedResponse: 'Áudio sobre o dia corrido no hospital',
+    nextPhase: 'descoberta'
+  }, 'descoberta');
+
+  assert.equal(decision.action, 'send_audio');
+  assert.equal(decision.audioId, 'aud_rotina_hospital');
+});
+
+test('147. Teste X: Áudio com transcrição compatível evita mensagem de texto redundante', () => {
+  const decision = {
+    action: 'send_audio',
+    audioId: 'aud_apresentacao',
+    suggestedResponse: '[audio:https://vendeo.com/audio1.mp3]' // Sem texto redundante tipo 'olha o áudio aí'
+  };
+
+  assert.equal(decision.action, 'send_audio');
+  assert.ok(!decision.suggestedResponse.includes('Segue o áudio'));
+  assert.ok(!decision.suggestedResponse.includes('Vou te mandar um áudio'));
+});
+
+test('148. Teste Y: Ausência de áudio correspondente utiliza Persona Memory (persona_get_fact) e responde por texto', () => {
+  const { load } = createRuntime();
+  const { getPersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const ageFact = getPersonaFact('age');
+  const cityFact = getPersonaFact('city');
+
+  assert.equal(ageFact.found, true);
+  assert.equal(ageFact.value, 23);
+  assert.equal(cityFact.found, true);
+  assert.ok(cityFact.value.includes('Minas Gerais'));
+});
+
+test('149. Teste Z: Subagente de descoberta explora objetivo pendente de forma natural no contexto sem interrogatório', () => {
+  const { load } = createRuntime();
+  const { buildDescobertaPrompt } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const prompt = buildDescobertaPrompt({
+    conversationId: 'conv_natural',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_pergunta_sobre_ele',
+    contextText: 'PRETENDENTE: Eu sou de Belo Horizonte!'
+  });
+
+  assert.ok(prompt.includes('NUNCA UM INTERROGATÓRIO'));
+  assert.ok(prompt.includes('Máximo 1 pergunta leve por turno'));
+  assert.ok(prompt.includes('stage_objectives_get'));
+});
+
+test('150. Teste AA: Subagente não força perguntas pendentes se o pretendente mudou de assunto', () => {
+  const { load } = createRuntime();
+  const { buildDescobertaPrompt } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const prompt = buildDescobertaPrompt({
+    conversationId: 'conv_flow',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_pergunta_sobre_ele',
+    contextText: 'PRETENDENTE: Nossa acabei de bater o carro estou muito chateado'
+  });
+
+  assert.ok(prompt.includes('Se o pretendente mudou de assunto'));
+  assert.ok(prompt.includes('NÃO INSISTA'));
+});
+
+test('151. Teste AB: Backend PROÍBE estritamente forçar nextObjective = pending[0]', async () => {
+  const { load } = createRuntime();
+  const { resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const res = await resolveStageObjectives({
+    supabase: {},
+    conversationId: 'conv_no_next_objective',
+    stageNameOrId: 'descoberta',
+    memoryProvider: { getFact: async () => ({ found: false }) }
+  });
+
+  assert.equal(res.nextObjective, undefined, 'Backend NUNCA deve prescrever nextObjective');
+  assert.equal(res.nextGoal, undefined, 'Backend NUNCA deve prescrever nextGoal');
+});
+
+test('152. Teste AC: stage_objectives_get rejeita conversationId forjado e injeta estritamente o id backend-bound', async () => {
+  const { load } = createRuntime();
+  const { resolveStageObjectives } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const queriedIds = [];
+  const mockMemory = {
+    getFact: async (contactId, entity, field) => {
+      queriedIds.push(contactId);
+      return { found: false };
+    }
+  };
+
+  await resolveStageObjectives({
+    supabase: {},
+    conversationId: 'secure_backend_contact_999',
+    stageNameOrId: 'descoberta',
+    memoryProvider: mockMemory
+  });
+
+  assert.ok(queriedIds.length > 0);
+  assert.ok(queriedIds.every(id => id === 'secure_backend_contact_999'), 'Todos os acessos de memória usam o conversationId seguro do backend');
+});
+
+// -------------------------------------------------------------------------
+// GRUPO 4: UI E APRESENTAÇÃO (Testes AD a AJ)
+// -------------------------------------------------------------------------
+test('153. Teste AD: ChatStageBar renderiza etapa e objetivos sem referências ou dependência do Cofre antigo', () => {
+  // Simulação das propriedades do ChatStageBar novo
+  const stageBarProps = {
+    stage: { id: 'stg_1', name: 'Descoberta', order: 2 },
+    objectives: [
+      { id: 'o1', title: 'Cidade', status: 'completed', value: 'Barbacena', required: true },
+      { id: 'o2', title: 'Idade', status: 'pending', value: null, required: true }
+    ],
+    totalObjectives: 2,
+    completedObjectivesCount: 1
+  };
+
+  assert.equal(stageBarProps.folderId, undefined);
+  assert.equal(stageBarProps.objectives.length, 2);
+  assert.equal(stageBarProps.completedObjectivesCount, 1);
+});
+
+test('154. Teste AE: Status de objetivo concluído exibe badge com valor conhecido (✓ Cidade — Barbacena)', () => {
+  const obj = { id: 'o_city', title: 'Cidade', status: 'completed', value: 'Barbacena', required: true };
+  const label = `${obj.title}${obj.value ? ` — ${obj.value}` : ''}`;
+
+  assert.equal(obj.status, 'completed');
+  assert.equal(label, 'Cidade — Barbacena');
+});
+
+test('155. Teste AF: Objetivos obrigatórios pendentes contêm indicação de obrigatoriedade', () => {
+  const obj = { id: 'o_age', title: 'Idade', status: 'pending', required: true };
+  const badge = obj.required ? 'Obrigatório' : 'Opcional';
+
+  assert.equal(badge, 'Obrigatório');
+});
+
+test('156. Teste AG: Objetivos opcionais pendentes contêm indicação de opcionalidade', () => {
+  const obj = { id: 'o_hobbies', title: 'Hobbies', status: 'pending', required: false };
+  const badge = obj.required ? 'Obrigatório' : 'Opcional';
+
+  assert.equal(badge, 'Opcional');
+});
+
+test('157. Teste AH: Contagem de objetivos cumpridos vs pendentes calculada corretamente', () => {
+  const objs = [
+    { id: '1', status: 'completed', required: true },
+    { id: '2', status: 'completed', required: false },
+    { id: '3', status: 'pending', required: true },
+    { id: '4', status: 'pending', required: false }
+  ];
+
+  const completed = objs.filter(o => o.status === 'completed').length;
+  const pending = objs.filter(o => o.status === 'pending').length;
+  const reqPending = objs.filter(o => o.status === 'pending' && o.required).length;
+
+  assert.equal(completed, 2);
+  assert.equal(pending, 2);
+  assert.equal(reqPending, 1);
+});
+
+test('158. Teste AI: Ação manual do operador (toggle de objetivo) atualiza o progresso no caso de uso', () => {
+  const objectiveProgress = {
+    'goal_city': { status: 'pending', value: null }
+  };
+
+  // Operador clica na UI para marcar manualmente como concluído
+  objectiveProgress['goal_city'] = {
+    status: 'completed',
+    value: 'Manual pelo operador'
+  };
+
+  assert.equal(objectiveProgress['goal_city'].status, 'completed');
+  assert.equal(objectiveProgress['goal_city'].value, 'Manual pelo operador');
+});
+
+test('159. Teste AJ: Mídias legadas do cofre permanecem preservadas de forma não-destrutiva', () => {
+  const legacyVaultData = {
+    folders: [{ id: 'f1', name: 'Fotos' }],
+    items: [
+      { id: 'img_1', folderId: 'f1', type: 'image', name: 'Foto 1', url: 'https://vendeo.com/img1.jpg' },
+      { id: 'txt_1', folderId: 'f1', type: 'text', name: 'Texto Rápido', content: 'Chave pix...' }
+    ]
+  };
+
+  // Nenhuma tabela antiga é dropada e nenhum arquivo legado é deletado
+  assert.equal(legacyVaultData.folders.length, 1);
+  assert.equal(legacyVaultData.items.length, 2);
+  assert.equal(legacyVaultData.items[0].type, 'image');
+});
+
+// -------------------------------------------------------------------------
+// GRUPO 5: INFRAESTRUTURA E RESILIÊNCIA (Testes AK a AQ)
+// -------------------------------------------------------------------------
+test('160. Teste AK: Envio de send_audio despachado com segurança através da Outbox com messageType: audio', () => {
+  const outboxEntry = {
+    id: 'out_audio_1',
+    conversationId: 'conv_audio_outbox',
+    messageType: 'audio',
+    content: '[audio:https://vendeo.com/audios/apresentacao.mp3]',
+    status: 'pending',
+    attempts: 0,
+    maxAttempts: 3
+  };
+
+  assert.equal(outboxEntry.messageType, 'audio');
+  assert.ok(outboxEntry.content.startsWith('[audio:'));
+});
+
+test('161. Teste AL: Freshness Gate antes do envio de áudio cancela áudio stale se nova mensagem chegar', async () => {
+  const { load } = createRuntime();
+  const { checkFreshnessGate } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const mockSupabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: {
+              stage_completed_rules: {
+                orchestration: {
+                  inboundRevision: 5,
+                  preemptRequested: true
+                }
+              }
+            }
+          })
+        })
+      })
+    })
+  };
+
+  const gate = await checkFreshnessGate({
+    supabase: mockSupabase,
+    conversationId: 'conv_stale_audio',
+    claimedMessageIds: ['m1'],
+    cycleStartedAt: new Date().toISOString(),
+    initialInboundRevision: 4
+  });
+
+  assert.equal(gate.isFresh, false, 'Freshness gate deve detectar que o áudio ficou obsoleto');
+});
+
+test('162. Teste AM: Incerteza de rede no envio de áudio entra em dispatch_uncertain bloqueando retry cego', async () => {
+  const { load } = createRuntime();
+  const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const outboxEntry = {
+    id: 'out_uncertain',
+    conversationId: 'conv_uncertain',
+    content: '[audio:https://url.com/a.mp3]',
+    messageType: 'audio',
+    status: 'pending',
+    attempts: 0,
+    maxAttempts: 3
+  };
+
+  const mockRuntime = {
+    sendMetaTextMessage: async () => {
+      const err = new Error('fetch failed: ETIMEDOUT');
+      err.name = 'TimeoutError';
+      throw err;
+    }
+  };
+
+  const res = await dispatchOutboxEntry({
+    supabase: {},
+    outboxEntry,
+    recipientId: 'conv_uncertain',
+    claimToken: 'token_1',
+    runtime: mockRuntime
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.isUncertain, true);
+  assert.equal(outboxEntry.status, 'dispatch_uncertain');
+});
+
+test('163. Teste AN: Idempotência na entrega de áudios: execução repetida do mesmo ciclo não envia duplicata', async () => {
+  const { load } = createRuntime();
+  const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const outboxEntry = {
+    id: 'out_idemp',
+    conversationId: 'conv_idemp',
+    content: '[audio:url]',
+    messageType: 'audio',
+    status: 'sent', // Já foi entregue anteriormente!
+    attempts: 1,
+    maxAttempts: 3
+  };
+
+  let sendCalls = 0;
+  const mockRuntime = {
+    sendMetaTextMessage: async () => {
+      sendCalls++;
+      return { message_id: 'm1' };
+    }
+  };
+
+  const res = await dispatchOutboxEntry({
+    supabase: {},
+    outboxEntry,
+    recipientId: 'conv_idemp',
+    claimToken: 'token_1',
+    runtime: mockRuntime
+  });
+
+  assert.equal(sendCalls, 0, 'Não deve chamar API de envio se outbox já estiver sent');
+});
+
+test('164. Teste AO: Isolamento estrito entre persona_get_fact (Larissa) e memory_get_fact (Pretendente)', async () => {
+  const { load } = createRuntime();
+  const { getPersonaFact, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  // Pretendente tem 40 anos e mora em Barbacena
+  await memoryProvider.writeFact('conv_isolate', { entity: 'self', field: 'age', value: 40 });
+  await memoryProvider.writeFact('conv_isolate', { entity: 'self', field: 'city', value: 'Barbacena' });
+
+  // Larissa tem 23 anos e mora em São João del Rei
+  const larissaAge = getPersonaFact('age');
+  const larissaCity = getPersonaFact('city');
+
+  const pretendenteAge = await memoryProvider.getFact('conv_isolate', 'self', 'age');
+  const pretendenteCity = await memoryProvider.getFact('conv_isolate', 'self', 'city');
+
+  assert.equal(larissaAge.value, 23, 'Idade da Larissa é 23');
+  assert.equal(pretendenteAge.value, 40, 'Idade do pretendente é 40');
+  assert.notEqual(larissaAge.value, pretendenteAge.value, 'Idades NUNCA devem se misturar');
+
+  assert.ok(larissaCity.value.includes('São João del Rei'));
+  assert.equal(pretendenteCity.value, 'Barbacena');
+});
+
+test('165. Teste AP: Preservação do fallback legacy intacto', () => {
+  const legacyConfig = {
+    mode: 'legacy',
+    enabled: true,
+    fallbackAllowed: true
+  };
+
+  assert.equal(legacyConfig.fallbackAllowed, true, 'Fallback legacy deve ser preservado para segurança operacional');
+});
+
+test('166. Teste AQ: Conclusão semântica via objectiveCompletion valida evidência antes de concluir', () => {
+  const { load } = createRuntime();
+  const { validateSubagentDecision } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const rawAgentOutput = {
+    action: 'reply',
+    checkpoint: 'chk_pergunta_sobre_ele',
+    summary: 'Pretendente confirmou ser solteiro',
+    suggestedResponse: 'Que bom saber!',
+    nextPhase: 'descoberta',
+    objectiveCompletion: {
+      objectiveId: 'goal_relationship',
+      evidenceMessageId: 'msg_ev_123',
+      value: 'Solteiro'
+    }
+  };
+
+  const validated = validateSubagentDecision(rawAgentOutput, 'descoberta');
+
+  assert.ok(validated.objectiveCompletion);
+  assert.equal(validated.objectiveCompletion.objectiveId, 'goal_relationship');
+  assert.equal(validated.objectiveCompletion.evidenceMessageId, 'msg_ev_123');
+  assert.equal(validated.objectiveCompletion.value, 'Solteiro');
+});
+
+

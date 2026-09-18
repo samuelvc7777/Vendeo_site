@@ -57,6 +57,7 @@ import {
   ensureCompatibleAudioUrl,
 } from "./audio-converter";
 import { FloatingVaultModal } from "./FloatingVaultModal";
+import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
 import {
   useTestChatSimulator,
@@ -635,6 +636,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [aiTargetMessageId, setAiTargetMessageId] = useState<string | null>(null);
   const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
+  const [isPersonaAudioModalOpen, setIsPersonaAudioModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const [selectedProfileForModal, setSelectedProfileForModal] = useState<DirectConversation | null>(null);
@@ -658,6 +660,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     allProgresses,
     chatDetail,
     toggleItem,
+    toggleObjective,
     advanceStage,
     setStage,
     toggleConverted,
@@ -3771,6 +3774,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           <ChatStageBar
             detail={chatDetail}
             onToggleItem={toggleItem}
+            onToggleObjective={toggleObjective}
             onAdvanceStage={advanceStage}
             onSetStage={setStage}
             onToggleConverted={toggleConverted}
@@ -4416,7 +4420,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 void handleUploadAndSendMedia(file);
               }}
               onStartRecording={handleStartRecording}
-              onOpenVault={() => setIsVaultModalOpen(true)}
+              onOpenVault={() => setIsPersonaAudioModalOpen(true)}
               onOpenAiAssistant={() => {
                 setAiTargetMessageId(null);
                 setIsAiModalOpen(true);
@@ -4425,7 +4429,31 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         )}
 
-        {/* Modal de Cofre de Pastas e Mídias Rápidas */}
+        {/* Modal Canônico: Cofre de Áudios da Larissa */}
+        <PersonaAudioVaultModal
+          isOpen={isPersonaAudioModalOpen}
+          onClose={() => setIsPersonaAudioModalOpen(false)}
+          activeChat={
+            activeChat
+              ? {
+                  id: activeChat.id,
+                  fullName: activeChat.fullName,
+                  username: activeChat.username,
+                }
+              : null
+          }
+          onSendAudioToChat={async (audio) => {
+            if (!activeChat) return;
+            await sendMessageWithText(`[audio:${audio.audioUrl}]`);
+            toast.success(`Áudio "${audio.title}" enviado com sucesso.`);
+          }}
+          onOpenLegacyVault={() => {
+            setIsPersonaAudioModalOpen(false);
+            setIsVaultModalOpen(true);
+          }}
+        />
+
+        {/* Modal de Cofre Legado de Pastas e Mídias Rápidas (Preservado) */}
         <FloatingVaultModal
           isOpen={isVaultModalOpen}
           onClose={() => setIsVaultModalOpen(false)}

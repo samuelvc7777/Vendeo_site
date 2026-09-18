@@ -99,6 +99,7 @@ export class ManageChatStagesUseCase {
 
     if (this.stageRepository.addGoal) {
       return this.stageRepository.addGoal(stageId, {
+        title: data.label.trim(),
         label: data.label.trim(),
         memoryEntity: (data.memoryEntity || "self").trim().toLowerCase(),
         memoryField: data.memoryField.trim().toLowerCase(),
@@ -116,6 +117,7 @@ export class ManageChatStagesUseCase {
     const newGoal: ConversationGoal = {
       id: "goal_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
       stageId,
+      title: data.label.trim(),
       label: data.label.trim(),
       memoryEntity: (data.memoryEntity || "self").trim().toLowerCase(),
       memoryField: data.memoryField.trim().toLowerCase(),
@@ -127,6 +129,7 @@ export class ManageChatStagesUseCase {
     stage.goals = [...currentGoals, newGoal];
     await this.stageRepository.updateStage(stageId, { goals: stage.goals });
     return newGoal;
+
   }
 
   async updateGoal(
