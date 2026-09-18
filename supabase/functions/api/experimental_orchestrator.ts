@@ -1651,8 +1651,14 @@ export function extractFactsFromInboundText(text: string, sourceMessageId?: stri
       ? "filha"
       : clean.toLowerCase().includes("primo")
       ? "primo"
-      : clean.toLowerCase().includes("mãe") || clean.toLowerCase().includes("mae")
+      : (clean.toLowerCase().includes("mãe") || clean.toLowerCase().includes("mae"))
       ? "mae"
+      : clean.toLowerCase().includes("pai")
+      ? "pai"
+      : (clean.toLowerCase().includes("irmão") || clean.toLowerCase().includes("irmao"))
+      ? "irmao"
+      : (clean.toLowerCase().includes("irmã") || clean.toLowerCase().includes("irma"))
+      ? "irma"
       : "terceiro";
     const namePart = thirdPartyAgeMatch[1] ? `_${thirdPartyAgeMatch[1].toLowerCase().trim()}` : "";
     const entity = `${kin}${namePart}`;
@@ -1669,11 +1675,12 @@ export function extractFactsFromInboundText(text: string, sourceMessageId?: stri
   }
 
   // 2. Idade do Pretendente ("self.age")
-  // Expressões explícitas: "tenho 40 anos", "faço 25 anos", "estou com 30 anos", "tô com 28 anos", "minha idade é 35"
+  // Expressões explícitas: "tenho 40 anos", "faço 25 anos", "fiz 40 semana passada", "tinha 39, fiz 40", "estou com 30 anos"
   // Frases vagas como "tô ficando velho" NÃO casam.
-  const selfAgeMatch = clean.match(
-    /(?:(?:eu\s+)?tenho|complet(?:ei|ando)|faço|estou com|tô com|minha idade [eé])\s+(\d{1,2})\s*(?:anos)?/i
-  );
+  const selfAgeMatch =
+    clean.match(/(?:(?:eu\s+)?tenho|complet(?:ei|ando)|faço|fiz|estou com|tô com|minha idade [eé])\s+(\d{1,2})\s*(?:anos)?/i) ||
+    clean.match(/(?:tinha\s+\d{1,2}[,\s]+(?:mas\s+)?fiz\s+(\d{1,2}))/i);
+
   if (selfAgeMatch && !thirdPartyAgeMatch) {
     const ageVal = parseInt(selfAgeMatch[1], 10);
     if (!isNaN(ageVal) && ageVal >= 16 && ageVal <= 110) {
@@ -2288,6 +2295,22 @@ export async function runExperimentalOrchestration(
 
       while (loopIterations < MAX_TOOL_ITERATIONS) {
         loopIterations++;
+
+        // Freshness Gate intra-loop: Se nova mensagem chegou enquanto o subagente consultava memória, preempta imediatamente
+        if (loopIterations > 1) {
+          const freshnessInToolLoop = await checkFreshnessGate({
+            supabase,
+            conversationId,
+            claimedMessageIds,
+            cycleStartedAt: currentCycle.startedAt,
+            initialInboundRevision,
+          });
+
+          if (!freshnessInToolLoop.isFresh) {
+            return await handleCyclePreemption("during_subagent_tool_loop", freshnessInToolLoop);
+          }
+        }
+
         const subRes = await callModelOrAtria(currentSubagentPrompt, { runtime, supabase });
         totalTokens += subRes.tokens;
         const rawSubJson = extractJsonFromText(subRes.content);

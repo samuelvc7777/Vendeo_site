@@ -4959,5 +4959,134 @@ test('88. End-to-End Integrado: Memória Sob Demanda + Roteamento + Despacho + M
   assert.equal(orch.messageLedger['m_inbound_pretendente'], 'processed');
 });
 
+// TESTE 89: Preempção intra-tool-loop: nova mensagem chega enquanto o subagente consultava memória
+test('89. Preempção intra-tool-loop: nova mensagem durante consulta de memória preempta ciclo antes da 2ª chamada', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  await memoryProvider.writeFact('conv_89', { entity: 'self', field: 'age', value: 28 });
+
+  let secondCallHappened = false;
+  let supabaseInstance = null;
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'teste' }),
+          tokens: 20,
+        };
+      }
+      if (!prompt.includes('RETORNO DA CONSULTA DE MEMÓRIA')) {
+        // Simula nova mensagem inbound chegando exatamente durante a consulta de memória
+        const conv = supabaseInstance.getConversationData();
+        conv.stage_completed_rules.orchestration.inboundRevision = 2;
+        conv.stage_completed_rules.preempt_requested = true;
+
+        return {
+          content: JSON.stringify({
+            action: 'call_tool',
+            tool: 'memory_get_fact',
+            parameters: { entity: 'self', field: 'age' },
+            reasoning: 'buscar idade',
+          }),
+          tokens: 30,
+        };
+      }
+      secondCallHappened = true;
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          suggestedResponse: 'Não deveria chegar aqui',
+          nextPhase: 'descoberta',
+          summary: 'não deve executar',
+        }),
+        tokens: 40,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true }),
+    memoryProvider,
+  };
+
+  supabaseInstance = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta', inboundRevision: 1 } },
+  }, [
+    { id: 'm_89', sender_id: 'c1', is_mine: false, text: 'Oi', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase: supabaseInstance,
+    conversationId: 'conv_89',
+    correlationId: 'cycle_89',
+    newMessage: { id: 'm_89', text: 'Oi', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, false, 'Ciclo deve ter sido preemptado');
+  assert.equal(res.sentToMeta, false, 'Nenhuma mensagem enviada à Meta');
+  assert.equal(res.blockLegacyFallback, true, 'Fallback legado permanece bloqueado');
+  assert.equal(secondCallHappened, false, '2ª chamada ao modelo NUNCA deve acontecer após preempção');
+
+  const conv = supabaseInstance.getConversationData();
+  assert.equal(conv.stage_completed_rules.orchestration.messageLedger['m_89'], 'pending', 'Mensagem revertida para pending');
+});
+
+// TESTE 90: Extração de Fatos - Caso A: "tenho 40 anos" -> self.age=40
+test('90. Auditoria de Extração - Caso A: "tenho 40 anos" -> self.age=40', () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const facts = extractFactsFromInboundText('tenho 40 anos', 'msg_a');
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].entity, 'self');
+  assert.equal(facts[0].field, 'age');
+  assert.equal(facts[0].value, 40);
+  assert.equal(facts[0].sourceMessageId, 'msg_a');
+});
+
+// TESTE 91: Extração de Fatos - Caso B: "minha prima Maria tem 25" -> prima_maria.age=25
+test('91. Auditoria de Extração - Caso B: "minha prima Maria tem 25" -> prima_maria.age=25', () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const facts = extractFactsFromInboundText('minha prima Maria tem 25', 'msg_b');
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].entity, 'prima_maria');
+  assert.equal(facts[0].field, 'age');
+  assert.equal(facts[0].value, 25);
+  assert.equal(facts[0].sourceMessageId, 'msg_b');
+});
+
+// TESTE 92: Extração de Fatos - Caso C ("tô ficando velho") -> [] e Caso D ("meu irmão tem 30") -> irmao.age=30
+test('92. Auditoria de Extração - Caso C ("tô ficando velho") -> zero fatos e Caso D ("meu irmão tem 30") -> irmao.age=30', () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const factsC = extractFactsFromInboundText('tô ficando velho kkk', 'msg_c');
+  assert.equal(factsC.length, 0, 'Frase vaga não deve gerar fato de idade');
+
+  const factsD = extractFactsFromInboundText('meu irmão tem 30', 'msg_d');
+  assert.equal(factsD.length, 1);
+  assert.equal(factsD[0].entity, 'irmao', 'Entidade deve ser irmao e JAMAIS self');
+  assert.notEqual(factsD[0].entity, 'self');
+  assert.equal(factsD[0].field, 'age');
+  assert.equal(factsD[0].value, 30);
+});
+
+// TESTE 93: Extração de Fatos - Caso E: "eu tinha 39, fiz 40 semana passada" -> self.age=40 atualizado com proveniência
+test('93. Auditoria de Extração - Caso E: "eu tinha 39, fiz 40 semana passada" -> self.age=40 com nova proveniência', () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const factsE = extractFactsFromInboundText('eu tinha 39, fiz 40 semana passada', 'msg_e');
+  assert.equal(factsE.length, 1);
+  assert.equal(factsE[0].entity, 'self');
+  assert.equal(factsE[0].field, 'age');
+  assert.equal(factsE[0].value, 40, 'Idade deve ser atualizada para 40');
+  assert.equal(factsE[0].sourceMessageId, 'msg_e');
+});
+
 
 
