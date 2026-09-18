@@ -2035,7 +2035,6 @@ export async function runExperimentalOrchestration(
         break;
       }
 
-      let foundProcessedInbound = false;
       for (const m of batch) {
         const msg = normalizeToCanonicalMessage(m, conversationId);
         if (msg.sender === "pretendente" && msg.direction === "inbound") {
@@ -2051,17 +2050,14 @@ export async function runExperimentalOrchestration(
 
           if (!isProcessed) {
             collectedPendingRaw.push({ ...msg, status: "pending" });
-          } else {
-            // A busca é reversa (DESC: mais nova -> mais antiga).
-            // Ao encontrar a primeira mensagem inbound já devidamente processada,
-            // atingimos a fronteira de mensagens pendentes.
-            foundProcessedInbound = true;
-            break;
           }
+          // Nota: Não interrompe ao encontrar mensagem processada. O ledger é a fonte
+          // da verdade e todas as pendentes da conversa devem ser coletadas, mesmo que
+          // existam inbounds intercaladas ou processadas anteriormente.
         }
       }
 
-      if (foundProcessedInbound || batch.length < batchSize || typeof (q as any).range !== "function") {
+      if (batch.length < batchSize || typeof (q as any).range !== "function") {
         hasMore = false;
       } else {
         offset += batchSize;

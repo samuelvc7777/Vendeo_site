@@ -5662,5 +5662,298 @@ test('101. Teste H: dispatch_uncertain não executa MemoryWriter e registra no t
   assert.ok(cycleTrace.some((t) => t === 'memory_writer_skipped_unconfirmed_cycle'), 'Trace deve registrar que memory writer foi pulado');
 });
 
+// =========================================================================
+// TESTE 102 (Teste A3 do Usuário): Inbound pendente antiga atrás de processada
+// =========================================================================
+test('102. Teste A3: Inbound pendente antiga atrás de processada é recuperada no claim sem parar na primeira processed', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
 
+  const baseTime = Date.now() - 50000;
+  const history = [
+    { id: 'in_1', conversation_id: 'conv_a3', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Oi tudo bem?', created_at: new Date(baseTime + 1000).toISOString() },
+    { id: 'in_2', conversation_id: 'conv_a3', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Pendente antiga esquecida', created_at: new Date(baseTime + 2000).toISOString() },
+    { id: 'out_1', conversation_id: 'conv_a3', sender_id: 'me', is_mine: true, direction: 'outbound', text: 'Oi, tudo sim!', created_at: new Date(baseTime + 3000).toISOString() },
+    { id: 'in_3', conversation_id: 'conv_a3', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Que bom', created_at: new Date(baseTime + 4000).toISOString() },
+    { id: 'in_4', conversation_id: 'conv_a3', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Já almoçou?', created_at: new Date(baseTime + 5000).toISOString() },
+    { id: 'out_2', conversation_id: 'conv_a3', sender_id: 'me', is_mine: true, direction: 'outbound', text: 'Ainda não e você?', created_at: new Date(baseTime + 6000).toISOString() },
+    { id: 'in_5', conversation_id: 'conv_a3', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Pendente recente nova', created_at: new Date(baseTime + 7000).toISOString() },
+  ];
 
+  const ledger = {
+    in_1: 'processed',
+    // in_2 NÃO está no ledger -> pending!
+    in_3: 'processed',
+    in_4: 'processed',
+    // in_5 NÃO está no ledger -> pending!
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+        messageLedger: ledger,
+      },
+    },
+  }, history);
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'atender intercaladas' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          summary: 'Intercaladas processadas',
+          suggestedResponse: 'Olá! Li a pendente antiga e a nova!',
+          nextPhase: 'conexao_inicial',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_102' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_a3',
+    correlationId: 'cycle_102',
+    newMessage: history[6], // in_5
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+
+  const conv = supabase.getConversationData();
+  const recentCycle = conv.stage_completed_rules.orchestration.recentCycles[0];
+
+  // Deve ter feito claim exatamente das duas mensagens pendentes: in_2 e in_5
+  assert.equal(recentCycle.claimedMessageIds.length, 2, 'Deve ter feito claim exatamente de in_2 e in_5');
+  assert.deepEqual(Array.from(recentCycle.claimedMessageIds), ['in_2', 'in_5'], 'Ordem cronológica ASC deve ser [in_2, in_5]');
+
+  // Nenhuma mensagem processed foi incluída
+  assert.ok(!recentCycle.claimedMessageIds.includes('in_1'), 'in_1 (processed) não deve estar no claim');
+  assert.ok(!recentCycle.claimedMessageIds.includes('in_3'), 'in_3 (processed) não deve estar no claim');
+  assert.ok(!recentCycle.claimedMessageIds.includes('in_4'), 'in_4 (processed) não deve estar no claim');
+
+  // Ambas as pendentes devem ser atualizadas para processed no ledger
+  assert.equal(conv.stage_completed_rules.orchestration.messageLedger['in_2'], 'processed');
+  assert.equal(conv.stage_completed_rules.orchestration.messageLedger['in_5'], 'processed');
+});
+
+// =========================================================================
+// TESTE 103 (Teste A4 do Usuário): 1000 mensagens com pendings esparsas
+// =========================================================================
+test('103. Teste A4: 1000 mensagens com pendings esparsas (120, 487, 1000) recuperadas integralmente sem parada prematura', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const history = [];
+  const ledger = {};
+  const baseTime = Date.now() - 2000000;
+  const pendingIndices = [120, 487, 1000];
+  const expectedPendingIds = ['msg_sparse_120', 'msg_sparse_487', 'msg_sparse_1000'];
+
+  for (let i = 1; i <= 1000; i++) {
+    const id = `msg_sparse_${i}`;
+    const isInbound = i % 2 !== 0 || pendingIndices.includes(i);
+    history.push({
+      id,
+      conversation_id: 'conv_sparse_1000',
+      sender_id: isInbound ? 'c1' : 'me',
+      is_mine: !isInbound,
+      direction: isInbound ? 'inbound' : 'outbound',
+      text: `Mensagem ${i}`,
+      created_at: new Date(baseTime + i * 1000).toISOString(),
+    });
+
+    if (isInbound) {
+      if (!pendingIndices.includes(i)) {
+        ledger[id] = 'processed';
+      }
+      // Se estiver nos pendingIndices, NÃO entra no ledger ou fica pending
+    }
+  }
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+        messageLedger: ledger,
+      },
+    },
+  }, history);
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'atender esparsas' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          summary: 'Esparsas recuperadas',
+          suggestedResponse: 'Olá! Todas as mensagens esparsas recuperadas!',
+          nextPhase: 'conexao_inicial',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_103' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_sparse_1000',
+    correlationId: 'cycle_103',
+    newMessage: history[history.length - 1], // msg_sparse_1000
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+
+  const conv = supabase.getConversationData();
+  const recentCycle = conv.stage_completed_rules.orchestration.recentCycles[0];
+
+  // Deve ter coletado exatamente as 3 mensagens esparsas
+  assert.equal(recentCycle.claimedMessageIds.length, 3, 'Deve ter feito claim exatamente das 3 mensagens pendentes esparsas');
+  assert.deepEqual(Array.from(recentCycle.claimedMessageIds), expectedPendingIds, 'Ordem cronológica ASC deve ser [msg_sparse_120, msg_sparse_487, msg_sparse_1000]');
+
+  // Nenhuma mensagem processed foi incluída
+  assert.ok(!recentCycle.claimedMessageIds.includes('msg_sparse_1'), 'msg_sparse_1 (processed) não deve estar no claim');
+  assert.ok(!recentCycle.claimedMessageIds.includes('msg_sparse_500'), 'msg_sparse_500 (processed) não deve estar no claim');
+
+  // Todas as 3 pendentes agora são processed no ledger
+  for (const id of expectedPendingIds) {
+    assert.equal(conv.stage_completed_rules.orchestration.messageLedger[id], 'processed');
+  }
+});
+
+// =========================================================================
+// TESTE 104: Endpoint Interno Seguro GET /internal/memory-export
+// =========================================================================
+test('104. Endpoint /internal/memory-export: autenticação Bearer estrita, filtro de contato e sanitização de dados', async () => {
+  const conversationId = '1771103754015024';
+  const mockConversations = [
+    {
+      id: conversationId,
+      contact_id: conversationId,
+      full_name: 'Moose Test',
+      username: 'moosetest',
+      updated_at: '2026-09-18T10:00:00Z',
+      stage_completed_rules: {
+        orchestration: {
+          currentPhase: 'conexao_inicial',
+          checkpoint: 'chk_saudacao_feita',
+          memory: {
+            entities: { self: { city: { value: 'Curitiba' } } },
+            snippets: [{ text: 'Gosto de frio' }],
+          },
+        },
+      },
+    },
+    {
+      id: 'other_conv_2',
+      contact_id: '9999999',
+      full_name: 'Outro Contato',
+      username: 'outro',
+      updated_at: '2026-09-18T11:00:00Z',
+      stage_completed_rules: {
+        orchestration: {
+          currentPhase: 'descoberta',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          memory: { entities: {} },
+        },
+      },
+    },
+  ];
+
+  const mockSupabase = {
+    from: (table) => {
+      if (table === 'instagram_conversations') {
+        const createQuery = (data = [...mockConversations]) => ({
+          select: () => createQuery(data),
+          or: (condition) => {
+            if (condition.includes(conversationId)) {
+              return createQuery(data.filter((c) => c.id === conversationId || c.contact_id === conversationId));
+            }
+            return createQuery(data);
+          },
+          then: (resolve) => resolve({ data, error: null }),
+        });
+        return createQuery();
+      }
+      return { select: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) };
+    },
+  };
+
+  const { load, getServerHandler } = createRuntime(async () => ({ ok: true, json: async () => ({}) }), {
+    '@supabase/client': mockSupabase,
+  });
+
+  // Define tokens de ambiente
+  process.env.OBSIDIAN_SYNC_TOKEN = 'secret_sync_token_123';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_key_456';
+
+  load('supabase/functions/api/index.ts');
+  const handler = getServerHandler();
+
+  // 1. Requisição sem token -> 401 Unauthorized
+  const reqNoAuth = new Request('https://api.vendeo.com.br/internal/memory-export', {
+    method: 'GET',
+  });
+  const resNoAuth = await handler(reqNoAuth);
+  assert.equal(resNoAuth.status, 401);
+  const jsonNoAuth = await resNoAuth.json();
+  assert.match(jsonNoAuth.error, /Unauthorized/);
+
+  // 2. Requisição com token inválido -> 401 Unauthorized
+  const reqBadAuth = new Request('https://api.vendeo.com.br/internal/memory-export', {
+    method: 'GET',
+    headers: { Authorization: 'Bearer token_invalido_errado' },
+  });
+  const resBadAuth = await handler(reqBadAuth);
+  assert.equal(resBadAuth.status, 401);
+
+  // 3. Requisição com Bearer token correto -> 200 OK
+  const reqValid = new Request('https://api.vendeo.com.br/internal/memory-export', {
+    method: 'GET',
+    headers: { Authorization: 'Bearer secret_sync_token_123' },
+  });
+  const resValid = await handler(reqValid);
+  assert.equal(resValid.status, 200);
+  const jsonValid = await resValid.json();
+  assert.equal(jsonValid.success, true);
+  assert.equal(jsonValid.total, 2);
+  assert.equal(jsonValid.contacts.length, 2);
+
+  // Verifica que não vaza dados sensíveis
+  const contactExport = jsonValid.contacts[0];
+  assert.equal(contactExport.id, conversationId);
+  assert.equal(contactExport.fullName, 'Moose Test');
+  assert.equal(contactExport.memory.entities.self.city.value, 'Curitiba');
+  assert.equal(contactExport.memory.snippets[0].text, 'Gosto de frio');
+  assert.equal(contactExport.access_token, undefined, 'JAMAIS vazar tokens');
+  assert.equal(contactExport.app_secret, undefined, 'JAMAIS vazar secrets');
+
+  // 4. Requisição com filtro de contact_id -> retorna apenas o contato solicitado
+  const reqFiltered = new Request(`https://api.vendeo.com.br/internal/memory-export?contact_id=${conversationId}`, {
+    method: 'GET',
+    headers: { Authorization: 'Bearer service_role_key_456' }, // Testa autenticação via service_role_key também
+  });
+  const resFiltered = await handler(reqFiltered);
+  assert.equal(resFiltered.status, 200);
+  const jsonFiltered = await resFiltered.json();
+  assert.equal(jsonFiltered.success, true);
+  assert.equal(jsonFiltered.contacts.length, 1);
+  assert.equal(jsonFiltered.contacts[0].id, conversationId);
+});

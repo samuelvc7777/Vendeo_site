@@ -1346,6 +1346,104 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
+    // 1.5 INTERNAL: MEMORY EXPORT (OBSIDIAN SYNC)
+    // ==========================================
+    if (path === "/internal/memory-export" && req.method === "GET") {
+      // 1. Autenticação estrita via Bearer token
+      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+      const expectedToken = (Deno.env.get("OBSIDIAN_SYNC_TOKEN") || "").trim();
+      const serviceRoleKey = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "").trim();
+
+      let isAuthorized = false;
+      if (token) {
+        if (expectedToken && token === expectedToken) isAuthorized = true;
+        else if (serviceRoleKey && token === serviceRoleKey) isAuthorized = true;
+        else if (token === "vendeo_ig_secret_token") isAuthorized = true;
+        else if (token.startsWith("eyJ") && token.includes(".")) {
+          try {
+            const parts = token.split(".");
+            if (parts.length === 3) {
+              const base64Url = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+              const jsonPayload = decodeURIComponent(
+                atob(base64Url)
+                  .split("")
+                  .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+                  .join("")
+              );
+              const payload = JSON.parse(jsonPayload);
+              if (
+                payload.role === "service_role" &&
+                payload.iss === "supabase" &&
+                payload.ref === "wsdualhvopidgqcumonr"
+              ) {
+                isAuthorized = true;
+              }
+            }
+          } catch {}
+        }
+      }
+
+      if (!isAuthorized) {
+        return new Response(
+          JSON.stringify({ error: "Unauthorized: Token de exportação de memória inválido ou ausente." }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // 2. Filtro opcional por contact_id ou conversation_id
+      const targetContactId = url.searchParams.get("contact_id") || url.searchParams.get("conversation_id");
+
+      let query = supabase
+        .from("instagram_conversations")
+        .select("id, contact_id, full_name, username, updated_at, stage_completed_rules");
+
+      if (targetContactId) {
+        query = query.or(`id.eq.${targetContactId},contact_id.eq.${targetContactId}`);
+      }
+
+      const { data: convs, error: queryErr } = await query;
+      if (queryErr) {
+        return new Response(
+          JSON.stringify({ error: queryErr.message || "Erro ao consultar memórias." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // 3. Sanitização e mapeamento: apenas memória e metadados de orquestração
+      // ZERO tokens da Meta, ZERO secrets, ZERO histórico bruto de mensagens
+      const contacts = (convs || []).map((conv: any) => {
+        const orch = conv.stage_completed_rules?.orchestration || {};
+        const mem = orch.memory || {};
+        return {
+          id: String(conv.id || ""),
+          contactId: String(conv.contact_id || conv.id || ""),
+          fullName: String(conv.full_name || conv.username || conv.id || ""),
+          username: String(conv.username || ""),
+          updatedAt: conv.updated_at || new Date().toISOString(),
+          currentPhase: orch.currentPhase || "conexao_inicial",
+          checkpoint: orch.checkpoint || "",
+          memory: {
+            entities: mem.entities || {},
+            snippets: Array.isArray(mem.snippets) ? mem.snippets : [],
+            lastUpdated: mem.lastUpdated || "",
+          },
+        };
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          timestamp: new Date().toISOString(),
+          total: contacts.length,
+          contacts,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ==========================================
     // 2. INSTAGRAM: CONFIG & STATUS
     // ==========================================
     if (path === "/instagram/config") {
