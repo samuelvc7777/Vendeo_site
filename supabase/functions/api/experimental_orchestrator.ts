@@ -207,14 +207,23 @@ export function getRulesForPhase(phase: OrchestrationPhase): string[] {
 // ----------------------------------------------------------------------------
 export function buildOrchestratorPrompt(input: OrchestratorInput): string {
   return `Você é a IA Atria, Auditora Oficial de Atendimento e Relacionamento do Vendeo.
-Sua missão é auditar a conversa e definir a próxima ação estratégica e resposta, respeitando a fase do funil de conversão.
+Você atua na condução estratégica do atendimento para a persona **Larissa** (23 anos, moça meiga de Minas Gerais, estudante de enfermagem e trabalha com vendas).
+O pretendente/cliente é quem está conversando com a Larissa. Quem enviou a última mensagem foi o cliente (${input.newMessage.sender}).
+A fala formulada em "suggestedResponse" é a resposta direta da **Larissa** para o cliente.
+
+### DIRETRIZES DA PERSONA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
+- Tom: carinhoso, meigo, natural de Minas Gerais (usando 'uai', 'né', 'kkk' com sutileza).
+- PROIBIDO terminar balão com ponto final (.)
+- PROIBIDO usar ponto de exclamação (!)
+- Jamais chame o cliente de Larissa. Responda ao que o cliente falou antes de perguntar qualquer coisa.
+- Mantenha a resposta curta, humana e fluida de WhatsApp/Instagram.
 
 ### DOSSIÊ DA CONVERSA
 - ID da Conversa: ${input.conversationId}
 - Fase Atual: ${input.currentPhase}
-- Resumo Anterior: ${input.conversationSummary || "Início do atendimento."}
+- Histórico Recente de Mensagens:
+${input.conversationSummary}
 - Memórias Relevantes: ${input.relevantMemories.length > 0 ? input.relevantMemories.join(" | ") : "Nenhuma memória registrada ainda."}
-- Tarefas Pendentes: ${input.pendingTasks.length > 0 ? input.pendingTasks.join(" | ") : "Nenhuma tarefa pendente."}
 - Ferramentas Permitidas: ${input.allowedTools.join(", ")}
 
 ### DIRETRIZES DA FASE [${input.currentPhase}]
@@ -226,19 +235,19 @@ ${input.phaseRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
 - Horário: ${input.newMessage.timestamp}
 
 ### REGRAS OBRIGATÓRIAS DE AUDITORIA
-1. Avalie a interação do cliente com base no dossiê.
+1. Avalie a interação do cliente com base no histórico e diretrizes da fase.
 2. Para avançar de 'conexao_inicial' para 'descoberta', você DEVE definir o checkpoint como 'chk_rapport_estabelecido' e próxima fase 'descoberta'.
-3. Se o cliente ainda estiver apenas cumprimentando, mantenha a fase 'conexao_inicial' e checkpoint 'chk_saudacao_feita'.
-4. Formule uma resposta cordial, atenciosa e acolhedora no estilo de atendimento humanizado de Minas Gerais (sem clichês formais de robô, meiga, sem ponto final).
-5. Responda ESTRITAMENTE em formato JSON com o seguinte schema:
+3. Se o cliente ainda estiver apenas em troca de saudações ou reciprocidade inicial, mantenha a fase 'conexao_inicial' e checkpoint 'chk_saudacao_feita'.
+4. Formule uma resposta curta e acolhedora em 'suggestedResponse' (estilo Larissa, sem ponto final).
+5. Responda ESTRITAMENTE em formato JSON puro com as seguintes chaves:
 {
   "action": "reply",
   "currentPhase": "${input.currentPhase}",
   "nextPhase": "conexao_inicial",
   "checkpoint": "chk_saudacao_feita",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "resposta atenciosa e acolhedora para o cliente",
-  "requiredTools": [],
+  "suggestedResponse": "resposta carinhosa da Larissa para o cliente",
+  "requiredTools": ["send_text"],
   "reasoning": "análise analítica da decisão tomada"
 }`;
 }
@@ -365,7 +374,7 @@ export async function runExperimentalOrchestration(
       conversationId,
       newMessage,
       currentPhase,
-      conversationSummary: orchState.lastDecision?.summary || historySnippet || "Início do diálogo",
+      conversationSummary: historySnippet || orchState.lastDecision?.summary || "Início do diálogo",
       relevantMemories: [],
       pendingTasks: [],
       allowedTools: ["send_text", "send_audio"],
@@ -420,8 +429,8 @@ export async function runExperimentalOrchestration(
         },
         body: JSON.stringify({
           model: "Atria-Dawn-Preview",
-          temperature: 0.3,
-          max_tokens: 1000,
+          temperature: 0.2,
+          max_tokens: 3000,
           messages: [{ role: "user", content: prompt }],
         }),
       });
@@ -431,8 +440,18 @@ export async function runExperimentalOrchestration(
       }
 
       const jsonRes = await atriaRes.json();
-      rawContent = jsonRes.choices?.[0]?.message?.content || "";
+      const choice = jsonRes.choices?.[0];
+      rawContent = choice?.message?.content || "";
       tokensUsed = jsonRes.usage?.total_tokens || 0;
+
+      if (!rawContent) {
+        console.error(
+          `[Orchestrator] Atria retornou content vazio! finish_reason=${choice?.finish_reason}, tokens=${JSON.stringify(jsonRes.usage)}`
+        );
+        if (choice?.message?.reasoning_content) {
+          console.log(`[Orchestrator] reasoning_content da Atria (${choice.message.reasoning_content.length} chars): ${choice.message.reasoning_content.slice(0, 300)}...`);
+        }
+      }
     }
 
     // 7. Validação estrita do Schema da Decisão
@@ -567,6 +586,18 @@ export async function runExperimentalOrchestration(
             throw new Error("Access token do Instagram (id: 'default') não configurado em instagram_config.");
           }
 
+          let recipientIgsid = conversationId;
+          if (!/^\d+$/.test(conversationId)) {
+            const { data: convMsgs } = await supabase
+              .from("instagram_messages")
+              .select("sender_id, is_mine")
+              .eq("conversation_id", conversationId)
+              .eq("is_mine", false)
+              .limit(5);
+            const foundNumeric = (convMsgs || []).find((m: any) => /^\d+$/.test(m.sender_id));
+            if (foundNumeric) recipientIgsid = foundNumeric.sender_id;
+          }
+
           const sendRes = await fetch(
             `https://graph.instagram.com/v21.0/me/messages?access_token=${accessToken}`,
             {
@@ -576,7 +607,7 @@ export async function runExperimentalOrchestration(
                 "Content-Type": "application/json",
               },
               body: JSON.stringify({
-                recipient: { id: conversationId },
+                recipient: { id: recipientIgsid },
                 message: { text: decision.suggestedResponse },
               }),
             }
@@ -584,8 +615,9 @@ export async function runExperimentalOrchestration(
 
           if (sendRes.ok) {
             sentSuccessfully = true;
+            const metaJson = await sendRes.json().catch(() => ({}));
             const nowIso = new Date().toISOString();
-            const messageId = `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const messageId = metaJson.message_id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
             // Salva mensagem no histórico
             await supabase.from("instagram_messages").upsert({

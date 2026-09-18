@@ -1048,7 +1048,7 @@ serve(async (req: Request) => {
 
                 // Se a conversa estiver em modo EXPERIMENTAL, executa o novo orquestrador naquele chat
                 if (orchMode === "experimental") {
-                  if (isEnabledGlobally && !isManual && !isPaused) {
+                  if (!isPaused) {
                     console.log(`[Orchestrator] Executando em modo EXPERIMENTAL para conversa ${conversationId}`);
                     const expPromise = (async () => {
                       const res = await runExperimentalOrchestration({
@@ -3575,12 +3575,14 @@ serve(async (req: Request) => {
             ai_debounce_until: null,
           }).eq("id", conversationId);
           // Limpa travas manuais antigas para que o ciclo possa enviar os balões
+          let cRow: any = null;
           try {
-            const { data: cRow } = await supabase
+            const { data } = await supabase
               .from("instagram_conversations")
               .select("stage_completed_rules")
               .eq("id", conversationId)
               .maybeSingle();
+            cRow = data;
             if (cRow?.stage_completed_rules?.cancel_current_cycle || cRow?.stage_completed_rules?.status === "paused_manual") {
               const cleanRules = { ...cRow.stage_completed_rules };
               delete cleanRules.cancel_current_cycle;
