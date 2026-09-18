@@ -1062,9 +1062,21 @@ serve(async (req: Request) => {
                         },
                       });
 
-                      // Em caso de falha do novo orquestrador (exceto lock concorrente ou duplicata), fallback seguro para o fluxo legado
-                      if (!res.handled && res.error && res.error !== "Lock ativo concorrente" && !res.skippedDuplicate) {
-                        console.warn(`[Orchestrator] Erro no modo experimental (${res.error}). Acionando fallback para fluxo legado.`);
+                      // Em caso de concorrência com ciclo ativo, agenda follow-up para processar a nova mensagem assim que o ciclo atual liberar o lock
+                      if (!res.handled && res.error === "Lock ativo concorrente") {
+                        console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Agendando follow-up em 4s.`);
+                        await supabase
+                          .from("instagram_conversations")
+                          .update({
+                            ai_auto_respond: true,
+                            ai_debounce_until: new Date(Date.now() + 4000).toISOString(),
+                          })
+                          .eq("id", conversationId);
+                      }
+
+                      // Em caso de falha do novo orquestrador ANTES de qualquer envio à Meta (e sem ser lock ou duplicata), fallback seguro para o fluxo legado
+                      if (!res.handled && res.error && !res.sentToMeta && res.error !== "Lock ativo concorrente" && !res.skippedDuplicate) {
+                        console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) antes de qualquer envio. Acionando fallback para fluxo legado.`);
                         await runCloudAutoPilot({
                           supabase,
                           conversationId,

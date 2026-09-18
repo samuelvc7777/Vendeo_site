@@ -981,6 +981,7 @@ export interface OrchestrationResult {
   mode: OrchestrationMode;
   handled: boolean;
   skippedDuplicate?: boolean;
+  sentToMeta?: boolean;
   decision?: OrchestratorDecision;
   durationMs?: number;
   tokens?: number;
@@ -993,27 +994,26 @@ export async function runExperimentalOrchestration(
   const { supabase, conversationId, newMessage, runtime } = params;
   const startTime = Date.now();
   const correlationId =
-    params.correlationId ||
-    `corr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    params.correlationId || `corr_${startTime}_${Math.random().toString(36).slice(2, 7)}`;
 
-  // 1. BACKEND DETERMINÍSTICO: Busca conversa e estado
+  // 1. Carrega o estado atual da conversa
   const { data: convRow, error: convErr } = await supabase
     .from("instagram_conversations")
-    .select("id, full_name, stage_completed_rules")
+    .select("stage_completed_rules, is_restricted")
     .eq("id", conversationId)
     .maybeSingle();
 
-  if (convErr || !convRow) {
-    console.warn(`[Orchestrator] Conversa ${conversationId} não encontrada.`);
-    return { mode: "legacy", handled: false, error: convErr?.message || "Conversa não encontrada" };
+  if (convErr) {
+    console.error(`[Orchestrator] Erro ao buscar conversa ${conversationId}:`, convErr);
+    return { mode: "legacy", handled: false, error: convErr.message };
   }
 
-  const stageRules = convRow.stage_completed_rules || {};
+  const stageRules = convRow?.stage_completed_rules || {};
   const orchState: ConversationOrchestrationState = stageRules.orchestration || {
     version: 1,
     mode: "legacy",
     currentPhase: "conexao_inicial",
-    checkpoint: "inicio",
+    checkpoint: "chk_saudacao_feita",
     lastProcessedMessageId: null,
     lastProcessedAt: null,
     lastProcessingStatus: "idle",
@@ -1059,6 +1059,7 @@ export async function runExperimentalOrchestration(
     .eq("id", conversationId);
 
   let claimedMessageIds: string[] = [];
+  let sentSuccessfully = false;
   const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
   const outboxMap: Record<string, OutboxEntry> = { ...(orchState.outbox || {}) };
 
@@ -1439,7 +1440,7 @@ export async function runExperimentalOrchestration(
     // MODO EXPERIMENTAL: Execução ativa no chat
     // ------------------------------------------------------------------------
     if (orchState.mode === "experimental") {
-      let sentSuccessfully = false;
+      sentSuccessfully = false;
 
       if (
         (decision.action === "reply" || decision.action === "advance_phase") &&
@@ -1586,9 +1587,36 @@ export async function runExperimentalOrchestration(
         `[Orchestrator] [EXPERIMENTAL] Execução concluída para ${conversationId} (subagente=${decision.routedSubagent}, ação=${decision.action}, fase=${validatedNextPhase}).`
       );
 
+      // Verificação pós-ciclo: se chegaram mensagens novas do pretendente durante este ciclo, agenda follow-up imediato
+      try {
+        const { data: latestUnread } = await supabase
+          .from("instagram_messages")
+          .select("id")
+          .eq("conversation_id", conversationId)
+          .eq("is_mine", false)
+          .order("created_at", { ascending: true })
+          .limit(10);
+
+        const hasUnprocessed = (latestUnread || []).some(
+          (m: any) => ledger[m.id] !== "processed" && !claimedMessageIds.includes(m.id)
+        );
+
+        if (hasUnprocessed) {
+          console.log(`[Orchestrator] Mensagens novas detectadas durante o ciclo em ${conversationId}. Agendando próximo ciclo imediatamente.`);
+          await supabase
+            .from("instagram_conversations")
+            .update({
+              ai_auto_respond: true,
+              ai_debounce_until: new Date().toISOString(),
+            })
+            .eq("id", conversationId);
+        }
+      } catch (_npErr) {}
+
       return {
         mode: "experimental",
         handled: true,
+        sentToMeta: sentSuccessfully,
         decision,
         durationMs,
         tokens: totalTokens,
@@ -1637,6 +1665,7 @@ export async function runExperimentalOrchestration(
     return {
       mode: orchState.mode,
       handled: false,
+      sentToMeta: sentSuccessfully,
       error: err.message || "Erro na orquestração experimental",
     };
   } finally {

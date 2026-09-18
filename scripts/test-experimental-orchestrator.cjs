@@ -164,22 +164,20 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
         };
       }
       if (table === 'instagram_messages') {
-        return {
-          select: () => ({
-            eq: () => ({
-              order: () => ({
-                limit: async () => ({
-                  data: messages,
-                  error: null,
-                }),
-              }),
-            }),
-            in: () => ({
-              order: () => ({
-                limit: async () => ({ data: messages, error: null }),
-              }),
-            }),
+        const createQueryObj = () => ({
+          eq: () => createQueryObj(),
+          not: () => createQueryObj(),
+          order: () => createQueryObj(),
+          limit: async () => ({ data: messages, error: null }),
+          in: async (col, ids) => ({
+            data: messages.filter((m) => ids.includes(m.id)),
+            error: null,
+            order: () => ({ limit: async () => ({ data: messages.filter((m) => ids.includes(m.id)), error: null }) }),
           }),
+          maybeSingle: async () => ({ data: messages[0] || null, error: null }),
+        });
+        return {
+          select: () => createQueryObj(),
           insert: async (msg) => {
             messages.push(msg);
             return { error: null };
@@ -1570,4 +1568,259 @@ test('33. Requisito 53: Falha durante envio HTTP da Meta registra erro na outbox
   const outEntry = orch.outbox[outboxKeys[0]];
   assert.ok(outEntry.lastError.includes('Graph API Meta 500'));
   assert.equal(convData.stage_completed_rules.active_cycle_token, null, 'Lock liberado após erro');
+});
+
+// =========================================================================
+// TESTE 34 (Requisito 34): Teste de Integração de Ponta a Ponta com Mock
+// =========================================================================
+test('34. Requisito 34: Teste de Integração de Ponta a Ponta (Webhook -> Normalização -> Cycle -> IA -> Outbox -> Meta Mock)', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, normalizeToCanonicalMessage } = load(
+    'supabase/functions/api/experimental_orchestrator.ts'
+  );
+
+  // 1. Simula payload bruto vindo do Webhook da Meta
+  const rawWebhookEvent = {
+    id: 'mid_meta_webhook_101',
+    sender_id: '1771103754015024',
+    text: 'Oi Larissa, vi que você também curte cidade tranquila! Você já visitou Tiradentes?',
+    reply_to_message_id: 'mid_larissa_ref_prev',
+    timestamp: new Date().toISOString(),
+    is_mine: false,
+  };
+
+  // 2. Normalização canônica
+  const canonical = normalizeToCanonicalMessage(rawWebhookEvent, '1771103754015024');
+  assert.equal(canonical.id, 'mid_meta_webhook_101');
+  assert.equal(canonical.sender, 'pretendente');
+  assert.equal(canonical.direction, 'inbound');
+  assert.equal(canonical.replyToMessageId, 'mid_larissa_ref_prev');
+
+  // 3. Mock do Supabase com estado inicial experimental
+  let metaSentPayload = null;
+  const initialMessages = [
+    {
+      id: 'mid_larissa_ref_prev',
+      sender_id: 'me',
+      is_mine: true,
+      direction: 'outbound',
+      text: 'Eu moro perto de São João del Rei e amo a calmaria daqui',
+      created_at: '2026-09-18T06:00:00Z',
+    },
+    {
+      ...rawWebhookEvent,
+      direction: 'inbound',
+    },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      id: '1771103754015024',
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'descoberta',
+          checkpoint: 'chk_cidade',
+          messageLedger: {
+            mid_larissa_ref_prev: 'processed',
+          },
+        },
+      },
+    },
+    initialMessages
+  );
+
+  // 4. Runtime com mocks dos modelos e da Meta
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      // Camada 1: ConversationAgent
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'descoberta',
+            action: 'delegate',
+            reason: 'Pretendente perguntou sobre cidades históricas em Minas',
+          }),
+          tokens: 45,
+        };
+      }
+      // Camada 2: Subagente Descoberta
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_cidade_validada',
+          summary: 'Larissa confirma que adora Tiradentes e pergunta se ele passeia por lá',
+          suggestedResponse: 'Nossa, Tiradentes é uma delícia né kkk vou lá direto passear nos finais de semana, você conhece?',
+          nextPhase: 'descoberta',
+          reasoning: 'Responder reciprocamente sobre a cidade e manter conexão mineira',
+        }),
+        tokens: 110,
+      };
+    },
+    sendMetaTextMessage: async (_sb, convId, text) => {
+      metaSentPayload = { convId, text };
+      return { message_id: 'meta_graph_api_mid_999999' };
+    },
+  };
+
+  // 5. Execução do fluxo completo de ponta a ponta
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: '1771103754015024',
+    newMessage: {
+      id: rawWebhookEvent.id,
+      text: rawWebhookEvent.text,
+      timestamp: rawWebhookEvent.timestamp,
+      sender: rawWebhookEvent.sender_id,
+    },
+    runtime: mockRuntime,
+  });
+
+  // 6. Validações estritas do resultado de ponta a ponta
+  assert.equal(result.handled, true);
+  assert.equal(result.mode, 'experimental');
+  assert.equal(result.sentToMeta, true);
+  assert.ok(result.decision);
+  assert.equal(result.decision.action, 'reply');
+  assert.equal(result.decision.routedSubagent, 'descoberta');
+  assert.equal(result.decision.checkpoint, 'chk_cidade_validada');
+
+  // Validação do envio à Meta Mock
+  assert.ok(metaSentPayload, 'Meta Graph API deve ter recebido o envio mockado');
+  assert.equal(metaSentPayload.convId, '1771103754015024');
+  assert.ok(metaSentPayload.text.includes('Tiradentes'));
+
+  // Validação da persistência da Outbox e Ledger no banco
+  const finalConv = supabase.getConversationData();
+  const finalOrch = finalConv.stage_completed_rules.orchestration;
+  assert.equal(finalOrch.messageLedger['mid_meta_webhook_101'], 'processed');
+  assert.equal(finalConv.stage_completed_rules.active_cycle_token, null, 'Lock deve estar livre');
+
+  // Verifica que a Outbox contém providerMessageId da Meta
+  const outboxEntries = Object.values(finalOrch.outbox || {});
+  assert.equal(outboxEntries.length, 1);
+  assert.equal(outboxEntries[0].status, 'sent');
+  assert.equal(outboxEntries[0].providerMessageId, 'meta_graph_api_mid_999999');
+});
+
+// =========================================================================
+// TESTE 35 (Requisito 28): Fallback Seguro para Legacy (Prevenção Estrita de Duplo Envio)
+// =========================================================================
+test('35. Requisito 28: Fallback Seguro para Legacy distingue falhas pré e pós envio evitando duplo envio', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Cenário A: Falha ANTES do envio (ex: erro no modelo de IA)
+  // sentToMeta deve ser false -> Fallback legacy é seguro
+  const supabaseA = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+      },
+    },
+  });
+
+  const resA = await runExperimentalOrchestration({
+    supabase: supabaseA,
+    conversationId: 'conv_fail_pre_send',
+    newMessage: { id: 'm_fail_pre', text: 'Oi', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => { throw new Error('Falha no modelo'); },
+    },
+  });
+
+  assert.equal(resA.handled, false);
+  assert.equal(resA.sentToMeta, false, 'sentToMeta DEVE ser false se falhou antes do envio');
+
+  // Cenário B: Sucesso no envio
+  // sentToMeta deve ser true -> Fallback legacy é expressamente proibido
+  const supabaseB = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+      },
+    },
+  });
+
+  const resB = await runExperimentalOrchestration({
+    supabase: supabaseB,
+    conversationId: 'conv_success_send',
+    newMessage: { id: 'm_ok_send', text: 'Oi', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({ action: 'reply', checkpoint: 'chk_saudacao_feita', suggestedResponse: 'Olá!', nextPhase: 'conexao_inicial', summary: 'ok' }),
+        tokens: 30,
+      }),
+      sendMetaTextMessage: async () => ({ message_id: 'meta_ok_123' }),
+    },
+  });
+
+  assert.equal(resB.handled, true);
+  assert.equal(resB.sentToMeta, true, 'sentToMeta DEVE ser true após envio confirmado');
+});
+
+// =========================================================================
+// TESTE 36 (Requisito 23): Pós-ciclo detecta mensagens concorrentes e agenda próximo ciclo
+// =========================================================================
+test('36. Requisito 23: Pós-ciclo detecta mensagens concorrentes e agenda próximo ciclo sem perda', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    [
+      { id: 'm_initial_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Msg 1', created_at: '2026-09-18T07:00:00Z' },
+    ]
+  );
+
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      // Simula chegada de uma nova mensagem no banco durante a execução
+      supabase.getInsertedMessages().push({
+        id: 'm_concurrent_during_cycle',
+        sender_id: 'them',
+        is_mine: false,
+        direction: 'inbound',
+        text: 'Msg 2 concorrente',
+        created_at: new Date().toISOString(),
+      });
+
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Normal' }), tokens: 40 };
+      }
+      return {
+        content: JSON.stringify({ action: 'reply', checkpoint: 'chk_saudacao_feita', suggestedResponse: 'Opa!', nextPhase: 'conexao_inicial', summary: 'ok' }),
+        tokens: 50,
+      };
+    },
+    sendMetaTextMessage: async () => ({ message_id: 'meta_cycle_1_ok' }),
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_post_cycle_check',
+    newMessage: { id: 'm_initial_1', text: 'Msg 1', timestamp: '2026-09-18T07:00:00Z', sender: 'them' },
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, true);
+  const conv = supabase.getConversationData();
+
+  // A mensagem concorrente provocou agendamento para o próximo ciclo
+  assert.equal(conv.ai_auto_respond, true);
+  assert.ok(conv.ai_debounce_until, 'Deve agendar debounce_until para execução imediata do próximo ciclo');
 });
