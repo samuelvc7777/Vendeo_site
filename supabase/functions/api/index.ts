@@ -1062,8 +1062,8 @@ serve(async (req: Request) => {
                         },
                       });
 
-                      // Em caso de falha do novo orquestrador, fallback seguro para o fluxo legado
-                      if (!res.handled && res.error) {
+                      // Em caso de falha do novo orquestrador (exceto lock concorrente ou duplicata), fallback seguro para o fluxo legado
+                      if (!res.handled && res.error && res.error !== "Lock ativo concorrente" && !res.skippedDuplicate) {
                         console.warn(`[Orchestrator] Erro no modo experimental (${res.error}). Acionando fallback para fluxo legado.`);
                         await runCloudAutoPilot({
                           supabase,

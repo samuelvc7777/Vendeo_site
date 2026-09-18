@@ -521,15 +521,21 @@ export async function runExperimentalOrchestration(
           await runtime.sendMetaTextMessage(supabase, conversationId, decision.suggestedResponse);
           sentSuccessfully = true;
         } else {
-          // Envio padrão via Meta Graph API
-          const { data: configRows } = await supabase
+          // Envio padrão via Meta Graph API buscando config oficial
+          const { data: configRow } = await supabase
             .from("instagram_config")
             .select("access_token")
-            .limit(1);
+            .eq("id", "default")
+            .maybeSingle();
 
-          const accessToken = configRows?.[0]?.access_token;
-          if (accessToken) {
-            const sendRes = await fetch("https://graph.instagram.com/v21.0/me/messages", {
+          const accessToken = configRow?.access_token;
+          if (!accessToken) {
+            throw new Error("Access token do Instagram (id: 'default') não configurado em instagram_config.");
+          }
+
+          const sendRes = await fetch(
+            `https://graph.instagram.com/v21.0/me/messages?access_token=${accessToken}`,
+            {
               method: "POST",
               headers: {
                 Authorization: `Bearer ${accessToken}`,
@@ -539,23 +545,39 @@ export async function runExperimentalOrchestration(
                 recipient: { id: conversationId },
                 message: { text: decision.suggestedResponse },
               }),
+            }
+          );
+
+          if (sendRes.ok) {
+            sentSuccessfully = true;
+            const nowIso = new Date().toISOString();
+            const messageId = `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+            // Salva mensagem no histórico
+            await supabase.from("instagram_messages").upsert({
+              id: messageId,
+              conversation_id: conversationId,
+              sender_id: "me",
+              is_mine: true,
+              text: decision.suggestedResponse,
+              status: "sent",
+              created_at: nowIso,
+              timestamp: nowIso,
             });
 
-            if (sendRes.ok) {
-              sentSuccessfully = true;
-              // Salva mensagem no histórico
-              await supabase.from("instagram_messages").insert({
-                id: `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                conversation_id: conversationId,
-                sender_id: "me",
-                is_mine: true,
-                text: decision.suggestedResponse,
-                created_at: new Date().toISOString(),
-                timestamp: new Date().toISOString(),
-              });
-            } else {
-              throw new Error(`Falha no envio pela Meta: ${await sendRes.text()}`);
-            }
+            // Atualiza prévia e status da conversa para refletir no painel
+            await supabase
+              .from("instagram_conversations")
+              .update({
+                last_message: decision.suggestedResponse,
+                last_message_preview: decision.suggestedResponse,
+                last_message_at: nowIso,
+                last_direction: "out",
+                last_status: "sent",
+              })
+              .eq("id", conversationId);
+          } else {
+            throw new Error(`Falha no envio pela Meta: ${await sendRes.text()}`);
           }
         }
       }
