@@ -262,7 +262,7 @@ export function formatProfileMarkdown(contact) {
     // Derivação automática resiliente a partir de selfFacts
     const ageVal = selfFacts.age?.value !== undefined ? selfFacts.age.value : selfFacts.age;
     const cityVal = selfFacts.city?.value !== undefined ? selfFacts.city.value : selfFacts.city;
-    const jobVal = selfFacts.job?.value !== undefined ? selfFacts.job.value : selfFacts.job;
+    const jobVal = selfFacts.job?.value !== undefined ? selfFacts.job.value : (selfFacts.job || selfFacts.profession?.value || selfFacts.profession);
     const relVal = selfFacts.relationship_status?.value !== undefined ? selfFacts.relationship_status.value : selfFacts.relationship_status;
 
     checklistSection = [

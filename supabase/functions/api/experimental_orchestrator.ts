@@ -2255,7 +2255,7 @@ export function extractFactsFromInboundText(text: string, sourceMessageId?: stri
 
   // 3. Cidade / Residência ("self.city")
   const cityMatch = clean.match(
-    /(?:moro em|sou de|vivo em|resido em)\s+([A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ][a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ\s]{2,30})/
+    /(?:moro em|sou de|vivo em|resido em)\s+([a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ\s]{2,35}?)(?=(?:\s+e\s+(?:voc[eê]|vc)\b|[,\.!\?]|(?:\s+mas\b)|\s*$))/i
   );
   if (cityMatch) {
     const city = cityMatch[1].trim();
@@ -2270,15 +2270,23 @@ export function extractFactsFromInboundText(text: string, sourceMessageId?: stri
     }
   }
 
-  // 4. Profissão / Ocupação ("self.profession")
+  // 4. Profissão / Ocupação ("self.profession" e "self.job")
   const profMatch = clean.match(
     /(?:trabalho como|trabalho com|trabalho na área de|sou)\s+(engenharia|engenheiro|médico|advogado|programador|dev|ti|médica|advogada|autônomo|professor|professora|vendedor|contador|arquiteto)/i
   );
   if (profMatch) {
+    const pVal = profMatch[1].toLowerCase().trim();
     facts.push({
       entity: "self",
       field: "profession",
-      value: profMatch[1].toLowerCase().trim(),
+      value: pVal,
+      sourceMessageId,
+      confidence: 0.9,
+    });
+    facts.push({
+      entity: "self",
+      field: "job",
+      value: pVal,
       sourceMessageId,
       confidence: 0.9,
     });

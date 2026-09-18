@@ -1443,7 +1443,8 @@ serve(async (req: Request) => {
 
         const resolvedGoals = DEFAULT_GOALS.map((g) => {
           const entity = entities[g.memoryEntity] || {};
-          const fact = entity[g.memoryField];
+          let fact = entity[g.memoryField];
+          if (!fact && g.memoryField === "job") fact = entity.profession;
           const hasFact = fact !== undefined && fact !== null && (fact.value !== undefined ? fact.value !== null : true);
           const isExplicit = completedGoalIds.includes(g.id);
           const isDone = hasFact || isExplicit;
