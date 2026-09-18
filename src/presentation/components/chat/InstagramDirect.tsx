@@ -37,6 +37,7 @@ import {
   Bot,
   AlertTriangle,
   RefreshCw,
+  FlaskConical,
 } from "lucide-react";
 import { TinderSession } from "@/domain/entities/Tinder";
 import {
@@ -865,6 +866,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Menu de Opções ao Clicar e Segurar (Long Press)
   const [selectedChatForActionSheet, setSelectedChatForActionSheet] = useState<DirectConversation | null>(null);
+  const [orchestrationModalChatId, setOrchestrationModalChatId] = useState<string | null>(null);
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressActiveRef = useRef<boolean>(false);
   const touchStartCoordsRef = useRef<{ x: number; y: number } | null>(null);
@@ -3759,7 +3761,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             )}
 
             {activeChat.type === "instagram" && !isTestConversationId(activeChat.id) && (
-              <OrchestrationModeSelector conversationId={activeChat.id} />
+              <OrchestrationModeSelector conversationId={activeChat.id} hideIfLegacy={true} />
             )}
           </div>
         </div>
@@ -5448,6 +5450,31 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   </p>
                 </div>
               </button>
+
+              {/* Opção 4: Modo de Orquestração IA (Acessível sem alterar cabeçalho) */}
+              {selectedChatForActionSheet.type === "instagram" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = selectedChatForActionSheet.id;
+                    setSelectedChatForActionSheet(null);
+                    setOrchestrationModalChatId(id);
+                  }}
+                  className="w-full p-3 rounded-xl bg-[#202022] border border-[#2c2c2e] hover:bg-[#28282b] text-white flex items-center gap-3 transition-all cursor-pointer active:scale-98 text-left"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center shrink-0">
+                    <FlaskConical className="w-4 h-4 text-purple-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                      Orquestração IA
+                    </p>
+                    <p className="text-[11px] text-[#8e8e8e] truncate">
+                      Configurar modo Legado, Shadow ou Experimental
+                    </p>
+                  </div>
+                </button>
+              )}
             </div>
 
             {/* Botão Cancelar */}
@@ -5457,6 +5484,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               className="w-full py-3 rounded-xl bg-[#222226] hover:bg-[#2a2a2e] text-white text-xs font-bold transition-all cursor-pointer active:scale-98 border border-[#303034]"
             >
               Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Dedicado de Orquestração IA (abre apenas quando acionado expressamente pelo usuário) */}
+      {orchestrationModalChatId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => setOrchestrationModalChatId(null)}
+        >
+          <div
+            className="w-full max-w-sm flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <OrchestrationModeSelector
+              conversationId={orchestrationModalChatId}
+              hideIfLegacy={false}
+              defaultOpen={true}
+            />
+            <button
+              type="button"
+              onClick={() => setOrchestrationModalChatId(null)}
+              className="mt-3 py-1.5 px-4 rounded-full bg-zinc-800/80 hover:bg-zinc-700 text-xs font-semibold text-zinc-300 hover:text-white transition-colors cursor-pointer border border-zinc-700"
+            >
+              Fechar
             </button>
           </div>
         </div>

@@ -24,6 +24,8 @@ interface OrchestrationModeSelectorProps {
   conversationId: string;
   initialState?: ConversationOrchestrationState | null;
   onStateChange?: (state: ConversationOrchestrationState) => void;
+  hideIfLegacy?: boolean;
+  defaultOpen?: boolean;
 }
 
 function getApiUrl(path: string): string {
@@ -47,11 +49,13 @@ export function OrchestrationModeSelector({
   conversationId,
   initialState,
   onStateChange,
+  hideIfLegacy = true,
+  defaultOpen = false,
 }: OrchestrationModeSelectorProps) {
   const [state, setState] = useState<ConversationOrchestrationState>(
     initialState || DEFAULT_ORCHESTRATION_STATE
   );
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isUpdating, setIsUpdating] = useState(false);
   const [confirmExperimentalOpen, setConfirmExperimentalOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -188,45 +192,41 @@ export function OrchestrationModeSelector({
 
   const currentMode = state.mode || "legacy";
 
+  // Se estiver no modo legado (padrão de todas as conversas), não renderiza nada no cabeçalho
+  // Preserva 100% da identidade visual original sem qualquer botão ou poluição visual
+  if (hideIfLegacy && currentMode === "legacy") {
+    return null;
+  }
+
   return (
-    <div className="relative inline-block" ref={popoverRef}>
-      {/* Botão Badge Principal */}
+    <div className="relative inline-block shrink-0" ref={popoverRef}>
+      {/* Botão Badge Principal - Só exibido quando o usuário escolheu expressamente modo Experimental ou Shadow */}
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
         disabled={isUpdating}
-        className={`px-2.5 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
+        className={`px-2 py-1 rounded-full border text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0 ${
           currentMode === "experimental"
-            ? "bg-purple-500/15 text-purple-300 border-purple-500/40 hover:bg-purple-500/25 shadow-sm shadow-purple-500/10"
-            : currentMode === "shadow"
-            ? "bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/25 shadow-sm shadow-amber-500/10"
-            : "bg-[#1c1c1e] text-[#a8a8a8] border-[#2e2e30] hover:text-white hover:bg-[#2c2c2e]"
+            ? "bg-purple-500/20 text-purple-300 border-purple-500/40 hover:bg-purple-500/30 shadow-sm shadow-purple-500/10"
+            : "bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30 shadow-sm shadow-amber-500/10"
         }`}
-        title={`Modo de Orquestração Atual: ${
+        title={`Modo de Orquestração Ativo: ${
           currentMode === "experimental"
             ? "Experimental (Novo Agente)"
-            : currentMode === "shadow"
-            ? "Shadow (Observação Silenciosa)"
-            : "Legado (Piloto Tradicional)"
+            : "Shadow (Observação Silenciosa)"
         }`}
       >
         {isUpdating ? (
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
         ) : currentMode === "experimental" ? (
           <FlaskConical className="w-3.5 h-3.5 text-purple-400" />
-        ) : currentMode === "shadow" ? (
-          <Eye className="w-3.5 h-3.5 text-amber-400" />
         ) : (
-          <Shield className="w-3.5 h-3.5 text-zinc-400" />
+          <Eye className="w-3.5 h-3.5 text-amber-400" />
         )}
-        <span>
-          {currentMode === "experimental"
-            ? "Experimental"
-            : currentMode === "shadow"
-            ? "Shadow"
-            : "Legado"}
+        <span className="hidden sm:inline text-[11px]">
+          {currentMode === "experimental" ? "Experimental" : "Shadow"}
         </span>
-        <ChevronDown className="w-3 h-3 opacity-60 ml-0.5" />
+        <ChevronDown className="w-2.5 h-2.5 opacity-70 ml-0.5" />
       </button>
 
       {/* Popover de Opções e Status */}
