@@ -1171,6 +1171,7 @@ serve(async (req: Request) => {
                     });
                   }
                 }
+              }
               } catch (apErr) {
                 console.error("[Cloud AutoPilot] Erro ao agendar resposta no webhook:", apErr);
               }
