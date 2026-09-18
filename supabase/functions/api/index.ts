@@ -1074,8 +1074,13 @@ serve(async (req: Request) => {
                           .eq("id", conversationId);
                       }
 
-                      // Em caso de falha do novo orquestrador ANTES de qualquer envio à Meta (e sem ser lock ou duplicata), fallback seguro para o fluxo legado
-                      if (!res.handled && res.error && !res.sentToMeta && res.error !== "Lock ativo concorrente" && !res.skippedDuplicate) {
+                      // Em caso de falha do novo orquestrador ANTES de qualquer envio à Meta (e sem ser lock, duplicata, preempção ou incerteza), fallback seguro para o fluxo legado
+                      const isPreemptedOrCancelled =
+                        res.error?.includes("preemptado") ||
+                        res.error?.includes("Cancelado pelo operador") ||
+                        res.error?.includes("Incerteza de rede");
+
+                      if (!res.handled && res.error && !res.sentToMeta && res.error !== "Lock ativo concorrente" && !res.skippedDuplicate && !isPreemptedOrCancelled) {
                         console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) antes de qualquer envio. Acionando fallback para fluxo legado.`);
                         await runCloudAutoPilot({
                           supabase,

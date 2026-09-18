@@ -67,7 +67,7 @@ export interface CanonicalMessage {
   claimedByCycleId?: string | null;
 }
 
-export type OutboxStatus = "pending" | "sending" | "sent" | "failed";
+export type OutboxStatus = "pending" | "sending" | "sent" | "failed" | "dispatch_uncertain";
 
 export interface OutboxEntry {
   id: string;
@@ -83,6 +83,8 @@ export interface OutboxEntry {
   lastError?: string | null;
   createdAt: string;
   sentAt?: string | null;
+  sendingAt?: string | null;
+  isUncertain?: boolean;
 }
 
 export interface ProcessingCycle {
@@ -666,15 +668,35 @@ export interface DispatchOutboxParams {
 
 export async function dispatchOutboxEntry(
   params: DispatchOutboxParams
-): Promise<{ success: boolean; providerMessageId?: string; error?: string }> {
+): Promise<{ success: boolean; providerMessageId?: string; isUncertain?: boolean; error?: string }> {
   const { supabase, outboxEntry, recipientId, runtime } = params;
 
-  // Idempotência estrita: se já foi enviada com sucesso, não repete envio
+  // 1. Idempotência estrita: se já foi enviada com sucesso, não repete envio
   if (outboxEntry.status === "sent" && outboxEntry.providerMessageId) {
     return { success: true, providerMessageId: outboxEntry.providerMessageId };
   }
 
+  // 2. Proteção contra duplo dispatch concorrente: impede que duas chamadas quase simultâneas disparem o mesmo envio
+  const now = Date.now();
+  const sendingAtMs = outboxEntry.sendingAt ? Date.parse(outboxEntry.sendingAt) : 0;
+  if (outboxEntry.status === "sending" && now - sendingAtMs < 20000) {
+    console.warn(
+      `[Dispatcher] Outbox ${outboxEntry.id} já está em processo de envio ativo (status: sending). Bloqueando despacho concorrente.`
+    );
+    return { success: false, error: "Outbox em envio concorrente (status: sending)" };
+  }
+
+  // 3. Proteção contra retry cego em incerteza: se o envio anterior sofreu timeout na conexão com a Meta,
+  // a Meta pode ter recebido e entregue a mensagem. Bloqueia retry automático cego para evitar duplicação!
+  if (outboxEntry.status === "dispatch_uncertain") {
+    console.warn(
+      `[Dispatcher] Outbox ${outboxEntry.id} possui status dispatch_uncertain. Retry automático bloqueado para evitar duplicação.`
+    );
+    return { success: false, isUncertain: true, error: "Envio anterior incerto. Retry automático bloqueado." };
+  }
+
   outboxEntry.status = "sending";
+  outboxEntry.sendingAt = new Date().toISOString();
   outboxEntry.attempts += 1;
 
   try {
@@ -684,6 +706,7 @@ export async function dispatchOutboxEntry(
       outboxEntry.status = "sent";
       outboxEntry.sentAt = new Date().toISOString();
       outboxEntry.providerMessageId = providerId;
+      outboxEntry.isUncertain = false;
       return { success: true, providerMessageId: providerId };
     }
 
@@ -716,7 +739,9 @@ export async function dispatchOutboxEntry(
 
     if (!sendRes.ok) {
       const errBody = await sendRes.text();
-      throw new Error(`Falha no envio pela Meta: ${errBody}`);
+      // Erro HTTP retornado ativamente pela Meta (ex: 400 Bad Request, 401 Unauthorized, 403 Forbidden):
+      // A Meta respondeu com certeza que a mensagem foi rejeitada!
+      throw new Error(`Falha no envio pela Meta (HTTP ${sendRes.status}): ${errBody}`);
     }
 
     const metaJson = await sendRes.json().catch(() => ({}));
@@ -725,16 +750,35 @@ export async function dispatchOutboxEntry(
     outboxEntry.status = "sent";
     outboxEntry.sentAt = new Date().toISOString();
     outboxEntry.providerMessageId = providerId;
+    outboxEntry.isUncertain = false;
 
     return { success: true, providerMessageId: providerId };
   } catch (err: any) {
-    outboxEntry.lastError = err.message || String(err);
+    const errMsg = err.message || String(err);
+    outboxEntry.lastError = errMsg;
+
+    // Detecta se a falha ocorreu por timeout/queda de rede pós-transmissão (resultado incerto da Meta)
+    const isTimeoutOrNetwork =
+      err.name === "AbortError" ||
+      err.name === "TimeoutError" ||
+      errMsg.toLowerCase().includes("timeout") ||
+      errMsg.includes("ETIMEDOUT") ||
+      errMsg.includes("ECONNRESET") ||
+      errMsg.includes("fetch failed");
+
+    if (isTimeoutOrNetwork) {
+      outboxEntry.status = "dispatch_uncertain";
+      outboxEntry.isUncertain = true;
+      return { success: false, isUncertain: true, error: `Incerteza de rede no envio à Meta: ${errMsg}` };
+    }
+
+    // Erro determinístico pré-envio ou rejeição explícita da Meta
     if (outboxEntry.attempts >= outboxEntry.maxAttempts) {
       outboxEntry.status = "failed";
     } else {
-      outboxEntry.status = "pending"; // Permite retry controlado
+      outboxEntry.status = "pending"; // Permite retry controlado para erros determinísticos comprovados
     }
-    return { success: false, error: err.message };
+    return { success: false, isUncertain: false, error: errMsg };
   }
 }
 
@@ -1097,8 +1141,14 @@ export async function runExperimentalOrchestration(
     const pendingMessages: CanonicalMessage[] = [];
     for (const msg of canonicalList) {
       if (msg.sender === "pretendente" && msg.direction === "inbound") {
+        const isActivelyClaimed =
+          ledger[msg.id] === "claimed" &&
+          activeLock &&
+          Date.now() - activeLockAt < 25000 &&
+          activeLock !== correlationId;
         const isProcessed =
           ledger[msg.id] === "processed" ||
+          isActivelyClaimed ||
           (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
         if (!isProcessed) {
           pendingMessages.push({ ...msg, status: "pending" });
@@ -1107,8 +1157,14 @@ export async function runExperimentalOrchestration(
     }
 
     if (newMessage && !pendingMessages.some((m) => m.id === newMessage.id)) {
+      const isActivelyClaimed =
+        ledger[newMessage.id] === "claimed" &&
+        activeLock &&
+        Date.now() - activeLockAt < 25000 &&
+        activeLock !== correlationId;
       const isProcessed =
         ledger[newMessage.id] === "processed" ||
+        isActivelyClaimed ||
         (orchState.lastProcessedMessageId && newMessage.id === orchState.lastProcessedMessageId);
       if (!isProcessed) {
         pendingMessages.push(
@@ -1142,6 +1198,24 @@ export async function runExperimentalOrchestration(
     for (const id of claimedMessageIds) {
       ledger[id] = "claimed";
     }
+
+    // Persiste imediatamente o claim e o ledger no banco de dados para que ciclos concorrentes
+    // saibam que estas mensagens já estão sob custódia deste ciclo
+    await supabase
+      .from("instagram_conversations")
+      .update({
+        stage_completed_rules: {
+          ...stageRules,
+          active_cycle_token: correlationId,
+          active_cycle_at: new Date().toISOString(),
+          orchestration: {
+            ...orchState,
+            messageLedger: ledger,
+            lastProcessingStatus: "processing",
+          },
+        },
+      })
+      .eq("id", conversationId);
 
     const currentCycle: ProcessingCycle = {
       cycleId: correlationId,
@@ -1328,16 +1402,19 @@ export async function runExperimentalOrchestration(
     currentCycle.outboxEntryId = outboxEntry.id;
     currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
-    // Checagem de cancelamento após inferência antes do despacho
-    const { data: recheckRules } = await supabase
+    // Checagem de cancelamento e preempção após inferência antes do despacho
+    const { data: recheckData } = await supabase
       .from("instagram_conversations")
       .select("stage_completed_rules")
       .eq("id", conversationId)
       .maybeSingle();
 
+    const recheckRules = recheckData?.stage_completed_rules || {};
+
+    // 1. Cancelamento manual pelo operador
     if (
-      recheckRules?.stage_completed_rules?.cancel_current_cycle === true ||
-      recheckRules?.stage_completed_rules?.status === "paused_manual"
+      recheckRules.cancel_current_cycle === true ||
+      recheckRules.status === "paused_manual"
     ) {
       currentCycle.status = "cancelled";
       currentCycle.trace.push("cycle_cancelled_before_dispatch");
@@ -1347,6 +1424,23 @@ export async function runExperimentalOrchestration(
       outboxEntry.status = "failed";
       outboxEntry.lastError = "Cancelado pelo operador";
       return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
+    }
+
+    // 2. Preempção por novo ciclo concorrente ou expiração de lock (Stale Lock / Zombie Cycle Prevention)
+    if (recheckRules.active_cycle_token !== correlationId) {
+      console.warn(
+        `[Orchestrator] Ciclo ${correlationId} perdeu o lock (token atual: ${recheckRules.active_cycle_token || "null"}). Abortando envio para evitar duplo envio.`
+      );
+      currentCycle.status = "failed";
+      currentCycle.trace.push(`cycle_preempted: lock_lost`);
+      outboxEntry.status = "failed";
+      outboxEntry.lastError = `Preemptado (lock ativo: ${recheckRules.active_cycle_token || "nenhum"})`;
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        error: `Ciclo preemptado por perda de lock (${recheckRules.active_cycle_token || "lock_expirado"})`,
+      };
     }
 
     // ------------------------------------------------------------------------
@@ -1505,11 +1599,25 @@ export async function runExperimentalOrchestration(
             ledger[id] = "processed";
           }
           currentCycle.status = "completed";
+        } else if (dispatchRes.isUncertain) {
+          // Incerteza de rede (timeout / disconnect na chamada da Meta Graph API)
+          // A Meta pode ter recebido e entregue a mensagem!
+          // NÃO reverte mensagens para pending (para não gerar duplicata) e marca sentSuccessfully como true
+          // para bloquear fallback para legacy no webhook handler.
+          sentSuccessfully = true;
+          currentCycle.status = "failed";
+          currentCycle.trace.push(`meta_dispatch_uncertain: ${dispatchRes.error}`);
+          console.warn(
+            `[Orchestrator] Envio com status dispatch_uncertain para ${conversationId}. Bloqueando retry automático e fallback legacy para evitar duplicação.`
+          );
+          for (const id of claimedMessageIds) {
+            ledger[id] = "processed";
+          }
         } else {
           currentCycle.status = "failed";
           currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
           for (const id of claimedMessageIds) {
-            ledger[id] = "pending"; // Reverte mensagens para retry limpo
+            ledger[id] = "pending"; // Reverte mensagens para retry limpo apenas em erro determinístico
           }
           throw new Error(`Falha no despacho da outbox: ${dispatchRes.error}`);
         }
@@ -1549,6 +1657,27 @@ export async function runExperimentalOrchestration(
         outbox: outboxMap,
         messageLedger: ledger,
       };
+
+      // Checagem de preempção antes do commit final no banco:
+      // Se outro ciclo assumiu o lock durante o processamento/despacho, não sobrescreve seu estado!
+      const { data: preCommitData } = await supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .eq("id", conversationId)
+        .maybeSingle();
+
+      const latestCycleToken = preCommitData?.stage_completed_rules?.active_cycle_token;
+      if (latestCycleToken !== correlationId) {
+        console.warn(
+          `[Orchestrator] Ciclo ${correlationId} preemptado antes do commit final (token atual: ${latestCycleToken || "null"}). Ignorando sobrescrita de estado.`
+        );
+        return {
+          mode: orchState.mode,
+          handled: false,
+          sentToMeta: sentSuccessfully,
+          error: `Ciclo preemptado antes do commit por ${latestCycleToken || "lock_expirado"}`,
+        };
+      }
 
       await supabase
         .from("instagram_conversations")
@@ -1640,6 +1769,25 @@ export async function runExperimentalOrchestration(
       messageLedger: ledger,
       outbox: outboxMap,
     };
+
+    // Se o ciclo já foi preemptado por outro ciclo mais recente, não sobrescreve o banco nem o active_cycle_token
+    const { data: errRecheck } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    if (errRecheck?.stage_completed_rules?.active_cycle_token !== correlationId) {
+      console.warn(
+        `[Orchestrator] Falha capturada no ciclo ${correlationId}, mas ciclo já perdeu o lock (atual: ${errRecheck?.stage_completed_rules?.active_cycle_token || "null"}). Abortando sobrescrita de fallback.`
+      );
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: sentSuccessfully,
+        error: err.message || "Ciclo preemptado",
+      };
+    }
 
     await supabase
       .from("instagram_conversations")

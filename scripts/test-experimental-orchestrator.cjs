@@ -1824,3 +1824,606 @@ test('36. Requisito 23: Pós-ciclo detecta mensagens concorrentes e agenda próx
   assert.equal(conv.ai_auto_respond, true);
   assert.ok(conv.ai_debounce_until, 'Deve agendar debounce_until para execução imediata do próximo ciclo');
 });
+
+// =========================================================================
+// TESTE 37 (Cenários 2 e 4 do Usuário): Stale Lock (>25s) + Ciclo B inicia + Processo Antigo A retorna depois (Prevenção de Zombie Cycle)
+// =========================================================================
+test('37. Stale Lock (>25s) e Zombie Cycle: Ciclo B assume lock e Ciclo A é preemptado antes de dispatch e commit', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaCalls = [];
+  const initialMessages = [
+    { id: 'msg_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Oi Larissa!', created_at: '2026-09-18T07:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          checkpoint: 'chk_saudacao_feita',
+          messageLedger: {},
+        },
+      },
+    },
+    initialMessages
+  );
+
+  let cycleAResolve;
+  const cycleAPromise = new Promise((resolve) => { cycleAResolve = resolve; });
+
+  // Ciclo A começa com correlationId corr_cycle_A
+  const promiseA = runExperimentalOrchestration({
+    supabase,
+    conversationId: 'test_conv_zombie',
+    correlationId: 'corr_cycle_A',
+    newMessage: { id: 'msg_1', text: 'Oi Larissa!', timestamp: '2026-09-18T07:00:00Z', sender: 'them' },
+    runtime: {
+      callModel: async () => {
+        // Simula ciclo A bloqueado esperando a IA (demora simulada > 30s)
+        await cycleAPromise;
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'conexao_inicial',
+            action: 'reply',
+            checkpoint: 'chk_saudacao_feita',
+            suggestedResponse: 'Resposta tardia do Ciclo A',
+            nextPhase: 'conexao_inicial',
+            summary: 'ok',
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async (sb, convId, text) => {
+        metaCalls.push({ sender: 'Ciclo A', text });
+        return { message_id: 'meta_from_A' };
+      },
+    },
+  });
+
+  // Aguarda Ciclo A registrar o claim e adquirir lock
+  await new Promise((r) => setTimeout(r, 60));
+
+  const convMidA = supabase.getConversationData();
+  assert.equal(convMidA.stage_completed_rules.active_cycle_token, 'corr_cycle_A');
+
+  // Simula passagem do tempo: lock expira (>25s)
+  convMidA.stage_completed_rules.active_cycle_at = new Date(Date.now() - 30000).toISOString();
+
+  // Uma nova mensagem chega para a conversa
+  supabase.getInsertedMessages().push({
+    id: 'msg_2',
+    sender_id: 'them',
+    is_mine: false,
+    direction: 'inbound',
+    text: 'Tudo bem?',
+    created_at: new Date().toISOString(),
+  });
+
+  // Ciclo B inicia com correlationId corr_cycle_B e detecta stale lock
+  const resB = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'test_conv_zombie',
+    correlationId: 'corr_cycle_B',
+    newMessage: { id: 'msg_2', text: 'Tudo bem?', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({
+          targetSubagent: 'conexao_inicial',
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Olá, resposta legítima do Ciclo B',
+          nextPhase: 'conexao_inicial',
+          summary: 'ok',
+        }),
+        tokens: 60,
+      }),
+      sendMetaTextMessage: async (sb, convId, text) => {
+        metaCalls.push({ sender: 'Ciclo B', text });
+        return { message_id: 'meta_from_B' };
+      },
+    },
+  });
+
+  assert.equal(resB.handled, true, 'Ciclo B deve assumir o lock expirado e concluir');
+  assert.equal(resB.sentToMeta, true, 'Ciclo B deve enviar para a Meta');
+  assert.equal(metaCalls.length, 1, 'Somente Ciclo B enviou para a Meta até aqui');
+  assert.equal(metaCalls[0].sender, 'Ciclo B');
+
+  // AGORA o Ciclo A finalmente acorda da IA tardia
+  cycleAResolve();
+  const resA = await promiseA;
+
+  // Ciclo A DEVE ser preemptado e abortado!
+  assert.equal(resA.handled, false, 'Ciclo A deve ser abortado');
+  assert.equal(resA.sentToMeta, false, 'Ciclo A NUNCA deve enviar para a Meta');
+  assert.match(resA.error, /preemptado/, 'Erro de A deve registrar preempção');
+
+  // Verifica que metaCalls CONTINUA com exatamente 1 envio (zero duplo envio!)
+  assert.equal(metaCalls.length, 1, 'Ciclo A NUNCA deve chamar a Meta após preempção');
+
+  // Verifica que o estado persistido no banco de dados pertence ao Ciclo B
+  const convFinal = supabase.getConversationData();
+  const lastDecision = convFinal.stage_completed_rules.orchestration.lastDecision;
+  assert.equal(lastDecision.suggestedResponse, 'Olá, resposta legítima do Ciclo B', 'Estado de B não pode ser sobrescrito por A');
+});
+
+// =========================================================================
+// TESTE 38 (Cenários 5, 6 e 7 do Usuário): Meta aceitou mas conexão sofre timeout (isUncertain: true)
+// =========================================================================
+test('38. Meta Timeout Incerto: marca dispatch_uncertain e bloqueia retry automático e duplicação', async () => {
+  const { load } = createRuntime();
+  const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let httpCalls = 0;
+  const mockSupabase = createMockSupabase();
+
+  const outboxEntry = {
+    id: 'out_uncertain_test',
+    cycleId: 'cycle_unc_1',
+    conversationId: 'test_conv_unc',
+    idempotencyKey: 'idemp_test_unc',
+    content: 'Olá! Mensagem com timeout incerto',
+    messageType: 'text',
+    status: 'pending',
+    attempts: 0,
+    maxAttempts: 3,
+    createdAt: new Date().toISOString(),
+  };
+
+  // Simula timeout de rede durante a chamada à Meta
+  const mockRuntime = {
+    sendMetaTextMessage: async () => {
+      httpCalls++;
+      const err = new Error('The operation was aborted due to timeout');
+      err.name = 'AbortError';
+      throw err;
+    },
+  };
+
+  // 1. Primeira tentativa de despacho sofre timeout de rede
+  const res1 = await dispatchOutboxEntry({
+    supabase: mockSupabase,
+    outboxEntry,
+    recipientId: 'test_conv_unc',
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res1.success, false);
+  assert.equal(res1.isUncertain, true, 'Deve identificar incerteza de rede');
+  assert.equal(outboxEntry.status, 'dispatch_uncertain');
+  assert.equal(outboxEntry.isUncertain, true);
+  assert.equal(httpCalls, 1);
+
+  // 2. Tentativa de Retry automático cego
+  const res2 = await dispatchOutboxEntry({
+    supabase: mockSupabase,
+    outboxEntry,
+    recipientId: 'test_conv_unc',
+    runtime: mockRuntime,
+  });
+
+  // O retry automático cego DEVE ser bloqueado para evitar duplicação!
+  assert.equal(res2.success, false);
+  assert.equal(res2.isUncertain, true);
+  assert.match(res2.error, /Retry automático bloqueado/);
+  assert.equal(httpCalls, 1, 'Nenhuma nova chamada HTTP pode ser feita em status dispatch_uncertain');
+});
+
+// =========================================================================
+// TESTE 39 (Cenários 8 e 9 do Usuário): Duplo Dispatch Concorrente na Mesma Outbox
+// =========================================================================
+test('39. Duplo Dispatch Concorrente: impede dois despachos simultâneos da mesma outbox entry', async () => {
+  const { load } = createRuntime();
+  const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let httpCalls = 0;
+  const mockSupabase = createMockSupabase();
+
+  const outboxEntry = {
+    id: 'out_race_entry',
+    cycleId: 'cycle_race_1',
+    conversationId: 'test_conv_race',
+    idempotencyKey: 'idemp_test_race',
+    content: 'Olá concorrente',
+    messageType: 'text',
+    status: 'pending',
+    attempts: 0,
+    maxAttempts: 3,
+    createdAt: new Date().toISOString(),
+  };
+
+  const mockRuntime = {
+    sendMetaTextMessage: async () => {
+      httpCalls++;
+      // Simula pequeno delay de rede para permitir concorrência
+      await new Promise((r) => setTimeout(r, 40));
+      return { message_id: 'meta_single_win' };
+    },
+  };
+
+  // Dispara duas chamadas concorrentes praticamente no mesmo milissegundo
+  const [callA, callB] = await Promise.all([
+    dispatchOutboxEntry({ supabase: mockSupabase, outboxEntry, recipientId: 'test_conv_race', runtime: mockRuntime }),
+    dispatchOutboxEntry({ supabase: mockSupabase, outboxEntry, recipientId: 'test_conv_race', runtime: mockRuntime }),
+  ]);
+
+  // Exatamente uma das duas chamadas deve ter sido bem-sucedida, e a outra bloqueada por status: sending
+  const successes = [callA, callB].filter((c) => c.success);
+  const rejections = [callA, callB].filter((c) => !c.success);
+
+  assert.equal(successes.length, 1, 'Exatamente um dispatch deve ter sucesso');
+  assert.equal(rejections.length, 1, 'O outro dispatch deve ser rejeitado por concorrência');
+  assert.match(rejections[0].error, /sending|concorrente/i);
+  assert.equal(httpCalls, 1, 'Meta deve ser chamada exatamente uma vez');
+  assert.equal(outboxEntry.status, 'sent');
+  assert.equal(outboxEntry.providerMessageId, 'meta_single_win');
+});
+
+// =========================================================================
+// TESTE 40 (Cenário 10 do Usuário): Crash em Status sending e Recuperação após 20s
+// =========================================================================
+test('40. Outbox Crash em sending: bloqueia retry imediato e permite recuperação após expiração de 20s', async () => {
+  const { load } = createRuntime();
+  const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let httpCalls = 0;
+  const mockSupabase = createMockSupabase();
+
+  const outboxEntry = {
+    id: 'out_crash_entry',
+    cycleId: 'cycle_crash_1',
+    conversationId: 'test_conv_crash',
+    idempotencyKey: 'idemp_test_crash',
+    content: 'Mensagem pós-crash',
+    messageType: 'text',
+    status: 'sending',
+    sendingAt: new Date(Date.now() - 5000).toISOString(), // 5s atrás (lock ativo)
+    attempts: 1,
+    maxAttempts: 3,
+    createdAt: new Date().toISOString(),
+  };
+
+  const mockRuntime = {
+    sendMetaTextMessage: async () => {
+      httpCalls++;
+      return { message_id: 'meta_recovered_ok' };
+    },
+  };
+
+  // 1. Tentativa dentro da janela de 20s (ainda em processo ou crash recente) -> BLOQUEADO
+  const resImmediate = await dispatchOutboxEntry({
+    supabase: mockSupabase,
+    outboxEntry,
+    recipientId: 'test_conv_crash',
+    runtime: mockRuntime,
+  });
+  assert.equal(resImmediate.success, false);
+  assert.match(resImmediate.error, /sending|concorrente/i);
+  assert.equal(httpCalls, 0);
+
+  // 2. Simula passagem de mais de 20 segundos (processo comprovadamente morto/crash)
+  outboxEntry.sendingAt = new Date(Date.now() - 25000).toISOString();
+
+  const resRecovered = await dispatchOutboxEntry({
+    supabase: mockSupabase,
+    outboxEntry,
+    recipientId: 'test_conv_crash',
+    runtime: mockRuntime,
+  });
+
+  // Agora a trava de 20s expirou, permitindo envio controlado com recuperação
+  assert.equal(resRecovered.success, true);
+  assert.equal(httpCalls, 1);
+  assert.equal(outboxEntry.status, 'sent');
+  assert.equal(outboxEntry.providerMessageId, 'meta_recovered_ok');
+});
+
+// =========================================================================
+// TESTE 41 (Cenários 11 e 12 do Usuário): Fallback Legacy sob Timeout Incerto é Rigorosamente Bloqueado
+// =========================================================================
+test('41. Fallback Legacy sob Incerteza: sentToMeta=true e isPreemptedOrCancelled impedem ativação do legacy', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+      },
+    },
+  });
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_uncertain_fallback_test',
+    newMessage: { id: 'm_unc_fb', text: 'Oi', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Olá!',
+          nextPhase: 'conexao_inicial',
+          summary: 'ok',
+        }),
+        tokens: 30,
+      }),
+      sendMetaTextMessage: async () => {
+        const err = new Error('Network timeout during POST to Meta');
+        err.name = 'TimeoutError';
+        throw err;
+      },
+    },
+  });
+
+  // Sob timeout incerto na Meta:
+  // 1. handled é true (o ciclo tratou a ocorrência)
+  assert.equal(res.handled, true);
+  // 2. sentToMeta é true (para sinalizar que a mensagem pode ter saído, impedindo envio legacy alternativo)
+  assert.equal(res.sentToMeta, true, 'sentToMeta DEVE ser true sob incerteza de rede para proteger contra fallback duplo');
+
+  // 3. Simula a avaliação da guarda no index.ts
+  const isPreemptedOrCancelled =
+    res.error?.includes('preemptado') ||
+    res.error?.includes('Cancelado pelo operador') ||
+    res.error?.includes('Incerteza de rede');
+
+  const triggersLegacyFallback =
+    !res.handled && res.error && !res.sentToMeta && res.error !== 'Lock ativo concorrente' && !res.skippedDuplicate && !isPreemptedOrCancelled;
+
+  assert.equal(triggersLegacyFallback, false, 'Fallback para o legacy NÃO pode ser acionado sob incerteza!');
+});
+
+// =========================================================================
+// TESTE 42 (Cenários 13 e 14 do Usuário): Lote de 20 Mensagens + 10 Mensagens Chegando Durante Ciclo Longo
+// =========================================================================
+test('42. Lote 20 + 10 Mensagens Concorrentes: Ciclo A processa 20, Ciclo B processa 10, zero perdas e zero duplicatas', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Cria 20 mensagens iniciais
+  const initialMessages = [];
+  for (let i = 1; i <= 20; i++) {
+    initialMessages.push({
+      id: `batch_msg_${i}`,
+      sender_id: 'them',
+      is_mine: false,
+      direction: 'inbound',
+      text: `Mensagem ${i} do lote de 20`,
+      created_at: new Date(Date.now() - (25 - i) * 1000).toISOString(),
+    });
+  }
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    initialMessages
+  );
+
+  let capturedAClaimCount = 0;
+  let capturedBClaimCount = 0;
+
+  // Ciclo A começa
+  const resA = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_batch_20_10',
+    correlationId: 'corr_batch_A',
+    newMessage: initialMessages[0],
+    runtime: {
+      callModel: async (prompt) => {
+        // Durante a inferência do Ciclo A, entram 10 mensagens novas concorrentes (msg 21 a 30)
+        for (let j = 21; j <= 30; j++) {
+          supabase.getInsertedMessages().push({
+            id: `batch_msg_${j}`,
+            sender_id: 'them',
+            is_mine: false,
+            direction: 'inbound',
+            text: `Mensagem concorrente ${j}`,
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        if (prompt.includes('Agente da Conversa')) {
+          return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Lote de 20' }), tokens: 50 };
+        }
+        return {
+          content: JSON.stringify({
+            action: 'reply',
+            checkpoint: 'chk_saudacao_feita',
+            suggestedResponse: 'Resposta ao primeiro lote de 20',
+            nextPhase: 'conexao_inicial',
+            summary: 'ok',
+          }),
+          tokens: 60,
+        };
+      },
+      sendMetaTextMessage: async () => ({ message_id: 'meta_batch_A_ok' }),
+    },
+  });
+
+  assert.equal(resA.handled, true);
+  assert.equal(resA.sentToMeta, true);
+
+  const convStateAfterA = supabase.getConversationData().stage_completed_rules.orchestration;
+  const ledgerAfterA = convStateAfterA.messageLedger;
+
+  // Verifica que exatamente as 20 primeiras mensagens foram marcadas como processed
+  for (let i = 1; i <= 20; i++) {
+    assert.equal(ledgerAfterA[`batch_msg_${i}`], 'processed', `Mensagem ${i} deve ser processed`);
+  }
+
+  // Verifica que as 10 novas mensagens (21 a 30) NÃO foram absorvidas pelo Ciclo A
+  for (let j = 21; j <= 30; j++) {
+    assert.notEqual(ledgerAfterA[`batch_msg_${j}`], 'processed', `Mensagem ${j} NÃO pode ter sido processada no Ciclo A`);
+  }
+
+  // Verifica que o pós-ciclo agendou o próximo ciclo
+  assert.equal(supabase.getConversationData().ai_auto_respond, true);
+
+  // Agora Ciclo B roda para processar o follow-up
+  const resB = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_batch_20_10',
+    correlationId: 'corr_batch_B',
+    newMessage: { id: 'batch_msg_21', text: 'Mensagem concorrente 21', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async (prompt) => {
+        if (prompt.includes('Agente da Conversa')) {
+          return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Lote de 10' }), tokens: 50 };
+        }
+        return {
+          content: JSON.stringify({
+            action: 'reply',
+            checkpoint: 'chk_saudacao_feita',
+            suggestedResponse: 'Resposta ao segundo lote de 10',
+            nextPhase: 'conexao_inicial',
+            summary: 'ok',
+          }),
+          tokens: 60,
+        };
+      },
+      sendMetaTextMessage: async () => ({ message_id: 'meta_batch_B_ok' }),
+    },
+  });
+
+  assert.equal(resB.handled, true);
+  assert.equal(resB.sentToMeta, true);
+
+  const convStateAfterB = supabase.getConversationData().stage_completed_rules.orchestration;
+  const ledgerAfterB = convStateAfterB.messageLedger;
+
+  // Verifica que agora todas as 30 mensagens estão no status processed
+  for (let k = 1; k <= 30; k++) {
+    assert.equal(ledgerAfterB[`batch_msg_${k}`], 'processed', `Mensagem ${k} deve estar processada após Ciclo B`);
+  }
+});
+
+// =========================================================================
+// TESTE 43 (Requisito 18): Teste Ponta a Ponta do Caso Mais Perigoso
+// =========================================================================
+test('43. Caso Mais Perigoso Ponta a Ponta: Msg chega -> IA demora >25s -> B inicia -> A tenta envio e é preemptado -> B despacha -> Exatamente 1 envio à Meta', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaDispatched = [];
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    [
+      { id: 'msg_extreme_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Mensagem do teste de estresse', created_at: '2026-09-18T07:00:00Z' },
+    ]
+  );
+
+  let unblockA;
+  const waitA = new Promise((r) => { unblockA = r; });
+
+  // 1. Ciclo A inicia
+  const promiseA = runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_extreme_stress',
+    correlationId: 'corr_extreme_A',
+    newMessage: { id: 'msg_extreme_1', text: 'Mensagem do teste de estresse', timestamp: '2026-09-18T07:00:00Z', sender: 'them' },
+    runtime: {
+      callModel: async () => {
+        await waitA; // Bloqueado esperando IA
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'conexao_inicial',
+            action: 'reply',
+            checkpoint: 'chk_saudacao_feita',
+            suggestedResponse: 'Resposta tardia A',
+            nextPhase: 'conexao_inicial',
+            summary: 'ok',
+          }),
+          tokens: 45,
+        };
+      },
+      sendMetaTextMessage: async (sb, cId, txt) => {
+        metaDispatched.push({ from: 'Ciclo A', text: txt });
+        return { message_id: 'meta_from_extreme_A' };
+      },
+    },
+  });
+
+  // Aguarda Ciclo A adquirir lock
+  await new Promise((r) => setTimeout(r, 50));
+
+  // 2. O lock fica stale (tempo passa > 25 segundos)
+  supabase.getConversationData().stage_completed_rules.active_cycle_at = new Date(Date.now() - 35000).toISOString();
+
+  // Nova mensagem chega
+  supabase.getInsertedMessages().push({
+    id: 'msg_extreme_2',
+    sender_id: 'them',
+    is_mine: false,
+    direction: 'inbound',
+    text: 'Outra mensagem enquanto IA dormia',
+    created_at: new Date().toISOString(),
+  });
+
+  // 3. Ciclo B inicia e assume lock
+  const resB = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_extreme_stress',
+    correlationId: 'corr_extreme_B',
+    newMessage: { id: 'msg_extreme_2', text: 'Outra mensagem enquanto IA dormia', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({
+          targetSubagent: 'conexao_inicial',
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Resposta legítima B',
+          nextPhase: 'conexao_inicial',
+          summary: 'ok',
+        }),
+        tokens: 45,
+      }),
+      sendMetaTextMessage: async (sb, cId, txt) => {
+        metaDispatched.push({ from: 'Ciclo B', text: txt });
+        return { message_id: 'meta_from_extreme_B' };
+      },
+    },
+  });
+
+  assert.equal(resB.handled, true);
+  assert.equal(resB.sentToMeta, true);
+  assert.equal(metaDispatched.length, 1);
+  assert.equal(metaDispatched[0].from, 'Ciclo B');
+
+  // 4. Ciclo A finalmente acorda e tenta despachar
+  unblockA();
+  const resA = await promiseA;
+
+  // Ciclo A deve ter sido preemptado antes de qualquer envio à Meta
+  assert.equal(resA.handled, false);
+  assert.equal(resA.sentToMeta, false);
+  assert.match(resA.error, /preemptado/);
+
+  // 5. PROVA ABSOLUTA: Exatamente 1 envio à Meta foi realizado
+  assert.equal(metaDispatched.length, 1, 'Exatamente UMA mensagem deve ser enviada para a Meta no total!');
+  assert.equal(metaDispatched[0].text, 'Resposta legítima B');
+});
+
