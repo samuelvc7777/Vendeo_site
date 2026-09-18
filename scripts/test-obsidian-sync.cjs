@@ -343,3 +343,196 @@ test('C9. atomicWriteFileIfChanged grava via .tmp e conclui com arquivo íntegro
     fs.rmSync(tempVault, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// TESTE C10: Resolução de Vault - 0 Vaults Detectados
+// =========================================================================
+test('C10. resolveVaultPath falha com erro explícito se 0 vaults válidos forem encontrados', async () => {
+  const { resolveVaultPath } = await loadSyncModule();
+  const tempDir = createTempVault();
+  const fakeConfigFile = path.join(tempDir, 'obsidian.json');
+
+  try {
+    // Config sem vaults ou com vaults apontando para diretórios inexistentes
+    fs.writeFileSync(fakeConfigFile, JSON.stringify({ vaults: { v1: { path: path.join(tempDir, 'inexistente') } } }), 'utf8');
+
+    const oldVaultEnv = process.env.OBSIDIAN_VAULT_PATH;
+    delete process.env.OBSIDIAN_VAULT_PATH;
+
+    try {
+      assert.throws(
+        () => resolveVaultPath(null, fakeConfigFile),
+        /Nenhum vault do Obsidian foi encontrado/i
+      );
+    } finally {
+      if (oldVaultEnv) process.env.OBSIDIAN_VAULT_PATH = oldVaultEnv;
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// TESTE C11: Resolução de Vault - Exatamente 1 Vault Válido
+// =========================================================================
+test('C11. resolveVaultPath seleciona o vault quando existe exatamente 1 válido', async () => {
+  const { resolveVaultPath } = await loadSyncModule();
+  const tempDir = createTempVault();
+  const singleVaultDir = path.join(tempDir, 'meu_vault_unico');
+  fs.mkdirSync(singleVaultDir, { recursive: true });
+  const fakeConfigFile = path.join(tempDir, 'obsidian.json');
+
+  try {
+    fs.writeFileSync(fakeConfigFile, JSON.stringify({
+      vaults: {
+        v1: { path: singleVaultDir },
+        v2_invalido: { path: path.join(tempDir, 'pasta_fantasma') }, // Ignorado porque não existe fisicamente
+      },
+    }), 'utf8');
+
+    const oldVaultEnv = process.env.OBSIDIAN_VAULT_PATH;
+    delete process.env.OBSIDIAN_VAULT_PATH;
+
+    try {
+      const selected = resolveVaultPath(null, fakeConfigFile);
+      assert.equal(selected, path.resolve(singleVaultDir), 'Deve selecionar o único vault válido');
+    } finally {
+      if (oldVaultEnv) process.env.OBSIDIAN_VAULT_PATH = oldVaultEnv;
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// TESTE C12: Resolução de Vault - 2 ou Mais Vaults Válidos (Erro e Listagem)
+// =========================================================================
+test('C12. resolveVaultPath FALHA e lista os caminhos se existirem 2 ou mais vaults válidos', async () => {
+  const { resolveVaultPath } = await loadSyncModule();
+  const tempDir = createTempVault();
+  const vault1 = path.join(tempDir, 'vault_alpha');
+  const vault2 = path.join(tempDir, 'vault_beta');
+  fs.mkdirSync(vault1, { recursive: true });
+  fs.mkdirSync(vault2, { recursive: true });
+  const fakeConfigFile = path.join(tempDir, 'obsidian.json');
+
+  try {
+    fs.writeFileSync(fakeConfigFile, JSON.stringify({
+      vaults: {
+        v1: { path: vault1 },
+        v2: { path: vault2 },
+      },
+    }), 'utf8');
+
+    const oldVaultEnv = process.env.OBSIDIAN_VAULT_PATH;
+    delete process.env.OBSIDIAN_VAULT_PATH;
+
+    try {
+      assert.throws(
+        () => resolveVaultPath(null, fakeConfigFile),
+        (err) => {
+          assert.match(err.message, /Múltiplos vaults do Obsidian foram encontrados/i);
+          assert.ok(err.message.includes('vault_alpha'), 'Mensagem deve listar vault_alpha');
+          assert.ok(err.message.includes('vault_beta'), 'Mensagem deve listar vault_beta');
+          assert.match(err.message, /OBSIDIAN_VAULT_PATH|--vault/i);
+          return true;
+        }
+      );
+    } finally {
+      if (oldVaultEnv) process.env.OBSIDIAN_VAULT_PATH = oldVaultEnv;
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// TESTE C13: Precedência de OBSIDIAN_VAULT_PATH
+// =========================================================================
+test('C13. OBSIDIAN_VAULT_PATH tem precedência sobre obsidian.json e falha se inexistente', async () => {
+  const { resolveVaultPath } = await loadSyncModule();
+  const tempDir = createTempVault();
+  const envVaultDir = path.join(tempDir, 'vault_via_env');
+  fs.mkdirSync(envVaultDir, { recursive: true });
+
+  const oldVaultEnv = process.env.OBSIDIAN_VAULT_PATH;
+  try {
+    process.env.OBSIDIAN_VAULT_PATH = envVaultDir;
+    const selected = resolveVaultPath(null, null);
+    assert.equal(selected, path.resolve(envVaultDir));
+
+    // Se o caminho da env não existir, deve falhar explicitamente
+    process.env.OBSIDIAN_VAULT_PATH = path.join(tempDir, 'nao_existe');
+    assert.throws(
+      () => resolveVaultPath(null, null),
+      /Caminho em OBSIDIAN_VAULT_PATH não existe/i
+    );
+  } finally {
+    if (oldVaultEnv) process.env.OBSIDIAN_VAULT_PATH = oldVaultEnv;
+    else delete process.env.OBSIDIAN_VAULT_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// TESTE C14: Precedência Absoluta de --vault
+// =========================================================================
+test('C14. --vault (explicitPath) tem precedência máxima sobre OBSIDIAN_VAULT_PATH e obsidian.json', async () => {
+  const { resolveVaultPath } = await loadSyncModule();
+  const tempDir = createTempVault();
+  const cliVaultDir = path.join(tempDir, 'vault_cli');
+  const envVaultDir = path.join(tempDir, 'vault_env');
+  fs.mkdirSync(cliVaultDir, { recursive: true });
+  fs.mkdirSync(envVaultDir, { recursive: true });
+
+  const oldVaultEnv = process.env.OBSIDIAN_VAULT_PATH;
+  try {
+    process.env.OBSIDIAN_VAULT_PATH = envVaultDir;
+    // Passa cliVaultDir explicitamente
+    const selected = resolveVaultPath(cliVaultDir, null);
+    assert.equal(selected, path.resolve(cliVaultDir), 'CLI deve prevalecer sobre ENV');
+
+    // Se CLI for inválido, deve falhar
+    assert.throws(
+      () => resolveVaultPath(path.join(tempDir, 'fantasma'), null),
+      /Caminho de vault fornecido via --vault não existe/i
+    );
+  } finally {
+    if (oldVaultEnv) process.env.OBSIDIAN_VAULT_PATH = oldVaultEnv;
+    else delete process.env.OBSIDIAN_VAULT_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// TESTE C15: runSync Exige Exclusivamente OBSIDIAN_SYNC_TOKEN
+// =========================================================================
+test('C15. runSync exige OBSIDIAN_SYNC_TOKEN e recusa SUPABASE_SERVICE_ROLE_KEY como substituto', async () => {
+  const { runSync } = await loadSyncModule();
+  const tempDir = createTempVault();
+
+  const oldSyncToken = process.env.OBSIDIAN_SYNC_TOKEN;
+  const oldServiceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  try {
+    // Configura service role mas NÃO OBSIDIAN_SYNC_TOKEN
+    delete process.env.OBSIDIAN_SYNC_TOKEN;
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_admin_key';
+    process.env.SUPABASE_URL = 'https://fake.supabase.co';
+
+    await assert.rejects(
+      async () => await runSync({ vault: tempDir }),
+      /OBSIDIAN_SYNC_TOKEN não configurado/i,
+      'runSync não deve aceitar service role e deve exigir OBSIDIAN_SYNC_TOKEN'
+    );
+  } finally {
+    if (oldSyncToken) process.env.OBSIDIAN_SYNC_TOKEN = oldSyncToken;
+    else delete process.env.OBSIDIAN_SYNC_TOKEN;
+
+    if (oldServiceRole) process.env.SUPABASE_SERVICE_ROLE_KEY = oldServiceRole;
+    else delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+

@@ -53,48 +53,86 @@ export function loadEnv(projectRoot = process.cwd()) {
 }
 
 /**
- * Detecta o caminho do vault do Obsidian
+ * Detecta o caminho do vault do Obsidian com regras estritas:
+ * A) Se explicitPath fornecido (--vault): usa exclusivamente ele se existir, senão lança erro.
+ * B) Senão, se OBSIDIAN_VAULT_PATH existe no ambiente: usa exclusivamente ele se existir, senão lança erro.
+ * C) Senão, lê a configuração oficial/local do Obsidian:
+ *    - Se existir exatamente 1 vault válido: usa ele.
+ *    - Se existirem 0 vaults válidos: FALHA com erro claro.
+ *    - Se existirem 2 ou mais vaults válidos: FALHA listando todos eles e exigindo configuração explícita.
+ *    - NUNCA escolhe o primeiro, nunca filtra por nome ("memoria"/"vendeo"), NUNCA cria pasta de falso vault.
  */
-export function resolveVaultPath(explicitPath = null) {
-  if (explicitPath && fs.existsSync(explicitPath)) {
-    return path.resolve(explicitPath);
-  }
-  if (process.env.OBSIDIAN_VAULT_PATH && fs.existsSync(process.env.OBSIDIAN_VAULT_PATH)) {
-    return path.resolve(process.env.OBSIDIAN_VAULT_PATH);
+export function resolveVaultPath(explicitPath = null, customObsidianConfigPath = null) {
+  // A) Se --vault foi fornecido via CLI
+  if (explicitPath) {
+    const resolved = path.resolve(explicitPath);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      throw new Error(`Caminho de vault fornecido via --vault não existe ou não é um diretório: ${resolved}`);
+    }
+    return resolved;
   }
 
-  // Tenta ler configuração do Obsidian no %APPDATA%
-  const appData = process.env.APPDATA;
-  if (appData) {
-    const obsConfigPath = path.join(appData, 'obsidian', 'obsidian.json');
-    if (fs.existsSync(obsConfigPath)) {
-      try {
-        const obsData = JSON.parse(fs.readFileSync(obsConfigPath, 'utf8'));
-        if (obsData.vaults && typeof obsData.vaults === 'object') {
-          // Prioriza vault chamado 'memoria' se existir
-          for (const key of Object.keys(obsData.vaults)) {
-            const v = obsData.vaults[key];
-            if (v && v.path && (v.path.toLowerCase().endsWith('memoria') || v.path.toLowerCase().includes('vendeo'))) {
-              if (fs.existsSync(v.path)) return path.resolve(v.path);
-            }
-          }
-          // Pega o primeiro válido
-          for (const key of Object.keys(obsData.vaults)) {
-            const v = obsData.vaults[key];
-            if (v && v.path && fs.existsSync(v.path)) {
-              return path.resolve(v.path);
-            }
-          }
-        }
-      } catch {}
+  // B) Senão, se OBSIDIAN_VAULT_PATH existe no ambiente
+  if (process.env.OBSIDIAN_VAULT_PATH) {
+    const resolved = path.resolve(process.env.OBSIDIAN_VAULT_PATH);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      throw new Error(`Caminho em OBSIDIAN_VAULT_PATH não existe ou não é um diretório: ${resolved}`);
+    }
+    return resolved;
+  }
+
+  // C) Senão, descobre a configuração do Obsidian no sistema operacional
+  let obsConfigPath = customObsidianConfigPath;
+  if (!obsConfigPath) {
+    const appData = process.env.APPDATA; // Windows
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (appData) {
+      obsConfigPath = path.join(appData, 'obsidian', 'obsidian.json');
+    } else if (process.platform === 'darwin' && home) {
+      obsConfigPath = path.join(home, 'Library', 'Application Support', 'obsidian', 'obsidian.json');
+    } else if (home) {
+      obsConfigPath = path.join(home, '.config', 'obsidian', 'obsidian.json');
     }
   }
 
-  // Fallback padrão local conhecido do projeto
-  const defaultVault = path.resolve('memoria');
-  if (fs.existsSync(defaultVault)) return defaultVault;
+  const configuredVaults = [];
+  if (obsConfigPath && fs.existsSync(obsConfigPath)) {
+    try {
+      const obsData = JSON.parse(fs.readFileSync(obsConfigPath, 'utf8'));
+      if (obsData.vaults && typeof obsData.vaults === 'object') {
+        for (const key of Object.keys(obsData.vaults)) {
+          const v = obsData.vaults[key];
+          if (v && v.path && typeof v.path === 'string') {
+            const resolved = path.resolve(v.path);
+            if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+              if (!configuredVaults.includes(resolved)) {
+                configuredVaults.push(resolved);
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
 
-  return path.resolve('memoria');
+  // Regra C:
+  // Se existir exatamente 1 vault válido
+  if (configuredVaults.length === 1) {
+    return configuredVaults[0];
+  }
+
+  // Se existirem 0 vaults válidos
+  if (configuredVaults.length === 0) {
+    throw new Error(
+      'Nenhum vault do Obsidian foi encontrado no sistema. Especifique o diretório do vault usando o argumento --vault <caminho> ou a variável de ambiente OBSIDIAN_VAULT_PATH.'
+    );
+  }
+
+  // Se existirem 2 ou mais vaults válidos: FALHA e lista os caminhos encontrados
+  const vaultList = configuredVaults.map((vp) => `  - ${vp}`).join('\n');
+  throw new Error(
+    `Múltiplos vaults do Obsidian foram encontrados (${configuredVaults.length} vaults):\n${vaultList}\nDefina explicitamente qual vault deseja usar através da variável de ambiente OBSIDIAN_VAULT_PATH ou do argumento --vault <caminho>.`
+  );
 }
 
 /**
@@ -362,34 +400,68 @@ export function syncContactToVault(vaultRoot, contact) {
 }
 
 /**
- * Busca dados da Edge Function do Supabase
+ * Busca dados da Edge Function do Supabase com paginação determinística
  */
 export async function fetchRemoteMemories(supabaseUrl, token, contactId = null) {
   const baseUrl = supabaseUrl.replace(/\/$/, '');
-  let endpoint = `${baseUrl}/functions/v1/api/internal/memory-export`;
+
   if (contactId) {
-    endpoint += `?contact_id=${encodeURIComponent(contactId)}`;
+    const endpoint = `${baseUrl}/functions/v1/api/internal/memory-export?contact_id=${encodeURIComponent(contactId)}`;
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text().catch(() => '');
+      throw new Error(`Falha ao exportar memórias do Supabase (HTTP ${res.status}): ${errorBody}`);
+    }
+
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.contacts)) {
+      throw new Error('Resposta do Supabase inválida ou sem contatos.');
+    }
+    return data.contacts;
   }
 
-  const res = await fetch(endpoint, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json',
-    },
-  });
+  // Exportação em massa paginada para garantir que nenhum contato seja truncado
+  const allContacts = [];
+  const pageSize = 100;
+  let offset = 0;
+  let hasMore = true;
 
-  if (!res.ok) {
-    const errorBody = await res.text().catch(() => '');
-    throw new Error(`Falha ao exportar memórias do Supabase (HTTP ${res.status}): ${errorBody}`);
+  while (hasMore) {
+    const endpoint = `${baseUrl}/functions/v1/api/internal/memory-export?limit=${pageSize}&offset=${offset}`;
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text().catch(() => '');
+      throw new Error(`Falha ao exportar memórias do Supabase (HTTP ${res.status}): ${errorBody}`);
+    }
+
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.contacts)) {
+      throw new Error('Resposta do Supabase inválida ou sem contatos.');
+    }
+
+    allContacts.push(...data.contacts);
+    if (data.contacts.length < pageSize || data.hasMore === false) {
+      hasMore = false;
+    } else {
+      offset += pageSize;
+    }
   }
 
-  const data = await res.json();
-  if (!data.success || !Array.isArray(data.contacts)) {
-    throw new Error(`Resposta do Supabase inválida ou sem contatos: ${JSON.stringify(data)}`);
-  }
-
-  return data.contacts;
+  return allContacts;
 }
 
 /**
@@ -399,21 +471,20 @@ export async function runSync(options = {}) {
   loadEnv();
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const token = process.env.OBSIDIAN_SYNC_TOKEN || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const token = process.env.OBSIDIAN_SYNC_TOKEN;
 
   if (!supabaseUrl) {
     throw new Error('Configuração ausente: SUPABASE_URL não foi encontrada nas variáveis de ambiente.');
   }
   if (!token) {
-    throw new Error('Configuração ausente: OBSIDIAN_SYNC_TOKEN ou SUPABASE_SERVICE_ROLE_KEY não configurado.');
+    throw new Error('Configuração ausente: OBSIDIAN_SYNC_TOKEN não configurado.');
   }
 
   const vaultPath = resolveVaultPath(options.vault);
   console.log(`[Obsidian Sync] Vault alvo: ${vaultPath}`);
 
   if (!fs.existsSync(vaultPath)) {
-    console.log(`[Obsidian Sync] Criando pasta do vault: ${vaultPath}`);
-    fs.mkdirSync(vaultPath, { recursive: true });
+    throw new Error(`Vault do Obsidian não encontrado: ${vaultPath}`);
   }
 
   console.log(`[Obsidian Sync] Buscando memórias no Supabase...`);

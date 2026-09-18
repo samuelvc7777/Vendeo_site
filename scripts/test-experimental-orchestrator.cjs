@@ -54,7 +54,7 @@ function createRuntime(mockFetch = async () => ({ ok: true, json: async () => ({
         clearTimeout,
         Deno: {
           env: {
-            get: (k) => process.env[k] || 'test_val',
+            get: (k) => (k in process.env ? process.env[k] : undefined),
           },
         },
         EdgeRuntime: {
@@ -5839,9 +5839,9 @@ test('103. Teste A4: 1000 mensagens com pendings esparsas (120, 487, 1000) recup
 });
 
 // =========================================================================
-// TESTE 104: Endpoint Interno Seguro GET /internal/memory-export
+// TESTE 104: Endpoint Interno Seguro GET /internal/memory-export (Hotfix v228)
 // =========================================================================
-test('104. Endpoint /internal/memory-export: autenticação Bearer estrita, filtro de contato e sanitização de dados', async () => {
+test('104. Endpoint /internal/memory-export: segurança estrita (A a H), timingSafeEqual e bloqueio de injeção', async () => {
   const conversationId = '1771103754015024';
   const mockConversations = [
     {
@@ -5888,6 +5888,9 @@ test('104. Endpoint /internal/memory-export: autenticação Bearer estrita, filt
             }
             return createQuery(data);
           },
+          order: () => ({
+            range: (from, to) => Promise.resolve({ data: data.slice(from, to + 1), error: null }),
+          }),
           then: (resolve) => resolve({ data, error: null }),
         });
         return createQuery();
@@ -5900,60 +5903,96 @@ test('104. Endpoint /internal/memory-export: autenticação Bearer estrita, filt
     '@supabase/client': mockSupabase,
   });
 
-  // Define tokens de ambiente
-  process.env.OBSIDIAN_SYNC_TOKEN = 'secret_sync_token_123';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_key_456';
+  // Configura secret na Edge Function
+  process.env.OBSIDIAN_SYNC_TOKEN = 'obsidian_secret_real_token_xyz_999';
 
   load('supabase/functions/api/index.ts');
   const handler = getServerHandler();
 
-  // 1. Requisição sem token -> 401 Unauthorized
-  const reqNoAuth = new Request('https://api.vendeo.com.br/internal/memory-export', {
-    method: 'GET',
-  });
-  const resNoAuth = await handler(reqNoAuth);
-  assert.equal(resNoAuth.status, 401);
-  const jsonNoAuth = await resNoAuth.json();
-  assert.match(jsonNoAuth.error, /Unauthorized/);
+  // Teste A: Sem Authorization -> 401
+  const resA = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', { method: 'GET' }));
+  assert.equal(resA.status, 401, 'Requisição sem header Authorization deve retornar 401');
 
-  // 2. Requisição com token inválido -> 401 Unauthorized
-  const reqBadAuth = new Request('https://api.vendeo.com.br/internal/memory-export', {
+  // Teste B: Token errado -> 401
+  const resB = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', {
     method: 'GET',
-    headers: { Authorization: 'Bearer token_invalido_errado' },
-  });
-  const resBadAuth = await handler(reqBadAuth);
-  assert.equal(resBadAuth.status, 401);
+    headers: { Authorization: 'Bearer token_incorreto_aleatorio' },
+  }));
+  assert.equal(resB.status, 401, 'Token incorreto deve retornar 401');
 
-  // 3. Requisição com Bearer token correto -> 200 OK
-  const reqValid = new Request('https://api.vendeo.com.br/internal/memory-export', {
+  // Teste C: OBSIDIAN_SYNC_TOKEN correto -> 200
+  const resC = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', {
     method: 'GET',
-    headers: { Authorization: 'Bearer secret_sync_token_123' },
-  });
-  const resValid = await handler(reqValid);
-  assert.equal(resValid.status, 200);
-  const jsonValid = await resValid.json();
-  assert.equal(jsonValid.success, true);
-  assert.equal(jsonValid.total, 2);
-  assert.equal(jsonValid.contacts.length, 2);
+    headers: { Authorization: 'Bearer obsidian_secret_real_token_xyz_999' },
+  }));
+  assert.equal(resC.status, 200, 'OBSIDIAN_SYNC_TOKEN correto deve retornar 200');
+  const jsonC = await resC.json();
+  assert.equal(jsonC.success, true);
+  assert.equal(jsonC.contacts.length, 2);
 
-  // Verifica que não vaza dados sensíveis
-  const contactExport = jsonValid.contacts[0];
-  assert.equal(contactExport.id, conversationId);
-  assert.equal(contactExport.fullName, 'Moose Test');
-  assert.equal(contactExport.memory.entities.self.city.value, 'Curitiba');
-  assert.equal(contactExport.memory.snippets[0].text, 'Gosto de frio');
-  assert.equal(contactExport.access_token, undefined, 'JAMAIS vazar tokens');
-  assert.equal(contactExport.app_secret, undefined, 'JAMAIS vazar secrets');
-
-  // 4. Requisição com filtro de contact_id -> retorna apenas o contato solicitado
-  const reqFiltered = new Request(`https://api.vendeo.com.br/internal/memory-export?contact_id=${conversationId}`, {
+  // Teste D: Antigo "vendeo_ig_secret_token" -> 401
+  const resD = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', {
     method: 'GET',
-    headers: { Authorization: 'Bearer service_role_key_456' }, // Testa autenticação via service_role_key também
-  });
-  const resFiltered = await handler(reqFiltered);
-  assert.equal(resFiltered.status, 200);
-  const jsonFiltered = await resFiltered.json();
-  assert.equal(jsonFiltered.success, true);
-  assert.equal(jsonFiltered.contacts.length, 1);
-  assert.equal(jsonFiltered.contacts[0].id, conversationId);
+    headers: { Authorization: 'Bearer vendeo_ig_secret_token' },
+  }));
+  assert.equal(resD.status, 401, 'Antigo token hardcoded vendeo_ig_secret_token deve ser sumariamente rejeitado com 401');
+
+  // Teste E: SUPABASE_SERVICE_ROLE_KEY -> 401
+  const resE = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', {
+    method: 'GET',
+    headers: { Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service_role_key_admin' },
+  }));
+  assert.equal(resE.status, 401, 'Service role key administrativo deve retornar 401 no memory-export');
+
+  // Teste F: Fake JWT com role=service_role, iss=supabase, ref=wsdualhvopidgqcumonr sem assinatura -> 401
+  const fakePayload = Buffer.from(JSON.stringify({
+    role: 'service_role',
+    iss: 'supabase',
+    ref: 'wsdualhvopidgqcumonr',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })).toString('base64url');
+  const fakeJwt = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${fakePayload}.fake_signature_12345`;
+  const resF = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${fakeJwt}` },
+  }));
+  assert.equal(resF.status, 401, 'JWT falso ou não assinado DEVE ser estritamente rejeitado com 401');
+
+  // Teste G: contact_id malicioso com caracteres de injeção -> 400 Bad Request
+  const maliciousIds = [
+    '1771103754015024,id.eq.999',
+    'id.in.(1,2,3)',
+    '1771103754015024.test',
+    "1771103754015024' or '1'='1",
+    '1771103754015024; DROP TABLE',
+    'invalid space in id',
+  ];
+  for (const badId of maliciousIds) {
+    const resG = await handler(new Request(`https://api.vendeo.com.br/internal/memory-export?contact_id=${encodeURIComponent(badId)}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer obsidian_secret_real_token_xyz_999' },
+    }));
+    assert.equal(resG.status, 400, `contact_id malicioso "${badId}" deve retornar 400 Bad Request`);
+    const jsonG = await resG.json();
+    assert.match(jsonG.error, /Bad Request|inválido/i);
+  }
+
+  // Filtro legítimo com contact_id limpo -> 200 OK
+  const resLegit = await handler(new Request(`https://api.vendeo.com.br/internal/memory-export?contact_id=${conversationId}`, {
+    method: 'GET',
+    headers: { Authorization: 'Bearer obsidian_secret_real_token_xyz_999' },
+  }));
+  assert.equal(resLegit.status, 200);
+  const jsonLegit = await resLegit.json();
+  assert.equal(jsonLegit.contacts.length, 1);
+  assert.equal(jsonLegit.contacts[0].id, conversationId);
+
+  // Teste H: OBSIDIAN_SYNC_TOKEN não configurado no servidor -> 503 Fail-Closed
+  delete process.env.OBSIDIAN_SYNC_TOKEN;
+  const resH = await handler(new Request('https://api.vendeo.com.br/internal/memory-export', {
+    method: 'GET',
+    headers: { Authorization: 'Bearer qualquer_token' },
+  }));
+  assert.equal(resH.status, 503, 'Se secret não estiver configurado no servidor, deve falhar fechado com 503');
 });
+

@@ -1349,51 +1349,64 @@ serve(async (req: Request) => {
     // 1.5 INTERNAL: MEMORY EXPORT (OBSIDIAN SYNC)
     // ==========================================
     if (path === "/internal/memory-export" && req.method === "GET") {
-      // 1. Autenticação estrita via Bearer token
+      // 1. Autenticação estrita e exclusiva via OBSIDIAN_SYNC_TOKEN
+      const expectedToken = (Deno.env.get("OBSIDIAN_SYNC_TOKEN") || "").trim();
+      if (!expectedToken) {
+        // Fail-closed absoluto se o segredo não estiver configurado na Edge Function
+        return new Response(
+          JSON.stringify({ error: "Configuração indisponível: OBSIDIAN_SYNC_TOKEN não configurado no servidor." }),
+          { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
       const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
 
-      const expectedToken = (Deno.env.get("OBSIDIAN_SYNC_TOKEN") || "").trim();
-      const serviceRoleKey = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "").trim();
-
-      let isAuthorized = false;
-      if (token) {
-        if (expectedToken && token === expectedToken) isAuthorized = true;
-        else if (serviceRoleKey && token === serviceRoleKey) isAuthorized = true;
-        else if (token === "vendeo_ig_secret_token") isAuthorized = true;
-        else if (token.startsWith("eyJ") && token.includes(".")) {
-          try {
-            const parts = token.split(".");
-            if (parts.length === 3) {
-              const base64Url = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-              const jsonPayload = decodeURIComponent(
-                atob(base64Url)
-                  .split("")
-                  .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-                  .join("")
-              );
-              const payload = JSON.parse(jsonPayload);
-              if (
-                payload.role === "service_role" &&
-                payload.iss === "supabase" &&
-                payload.ref === "wsdualhvopidgqcumonr"
-              ) {
-                isAuthorized = true;
-              }
-            }
-          } catch {}
-        }
-      }
-
-      if (!isAuthorized) {
+      if (!token) {
         return new Response(
-          JSON.stringify({ error: "Unauthorized: Token de exportação de memória inválido ou ausente." }),
+          JSON.stringify({ error: "Unauthorized: Token de sincronização ausente." }),
           { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      // 2. Filtro opcional por contact_id ou conversation_id
+      // Comparação de bytes em tempo constante para proteção contra timing attacks
+      const encoder = new TextEncoder();
+      const aBuf = encoder.encode(token);
+      const bBuf = encoder.encode(expectedToken);
+      let isTokenMatch = aBuf.byteLength === bBuf.byteLength;
+      if (isTokenMatch) {
+        let diff = 0;
+        for (let i = 0; i < aBuf.byteLength; i++) {
+          diff |= aBuf[i] ^ bBuf[i];
+        }
+        isTokenMatch = diff === 0;
+      }
+
+      if (!isTokenMatch) {
+        return new Response(
+          JSON.stringify({ error: "Unauthorized: Token de sincronização inválido." }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // 2. Validação estrita de contact_id / conversation_id contra injeções PostgREST
       const targetContactId = url.searchParams.get("contact_id") || url.searchParams.get("conversation_id");
+      if (targetContactId) {
+        // IDs legítimos do Instagram / Vendeo são alfanuméricos com underscores e hífens
+        const isValidId = /^[a-zA-Z0-9_-]{1,64}$/.test(targetContactId);
+        if (!isValidId) {
+          return new Response(
+            JSON.stringify({ error: "Bad Request: Identificador de contato inválido." }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+
+      // 3. Paginação determinística para exportações em massa
+      const limitParam = parseInt(url.searchParams.get("limit") || "100", 10);
+      const offsetParam = parseInt(url.searchParams.get("offset") || "0", 10);
+      const limit = Math.min(Math.max(isNaN(limitParam) ? 100 : limitParam, 1), 200);
+      const offset = Math.max(isNaN(offsetParam) ? 0 : offsetParam, 0);
 
       let query = supabase
         .from("instagram_conversations")
@@ -1401,6 +1414,8 @@ serve(async (req: Request) => {
 
       if (targetContactId) {
         query = query.or(`id.eq.${targetContactId},contact_id.eq.${targetContactId}`);
+      } else {
+        query = query.order("id", { ascending: true }).range(offset, offset + limit - 1);
       }
 
       const { data: convs, error: queryErr } = await query;
@@ -1411,7 +1426,7 @@ serve(async (req: Request) => {
         );
       }
 
-      // 3. Sanitização e mapeamento: apenas memória e metadados de orquestração
+      // 4. Sanitização e mapeamento: apenas memória e metadados de orquestração
       // ZERO tokens da Meta, ZERO secrets, ZERO histórico bruto de mensagens
       const contacts = (convs || []).map((conv: any) => {
         const orch = conv.stage_completed_rules?.orchestration || {};
@@ -1421,7 +1436,7 @@ serve(async (req: Request) => {
           contactId: String(conv.contact_id || conv.id || ""),
           fullName: String(conv.full_name || conv.username || conv.id || ""),
           username: String(conv.username || ""),
-          updatedAt: conv.updated_at || new Date().toISOString(),
+          updatedAt: conv.updated_at || new Date(0).toISOString(),
           currentPhase: orch.currentPhase || "conexao_inicial",
           checkpoint: orch.checkpoint || "",
           memory: {
@@ -1437,6 +1452,9 @@ serve(async (req: Request) => {
           success: true,
           timestamp: new Date().toISOString(),
           total: contacts.length,
+          limit: targetContactId ? contacts.length : limit,
+          offset: targetContactId ? 0 : offset,
+          hasMore: targetContactId ? false : contacts.length === limit,
           contacts,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
