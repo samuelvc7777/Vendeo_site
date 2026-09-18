@@ -670,127 +670,74 @@ export async function claimOutboxEntryAtomic(
   success: boolean;
   reason?: string;
   isUncertain?: boolean;
+  isInfraFailure?: boolean;
   entry?: any;
 }> {
   const { supabase, conversationId, outboxKey, claimToken } = params;
 
-  // 1. Tenta RPC atômico no PostgreSQL com lock exclusivo FOR UPDATE
-  if (typeof supabase?.rpc === "function") {
-    try {
-      const { data, error } = await supabase.rpc("claim_outbox_entry", {
-        p_conversation_id: conversationId,
-        p_outbox_id: outboxKey,
-        p_claim_token: claimToken,
-      });
-
-      if (!error && data && typeof data === "object") {
-        return {
-          success: Boolean(data.success),
-          reason: data.reason,
-          isUncertain: Boolean(data.isUncertain || data.reason === "sending_stale_uncertain"),
-          entry: data.entry,
-        };
-      }
-    } catch (_rpcErr) {
-      // Fallback para PostgREST ou mock local
-    }
-  }
-
-  // 2. Fallback determinístico no banco (PostgREST / Mock)
-  const { data: convRow } = await supabase
-    .from("instagram_conversations")
-    .select("stage_completed_rules")
-    .eq("id", conversationId)
-    .maybeSingle();
-
-  const rules = convRow?.stage_completed_rules || {};
-  const orch = rules.orchestration || {};
-  const outboxMap = { ...(orch.outbox || {}) };
-
-  let targetKey = outboxKey;
-  let entry = outboxMap[outboxKey];
-  if (!entry) {
-    for (const [k, v] of Object.entries(outboxMap)) {
-      if ((v as any)?.id === outboxKey || (v as any)?.idempotencyKey === outboxKey) {
-        targetKey = k;
-        entry = v;
-        break;
-      }
-    }
-  }
-
-  if (!entry) {
-    return { success: false, reason: "outbox_entry_not_found" };
-  }
-
-  if (entry.status === "sent") {
-    return { success: false, reason: "already_sent" };
-  }
-
-  if (entry.status === "dispatch_uncertain") {
-    return { success: false, reason: "dispatch_uncertain", isUncertain: true };
-  }
-
-  const now = Date.now();
-  if (entry.status === "sending") {
-    const sendingAtMs = entry.sendingAt ? Date.parse(entry.sendingAt) : 0;
-    if (now - sendingAtMs < 20000) {
-      return { success: false, reason: "sending_active" };
-    } else {
-      // SENDING STALE (>= 20s): O processo anterior pode ter entregue a mensagem!
-      // Marca imediatamente dispatch_uncertain no banco e bloqueia retry automático
-      const updatedEntry = {
-        ...entry,
-        status: "dispatch_uncertain",
-        isUncertain: true,
-        lastError: "Sending stale detectado (>20s sem confirmação) - processo anterior pode ter entregue",
-      };
-      outboxMap[targetKey] = updatedEntry;
-
-      await supabase
-        .from("instagram_conversations")
-        .update({
-          stage_completed_rules: {
-            ...rules,
-            orchestration: {
-              ...orch,
-              outbox: outboxMap,
-            },
-          },
-        })
-        .eq("id", conversationId);
-
-      return { success: false, reason: "sending_stale_uncertain", isUncertain: true, entry: updatedEntry };
-    }
-  }
-
-  if (entry.status === "pending") {
-    const updatedEntry = {
-      ...entry,
-      status: "sending",
-      sendingAt: new Date().toISOString(),
-      claimedBy: claimToken,
-      attempts: (entry.attempts || 0) + 1,
+  // FAIL CLOSED: A atomicidade REAL exige a execução da RPC no PostgreSQL com SELECT ... FOR UPDATE.
+  // Nenhum fallback para read-modify-write (leitura, modificação e gravação) em JS é permitido.
+  if (typeof supabase?.rpc !== "function") {
+    console.error(
+      `[claimOutboxEntryAtomic] FAIL CLOSED: supabase.rpc não disponível para conv=${conversationId}. Bloqueando envio por segurança.`
+    );
+    return {
+      success: false,
+      reason: "rpc_unavailable_fail_closed",
+      isInfraFailure: true,
     };
-    outboxMap[targetKey] = updatedEntry;
-
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: {
-          ...rules,
-          orchestration: {
-            ...orch,
-            outbox: outboxMap,
-          },
-        },
-      })
-      .eq("id", conversationId);
-
-    return { success: true, entry: updatedEntry };
   }
 
-  return { success: false, reason: "invalid_status", entry };
+  try {
+    const { data, error } = await supabase.rpc("claim_outbox_entry", {
+      p_conversation_id: conversationId,
+      p_outbox_id: outboxKey,
+      p_claim_token: claimToken,
+    });
+
+    if (error) {
+      console.error(
+        `[claimOutboxEntryAtomic] FAIL CLOSED: Falha de infraestrutura na RPC claim_outbox_entry para conv=${conversationId}:`,
+        error
+      );
+      return {
+        success: false,
+        reason: "rpc_error_fail_closed",
+        isInfraFailure: true,
+      };
+    }
+
+    if (!data || typeof data !== "object") {
+      console.error(
+        `[claimOutboxEntryAtomic] FAIL CLOSED: Retorno inesperado da RPC claim_outbox_entry para conv=${conversationId}:`,
+        data
+      );
+      return {
+        success: false,
+        reason: "rpc_invalid_response_fail_closed",
+        isInfraFailure: true,
+      };
+    }
+
+    // Retorno oficial e determinístico do banco de dados PostgreSQL
+    return {
+      success: Boolean(data.success),
+      reason: data.reason,
+      isUncertain: Boolean(data.isUncertain || data.reason === "sending_stale_uncertain"),
+      isInfraFailure: false, // RPC executou perfeitamente; o resultado reflete o estado do banco
+      entry: data.entry,
+    };
+  } catch (rpcEx: any) {
+    console.error(
+      `[claimOutboxEntryAtomic] FAIL CLOSED: Exceção na chamada da RPC claim_outbox_entry para conv=${conversationId}:`,
+      rpcEx
+    );
+    return {
+      success: false,
+      reason: "rpc_exception_fail_closed",
+      isInfraFailure: true,
+    };
+  }
 }
 
 export interface DispatchOutboxParams {
@@ -1758,6 +1705,21 @@ export async function runExperimentalOrchestration(
               handled: true,
               sentToMeta: true,
               error: `Outbox com envio incerto (${claimRes.reason}). Retry automático bloqueado para evitar duplicação.`,
+            };
+          } else if (claimRes.isInfraFailure) {
+            // FAIL CLOSED: Falha de infraestrutura na execução da RPC no Postgres
+            // Não tenta envio, não assume entrega, não ativa fallback inseguro
+            sentSuccessfully = false;
+            currentCycle.status = "failed";
+            currentCycle.trace.push(`outbox_claim_infra_failure: ${claimRes.reason}`);
+            for (const id of claimedMessageIds) {
+              ledger[id] = "pending";
+            }
+            return {
+              mode: orchState.mode,
+              handled: false,
+              sentToMeta: false,
+              error: `Falha de infraestrutura no claim atômico (${claimRes.reason}). Fail-closed: envio abortado.`,
             };
           } else {
             return {

@@ -2929,3 +2929,147 @@ test('49. Teste F: Fallback legacy é completamente bloqueado quando a falha é 
   assert.equal(metaCalls, 1, 'Exatamente UMA tentativa de envio foi feita (zero duplicatas no legado)!');
 });
 
+// =========================================================================
+// TESTE 50: Falha de Infraestrutura na RPC -> FAIL CLOSED absoluto
+// =========================================================================
+test('50. Falha de Infraestrutura na RPC: erro de rede/Postgres falha fechado (ZERO envio à Meta, ZERO fallback inseguro)', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, claimOutboxEntryAtomic } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const conversationId = 'conv_rpc_infra_err';
+
+  // Simula cliente Supabase cuja RPC retorna erro de conexão com o PostgreSQL
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          checkpoint: 'chk_saudacao_feita',
+          outbox: {},
+          messageLedger: {},
+        },
+      },
+    },
+    [
+      { id: 'msg_infra_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Oi', created_at: new Date().toISOString() },
+    ]
+  );
+
+  // Sobrescreve rpc para simular erro de banco (ex: 500 / conexão perdida com Postgres)
+  supabase.rpc = async () => ({
+    data: null,
+    error: { message: 'connection to server was lost', code: '08006' },
+  });
+
+  // 1. Chamada direta de claimOutboxEntryAtomic
+  const directClaim = await claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: 'out_any',
+    claimToken: 'corr_test',
+  });
+  assert.equal(directClaim.success, false);
+  assert.equal(directClaim.isInfraFailure, true);
+  assert.equal(directClaim.reason, 'rpc_error_fail_closed');
+
+  // 2. Execução ponta a ponta da orquestração: NÃO PODE fazer fallback para read-modify-write nem chamar a Meta!
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId,
+    correlationId: 'corr_infra_fail',
+    newMessage: { id: 'msg_infra_1', text: 'Oi', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({
+          action: 'reply',
+          suggestedResponse: 'Não pode enviar se RPC falhar',
+        }),
+      }),
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        return { message_id: 'should_not_happen' };
+      },
+    },
+  });
+
+  // Verificações estritas de fail-closed
+  assert.equal(res.handled, false);
+  assert.equal(res.sentToMeta, false);
+  assert.match(res.error, /Falha de infraestrutura no claim atômico.*rpc_error_fail_closed/);
+  assert.equal(metaCalls, 0, 'ZERO chamadas à Meta permitidas sob falha de infraestrutura!');
+
+  // Mensagens voltam para pending para reprocessamento futuro quando o Postgres se recuperar
+  const convState = supabase.getConversationData();
+  const ledger = convState.stage_completed_rules.orchestration.messageLedger;
+  assert.equal(ledger['msg_infra_1'], 'pending', 'Mensagem deve permanecer pending para ciclo futuro');
+});
+
+// =========================================================================
+// TESTE 51: RPC Indisponível (Sem suporte a RPC) -> FAIL CLOSED imediato
+// =========================================================================
+test('51. RPC Indisponível: cliente sem método rpc falha fechado imediatamente sem tentar ler/modificar/gravar', async () => {
+  const { load } = createRuntime();
+  const { claimOutboxEntryAtomic } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Supabase client sem rpc (ex: postgrest básico sem rpc registrado)
+  const supabaseWithoutRpc = { from: () => {} };
+
+  const claimRes = await claimOutboxEntryAtomic({
+    supabase: supabaseWithoutRpc,
+    conversationId: 'conv_no_rpc',
+    outboxKey: 'out_key',
+    claimToken: 'token_1',
+  });
+
+  assert.equal(claimRes.success, false);
+  assert.equal(claimRes.isInfraFailure, true);
+  assert.equal(claimRes.reason, 'rpc_unavailable_fail_closed');
+});
+
+// =========================================================================
+// TESTE 52: Distinção Estrita entre Perda Normal de Claim vs Falha de Infra
+// =========================================================================
+test('52. Distinção Semântica: Perda normal de claim (isInfraFailure=false) vs Falha de Infraestrutura (isInfraFailure=true)', async () => {
+  const { load } = createRuntime();
+  const { claimOutboxEntryAtomic } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Caso A: Perda normal de claim por concorrência ativa (RPC funcionou e respondeu sending_active)
+  const supabaseNormal = {
+    rpc: async () => ({
+      data: { success: false, reason: 'sending_active' },
+      error: null,
+    }),
+  };
+
+  const normalLoss = await claimOutboxEntryAtomic({
+    supabase: supabaseNormal,
+    conversationId: 'conv_1',
+    outboxKey: 'out_1',
+    claimToken: 'token_a',
+  });
+  assert.equal(normalLoss.success, false);
+  assert.equal(normalLoss.isInfraFailure, false, 'Perda por concorrência NÃO é falha de infra');
+  assert.equal(normalLoss.reason, 'sending_active');
+
+  // Caso B: Falha de infraestrutura na execução da RPC (banco desconectou ou rpc lançou erro)
+  const supabaseInfra = {
+    rpc: async () => {
+      throw new Error('Postgres pool exhausted');
+    },
+  };
+
+  const infraLoss = await claimOutboxEntryAtomic({
+    supabase: supabaseInfra,
+    conversationId: 'conv_2',
+    outboxKey: 'out_2',
+    claimToken: 'token_b',
+  });
+  assert.equal(infraLoss.success, false);
+  assert.equal(infraLoss.isInfraFailure, true, 'Exceção de banco DEVE ser marcada como isInfraFailure');
+  assert.equal(infraLoss.reason, 'rpc_exception_fail_closed');
+});
+
+
