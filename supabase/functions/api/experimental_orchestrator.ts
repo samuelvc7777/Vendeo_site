@@ -924,6 +924,85 @@ export async function checkFreshnessGate(
 }
 
 // ----------------------------------------------------------------------------
+// 5.3. ACK Atômico Revision-Aware de Preempção via RPC no Postgres
+// ----------------------------------------------------------------------------
+export interface AckCyclePreemptionParams {
+  supabase: any;
+  conversationId: string;
+  correlationId: string;
+  expectedInboundRevision: number;
+}
+
+export interface AckCyclePreemptionResult {
+  acknowledged: boolean;
+  currentRevision?: number;
+  expectedRevision?: number;
+  reason: string;
+}
+
+export async function ackCyclePreemptionAtomic(
+  params: AckCyclePreemptionParams
+): Promise<AckCyclePreemptionResult> {
+  const { supabase, conversationId, correlationId, expectedInboundRevision } = params;
+
+  if (typeof supabase?.rpc !== "function") {
+    console.warn(
+      `[ackCyclePreemptionAtomic] supabase.rpc não disponível para conv=${conversationId}. Mantendo estado atual.`
+    );
+    return {
+      acknowledged: false,
+      reason: "rpc_unavailable",
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc("ack_experimental_cycle_preemption", {
+      p_conversation_id: conversationId,
+      p_cycle_token: correlationId,
+      p_expected_inbound_revision: expectedInboundRevision,
+    });
+
+    if (error) {
+      console.warn(
+        `[ackCyclePreemptionAtomic] Erro na RPC ack_experimental_cycle_preemption para conv=${conversationId}:`,
+        error
+      );
+      return {
+        acknowledged: false,
+        reason: "rpc_error",
+      };
+    }
+
+    if (!data || typeof data !== "object") {
+      console.warn(
+        `[ackCyclePreemptionAtomic] Retorno inesperado da RPC ack_experimental_cycle_preemption para conv=${conversationId}:`,
+        data
+      );
+      return {
+        acknowledged: false,
+        reason: "rpc_invalid_response",
+      };
+    }
+
+    return {
+      acknowledged: Boolean(data.acknowledged),
+      currentRevision: data.currentRevision,
+      expectedRevision: data.expectedRevision,
+      reason: data.reason || "unknown",
+    };
+  } catch (err: any) {
+    console.warn(
+      `[ackCyclePreemptionAtomic] Exceção na chamada da RPC ack_experimental_cycle_preemption para conv=${conversationId}:`,
+      err
+    );
+    return {
+      acknowledged: false,
+      reason: "rpc_exception",
+    };
+  }
+}
+
+// ----------------------------------------------------------------------------
 // 5.4. Atomic Claim no Postgres & Dispatcher da Outbox
 // ----------------------------------------------------------------------------
 export interface ClaimOutboxAtomicParams {
@@ -2161,61 +2240,6 @@ export async function runExperimentalOrchestration(
       ],
     };
 
-    const currentCheckpoint =
-      orchState.checkpoint ||
-      (currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita");
-
-    // 6. CONTEXT BUILDER: Projeção Mínima & Lookup Pontual de Replies
-    const { payload: baseContextPayload, trace: contextTrace } =
-      await buildConversationContextForCycle({
-        conversationId,
-        currentPhase,
-        checkpoint: currentCheckpoint,
-        claimedMessages,
-        supabase,
-        knownFacts: stageRules.known_facts || {},
-      });
-
-    currentCycle.trace.push(...contextTrace);
-    currentCycle.trace.push(`context_built: msgs=${baseContextPayload.newMessages.length}`);
-
-    const routerContextText = formatContextForConversationAgent(baseContextPayload);
-    const conexaoContextText = formatContextForConexaoInicial(baseContextPayload);
-    const descobertaContextText = formatContextForDescoberta(baseContextPayload);
-
-    let totalTokens = 0;
-
-    await publishAutoPilotState(supabase, conversationId, {
-      status: "processing",
-      activity: activity(
-        "atria",
-        orchState.mode === "shadow" ? "Atria (Shadow)" : "Agente da Conversa analisando...",
-        "Avaliando roteamento da conversa...",
-        {
-          atriaThought: "Identificando subagente apropriado para o turno...",
-          mode: orchState.mode,
-          currentPhase,
-        }
-      ),
-    });
-
-    // ------------------------------------------------------------------------
-    // CAMADA 1: AGENTE DA CONVERSA (ROTEADOR DE DECISÃO)
-    // ------------------------------------------------------------------------
-    const routingPrompt = buildConversationAgentPrompt({
-      conversationId,
-      currentPhase,
-      checkpoint: currentCheckpoint,
-      contextText: routerContextText,
-      newMessage,
-    });
-
-    const routingRes = await callModelOrAtria(routingPrompt, { runtime, supabase });
-    totalTokens += routingRes.tokens;
-    const rawRoutingJson = extractJsonFromText(routingRes.content);
-    const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase);
-    currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
-
     // Helper atômico de preempção segura contra ciclos zumbis e concorrência
     async function handleCyclePreemption(
       reasonLabel: string,
@@ -2293,6 +2317,96 @@ export async function runExperimentalOrchestration(
         error: `Ciclo preemptado por nova mensagem inbound (${reasonLabel})`,
       };
     }
+
+    // ACK ATÔMICO REVISION-AWARE DE PREEMPÇÃO:
+    // Reconhece atomicamente a preempção do ciclo anterior e limpa as flags preempt_requested
+    // SOMENTE se nenhuma nova mensagem tiver chegado após o snapshot (inboundRevision bate).
+    const ackRes = await ackCyclePreemptionAtomic({
+      supabase,
+      conversationId,
+      correlationId,
+      expectedInboundRevision: initialInboundRevision,
+    });
+
+    if (ackRes.acknowledged) {
+      stageRules.preempt_requested = false;
+      orchState.preemptRequested = false;
+      currentCycle.trace.push(`preemption_acknowledged: rev=${initialInboundRevision}`);
+    } else if (ackRes.reason === "newer_revision_detected") {
+      const newerCount = (ackRes.currentRevision || initialInboundRevision + 1) - initialInboundRevision;
+      return await handleCyclePreemption("during_cycle_initialization", {
+        isFresh: false,
+        newerInboundCount: newerCount,
+        newerInboundIds: [],
+        reason: "newer_revision_detected",
+      });
+    } else if (ackRes.reason === "cycle_token_mismatch") {
+      console.warn(
+        `[Orchestrator] Ciclo ${correlationId} perdeu a custódia antes do início em ${conversationId}. Abortando.`
+      );
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: `Ciclo preemptado por perda de custódia inicial`,
+      };
+    }
+
+    const currentCheckpoint =
+      orchState.checkpoint ||
+      (currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita");
+
+    // 6. CONTEXT BUILDER: Projeção Mínima & Lookup Pontual de Replies
+    const { payload: baseContextPayload, trace: contextTrace } =
+      await buildConversationContextForCycle({
+        conversationId,
+        currentPhase,
+        checkpoint: currentCheckpoint,
+        claimedMessages,
+        supabase,
+        knownFacts: stageRules.known_facts || {},
+      });
+
+    currentCycle.trace.push(...contextTrace);
+    currentCycle.trace.push(`context_built: msgs=${baseContextPayload.newMessages.length}`);
+
+    const routerContextText = formatContextForConversationAgent(baseContextPayload);
+    const conexaoContextText = formatContextForConexaoInicial(baseContextPayload);
+    const descobertaContextText = formatContextForDescoberta(baseContextPayload);
+
+    let totalTokens = 0;
+
+    await publishAutoPilotState(supabase, conversationId, {
+      status: "processing",
+      activity: activity(
+        "atria",
+        orchState.mode === "shadow" ? "Atria (Shadow)" : "Agente da Conversa analisando...",
+        "Avaliando roteamento da conversa...",
+        {
+          atriaThought: "Identificando subagente apropriado para o turno...",
+          mode: orchState.mode,
+          currentPhase,
+        }
+      ),
+    });
+
+    // ------------------------------------------------------------------------
+    // CAMADA 1: AGENTE DA CONVERSA (ROTEADOR DE DECISÃO)
+    // ------------------------------------------------------------------------
+    const routingPrompt = buildConversationAgentPrompt({
+      conversationId,
+      currentPhase,
+      checkpoint: currentCheckpoint,
+      contextText: routerContextText,
+      newMessage,
+    });
+
+    const routingRes = await callModelOrAtria(routingPrompt, { runtime, supabase });
+    totalTokens += routingRes.tokens;
+    const rawRoutingJson = extractJsonFromText(routingRes.content);
+    const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase);
+    currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
 
     // ------------------------------------------------------------------------
     // FRESHNESS GATE 1: Revalidação imediatamente após o ConversationAgent
@@ -3193,6 +3307,8 @@ Gere sua resposta final estritamente no formato JSON abaixo:
       };
 
       updatedState.memory = mergedMemory;
+      updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
+      updatedState.preemptRequested = freshRules?.orchestration?.preemptRequested ?? false;
 
       await supabase
         .from("instagram_conversations")
