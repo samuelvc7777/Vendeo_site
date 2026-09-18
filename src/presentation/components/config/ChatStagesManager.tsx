@@ -416,103 +416,111 @@ export function ChatStagesManager({
                 className="rounded-xl bg-[#18181b] border border-[#27272a] hover:border-zinc-700 transition-all overflow-hidden"
               >
                 {/* Linha Principal da Etapa */}
-                <div className="p-3 flex items-center justify-between gap-3">
-                  {/* Lado Esquerdo: Posição, Cor, Nome e Pasta */}
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <div className="flex flex-col items-center justify-center w-6 shrink-0">
-                      <span className="text-xs font-bold text-zinc-400">#{index + 1}</span>
-                    </div>
+                <div className="p-3 space-y-2.5">
+                  {/* Linha 1: Nome da Etapa e Ações */}
+                  <div className="flex items-center justify-between gap-2">
+                    {/* Lado Esquerdo: Posição, Cor, Nome */}
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <span className="text-xs font-bold text-zinc-500 w-5 shrink-0">#{index + 1}</span>
 
-                    <div
-                      className="w-3 h-8 rounded-full shrink-0 shadow-sm"
-                      style={{ backgroundColor: stage.color || "#3b82f6" }}
-                    />
+                      <div
+                        className="w-2.5 h-6 rounded-full shrink-0 shadow-sm"
+                        style={{ backgroundColor: stage.color || "#3b82f6" }}
+                      />
 
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
                         <h4 className="text-sm font-bold text-white truncate">{stage.name}</h4>
                         {isLast && (
-                          <span className="shrink-0 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
-                            Etapa Final
+                          <span className="shrink-0 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
+                            Final
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-zinc-400 mt-0.5">
-                        <span className="flex items-center gap-1 truncate text-zinc-300">
-                          <Folder className="w-3 h-3 text-sky-400 shrink-0" />
-                          {folderName}
-                        </span>
-                        <span>•</span>
-                        <span className="text-zinc-400">{itemCount} itens no cofre</span>
-                        <span>•</span>
-                        <button
-                          type="button"
-                          onClick={() => toggleStageGoals(stage.id)}
-                          className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors text-[11px] font-medium"
-                          title="Ver e gerenciar objetivos semânticos"
-                        >
-                          <Target className="w-3 h-3 text-sky-400" />
-                          <span>{stageGoals.length} objetivos</span>
-                          {isGoalsExpanded ? (
-                            <ChevronUp className="w-3 h-3 text-zinc-400" />
-                          ) : (
-                            <ChevronDown className="w-3 h-3 text-zinc-400" />
-                          )}
-                        </button>
-                      </div>
+                    </div>
+
+                    {/* Lado Direito: Ações (Reordenar, Editar, Excluir) */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isFirst}
+                        onClick={() => onMoveUp(stage.id)}
+                        className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform"
+                        title="Mover para cima"
+                        aria-label="Mover para cima"
+                      >
+                        <ArrowUp className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isLast}
+                        onClick={() => onMoveDown(stage.id)}
+                        className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform"
+                        title="Mover para baixo"
+                        aria-label="Mover para baixo"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(stage)}
+                        className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-0.5"
+                        title="Editar etapa"
+                        aria-label="Editar etapa"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Deseja realmente excluir a etapa "${stage.name}"?`)) {
+                            onDeleteStage(stage.id);
+                          }
+                        }}
+                        className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-red-400 active:scale-90 transition-all"
+                        title="Excluir etapa"
+                        aria-label="Excluir etapa"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
 
-                  {/* Lado Direito: Ações (Reordenar ⬆️ ⬇️, Editar, Excluir) */}
-                  <div className="flex items-center gap-1 shrink-0">
-                    {/* Seta Subir */}
+                  {/* Linha 2: Metadados do Cofre */}
+                  <div className="flex items-center gap-2 text-xs text-zinc-400 pl-7">
+                    <span className="flex items-center gap-1 truncate text-zinc-300">
+                      <Folder className="w-3 h-3 text-sky-400 shrink-0" />
+                      <span className="truncate max-w-[150px] sm:max-w-none">{folderName}</span>
+                    </span>
+                    <span>•</span>
+                    <span className="text-zinc-400">{itemCount} itens no cofre</span>
+                  </div>
+
+                  {/* Linha 3: Barra de Acesso aos Objetivos Semânticos */}
+                  <div className="pt-2 border-t border-zinc-800/70 flex items-center justify-between gap-2">
                     <button
                       type="button"
-                      disabled={isFirst}
-                      onClick={() => onMoveUp(stage.id)}
-                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-90 transition-transform"
-                      title="Mover para cima"
-                      aria-label="Mover para cima"
+                      onClick={() => toggleStageGoals(stage.id)}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 border border-zinc-800/80 transition-colors text-xs font-semibold active:scale-95"
                     >
-                      <ArrowUp className="w-3.5 h-3.5" />
+                      <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                      <span>Objetivos da Conversa ({stageGoals.length})</span>
+                      {isGoalsExpanded ? (
+                        <ChevronUp className="w-3.5 h-3.5 text-zinc-400 ml-0.5" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5 text-zinc-400 ml-0.5" />
+                      )}
                     </button>
 
-                    {/* Seta Descer */}
                     <button
                       type="button"
-                      disabled={isLast}
-                      onClick={() => onMoveDown(stage.id)}
-                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-90 transition-transform"
-                      title="Mover para baixo"
-                      aria-label="Mover para baixo"
+                      onClick={() => openAddGoalModal(stage.id)}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 text-xs font-semibold active:scale-95 transition-all"
                     >
-                      <ArrowDown className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* Editar */}
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(stage)}
-                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-1"
-                      title="Editar etapa"
-                      aria-label="Editar etapa"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* Excluir */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm(`Deseja realmente excluir a etapa "${stage.name}"?`)) {
-                          onDeleteStage(stage.id);
-                        }
-                      }}
-                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-red-400 active:scale-90 transition-all"
-                      title="Excluir etapa"
-                      aria-label="Excluir etapa"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Novo Objetivo</span>
                     </button>
                   </div>
                 </div>
