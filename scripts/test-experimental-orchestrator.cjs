@@ -118,7 +118,7 @@ test('2. validatePhaseTransition impede avanço indevido para "descoberta" sem c
 // -------------------------------------------------------------------------
 // HELPERS PARA MOCK COMPLETO DO SUPABASE
 // -------------------------------------------------------------------------
-function createMockSupabase(initialConversationData = {}) {
+function createMockSupabase(initialConversationData = {}, initialMessages = []) {
   let convData = {
     id: 'test_conv_123',
     full_name: 'Contato Teste',
@@ -126,7 +126,7 @@ function createMockSupabase(initialConversationData = {}) {
     ...initialConversationData,
   };
   const logs = [];
-  const insertedMessages = [];
+  let messages = [...initialMessages];
 
   const supabase = {
     from: (table) => {
@@ -150,6 +150,17 @@ function createMockSupabase(initialConversationData = {}) {
               return { error: null };
             },
           }),
+          upsert: async (fields) => {
+            convData = {
+              ...convData,
+              ...fields,
+              stage_completed_rules: {
+                ...(convData.stage_completed_rules || {}),
+                ...(fields.stage_completed_rules || {}),
+              },
+            };
+            return { error: null };
+          },
         };
       }
       if (table === 'instagram_messages') {
@@ -158,26 +169,44 @@ function createMockSupabase(initialConversationData = {}) {
             eq: () => ({
               order: () => ({
                 limit: async () => ({
-                  data: [
-                    { sender_id: 'them', is_mine: false, text: 'Oi' },
-                    { sender_id: 'me', is_mine: true, text: 'Olá!' },
-                  ],
+                  data: messages,
                   error: null,
                 }),
               }),
             }),
+            in: () => ({
+              order: () => ({
+                limit: async () => ({ data: messages, error: null }),
+              }),
+            }),
           }),
           insert: async (msg) => {
-            insertedMessages.push(msg);
+            messages.push(msg);
             return { error: null };
           },
+          upsert: async (msg) => {
+            const idx = messages.findIndex((m) => m.id === msg.id);
+            if (idx >= 0) messages[idx] = { ...messages[idx], ...msg };
+            else messages.push(msg);
+            return { error: null };
+          },
+        };
+      }
+      if (table === 'agent_cloud_state') {
+        return {
+          select: () => ({
+            eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+          }),
+          upsert: async () => ({ error: null }),
+          update: () => ({ eq: async () => ({ error: null }) }),
+          insert: async () => ({ error: null }),
         };
       }
       if (table === 'instagram_config') {
         return {
           select: () => ({
             eq: () => ({
-              maybeSingle: async () => ({ data: { app_secret: 'fake_secret' }, error: null }),
+              maybeSingle: async () => ({ data: { app_secret: 'fake_secret', access_token: 'fake_token' }, error: null }),
             }),
             limit: async () => ({ data: [{ access_token: 'fake_token' }], error: null }),
           }),
@@ -193,13 +222,27 @@ function createMockSupabase(initialConversationData = {}) {
       }
       return {
         select: () => ({
-          eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+          eq: () => ({
+            maybeSingle: async () => ({ data: null, error: null }),
+            order: () => ({
+              limit: async () => ({ data: [], error: null }),
+            }),
+          }),
+          maybeSingle: async () => ({ data: null, error: null }),
         }),
+        upsert: async () => ({ error: null }),
+        update: () => ({ eq: async () => ({ error: null }) }),
+        insert: async () => ({ error: null }),
       };
     },
+    channel: () => ({
+      send: async () => ({}),
+      subscribe: () => ({}),
+      unsubscribe: () => ({}),
+    }),
     getConversationData: () => convData,
     getAiLogs: () => logs,
-    getInsertedMessages: () => insertedMessages,
+    getInsertedMessages: () => messages,
   };
 
   return supabase;
@@ -1051,4 +1094,480 @@ test('25. Formato TXT: saída é 100% determinística e idêntica para a mesma e
 
   assert.equal(run1, run2, 'Run 1 e Run 2 devem ser idênticos');
   assert.equal(run2, run3, 'Run 2 e Run 3 devem ser idênticos');
+});
+
+// =========================================================================
+// TESTES OBRIGATÓRIOS: REQUISITOS 46 A 53 (MOTOR OPERACIONAL DETERMINÍSTICO)
+// =========================================================================
+
+// TESTE 26 (Requisito 46): Conversa legacy não toca no ConversationAgent nem nos subagentes
+test('26. Requisito 46: Conversa legacy não toca no ConversationAgent nem nos subagentes', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let modelCalled = false;
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'legacy',
+      },
+    },
+  });
+
+  const mockRuntime = {
+    callModel: async () => {
+      modelCalled = true;
+      throw new Error('NUNCA DEVE SER CHAMADO PARA CONVERSAS LEGACY');
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_legacy_pure',
+    newMessage: {
+      id: 'm_legacy_1',
+      text: 'Olá mundo legacy',
+      timestamp: new Date().toISOString(),
+      sender: 'them',
+    },
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.mode, 'legacy');
+  assert.equal(result.handled, false);
+  assert.equal(modelCalled, false, 'Modelo de IA nunca deve ser invocado em modo legacy');
+});
+
+// TESTE 27 (Requisito 47): Claim integral sem corte arbitrário (1, 5, 20 mensagens)
+test('27. Requisito 47: Claim integral sem corte arbitrário processa 20 mensagens no mesmo ciclo', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const pendingMessagesList = [];
+  for (let i = 1; i <= 20; i++) {
+    pendingMessagesList.push({
+      id: `m_batch_${i}`,
+      sender_id: 'them',
+      is_mine: false,
+      direction: 'inbound',
+      text: `Mensagem pendente ${i}`,
+      created_at: new Date(Date.now() + i * 1000).toISOString(),
+    });
+  }
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    pendingMessagesList
+  );
+
+  let sentText = null;
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'conexao_inicial',
+            action: 'delegate',
+            reason: 'Atender lote de 20 mensagens',
+          }),
+          tokens: 50,
+        };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_rapport_estabelecido',
+          summary: 'Lote de 20 mensagens recebido',
+          suggestedResponse: 'Oi! Li tudo com calma 🥰',
+          nextPhase: 'conexao_inicial',
+          reasoning: 'Responder com carinho ao lote',
+        }),
+        tokens: 80,
+      };
+    },
+    sendMetaTextMessage: async (_sb, _convId, text) => {
+      sentText = text;
+      return { success: true, message_id: 'meta_batch_20' };
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_claim_20',
+    newMessage: pendingMessagesList[19],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, true);
+  const convData = supabase.getConversationData();
+  const orchState = convData.stage_completed_rules.orchestration;
+  const recentCycle = orchState.recentCycles?.[0];
+
+  assert.ok(recentCycle, 'Deve haver um ciclo registrado');
+  assert.equal(recentCycle.claimedMessageIds.length, 20, 'O ciclo deve fazer claim de todas as 20 mensagens');
+  for (let i = 1; i <= 20; i++) {
+    assert.equal(orchState.messageLedger[`m_batch_${i}`], 'processed', `Mensagem m_batch_${i} deve ser processed no ledger`);
+  }
+});
+
+// TESTE 28 (Requisito 48): Snapshot imutável - novas mensagens que chegam durante o ciclo permanecem pending
+test('28. Requisito 48: Snapshot imutável mantém novas mensagens concorrentes como pending no ledger', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const initialMsgs = [
+    { id: 'm_snap_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Msg 1', created_at: '2026-09-18T05:00:00Z' },
+    { id: 'm_snap_2', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Msg 2', created_at: '2026-09-18T05:00:01Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      // Simula a chegada de uma nova mensagem no banco durante o processamento
+      supabase.getInsertedMessages().push({
+        id: 'm_snap_concorrente_3',
+        sender_id: 'them',
+        is_mine: false,
+        direction: 'inbound',
+        text: 'Msg 3 que chegou enquanto a IA pensava',
+        created_at: new Date().toISOString(),
+      });
+
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Normal' }),
+          tokens: 50,
+        };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          summary: 'Respondendo lote original',
+          suggestedResponse: 'Tudo bem sim!',
+          nextPhase: 'conexao_inicial',
+          reasoning: 'Normal',
+        }),
+        tokens: 60,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_snap_ok' }),
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_snapshot_test',
+    newMessage: initialMsgs[1],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, true);
+  const convData = supabase.getConversationData();
+  const orch = convData.stage_completed_rules.orchestration;
+  const cycle = orch.recentCycles?.[0];
+
+  // O ciclo congelou apenas m_snap_1 e m_snap_2
+  assert.equal(JSON.stringify(cycle.claimedMessageIds), JSON.stringify(['m_snap_1', 'm_snap_2']));
+  assert.equal(orch.messageLedger['m_snap_1'], 'processed');
+  assert.equal(orch.messageLedger['m_snap_2'], 'processed');
+  // m_snap_concorrente_3 NÃO foi marcada como processed no ciclo atual
+  assert.notEqual(orch.messageLedger['m_snap_concorrente_3'], 'processed');
+});
+
+// TESTE 29 (Requisito 49): Lookup pontual de reply antiga por ID sem carregar histórico completo
+test('29. Requisito 49: buildConversationContextForCycle faz lookup pontual de reply antiga por ID', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let queriedIds = [];
+  const mockSupabase = {
+    from: (table) => {
+      if (table === 'instagram_messages') {
+        return {
+          select: () => ({
+            in: async (col, ids) => {
+              queriedIds = ids;
+              return {
+                data: [
+                  {
+                    id: 'm_antiga_id_999',
+                    sender_id: 'me',
+                    is_mine: true,
+                    direction: 'outbound',
+                    text: 'Qual o seu esporte favorito?',
+                    created_at: '2026-09-17T10:00:00Z',
+                  },
+                ],
+                error: null,
+              };
+            },
+          }),
+        };
+      }
+      return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) };
+    },
+  };
+
+  const claimed = [
+    {
+      id: 'm_nova_com_reply',
+      sender: 'pretendente',
+      text: 'Gosto de natação',
+      replyToMessageId: 'm_antiga_id_999',
+      timestamp: new Date().toISOString(),
+      direction: 'inbound',
+    },
+  ];
+
+  const { payload, trace } = await buildConversationContextForCycle({
+    conversationId: 'conv_lookup_test',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_hobbies',
+    claimedMessages: claimed,
+    supabase: mockSupabase,
+    knownFacts: {},
+  });
+
+  assert.equal(JSON.stringify(queriedIds), JSON.stringify(['m_antiga_id_999']), 'Deve ter consultado pontualmente apenas o ID da reply');
+  assert.ok(payload.referencedMessages['m_antiga_id_999'], 'Referência deve estar no payload');
+  assert.equal(payload.referencedMessages['m_antiga_id_999'].text, 'Qual o seu esporte favorito?');
+  assert.equal(payload.referencedMessages['m_antiga_id_999'].sender, 'larissa');
+  assert.ok(trace.some((t) => t.includes('fetch_replies_count=1')));
+});
+
+// TESTE 30 (Requisito 50): Reply para o próprio pretendente rotula remetente como PRETENDENTE
+test('30. Requisito 50: Reply para mensagem do próprio pretendente rotula remetente como PRETENDENTE', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle, formatConversationContextForModel } = load(
+    'supabase/functions/api/experimental_orchestrator.ts'
+  );
+
+  const mockSupabase = {
+    from: (table) => ({
+      select: () => ({
+        in: async () => ({
+          data: [
+            {
+              id: 'm_pretendente_antiga',
+              sender_id: 'them',
+              is_mine: false,
+              direction: 'inbound',
+              text: 'Eu moro em Uberlândia',
+              created_at: '2026-09-17T11:00:00Z',
+            },
+          ],
+          error: null,
+        }),
+      }),
+    }),
+  };
+
+  const claimed = [
+    {
+      id: 'm_pretendente_reforco',
+      sender: 'pretendente',
+      text: 'Ou melhor, num distrito perto de Uberlândia',
+      replyToMessageId: 'm_pretendente_antiga',
+      timestamp: new Date().toISOString(),
+      direction: 'inbound',
+    },
+  ];
+
+  const { payload } = await buildConversationContextForCycle({
+    conversationId: 'conv_self_reply',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_cidade',
+    claimedMessages: claimed,
+    supabase: mockSupabase,
+    knownFacts: {},
+  });
+
+  assert.equal(payload.referencedMessages['m_pretendente_antiga'].sender, 'pretendente');
+
+  const textContext = formatConversationContextForModel(payload);
+  assert.ok(textContext.includes('[REFERÊNCIAS]'));
+  assert.match(textContext, /PRETENDENTE:\nEu moro em Uberlândia/);
+  assert.equal(textContext.includes('LARISSA:\nEu moro em Uberlândia'), false);
+});
+
+// TESTE 31 (Requisito 51): Outbox Pattern e Idempotência Estrita evita duplo envio
+test('31. Requisito 51: Outbox Pattern e Idempotência Estrita previne envios duplicados à Meta', async () => {
+  const { load } = createRuntime();
+  const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let sendCount = 0;
+  const mockRuntime = {
+    sendMetaTextMessage: async () => {
+      sendCount++;
+      return { success: true, message_id: 'meta_sent_unique' };
+    },
+  };
+
+  const outboxEntry = {
+    id: 'out_entry_1',
+    cycleId: 'cycle_idem_1',
+    conversationId: 'conv_idem_test',
+    idempotencyKey: 'idemp_key_123',
+    content: 'Mensagem única segura',
+    messageType: 'text',
+    status: 'pending',
+    attempts: 0,
+    maxAttempts: 3,
+    createdAt: new Date().toISOString(),
+  };
+
+  // Primeiro despacho: executa o envio
+  const res1 = await dispatchOutboxEntry({
+    supabase: {},
+    outboxEntry,
+    recipientId: 'conv_idem_test',
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res1.success, true);
+  assert.equal(sendCount, 1);
+  assert.equal(outboxEntry.status, 'sent');
+  assert.equal(outboxEntry.attempts, 1);
+
+  // Segundo despacho com a mesma outboxEntry (já em status 'sent'): IDEMPOTÊNCIA ESTRITA
+  const res2 = await dispatchOutboxEntry({
+    supabase: {},
+    outboxEntry,
+    recipientId: 'conv_idem_test',
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res2.success, true);
+  assert.equal(res2.providerMessageId, 'meta_sent_unique');
+  assert.equal(sendCount, 1, 'NÃO deve ter feito segundo envio na Meta');
+});
+
+// TESTE 32 (Requisito 52): Falha antes do envio reverte mensagens do ciclo para pending
+test('32. Requisito 52: Falha na inferência antes do envio reverte mensagens para pending sem perda', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const pendingMsgs = [
+    { id: 'm_err_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Erro 1', created_at: '2026-09-18T05:00:00Z' },
+    { id: 'm_err_2', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Erro 2', created_at: '2026-09-18T05:00:01Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    pendingMsgs
+  );
+
+  const mockRuntime = {
+    callModel: async () => {
+      throw new Error('Falha de rede da IA');
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_fail_before_send',
+    newMessage: pendingMsgs[1],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, false);
+  const convData = supabase.getConversationData();
+  const orch = convData.stage_completed_rules.orchestration;
+
+  // As mensagens devem ter sido revertidas para pending para permitir retry
+  assert.equal(orch.messageLedger['m_err_1'], 'pending');
+  assert.equal(orch.messageLedger['m_err_2'], 'pending');
+  assert.equal(convData.stage_completed_rules.active_cycle_token, null, 'Lock deve ser liberado');
+});
+
+// TESTE 33 (Requisito 53): Falha durante envio pela Meta registra erro na outbox e reverte ledger
+test('33. Requisito 53: Falha durante envio HTTP da Meta registra erro na outbox e reverte ledger', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const pendingMsgs = [
+    { id: 'm_meta_fail_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Oi', created_at: '2026-09-18T05:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          messageLedger: {},
+        },
+      },
+    },
+    pendingMsgs
+  );
+
+  const mockRuntime = {
+    callModel: async () => ({
+      content: JSON.stringify({
+        action: 'reply',
+        checkpoint: 'chk_saudacao_feita',
+        summary: 'Normal',
+        suggestedResponse: 'Olá!',
+        nextPhase: 'conexao_inicial',
+        reasoning: 'Normal',
+      }),
+      tokens: 40,
+    }),
+    sendMetaTextMessage: async () => {
+      throw new Error('Graph API Meta 500 Internal Server Error');
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_meta_fail',
+    newMessage: pendingMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, false);
+  const convData = supabase.getConversationData();
+  const orch = convData.stage_completed_rules.orchestration;
+
+  // Mensagem revertida para pending
+  assert.equal(orch.messageLedger['m_meta_fail_1'], 'pending');
+  // Outbox possui a tentativa registrada
+  const outboxKeys = Object.keys(orch.outbox || {});
+  assert.ok(outboxKeys.length > 0, 'Deve conter registro na outbox');
+  const outEntry = orch.outbox[outboxKeys[0]];
+  assert.ok(outEntry.lastError.includes('Graph API Meta 500'));
+  assert.equal(convData.stage_completed_rules.active_cycle_token, null, 'Lock liberado após erro');
 });

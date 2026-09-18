@@ -46,6 +46,70 @@ export interface OrchestratorDecision {
   routedSubagent?: SubagentTarget;
 }
 
+export type MessageProcessingStatus =
+  | "received"
+  | "pending"
+  | "claimed"
+  | "processed"
+  | "failed";
+
+export interface CanonicalMessage {
+  id: string;
+  conversationId: string;
+  sender: "pretendente" | "larissa";
+  direction: "inbound" | "outbound";
+  timestamp: string;
+  type: "text" | "audio" | "image" | "file";
+  text: string;
+  replyToMessageId?: string | null;
+  mediaUrl?: string | null;
+  status: MessageProcessingStatus;
+  claimedByCycleId?: string | null;
+}
+
+export type OutboxStatus = "pending" | "sending" | "sent" | "failed";
+
+export interface OutboxEntry {
+  id: string;
+  cycleId: string;
+  conversationId: string;
+  idempotencyKey: string;
+  content: string;
+  messageType: "text" | "audio" | "image";
+  status: OutboxStatus;
+  attempts: number;
+  maxAttempts: number;
+  providerMessageId?: string | null;
+  lastError?: string | null;
+  createdAt: string;
+  sentAt?: string | null;
+}
+
+export interface ProcessingCycle {
+  cycleId: string;
+  conversationId: string;
+  claimedMessageIds: string[];
+  startedAt: string;
+  completedAt?: string | null;
+  status: "in_progress" | "completed" | "failed" | "cancelled";
+  agentVersions: {
+    router: string;
+    subagent: string;
+    prompt: string;
+  };
+  decision?: OrchestratorDecision;
+  outboxEntryId?: string;
+  metrics?: {
+    durationMs: number;
+    tokens: {
+      input?: number;
+      output?: number;
+      total: number;
+    };
+  };
+  trace: string[];
+}
+
 export interface ConversationOrchestrationState {
   version: 1;
   mode: OrchestrationMode;
@@ -60,6 +124,11 @@ export interface ConversationOrchestrationState {
   durationMs?: number;
   tokens?: number;
   updatedAt: string;
+  // Campos incrementais da arquitetura com Ledger, Cycle e Outbox
+  activeCycle?: ProcessingCycle | null;
+  recentCycles?: ProcessingCycle[];
+  outbox?: Record<string, OutboxEntry>;
+  messageLedger?: Record<string, MessageProcessingStatus>;
 }
 
 export interface StructuredConversationMessage {
@@ -464,6 +533,213 @@ export function formatContextForDescoberta(
 }
 
 // ----------------------------------------------------------------------------
+// 5.2. Normalizador Canônico de Mensagens (.agents/STANDARDS.md)
+// ----------------------------------------------------------------------------
+export function normalizeToCanonicalMessage(raw: any, conversationId: string): CanonicalMessage {
+  const isMine = Boolean(raw.is_mine || raw.sender_id === "me");
+  let msgType: "text" | "audio" | "image" | "file" = "text";
+  const rawText = String(raw.text || "").trim();
+
+  if (raw.media_type === "audio" || rawText.startsWith("[audio:")) {
+    msgType = "audio";
+  } else if (raw.media_type === "image" || rawText.startsWith("[image:")) {
+    msgType = "image";
+  } else if (raw.media_type === "file" || rawText.startsWith("[file:")) {
+    msgType = "file";
+  }
+
+  return {
+    id: String(raw.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`),
+    conversationId,
+    sender: isMine ? "larissa" : "pretendente",
+    direction: isMine ? "outbound" : "inbound",
+    timestamp: raw.timestamp || raw.created_at || new Date().toISOString(),
+    type: msgType,
+    text: rawText,
+    replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId || null,
+    mediaUrl: raw.media_url || null,
+    status: raw.status || "received",
+  };
+}
+
+// ----------------------------------------------------------------------------
+// 5.3. ContextBuilder: Projeção Mínima & Lookup Pontual de Replies (.agents/CONTEXT_SERIALIZATION_SPEC.md)
+// ----------------------------------------------------------------------------
+export interface BuildContextParams {
+  conversationId: string;
+  currentPhase: OrchestrationPhase;
+  checkpoint: string;
+  claimedMessages: CanonicalMessage[];
+  supabase: any;
+  knownFacts?: Record<string, string>;
+}
+
+export async function buildConversationContextForCycle(
+  params: BuildContextParams
+): Promise<{
+  payload: ConversationContextPayload;
+  trace: string[];
+}> {
+  const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts } = params;
+  const trace: string[] = [];
+
+  // Coleta IDs de replies necessários
+  const replyIdsNeeded = new Set<string>();
+  for (const msg of claimedMessages) {
+    if (msg.replyToMessageId) {
+      replyIdsNeeded.add(msg.replyToMessageId);
+    }
+  }
+
+  const referencedMap: Record<string, StructuredConversationMessage> = {};
+
+  // 1. Resolve referências que já estejam entre as mensagens claimed do ciclo
+  for (const m of claimedMessages) {
+    if (replyIdsNeeded.has(m.id)) {
+      referencedMap[m.id] = {
+        id: m.id,
+        sender: m.sender,
+        text: m.text,
+        replyToId: m.replyToMessageId,
+        timestamp: m.timestamp,
+      };
+      replyIdsNeeded.delete(m.id);
+    }
+  }
+
+  // 2. Se houver referências a mensagens antigas (fora do ciclo atual), busca pontualmente por ID
+  if (replyIdsNeeded.size > 0) {
+    trace.push(`fetch_replies_count=${replyIdsNeeded.size}`);
+    try {
+      const { data: refRows } = await supabase
+        .from("instagram_messages")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
+        .in("id", Array.from(replyIdsNeeded));
+
+      for (const r of refRows || []) {
+        const isMine = Boolean(r.is_mine || r.sender_id === "me");
+        referencedMap[r.id] = {
+          id: String(r.id),
+          sender: isMine ? "larissa" : "pretendente",
+          text: (r.text || "").trim(),
+          replyToId: r.reply_to_message_id || null,
+          timestamp: r.timestamp || r.created_at,
+        };
+        replyIdsNeeded.delete(r.id);
+      }
+    } catch (err: any) {
+      trace.push(`reply_fetch_error=${err.message || String(err)}`);
+    }
+  }
+
+  // 3. Projeta mensagens claimed em formato de entrada estruturada
+  const structuredNewMessages: StructuredConversationMessage[] = claimedMessages.map((m) => ({
+    id: m.id,
+    sender: m.sender,
+    text: m.text,
+    replyToId: m.replyToMessageId,
+    timestamp: m.timestamp,
+  }));
+
+  const payload: ConversationContextPayload = {
+    phase: currentPhase,
+    checkpoint,
+    newMessages: structuredNewMessages,
+    referencedMessages: referencedMap,
+    knownFacts: knownFacts || {},
+  };
+
+  return { payload, trace };
+}
+
+// ----------------------------------------------------------------------------
+// 5.4. Dispatcher da Outbox com Idempotência Estrita
+// ----------------------------------------------------------------------------
+export interface DispatchOutboxParams {
+  supabase: any;
+  outboxEntry: OutboxEntry;
+  recipientId: string;
+  runtime?: {
+    sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
+  };
+}
+
+export async function dispatchOutboxEntry(
+  params: DispatchOutboxParams
+): Promise<{ success: boolean; providerMessageId?: string; error?: string }> {
+  const { supabase, outboxEntry, recipientId, runtime } = params;
+
+  // Idempotência estrita: se já foi enviada com sucesso, não repete envio
+  if (outboxEntry.status === "sent" && outboxEntry.providerMessageId) {
+    return { success: true, providerMessageId: outboxEntry.providerMessageId };
+  }
+
+  outboxEntry.status = "sending";
+  outboxEntry.attempts += 1;
+
+  try {
+    if (runtime?.sendMetaTextMessage) {
+      const res = await runtime.sendMetaTextMessage(supabase, outboxEntry.conversationId, outboxEntry.content);
+      const providerId = res?.message_id || `sim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      outboxEntry.status = "sent";
+      outboxEntry.sentAt = new Date().toISOString();
+      outboxEntry.providerMessageId = providerId;
+      return { success: true, providerMessageId: providerId };
+    }
+
+    // Despacho oficial Meta Graph API
+    const { data: configRow } = await supabase
+      .from("instagram_config")
+      .select("access_token")
+      .eq("id", "default")
+      .maybeSingle();
+
+    const accessToken = configRow?.access_token;
+    if (!accessToken) {
+      throw new Error("Access token do Instagram (id: 'default') não configurado em instagram_config.");
+    }
+
+    const sendRes = await fetch(
+      `https://graph.instagram.com/v21.0/me/messages?access_token=${accessToken}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipient: { id: recipientId },
+          message: { text: outboxEntry.content },
+        }),
+      }
+    );
+
+    if (!sendRes.ok) {
+      const errBody = await sendRes.text();
+      throw new Error(`Falha no envio pela Meta: ${errBody}`);
+    }
+
+    const metaJson = await sendRes.json().catch(() => ({}));
+    const providerId = metaJson.message_id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    outboxEntry.status = "sent";
+    outboxEntry.sentAt = new Date().toISOString();
+    outboxEntry.providerMessageId = providerId;
+
+    return { success: true, providerMessageId: providerId };
+  } catch (err: any) {
+    outboxEntry.lastError = err.message || String(err);
+    if (outboxEntry.attempts >= outboxEntry.maxAttempts) {
+      outboxEntry.status = "failed";
+    } else {
+      outboxEntry.status = "pending"; // Permite retry controlado
+    }
+    return { success: false, error: err.message };
+  }
+}
+
+
+// ----------------------------------------------------------------------------
 // 6. Construtor de Prompt do Agente da Conversa (Camada 1 - Roteador Enxuto)
 // ----------------------------------------------------------------------------
 export function buildConversationAgentPrompt(input: ConversationAgentInput): string {
@@ -760,7 +1036,7 @@ export async function runExperimentalOrchestration(
     return { mode: orchState.mode, handled: true, skippedDuplicate: true };
   }
 
-  // 4. BACKEND DETERMINÍSTICO: Lock Atômico concorrente
+  // 3. BACKEND DETERMINÍSTICO: Lock Atômico concorrente
   const activeLock = stageRules.active_cycle_token;
   const activeLockAt = stageRules.active_cycle_at ? Date.parse(stageRules.active_cycle_at) : 0;
   if (activeLock && Date.now() - activeLockAt < 25000 && activeLock !== correlationId) {
@@ -782,8 +1058,12 @@ export async function runExperimentalOrchestration(
     })
     .eq("id", conversationId);
 
+  let claimedMessageIds: string[] = [];
+  const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
+  const outboxMap: Record<string, OutboxEntry> = { ...(orchState.outbox || {}) };
+
   try {
-    // 5. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
+    // 4. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
     if (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual") {
       console.log(`[Orchestrator] Ciclo cancelado pelo operador para ${conversationId}.`);
       await supabase
@@ -801,79 +1081,101 @@ export async function runExperimentalOrchestration(
 
     const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
 
-    // 6. BACKEND DETERMINÍSTICO: Extração de Contexto Estruturado
-    const { data: recentMsgs } = await supabase
+    // 5. BACKEND DETERMINÍSTICO: Ledger & Seleção de TODAS as mensagens pendentes (Sem cortes arbitrários)
+    const { data: rawMsgs } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_mine, text, reply_to_message_id, created_at")
+      .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction")
       .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: false })
-      .limit(10);
+      .order("created_at", { ascending: true })
+      .limit(100);
 
-    // Mapeamento de referências citadas em reply_to_message_id
-    const replyIdsToFetch = (recentMsgs || [])
-      .map((m: any) => m.reply_to_message_id)
-      .filter((id: any) => id && !recentMsgs?.some((rm: any) => rm.id === id));
+    const canonicalList: CanonicalMessage[] = (rawMsgs || []).map((m: any) =>
+      normalizeToCanonicalMessage(m, conversationId)
+    );
 
-    const referencedMap: Record<string, StructuredConversationMessage> = {};
-    if (replyIdsToFetch.length > 0) {
-      const { data: refRows } = await supabase
-        .from("instagram_messages")
-        .select("id, sender_id, is_mine, text")
-        .in("id", replyIdsToFetch);
-      for (const r of refRows || []) {
-        referencedMap[r.id] = {
-          id: r.id,
-          sender: r.is_mine ? "larissa" : "pretendente",
-          text: r.text || "",
-        };
-      }
-    }
-
-    for (const m of recentMsgs || []) {
-      if (m.reply_to_message_id && !referencedMap[m.reply_to_message_id]) {
-        const found = (recentMsgs || []).find((rm: any) => rm.id === m.reply_to_message_id);
-        if (found) {
-          referencedMap[found.id] = {
-            id: found.id,
-            sender: found.is_mine ? "larissa" : "pretendente",
-            text: found.text || "",
-          };
+    const pendingMessages: CanonicalMessage[] = [];
+    for (const msg of canonicalList) {
+      if (msg.sender === "pretendente" && msg.direction === "inbound") {
+        const isProcessed =
+          ledger[msg.id] === "processed" ||
+          (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
+        if (!isProcessed) {
+          pendingMessages.push({ ...msg, status: "pending" });
         }
       }
     }
 
-    // Mensagens em ordem cronológica
-    const structuredMessages: StructuredConversationMessage[] = (recentMsgs || [])
-      .slice()
-      .reverse()
-      .map((m: any) => ({
-        id: m.id,
-        sender: m.is_mine ? "larissa" : "pretendente",
-        text: m.text || "",
-        replyToId: m.reply_to_message_id || null,
-        timestamp: m.created_at,
-      }));
-
-    if (structuredMessages.length === 0 || !structuredMessages.some((m) => m.id === newMessage.id)) {
-      structuredMessages.push({
-        id: newMessage.id,
-        sender: "pretendente",
-        text: newMessage.text,
-        timestamp: newMessage.timestamp,
-      });
+    if (newMessage && !pendingMessages.some((m) => m.id === newMessage.id)) {
+      const isProcessed =
+        ledger[newMessage.id] === "processed" ||
+        (orchState.lastProcessedMessageId && newMessage.id === orchState.lastProcessedMessageId);
+      if (!isProcessed) {
+        pendingMessages.push(
+          normalizeToCanonicalMessage(
+            {
+              id: newMessage.id,
+              sender_id: newMessage.sender,
+              text: newMessage.text,
+              created_at: newMessage.timestamp,
+              is_mine: false,
+            },
+            conversationId
+          )
+        );
+      }
     }
+
+    if (pendingMessages.length === 0) {
+      console.log(`[Orchestrator] Nenhuma mensagem pendente para ${conversationId}. Abortando por idempotência.`);
+      return { mode: orchState.mode, handled: true, skippedDuplicate: true };
+    }
+
+    // SNAPSHOT IMUTÁVEL DO CICLO: Claims all pending messages
+    claimedMessageIds = pendingMessages.map((m) => m.id);
+    const claimedMessages = pendingMessages.map((m) => ({
+      ...m,
+      status: "claimed" as MessageProcessingStatus,
+      claimedByCycleId: correlationId,
+    }));
+
+    for (const id of claimedMessageIds) {
+      ledger[id] = "claimed";
+    }
+
+    const currentCycle: ProcessingCycle = {
+      cycleId: correlationId,
+      conversationId,
+      claimedMessageIds,
+      startedAt: new Date().toISOString(),
+      status: "in_progress",
+      agentVersions: {
+        router: "1.2.0",
+        subagent: "1.2.0",
+        prompt: "1.2.0",
+      },
+      trace: [
+        `cycle_started: ${correlationId}`,
+        `messages_claimed: ${claimedMessageIds.length}`,
+      ],
+    };
 
     const currentCheckpoint =
       orchState.checkpoint ||
       (currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita");
 
-    const baseContextPayload: ConversationContextPayload = {
-      phase: currentPhase,
-      checkpoint: currentCheckpoint,
-      newMessages: structuredMessages,
-      referencedMessages: referencedMap,
-      knownFacts: stageRules.known_facts || {},
-    };
+    // 6. CONTEXT BUILDER: Projeção Mínima & Lookup Pontual de Replies
+    const { payload: baseContextPayload, trace: contextTrace } =
+      await buildConversationContextForCycle({
+        conversationId,
+        currentPhase,
+        checkpoint: currentCheckpoint,
+        claimedMessages,
+        supabase,
+        knownFacts: stageRules.known_facts || {},
+      });
+
+    currentCycle.trace.push(...contextTrace);
+    currentCycle.trace.push(`context_built: msgs=${baseContextPayload.newMessages.length}`);
 
     const routerContextText = formatContextForConversationAgent(baseContextPayload);
     const conexaoContextText = formatContextForConexaoInicial(baseContextPayload);
@@ -881,7 +1183,6 @@ export async function runExperimentalOrchestration(
 
     let totalTokens = 0;
 
-    // Publica estado visual imediato na tela
     await publishAutoPilotState(supabase, conversationId, {
       status: "processing",
       activity: activity(
@@ -911,6 +1212,7 @@ export async function runExperimentalOrchestration(
     totalTokens += routingRes.tokens;
     const rawRoutingJson = extractJsonFromText(routingRes.content);
     const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase);
+    currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
 
     console.log(
       `[Orchestrator] Agente da Conversa roteou ${conversationId} para "${routingDecision.targetSubagent}" (ação=${routingDecision.action}, motivo=${routingDecision.reason}).`
@@ -918,7 +1220,6 @@ export async function runExperimentalOrchestration(
 
     let finalSubDecision: SubagentDecision;
 
-    // Se a decisão de roteamento for aguardar ou não acionar subagente
     if (routingDecision.action === "wait" || routingDecision.targetSubagent === "none") {
       finalSubDecision = {
         action: "wait",
@@ -929,10 +1230,8 @@ export async function runExperimentalOrchestration(
         reasoning: routingDecision.reason,
         requiredTools: [],
       };
+      currentCycle.trace.push("subagent_action: wait");
     } else {
-      // ----------------------------------------------------------------------
-      // CAMADA 2: SUBAGENTE ESPECIALIZADO (CONEXÃO INICIAL OU DESCOBERTA)
-      // ----------------------------------------------------------------------
       const targetSubagent = routingDecision.targetSubagent;
       let subagentPrompt = "";
 
@@ -954,7 +1253,6 @@ export async function runExperimentalOrchestration(
         });
       }
 
-      // Notifica visualmente a transição para o subagente
       await publishAutoPilotState(supabase, conversationId, {
         status: "processing",
         activity: activity(
@@ -973,6 +1271,7 @@ export async function runExperimentalOrchestration(
       totalTokens += subRes.tokens;
       const rawSubJson = extractJsonFromText(subRes.content);
       finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
+      currentCycle.trace.push(`subagent_executed: ${targetSubagent}`);
     }
 
     // ------------------------------------------------------------------------
@@ -991,8 +1290,6 @@ export async function runExperimentalOrchestration(
       );
     }
 
-    const durationMs = Date.now() - startTime;
-
     const decision: OrchestratorDecision = {
       action: finalSubDecision.action,
       currentPhase,
@@ -1004,17 +1301,81 @@ export async function runExperimentalOrchestration(
       reasoning: finalSubDecision.reasoning,
       routedSubagent: routingDecision.targetSubagent,
     };
+    currentCycle.decision = decision;
 
     // ------------------------------------------------------------------------
-    // MODO SHADOW: Registra tudo sem ações externas, ZERO envio à Meta
+    // OUTBOX PATTERN: Criação da Intenção de Envio com IdempotencyKey
+    // ------------------------------------------------------------------------
+    const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
+    let outboxEntry = outboxMap[idempotencyKey];
+
+    if (!outboxEntry) {
+      outboxEntry = {
+        id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        cycleId: correlationId,
+        conversationId,
+        idempotencyKey,
+        content: decision.suggestedResponse,
+        messageType: "text",
+        status: "pending",
+        attempts: 0,
+        maxAttempts: 3,
+        createdAt: new Date().toISOString(),
+      };
+      outboxMap[idempotencyKey] = outboxEntry;
+    }
+    currentCycle.outboxEntryId = outboxEntry.id;
+    currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
+
+    // Checagem de cancelamento após inferência antes do despacho
+    const { data: recheckRules } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    if (
+      recheckRules?.stage_completed_rules?.cancel_current_cycle === true ||
+      recheckRules?.stage_completed_rules?.status === "paused_manual"
+    ) {
+      currentCycle.status = "cancelled";
+      currentCycle.trace.push("cycle_cancelled_before_dispatch");
+      for (const id of claimedMessageIds) {
+        ledger[id] = "pending";
+      }
+      outboxEntry.status = "failed";
+      outboxEntry.lastError = "Cancelado pelo operador";
+      return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
+    }
+
+    // ------------------------------------------------------------------------
+    // MODO SHADOW: Registra tudo sem envio externo à Meta
     // ------------------------------------------------------------------------
     if (orchState.mode === "shadow") {
+      outboxEntry.status = "sent";
+      outboxEntry.sentAt = new Date().toISOString();
+      outboxEntry.providerMessageId = "shadow_simulated";
+      currentCycle.status = "completed";
+      currentCycle.trace.push("shadow_simulation_completed");
+
+      for (const id of claimedMessageIds) {
+        ledger[id] = "processed";
+      }
+
+      const durationMs = Date.now() - startTime;
+      currentCycle.completedAt = new Date().toISOString();
+      currentCycle.metrics = {
+        durationMs,
+        tokens: { total: totalTokens },
+      };
+      currentCycle.trace.push("cycle_completed");
+
       const updatedState: ConversationOrchestrationState = {
         version: 1,
         mode: "shadow",
         currentPhase: validatedNextPhase,
         checkpoint: decision.checkpoint,
-        lastProcessedMessageId: newMessage.id,
+        lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
         lastProcessedAt: new Date().toISOString(),
         lastProcessingStatus: "shadow_logged",
         lastCorrelationId: correlationId,
@@ -1023,6 +1384,10 @@ export async function runExperimentalOrchestration(
         durationMs,
         tokens: totalTokens,
         updatedAt: new Date().toISOString(),
+        activeCycle: null,
+        recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
+        outbox: outboxMap,
+        messageLedger: ledger,
       };
 
       await supabase
@@ -1036,7 +1401,6 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
-      // Publica estado visual na tela com histórico preservado
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
         lastThoughts: {
@@ -1072,7 +1436,7 @@ export async function runExperimentalOrchestration(
     }
 
     // ------------------------------------------------------------------------
-    // MODO EXPERIMENTAL: Execução ativa no chat marcado
+    // MODO EXPERIMENTAL: Execução ativa no chat
     // ------------------------------------------------------------------------
     if (orchState.mode === "experimental") {
       let sentSuccessfully = false;
@@ -1099,96 +1463,90 @@ export async function runExperimentalOrchestration(
           ),
         });
 
-        if (runtime?.sendMetaTextMessage) {
-          await runtime.sendMetaTextMessage(supabase, conversationId, decision.suggestedResponse);
+        // DISPATCHER: Envio seguro através da Outbox
+        const dispatchRes = await dispatchOutboxEntry({
+          supabase,
+          outboxEntry,
+          recipientId: conversationId,
+          runtime,
+        });
+
+        if (dispatchRes.success && outboxEntry.status === "sent") {
           sentSuccessfully = true;
+          currentCycle.trace.push(`meta_dispatched: ${dispatchRes.providerMessageId}`);
+
+          const nowIso = new Date().toISOString();
+          const messageId = dispatchRes.providerMessageId || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+          await supabase.from("instagram_messages").upsert({
+            id: messageId,
+            conversation_id: conversationId,
+            sender_id: "me",
+            is_mine: true,
+            text: decision.suggestedResponse,
+            status: "sent",
+            created_at: nowIso,
+            timestamp: nowIso,
+          });
+
+          await supabase
+            .from("instagram_conversations")
+            .update({
+              last_message: decision.suggestedResponse,
+              last_message_preview: decision.suggestedResponse,
+              last_message_at: nowIso,
+              last_direction: "out",
+              last_status: "sent",
+            })
+            .eq("id", conversationId);
+
+          for (const id of claimedMessageIds) {
+            ledger[id] = "processed";
+          }
+          currentCycle.status = "completed";
         } else {
-          // Despacho via Meta Graph API oficial
-          const { data: configRow } = await supabase
-            .from("instagram_config")
-            .select("access_token")
-            .eq("id", "default")
-            .maybeSingle();
-
-          const accessToken = configRow?.access_token;
-          if (!accessToken) {
-            throw new Error("Access token do Instagram (id: 'default') não configurado em instagram_config.");
+          currentCycle.status = "failed";
+          currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
+          for (const id of claimedMessageIds) {
+            ledger[id] = "pending"; // Reverte mensagens para retry limpo
           }
-
-          let recipientIgsid = conversationId;
-          if (!/^d+$/.test(conversationId)) {
-            const { data: convMsgs } = await supabase
-              .from("instagram_messages")
-              .select("sender_id, is_mine")
-              .eq("conversation_id", conversationId)
-              .eq("is_mine", false)
-              .limit(5);
-            const foundNumeric = (convMsgs || []).find((m: any) => /^d+$/.test(m.sender_id));
-            if (foundNumeric) recipientIgsid = foundNumeric.sender_id;
-          }
-
-          const sendRes = await fetch(
-            `https://graph.instagram.com/v21.0/me/messages?access_token=${accessToken}`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                recipient: { id: recipientIgsid },
-                message: { text: decision.suggestedResponse },
-              }),
-            }
-          );
-
-          if (sendRes.ok) {
-            sentSuccessfully = true;
-            const metaJson = await sendRes.json().catch(() => ({}));
-            const nowIso = new Date().toISOString();
-            const messageId = metaJson.message_id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-            await supabase.from("instagram_messages").upsert({
-              id: messageId,
-              conversation_id: conversationId,
-              sender_id: "me",
-              is_mine: true,
-              text: decision.suggestedResponse,
-              status: "sent",
-              created_at: nowIso,
-              timestamp: nowIso,
-            });
-
-            await supabase
-              .from("instagram_conversations")
-              .update({
-                last_message: decision.suggestedResponse,
-                last_message_preview: decision.suggestedResponse,
-                last_message_at: nowIso,
-                last_direction: "out",
-                last_status: "sent",
-              })
-              .eq("id", conversationId);
-          } else {
-            throw new Error(`Falha no envio pela Meta: ${await sendRes.text()}`);
-          }
+          throw new Error(`Falha no despacho da outbox: ${dispatchRes.error}`);
         }
+      } else {
+        // Ação 'wait' ou sem resposta: marca mensagens como processadas para não reavaliar no vácuo
+        for (const id of claimedMessageIds) {
+          ledger[id] = "processed";
+        }
+        currentCycle.status = "completed";
+        currentCycle.trace.push("cycle_completed_wait");
       }
+
+      const durationMs = Date.now() - startTime;
+      currentCycle.completedAt = new Date().toISOString();
+      currentCycle.metrics = {
+        durationMs,
+        tokens: { total: totalTokens },
+      };
+      currentCycle.trace.push("cycle_completed");
 
       const updatedState: ConversationOrchestrationState = {
         version: 1,
         mode: "experimental",
         currentPhase: validatedNextPhase,
         checkpoint: decision.checkpoint,
-        lastProcessedMessageId: newMessage.id,
+        lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
         lastProcessedAt: new Date().toISOString(),
-        lastProcessingStatus: sentSuccessfully ? "sent" : "decided",
+        lastProcessingStatus: sentSuccessfully || decision.action === "wait" ? "sent" : "decided",
         lastCorrelationId: correlationId,
         lastDecision: decision,
         lastError: null,
         durationMs,
         tokens: totalTokens,
         updatedAt: new Date().toISOString(),
+        activeCycle: null,
+        recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
+        outbox: outboxMap,
+        messageLedger: ledger,
       };
 
       await supabase
@@ -1241,11 +1599,18 @@ export async function runExperimentalOrchestration(
   } catch (err: any) {
     console.error(`[Orchestrator] Erro na execução de ${conversationId}:`, err);
 
+    // Em caso de erro, reverte as mensagens claimed para pending para permitir retry
+    for (const id of claimedMessageIds) {
+      ledger[id] = "pending";
+    }
+
     const fallbackState: ConversationOrchestrationState = {
       ...orchState,
       lastError: err.message || "Erro desconhecido",
       lastProcessingStatus: "failed",
       updatedAt: new Date().toISOString(),
+      messageLedger: ledger,
+      outbox: outboxMap,
     };
 
     await supabase
