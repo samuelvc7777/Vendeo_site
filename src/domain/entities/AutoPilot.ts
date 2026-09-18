@@ -1,0 +1,94 @@
+export interface AutoPilotConfig {
+  isEnabledGlobally: boolean;
+  mode?: "automatic"; // 100% Automático direto (semiautomático removido)
+  responseDelayMinutes: number; // Padrão: 1 min para testes, 10 min produção
+  activationWaitMinutes: number; // Tempo de espera após ativar antes de começar (padrão: 1 min)
+  pauseOnPhotoReceived: boolean; // Pausar se o cliente enviar foto
+  pauseOnSensitiveContent: boolean; // Pausar se detectar conteúdo bizarro/ofensivo
+  handOffAtRaffleStep: boolean; // Pausar e notificar o dono ao atingir o momento da rifa
+  typingDelaySecondsPerBalloon: number; // Delay simulando digitação humana (ex: 4s)
+  updatedAt: string;
+}
+
+export type AutoPilotChatStatus =
+  | "idle" // Aguardando mensagem do cliente
+  | "activation_wait" // Aguardando 1 minuto inicial após ativação
+  | "waiting_delay" // Cliente mandou mensagem, aguardando expirar tempo de espera (debounce)
+  | "waiting_debounce" // Alias semântico para waiting_delay
+  | "in_queue" // Tempo expirou, está na fila sequencial global aguardando a vez
+  | "processing" // Sendo respondido agora pela IA (simulando digitação)
+  | "paused_guardrail" // Pausado por foto recebida ou conteúdo estranho
+  | "paused_handoff" // Pausado por chegar no momento da rifa (chamar dono)
+  | "disabled"; // Desativado pelo operador
+
+export type AutoPilotActivityPhase =
+  | "waiting"
+  | "context"
+  | "search"
+  | "reanalyzing"
+  | "atria"
+  | "sol"
+  | "checklist"
+  | "typing"
+  | "sending"
+  | "completed";
+
+export interface AutoPilotActivity {
+  phase: AutoPilotActivityPhase;
+  label: string;
+  detail?: string;
+  currentBalloon?: number;
+  totalBalloons?: number;
+  updatedAt: string;
+  atriaThought?: string;
+  solThought?: string;
+  previewResponses?: string[];
+  currentResponsePreview?: string;
+  countdownSeconds?: number;
+}
+
+export interface AutoPilotLastThoughts {
+  atriaThought?: string;
+  solThought?: string;
+  previewResponses?: string[];
+  sentAt?: string;
+}
+
+export interface AutoPilotPendingAction {
+  conversationId: string;
+  conversationName: string;
+  contactUsername?: string;
+  responses: string[]; // balões de texto ou tags [audio:URL]
+  completedChecklistIds?: string[];
+  isRaffleStepReached?: boolean;
+  createdAt: string;
+  reason?: string;
+}
+
+export interface AutoPilotChatState {
+  conversationId: string;
+  isEnabled: boolean;
+  enabledAt?: string;
+  status: AutoPilotChatStatus;
+  lastClientMessageAt?: string;
+  scheduledResponseAt?: string;
+  pauseReason?: string;
+  pausedAt?: string;
+  lastResponseSentAt?: string;
+  pendingAction?: AutoPilotPendingAction;
+  activity?: AutoPilotActivity | null;
+  lastThoughts?: AutoPilotLastThoughts | null;
+  isSending?: boolean;
+  sendingStartedAt?: string | null;
+  sendingCycleToken?: string | null;
+  activeCycleToken?: string | null;
+  stateUpdatedAt?: string;
+}
+
+export interface AutoPilotQueueItem {
+  conversationId: string;
+  conversationName: string;
+  contactUsername?: string;
+  scheduledAt: string;
+  priorityTimestamp: number;
+}
