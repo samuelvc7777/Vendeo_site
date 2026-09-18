@@ -3467,27 +3467,50 @@ serve(async (req: Request) => {
             const isFromThem = lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me";
 
             if (isFromThem) {
-              console.log(`[TRACE-AUTOPILOT] cron:tick_trigger conversation=${conv.id} msg=${lastMsg.id} (skipDebounce=true)`);
-              await recordAutoPilotTrace(supabase, "cron:tick_trigger", conv.id, `msg=${lastMsg.id}`);
+              const convRules = conv.stage_completed_rules || {};
+              const orchMode = convRules.orchestration?.mode || "legacy";
 
-              const runPromise = runCloudAutoPilot({
-                supabase,
-                conversationId: conv.id,
-                triggerMessageId: lastMsg.id,
-                triggerTimestamp: lastMsg.timestamp || lastMsg.created_at,
-                triggerText: lastMsg.text || "",
-                skipDebounce: true,
-                runtime: {
-                  apiBase: API_BASE,
-                  transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                  ...cloudAutopilotSupport,
-                },
-              });
+              if (orchMode === "experimental") {
+                console.log(`[Orchestrator] cron:tick roteando para modo EXPERIMENTAL em ${conv.id}`);
+                const expPromise = runExperimentalOrchestration({
+                  supabase,
+                  conversationId: conv.id,
+                  newMessage: {
+                    id: lastMsg.id,
+                    text: lastMsg.text || "",
+                    timestamp: lastMsg.timestamp || lastMsg.created_at,
+                    sender: lastMsg.sender_id || "them",
+                  },
+                });
 
-              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                (globalThis as any).EdgeRuntime.waitUntil(runPromise);
+                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                  (globalThis as any).EdgeRuntime.waitUntil(expPromise);
+                } else {
+                  void expPromise;
+                }
               } else {
-                void runPromise;
+                console.log(`[TRACE-AUTOPILOT] cron:tick_trigger conversation=${conv.id} msg=${lastMsg.id} (skipDebounce=true)`);
+                await recordAutoPilotTrace(supabase, "cron:tick_trigger", conv.id, `msg=${lastMsg.id}`);
+
+                const runPromise = runCloudAutoPilot({
+                  supabase,
+                  conversationId: conv.id,
+                  triggerMessageId: lastMsg.id,
+                  triggerTimestamp: lastMsg.timestamp || lastMsg.created_at,
+                  triggerText: lastMsg.text || "",
+                  skipDebounce: true,
+                  runtime: {
+                    apiBase: API_BASE,
+                    transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
+                    ...cloudAutopilotSupport,
+                  },
+                });
+
+                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                  (globalThis as any).EdgeRuntime.waitUntil(runPromise);
+                } else {
+                  void runPromise;
+                }
               }
 
               processed.push(conv.id);
@@ -3568,12 +3591,47 @@ serve(async (req: Request) => {
             }
           } catch {}
 
-          console.log(`[TRACE-AUTOPILOT] activation_trigger:start conversation=${conversationId} msg=${lastMsg.id} (skipDebounce=true)`);
-          await recordAutoPilotTrace(supabase, "activation:trigger", conversationId, `msg=${lastMsg.id};skipDebounce=true`);
+          const orchMode = cRow?.stage_completed_rules?.orchestration?.mode || "legacy";
+          if (orchMode === "experimental") {
+            console.log(`[Orchestrator] trigger roteando para modo EXPERIMENTAL em ${conversationId}`);
+            const expPromise = runExperimentalOrchestration({
+              supabase,
+              conversationId,
+              newMessage: {
+                id: lastMsg.id,
+                text: lastMsg.text || "",
+                timestamp: lastMsg.timestamp,
+                sender: lastMsg.sender_id || "them",
+              },
+            });
 
-          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-            (globalThis as any).EdgeRuntime.waitUntil(
-              runCloudAutoPilot({
+            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+              (globalThis as any).EdgeRuntime.waitUntil(expPromise);
+            } else {
+              void expPromise;
+            }
+          } else {
+            console.log(`[TRACE-AUTOPILOT] activation_trigger:start conversation=${conversationId} msg=${lastMsg.id} (skipDebounce=true)`);
+            await recordAutoPilotTrace(supabase, "activation:trigger", conversationId, `msg=${lastMsg.id};skipDebounce=true`);
+
+            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+              (globalThis as any).EdgeRuntime.waitUntil(
+                runCloudAutoPilot({
+                  supabase,
+                  conversationId,
+                  triggerMessageId: lastMsg.id,
+                  triggerTimestamp: lastMsg.timestamp,
+                  triggerText: lastMsg.text || "",
+                  skipDebounce: true,
+                  runtime: {
+                    apiBase: API_BASE,
+                    transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
+                    ...cloudAutopilotSupport,
+                  },
+                })
+              );
+            } else {
+              void runCloudAutoPilot({
                 supabase,
                 conversationId,
                 triggerMessageId: lastMsg.id,
@@ -3585,22 +3643,8 @@ serve(async (req: Request) => {
                   transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
                   ...cloudAutopilotSupport,
                 },
-              })
-            );
-          } else {
-            void runCloudAutoPilot({
-              supabase,
-              conversationId,
-              triggerMessageId: lastMsg.id,
-              triggerTimestamp: lastMsg.timestamp,
-              triggerText: lastMsg.text || "",
-              skipDebounce: true,
-              runtime: {
-                apiBase: API_BASE,
-                transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                ...cloudAutopilotSupport,
-              },
-            });
+              });
+            }
           }
 
           return new Response(JSON.stringify({
@@ -3857,23 +3901,44 @@ serve(async (req: Request) => {
             .limit(1);
           const lastMsg = lastMsgs?.[0];
           if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
-            const runPromise = runCloudAutoPilot({
-              supabase,
-              conversationId,
-              triggerMessageId: lastMsg.id,
-              triggerTimestamp: lastMsg.timestamp,
-              triggerText: lastMsg.text || "",
-              skipDebounce: true,
-              runtime: {
-                apiBase: API_BASE,
-                transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                ...cloudAutopilotSupport,
-              },
-            });
-            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-              (globalThis as any).EdgeRuntime.waitUntil(runPromise);
+            const orchMode = currentRules?.orchestration?.mode || "legacy";
+            if (orchMode === "experimental") {
+              console.log(`[Orchestrator] send-now roteando para modo EXPERIMENTAL em ${conversationId}`);
+              const expPromise = runExperimentalOrchestration({
+                supabase,
+                conversationId,
+                newMessage: {
+                  id: lastMsg.id,
+                  text: lastMsg.text || "",
+                  timestamp: lastMsg.timestamp,
+                  sender: lastMsg.sender_id || "them",
+                },
+              });
+
+              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                (globalThis as any).EdgeRuntime.waitUntil(expPromise);
+              } else {
+                void expPromise;
+              }
             } else {
-              void runPromise;
+              const runPromise = runCloudAutoPilot({
+                supabase,
+                conversationId,
+                triggerMessageId: lastMsg.id,
+                triggerTimestamp: lastMsg.timestamp,
+                triggerText: lastMsg.text || "",
+                skipDebounce: true,
+                runtime: {
+                  apiBase: API_BASE,
+                  transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
+                  ...cloudAutopilotSupport,
+                },
+              });
+              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                (globalThis as any).EdgeRuntime.waitUntil(runPromise);
+              } else {
+                void runPromise;
+              }
             }
           }
         }

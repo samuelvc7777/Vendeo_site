@@ -374,12 +374,16 @@ export async function runExperimentalOrchestration(
 
     // Publica estado visual imediato para a tela do chat
     await publishAutoPilotState(supabase, conversationId, {
-      status: "analyzing",
+      status: "processing",
       activity: activity(
-        "analyzing",
+        "atria",
         orchState.mode === "shadow" ? "Atria (Shadow)" : "Atria analisando...",
         "Avaliando conversa e diretrizes de atendimento...",
-        { mode: orchState.mode, currentPhase }
+        {
+          atriaThought: "Analisando histórico, contexto do pretendente e definindo diretrizes...",
+          mode: orchState.mode,
+          currentPhase,
+        }
       ),
     });
 
@@ -482,14 +486,25 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
-      // Publica estado visual na tela
+      // Publica estado visual na tela com histórico de pensamento preservado
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
+        lastThoughts: {
+          atriaThought: decision.reasoning,
+          solThought: decision.suggestedResponse,
+          previewResponses: [decision.suggestedResponse],
+        },
         activity: activity(
           "completed",
           "Atria (Shadow)",
           `Decisão: ${decision.action} | Sugestão: "${(decision.suggestedResponse || "").slice(0, 45)}..."`,
-          { mode: "shadow", decision }
+          {
+            atriaThought: decision.reasoning,
+            solThought: decision.suggestedResponse,
+            currentResponsePreview: decision.suggestedResponse,
+            mode: "shadow",
+            decision,
+          }
         ),
       });
 
@@ -517,6 +532,25 @@ export async function runExperimentalOrchestration(
         (decision.action === "reply" || decision.action === "advance_phase") &&
         decision.suggestedResponse
       ) {
+        // Notifica visualmente que está despachando o envio (fase: "sending")
+        await publishAutoPilotState(supabase, conversationId, {
+          status: "processing",
+          activity: activity(
+            "sending",
+            "Atria enviando...",
+            "Entregando a mensagem pelo Instagram.",
+            {
+              atriaThought: decision.reasoning,
+              solThought: decision.suggestedResponse,
+              currentResponsePreview: decision.suggestedResponse,
+              totalBalloons: 1,
+              currentBalloon: 1,
+              countdownSeconds: 0,
+              mode: "experimental",
+            }
+          ),
+        });
+
         if (runtime?.sendMetaTextMessage) {
           await runtime.sendMetaTextMessage(supabase, conversationId, decision.suggestedResponse);
           sentSuccessfully = true;
@@ -609,14 +643,26 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
-      // Publica estado visual na tela
+      // Publica estado visual na tela com histórico de pensamento preservado
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
+        lastThoughts: {
+          atriaThought: decision.reasoning,
+          solThought: decision.suggestedResponse,
+          previewResponses: [decision.suggestedResponse],
+        },
         activity: activity(
           "completed",
           sentSuccessfully ? "Atria respondeu" : "Atria avaliou",
           decision.suggestedResponse || "Turno concluído.",
-          { mode: "experimental", decision }
+          {
+            atriaThought: decision.reasoning,
+            solThought: decision.suggestedResponse,
+            currentResponsePreview: decision.suggestedResponse,
+            previewResponses: [decision.suggestedResponse],
+            mode: "experimental",
+            decision,
+          }
         ),
       });
 

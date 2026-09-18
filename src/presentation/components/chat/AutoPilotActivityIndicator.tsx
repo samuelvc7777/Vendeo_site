@@ -472,7 +472,7 @@ export function AutoPilotActivityIndicator({
 
   // VARIANTE FLOATING (Cápsula Flutuante sobre o Chat - Estilo Antigravity Reativo)
   const isAudioPreview = currentPreview?.startsWith("[audio:");
-  const shouldShowReasoningSection = isWorking || hasThoughts;
+  const shouldShowReasoningSection = Boolean(hasThoughts || isAtriaActive || isSolActive || validAtriaThought || validSolThought);
 
   return (
     <div className="w-full select-none animate-in fade-in slide-in-from-bottom-2 duration-200">
