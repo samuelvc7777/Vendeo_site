@@ -3,6 +3,7 @@
 // Novo Motor Experimental de Orquestração por Conversa (Clean Architecture)
 // Suporta modos: 'legacy' | 'shadow' | 'experimental'
 // ============================================================================
+import { publishAutoPilotState, activity } from "./cloud_autopilot.ts";
 
 export type OrchestrationMode = "legacy" | "shadow" | "experimental";
 export type OrchestrationPhase = "conexao_inicial" | "descoberta";
@@ -371,6 +372,17 @@ export async function runExperimentalOrchestration(
       phaseRules,
     };
 
+    // Publica estado visual imediato para a tela do chat
+    await publishAutoPilotState(supabase, conversationId, {
+      status: "analyzing",
+      activity: activity(
+        "analyzing",
+        orchState.mode === "shadow" ? "Atria (Shadow)" : "Atria analisando...",
+        "Avaliando conversa e diretrizes de atendimento...",
+        { mode: orchState.mode, currentPhase }
+      ),
+    });
+
     const prompt = buildOrchestratorPrompt(input);
 
     // 6. Chamada de Inferência do Modelo
@@ -470,6 +482,17 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
+      // Publica estado visual na tela
+      await publishAutoPilotState(supabase, conversationId, {
+        status: "idle",
+        activity: activity(
+          "completed",
+          "Atria (Shadow)",
+          `Decisão: ${decision.action} | Sugestão: "${(decision.suggestedResponse || "").slice(0, 45)}..."`,
+          { mode: "shadow", decision }
+        ),
+      });
+
       console.log(
         `[Orchestrator] [SHADOW] Decisão registrada com sucesso para ${conversationId} (${durationMs}ms, checkpoint=${decision.checkpoint}). Nenhum envio realizado.`
       );
@@ -564,6 +587,17 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
+      // Publica estado visual na tela
+      await publishAutoPilotState(supabase, conversationId, {
+        status: "idle",
+        activity: activity(
+          "completed",
+          sentSuccessfully ? "Atria respondeu" : "Atria avaliou",
+          decision.suggestedResponse || "Turno concluído.",
+          { mode: "experimental", decision }
+        ),
+      });
+
       console.log(
         `[Orchestrator] [EXPERIMENTAL] Execução concluída para ${conversationId} (ação=${decision.action}, fase=${validatedNextPhase}).`
       );
@@ -599,6 +633,17 @@ export async function runExperimentalOrchestration(
         },
       })
       .eq("id", conversationId);
+
+    // Publica erro visual na tela para o operador ver imediatamente
+    await publishAutoPilotState(supabase, conversationId, {
+      status: "failed",
+      activity: activity(
+        "failed",
+        "Erro na Atria",
+        err.message || "Falha na análise da Atria",
+        { mode: orchState.mode }
+      ),
+    });
 
     return {
       mode: orchState.mode,
