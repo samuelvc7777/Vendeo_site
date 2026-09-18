@@ -1385,15 +1385,16 @@ test('28. Requisito 48: Snapshot imutável mantém novas mensagens concorrentes 
     runtime: mockRuntime,
   });
 
-  assert.equal(result.handled, true);
+  // Com o Freshness Gate ativo, a chegada de nova mensagem durante a inferência preempta o ciclo
+  assert.equal(result.handled, false, 'Ciclo deve ser preemptado quando nova mensagem chega durante inferência');
+  assert.match(result.error, /preemptado/i);
   const convData = supabase.getConversationData();
   const orch = convData.stage_completed_rules.orchestration;
   const cycle = orch.recentCycles?.[0];
 
-  // O ciclo congelou apenas m_snap_1 e m_snap_2
-  assert.equal(JSON.stringify(cycle.claimedMessageIds), JSON.stringify(['m_snap_1', 'm_snap_2']));
-  assert.equal(orch.messageLedger['m_snap_1'], 'processed');
-  assert.equal(orch.messageLedger['m_snap_2'], 'processed');
+  assert.equal(cycle.status, 'superseded', 'Status do ciclo deve ser superseded');
+  assert.equal(orch.messageLedger['m_snap_1'], 'pending', 'Mensagens claimed devem reverter para pending');
+  assert.equal(orch.messageLedger['m_snap_2'], 'pending', 'Mensagens claimed devem reverter para pending');
   // m_snap_concorrente_3 NÃO foi marcada como processed no ciclo atual
   assert.notEqual(orch.messageLedger['m_snap_concorrente_3'], 'processed');
 });
@@ -1921,12 +1922,14 @@ test('36. Requisito 23: Pós-ciclo detecta mensagens concorrentes e agenda próx
     runtime: mockRuntime,
   });
 
-  assert.equal(result.handled, true);
+  // Com o Freshness Gate ativo, a mensagem concorrente durante o ciclo provoca preempção imediata
+  assert.equal(result.handled, false, 'Deve ser preemptado por nova mensagem');
+  assert.match(result.error, /preemptado/i);
   const conv = supabase.getConversationData();
 
   // A mensagem concorrente provocou agendamento para o próximo ciclo
-  assert.equal(conv.ai_auto_respond, true);
-  assert.ok(conv.ai_debounce_until, 'Deve agendar debounce_until para execução imediata do próximo ciclo');
+  assert.equal(conv.stage_completed_rules.ai_auto_respond, true);
+  assert.ok(conv.stage_completed_rules.ai_debounce_until, 'Deve agendar debounce_until para execução do próximo ciclo');
 });
 
 // =========================================================================
@@ -2371,26 +2374,23 @@ test('42. Lote 20 + 10 Mensagens Concorrentes: Ciclo A processa 20, Ciclo B proc
     },
   });
 
-  assert.equal(resA.handled, true);
-  assert.equal(resA.sentToMeta, true);
+  assert.equal(resA.handled, false, 'Ciclo A deve ser preemptado quando 10 novas mensagens chegam durante sua inferência');
+  assert.equal(resA.sentToMeta, false, 'Ciclo A não deve enviar à Meta');
+  assert.match(resA.error, /preemptado/i);
 
   const convStateAfterA = supabase.getConversationData().stage_completed_rules.orchestration;
   const ledgerAfterA = convStateAfterA.messageLedger;
 
-  // Verifica que exatamente as 20 primeiras mensagens foram marcadas como processed
+  // Verifica que as 20 primeiras mensagens reverteram para pending para serem unificadas
   for (let i = 1; i <= 20; i++) {
-    assert.equal(ledgerAfterA[`batch_msg_${i}`], 'processed', `Mensagem ${i} deve ser processed`);
+    assert.equal(ledgerAfterA[`batch_msg_${i}`], 'pending', `Mensagem ${i} deve ser pending após preempção de A`);
   }
 
-  // Verifica que as 10 novas mensagens (21 a 30) NÃO foram absorvidas pelo Ciclo A
-  for (let j = 21; j <= 30; j++) {
-    assert.notEqual(ledgerAfterA[`batch_msg_${j}`], 'processed', `Mensagem ${j} NÃO pode ter sido processada no Ciclo A`);
-  }
+  // Verifica que a preempção agendou o próximo ciclo via debounce
+  assert.equal(supabase.getConversationData().stage_completed_rules.ai_auto_respond, true);
+  assert.ok(supabase.getConversationData().stage_completed_rules.ai_debounce_until);
 
-  // Verifica que o pós-ciclo agendou o próximo ciclo
-  assert.equal(supabase.getConversationData().ai_auto_respond, true);
-
-  // Agora Ciclo B roda para processar o follow-up
+  // Agora Ciclo B roda para processar o lote unificado (as 20 originais + 10 novas = 30 mensagens)
   const resB = await runExperimentalOrchestration({
     supabase,
     conversationId: 'conv_batch_20_10',
@@ -2399,13 +2399,13 @@ test('42. Lote 20 + 10 Mensagens Concorrentes: Ciclo A processa 20, Ciclo B proc
     runtime: {
       callModel: async (prompt) => {
         if (prompt.includes('Agente da Conversa')) {
-          return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Lote de 10' }), tokens: 50 };
+          return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Lote unificado de 30' }), tokens: 50 };
         }
         return {
           content: JSON.stringify({
             action: 'reply',
             checkpoint: 'chk_saudacao_feita',
-            suggestedResponse: 'Resposta ao segundo lote de 10',
+            suggestedResponse: 'Resposta ao lote unificado de 30 mensagens',
             nextPhase: 'conexao_inicial',
             summary: 'ok',
           }),
@@ -3340,6 +3340,954 @@ test('53. Webhook Real Fim-a-Fim: falha de infraestrutura na RPC do Postgres blo
   // Comprova que as mensagens no ledger permanecem pendentes no banco para retry seguro
   const ledger = convState.stage_completed_rules.orchestration.messageLedger;
   assert.equal(ledger['mid_webhook_real_msg_1'], 'pending', 'Mensagem claimed deve reverter para pending após fail-closed da RPC');
+});
+
+// =============================================================================
+// BATERIA DE TESTES: PREEMPÇÃO POR NOVA MENSAGEM & MULTI-BALÕES (TESTES 54 A 68)
+// =============================================================================
+
+// TESTE 54: Preempção Gate 1 (durante ConversationAgent)
+test('54. Preempção Gate 1: Nova mensagem durante ConversationAgent preempta ciclo, reverte ledger para pending e não envia à Meta', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaSent = 0;
+  const initialMsgs = [
+    { id: 'm_g1_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Olá, qual o valor da Amarok?', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      // Simula chegada de nova mensagem enquanto o ConversationAgent avalia o turno
+      supabase.getInsertedMessages().push({
+        id: 'm_g1_2_concorrente',
+        sender_id: 'them',
+        is_mine: false,
+        direction: 'inbound',
+        text: 'E qual o ano dela também?',
+        created_at: new Date().toISOString(),
+      });
+
+      return {
+        content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Avaliação inicial' }),
+        tokens: 40,
+      };
+    },
+    sendMetaTextMessage: async () => {
+      metaSent++;
+      return { success: true, message_id: 'meta_should_not_happen' };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_gate_1_test',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, false, 'Ciclo deve retornar handled=false quando preemptado no Gate 1');
+  assert.equal(res.sentToMeta, false, 'ZERO envios à Meta quando preemptado no Gate 1');
+  assert.equal(metaSent, 0, 'Nenhuma chamada à API da Meta');
+  assert.match(res.error, /preemptado/i);
+
+  const conv = supabase.getConversationData();
+  const orch = conv.stage_completed_rules.orchestration;
+  const cycle = orch.recentCycles?.[0];
+
+  assert.equal(cycle.status, 'superseded', 'Ciclo deve ter status superseded');
+  assert.equal(orch.messageLedger['m_g1_1'], 'pending', 'Mensagem claimed m_g1_1 deve reverter para pending');
+  assert.ok(conv.stage_completed_rules.ai_debounce_until, 'Deve agendar debounce para o novo ciclo');
+});
+
+// TESTE 55: Preempção Gate 2 (durante Subagente)
+test('55. Preempção Gate 2: Nova mensagem durante Subagente preempta ciclo, reverte ledger para pending e cancela despacho', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaSent = 0;
+  const initialMsgs = [
+    { id: 'm_g2_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Tem garantia de fábrica?', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Fase inicial' }),
+          tokens: 40,
+        };
+      }
+      // Simula chegada de nova mensagem enquanto o Subagente formula a resposta
+      supabase.getInsertedMessages().push({
+        id: 'm_g2_2_concorrente',
+        sender_id: 'them',
+        is_mine: false,
+        direction: 'inbound',
+        text: 'E aceita troca na minha Saveiro?',
+        created_at: new Date().toISOString(),
+      });
+
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Tem garantia de fábrica sim!',
+          nextPhase: 'conexao_inicial',
+          summary: 'Resposta da garantia',
+        }),
+        tokens: 60,
+      };
+    },
+    sendMetaTextMessage: async () => {
+      metaSent++;
+      return { success: true, message_id: 'meta_never' };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_gate_2_test',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, false, 'Ciclo deve retornar handled=false quando preemptado no Gate 2');
+  assert.equal(res.sentToMeta, false, 'ZERO envios à Meta no Gate 2');
+  assert.equal(metaSent, 0);
+  assert.match(res.error, /preemptado/i);
+
+  const conv = supabase.getConversationData();
+  const orch = conv.stage_completed_rules.orchestration;
+  assert.equal(orch.messageLedger['m_g2_1'], 'pending', 'm_g2_1 deve reverter para pending');
+});
+
+// TESTE 56: Preempção Gate 3 (antes da Outbox)
+test('56. Preempção Gate 3: Nova mensagem antes da Outbox preempta o ciclo antes da criação da intenção', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaSent = 0;
+  const initialMsgs = [
+    { id: 'm_g3_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Faz financiamento 100%?', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  let modelCalls = 0;
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      modelCalls++;
+      if (modelCalls === 2) {
+        // Ao concluir as duas chamadas de LLM, simula uma mensagem chegando exatamente antes da outbox
+        supabase.getConversationData().stage_completed_rules.preempt_requested = true;
+      }
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 30 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Financiamos sim!',
+          nextPhase: 'conexao_inicial',
+          summary: 'ok',
+        }),
+        tokens: 40,
+      };
+    },
+    sendMetaTextMessage: async () => {
+      metaSent++;
+      return { success: true };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_gate_3_test',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, false);
+  assert.equal(res.sentToMeta, false);
+  assert.equal(metaSent, 0);
+  assert.match(res.error, /preemptado/i);
+
+  const conv = supabase.getConversationData();
+  const orch = conv.stage_completed_rules.orchestration;
+  assert.equal(orch.messageLedger['m_g3_1'], 'pending');
+});
+
+// TESTE 57: Preempção Gate 4 (Caso A - Balão 0)
+test('57. Preempção Gate 4 (Caso A - Balão 0): Nova mensagem antes do primeiro balão cancela envio com ZERO Meta', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaSent = 0;
+  const initialMsgs = [
+    { id: 'm_g4a_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Você trabalha hoje?', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 30 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Trabalho sim!\n\nPosso te atender à tarde.',
+          nextPhase: 'conexao_inicial',
+          summary: 'ok',
+        }),
+        tokens: 40,
+      };
+    },
+    sendMetaTextMessage: async () => {
+      metaSent++;
+      return { success: true, message_id: 'meta_b1' };
+    },
+  };
+
+  // Simula sinal de preempção que chega antes do despacho do primeiro balão
+  const origUpdate = supabase.from('instagram_conversations').update;
+  let intercepted = false;
+  supabase.from = (table) => {
+    if (table === 'instagram_conversations') {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => {
+              // Se já criou a outbox na conversa, simula nova mensagem concorrente detectada
+              const data = supabase.getConversationData();
+              if (data.stage_completed_rules?.orchestration?.outbox && !intercepted) {
+                intercepted = true;
+                data.stage_completed_rules.preempt_requested = true;
+              }
+              return { data, error: null };
+            },
+          }),
+        }),
+        update: origUpdate,
+      };
+    }
+    return {
+      select: () => ({
+        eq: () => ({
+          order: () => ({
+            limit: async () => ({ data: supabase.getInsertedMessages(), error: null }),
+          }),
+        }),
+      }),
+      upsert: async () => ({ data: null, error: null }),
+    };
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_gate_4a_test',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, false, 'Caso A deve retornar handled=false');
+  assert.equal(res.sentToMeta, false, 'Caso A tem ZERO envios à Meta');
+  assert.equal(metaSent, 0);
+  assert.match(res.error, /preemptado/i);
+});
+
+// TESTE 58: Fronteira Irreversível Gate 4 (Caso B - Multi-balão)
+test('58. Fronteira Irreversível Gate 4 (Caso B): Balão 1 enviado, nova msg chega -> Balão 2 cancelado e Balão 1 preservado', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaCalls = [];
+  const initialMsgs = [
+    { id: 'm_multi_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Boa tarde!', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 30 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Boa tarde, tudo bem?\n\nComo posso te ajudar hoje?',
+          nextPhase: 'conexao_inicial',
+          summary: 'Resposta em 2 balões',
+        }),
+        tokens: 50,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaCalls.push(text);
+      // Após o primeiro balão ser enviado à Meta, simula o pretendente mandando nova mensagem antes do segundo balão!
+      supabase.getConversationData().stage_completed_rules.preempt_requested = true;
+      return { success: true, message_id: `meta_balloon_${metaCalls.length}` };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_multi_case_b',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  // Fronteira irreversível: Balão 1 foi enviado, logo sentToMeta=true e handled=true
+  assert.equal(res.handled, true, 'Caso B considera o turno parcialmente entregue como handled=true');
+  assert.equal(res.sentToMeta, true, 'sentToMeta=true pois Balão 1 já foi entregue');
+  assert.equal(metaCalls.length, 1, 'Exatamente 1 balão deve ter sido enviado à Meta (Balão 2 foi cancelado)');
+  assert.equal(metaCalls[0], 'Boa tarde, tudo bem?');
+
+  const conv = supabase.getConversationData();
+  const orch = conv.stage_completed_rules.orchestration;
+  const cycle = orch.recentCycles?.[0];
+
+  // Balão 1 foi entregue, então as mensagens daquele lote ficam processed
+  assert.equal(orch.messageLedger['m_multi_1'], 'processed', 'm_multi_1 foi respondida pelo Balão 1');
+  assert.ok(cycle.trace.some((t) => t.includes('remaining_bubbles_superseded')), 'Trace deve conter remaining_bubbles_superseded');
+  assert.ok(conv.stage_completed_rules.ai_debounce_until, 'Deve agendar debounce para o próximo ciclo com a nova mensagem');
+});
+
+// TESTE 59: Âncora de Contexto da Larissa pós-Caso B
+test('59. Âncora de Contexto pós-Caso B: Próximo ciclo enxerga Balão 1 como [ULTIMA_RESPOSTA_LARISSA]', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle, formatContextForConversationAgent } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const messagesInDb = [
+    { id: 'm_past_1', sender_id: 'them', is_mine: false, text: 'Boa tarde!', created_at: '2026-09-18T10:00:00Z', timestamp: '2026-09-18T10:00:00Z' },
+    { id: 'm_larissa_b1', sender_id: 'me', is_mine: true, text: 'Boa tarde, tudo bem?', created_at: '2026-09-18T10:00:02Z', timestamp: '2026-09-18T10:00:02Z' },
+  ];
+
+  const mockSupabase = {
+    from: (table) => ({
+      select: () => ({
+        eq: () => ({
+          or: () => ({
+            order: () => ({
+              limit: async () => ({
+                data: [{ id: 'm_larissa_b1', sender_id: 'me', is_mine: true, text: 'Boa tarde, tudo bem?' }],
+              }),
+            }),
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const claimed = [
+    { id: 'm_new_inbound', sender: 'pretendente', text: 'Quero saber da Amarok', timestamp: '2026-09-18T10:00:05Z', direction: 'inbound' },
+  ];
+
+  const { payload } = await buildConversationContextForCycle({
+    conversationId: 'conv_anchor_test',
+    currentPhase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_feita',
+    claimedMessages: claimed,
+    supabase: mockSupabase,
+  });
+
+  assert.ok(payload.lastLarissaMessage, 'Deve haver lastLarissaMessage');
+  assert.equal(payload.lastLarissaMessage.text, 'Boa tarde, tudo bem?');
+
+  const serialized = formatContextForConversationAgent(payload);
+  assert.ok(serialized.includes('[ULTIMA_RESPOSTA_LARISSA]'), 'Serialização deve conter a tag [ULTIMA_RESPOSTA_LARISSA]');
+  assert.ok(serialized.includes('Boa tarde, tudo bem?'));
+});
+
+// TESTE 60: Concorrência no Webhook
+test('60. Concorrência no Webhook: Mensagem recebida sob lock ativo incrementa inboundRevision e marca preempt_requested', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Simula conversa com lock ativo por outro correlationId recente
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        active_cycle_token: 'active_other_worker_123',
+        active_cycle_at: new Date().toISOString(), // Lock fresco (<25s)
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          inboundRevision: 1,
+          messageLedger: {},
+        },
+      },
+    },
+    []
+  );
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_webhook_conc_test',
+    correlationId: 'new_corr_456',
+    newMessage: { id: 'm_new_conc', text: 'Mensagem simultânea', timestamp: new Date().toISOString(), sender: 'them' },
+  });
+
+  assert.equal(res.handled, false);
+  assert.equal(res.error, 'Lock ativo concorrente');
+  assert.equal(res.blockLegacyFallback, true, 'Concorrência NUNCA deve ativar o legado');
+});
+
+// TESTE 61: Fusão de Mensagens em Rajada via Debounce
+test('61. Fusão de Mensagens via Debounce: 3 mensagens em rajada são agrupadas no mesmo lote de claim', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const rajadaMsgs = [
+    { id: 'raj_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Oi', created_at: '2026-09-18T10:00:00Z' },
+    { id: 'raj_2', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Tudo bem?', created_at: '2026-09-18T10:00:01Z' },
+    { id: 'raj_3', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Quero ver o carro', created_at: '2026-09-18T10:00:02Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    rajadaMsgs
+  );
+
+  let claimedInPrompt = [];
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 40 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Olá! Tudo ótimo, vamos agendar sim!',
+          nextPhase: 'conexao_inicial',
+          summary: 'Resposta unificada',
+        }),
+        tokens: 50,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_raj_ok' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_rajada_test',
+    newMessage: rajadaMsgs[2],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, true);
+  const conv = supabase.getConversationData();
+  const orch = conv.stage_completed_rules.orchestration;
+  const cycle = orch.recentCycles?.[0];
+
+  assert.equal(cycle.claimedMessageIds.length, 3, 'Todas as 3 mensagens devem ser agrupadas no mesmo ciclo');
+  assert.equal(orch.messageLedger['raj_1'], 'processed');
+  assert.equal(orch.messageLedger['raj_2'], 'processed');
+  assert.equal(orch.messageLedger['raj_3'], 'processed');
+});
+
+// TESTE 62: Âncora da Larissa nunca descarta mensagens inbound
+test('62. Âncora da Larissa nunca descarta mensagens: 4 mensagens do pretendente após Larissa são todas claimed', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const history = [
+    { id: 'm_l_old', sender_id: 'me', is_mine: true, direction: 'outbound', text: 'Como posso ajudar?', created_at: '2026-09-18T09:50:00Z' },
+    { id: 'p_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'P1', created_at: '2026-09-18T10:00:01Z' },
+    { id: 'p_2', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'P2', created_at: '2026-09-18T10:00:02Z' },
+    { id: 'p_3', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'P3', created_at: '2026-09-18T10:00:03Z' },
+    { id: 'p_4', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'P4', created_at: '2026-09-18T10:00:04Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    history
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async () => ({
+      content: JSON.stringify({ action: 'reply', checkpoint: 'chk_saudacao_feita', suggestedResponse: 'Entendido!', nextPhase: 'conexao_inicial', summary: 'ok' }),
+      tokens: 30,
+    }),
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_p4_ok' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_anchor_no_drop',
+    newMessage: history[4],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, true);
+  const cycle = supabase.getConversationData().stage_completed_rules.orchestration.recentCycles?.[0];
+  assert.equal(cycle.claimedMessageIds.length, 4, 'Todas as 4 mensagens do pretendente devem ser claimed');
+});
+
+// TESTE 63: Fluxo Nominal Limpo (sem novas mensagens concorrentes)
+test('63. Fluxo Nominal Limpo: Turno sem concorrência completa com sucesso e envia resposta à Meta', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaSentText = '';
+  const initialMsgs = [
+    { id: 'm_nom_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Qual o valor?', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 30 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Está R$ 250.000',
+          nextPhase: 'conexao_inicial',
+          summary: 'Preço informado',
+        }),
+        tokens: 40,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaSentText = text;
+      return { success: true, message_id: 'meta_nom_ok' };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_nominal_clean',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(metaSentText, 'Está R$ 250.000');
+
+  const orch = supabase.getConversationData().stage_completed_rules.orchestration;
+  assert.equal(orch.messageLedger['m_nom_1'], 'processed');
+  assert.equal(orch.recentCycles?.[0]?.status, 'completed');
+});
+
+// TESTE 64: Resposta em 3 balões sem interrupção
+test('64. Resposta em 3 Balões: Despacha todos os 3 balões sequencialmente com outbox atômica independente', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaBalloons = [];
+  const initialMsgs = [
+    { id: 'm_b3_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Como funciona?', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 30 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Primeiro balão explicativo.\n\nSegundo balão com detalhes.\n\nTerceiro balão com pergunta.',
+          nextPhase: 'conexao_inicial',
+          summary: '3 balões',
+        }),
+        tokens: 60,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaBalloons.push(text);
+      return { success: true, message_id: `meta_b_${metaBalloons.length}` };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_three_balloons',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(metaBalloons.length, 3, 'Todos os 3 balões devem ter sido enviados');
+  assert.equal(metaBalloons[0], 'Primeiro balão explicativo.');
+  assert.equal(metaBalloons[1], 'Segundo balão com detalhes.');
+  assert.equal(metaBalloons[2], 'Terceiro balão com pergunta.');
+
+  const orch = supabase.getConversationData().stage_completed_rules.orchestration;
+  assert.equal(orch.messageLedger['m_b3_1'], 'processed');
+});
+
+// TESTE 65: Preempção durante Balão 3 (após 1 e 2 enviados)
+test('65. Preempção durante Balão 3: Balões 1 e 2 entregues, Balão 3 cancelado por nova mensagem', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaBalloons = [];
+  const initialMsgs = [
+    { id: 'm_b3_cut_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Me explica tudo', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 30 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Balão 1 entregue.\n\nBalão 2 entregue.\n\nBalão 3 que será cancelado.',
+          nextPhase: 'conexao_inicial',
+          summary: '3 balões com corte',
+        }),
+        tokens: 60,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaBalloons.push(text);
+      if (metaBalloons.length === 2) {
+        // Após o segundo balão, pretendente envia nova mensagem antes do terceiro
+        supabase.getConversationData().stage_completed_rules.preempt_requested = true;
+      }
+      return { success: true, message_id: `meta_b_${metaBalloons.length}` };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_balloon_3_cut',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(metaBalloons.length, 2, 'Apenas 2 balões devem ter sido entregues; Balão 3 cancelado');
+  assert.equal(metaBalloons[0], 'Balão 1 entregue.');
+  assert.equal(metaBalloons[1], 'Balão 2 entregue.');
+
+  const conv = supabase.getConversationData();
+  const orch = conv.stage_completed_rules.orchestration;
+  assert.equal(orch.messageLedger['m_b3_cut_1'], 'processed');
+});
+
+// TESTE 66: Incerteza de Rede no Balão 2 (timeout Meta)
+test('66. Incerteza de Rede no Balão 2: Balão 1 entregue, Balão 2 incerto -> finaliza incerto sem enviar Balão 3 e bloqueia legado', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaBalloons = [];
+  const initialMsgs = [
+    { id: 'm_unc_b2', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Quero detalhes', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async () => ({
+      content: JSON.stringify({
+        action: 'reply',
+        checkpoint: 'chk_saudacao_feita',
+        suggestedResponse: 'Balão 1 com sucesso.\n\nBalão 2 com timeout.\n\nBalão 3 não deve rodar.',
+        nextPhase: 'conexao_inicial',
+        summary: 'ok',
+      }),
+      tokens: 50,
+    }),
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaBalloons.push(text);
+      if (metaBalloons.length === 2) {
+        throw new Error('Connection timeout while waiting for Meta Graph API response');
+      }
+      return { success: true, message_id: 'meta_b1_ok' };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_unc_balloon_2',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.sentToMeta, true, 'sentToMeta=true pois Balão 1 foi entregue e Balão 2 é incerto');
+  assert.equal(res.blockLegacyFallback, true, 'Fallback legado terminantemente bloqueado');
+  assert.equal(metaBalloons.length, 2, 'Balão 3 nunca deve ser tentado');
+});
+
+// TESTE 67: Cancelamento Manual pelo Operador tem Prioridade
+test('67. Cancelamento Manual pelo Operador: cancel_current_cycle cancela imediatamente com prioridade máxima', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const initialMsgs = [
+    { id: 'm_cancel_op', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Oi', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        cancel_current_cycle: true,
+        orchestration: { version: 1, mode: 'experimental', currentPhase: 'conexao_inicial', messageLedger: {} },
+      },
+    },
+    initialMsgs
+  );
+
+  const mockRuntime = {
+    _fastTest: true,
+    callModel: async () => ({ content: JSON.stringify({ action: 'reply' }), tokens: 10 }),
+    sendMetaTextMessage: async () => {
+      metaCalls++;
+      return { success: true };
+    },
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_cancel_op_test',
+    newMessage: initialMsgs[0],
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, false);
+  assert.equal(res.sentToMeta, false);
+  assert.equal(res.blockLegacyFallback, true);
+  assert.equal(metaCalls, 0);
+  assert.match(res.error, /cancelado pelo operador/i);
+});
+
+// TESTE 68: Teste Fim-a-Fim Humano Completo
+test('68. Teste Fim-a-Fim Humano Completo: Msg 1 -> IA pensa -> Msg 2 chega -> Ciclo 1 preemptado -> Debounce agrupa Msg 1+2 -> Ciclo 2 responde em 2 balões com entrega íntegra', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const metaDelivered = [];
+  const dbMessages = [
+    { id: 'h_msg_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Olá Larissa, vi o anúncio da Amarok', created_at: '2026-09-18T11:00:00Z' },
+  ];
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          inboundRevision: 0,
+          messageLedger: {},
+        },
+      },
+    },
+    dbMessages
+  );
+
+  // 1. CICLO 1 INICIA
+  const runtimeCycle1 = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      // Enquanto a IA pensa no Ciclo 1, o pretendente manda uma segunda mensagem complementando
+      const newMsgObj = {
+        id: 'h_msg_2',
+        sender_id: 'them',
+        is_mine: false,
+        direction: 'inbound',
+        text: 'Ela ainda está disponível para visita amanhã?',
+        created_at: new Date().toISOString(),
+      };
+      dbMessages.push(newMsgObj);
+      supabase.getInsertedMessages().push(newMsgObj);
+
+      return {
+        content: JSON.stringify({
+          targetSubagent: 'conexao_inicial',
+          action: 'delegate',
+          reason: 'Atendimento inicial',
+        }),
+        tokens: 40,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaDelivered.push(text);
+      return { success: true, message_id: 'meta_c1_never' };
+    },
+  };
+
+  const res1 = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_human_e2e',
+    correlationId: 'cycle_human_1',
+    newMessage: dbMessages[0],
+    runtime: runtimeCycle1,
+  });
+
+  // Ciclo 1 DEVE ser preemptado!
+  assert.equal(res1.handled, false, 'Ciclo 1 deve ser preemptado pela chegada de h_msg_2');
+  assert.equal(res1.sentToMeta, false, 'ZERO mensagens entregues pelo Ciclo 1');
+  assert.equal(metaDelivered.length, 0);
+
+  const convAfter1 = supabase.getConversationData();
+  const orchAfter1 = convAfter1.stage_completed_rules.orchestration;
+  assert.equal(orchAfter1.messageLedger['h_msg_1'], 'pending', 'h_msg_1 deve voltar para pending');
+  assert.ok(convAfter1.stage_completed_rules.ai_debounce_until, 'Debounce agendado para o próximo ciclo');
+
+  // 2. CICLO 2 DISPARA APÓS O DEBOUNCE COM AMBAS AS MENSAGENS NO BANCO
+  let capturedPrompts = [];
+  const runtimeCycle2 = {
+    _fastTest: true,
+    callModel: async (prompt) => {
+      capturedPrompts.push(prompt);
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'conexao_inicial',
+            action: 'delegate',
+            reason: 'Responder sobre disponibilidade e visita',
+          }),
+          tokens: 50,
+        };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Olá! Está disponível sim!\n\nPodemos combinar amanhã às 14h, o que acha?',
+          nextPhase: 'conexao_inicial',
+          summary: 'Resposta unificada em 2 balões',
+        }),
+        tokens: 70,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      metaDelivered.push(text);
+      return { success: true, message_id: `meta_h_${metaDelivered.length}` };
+    },
+  };
+
+  const res2 = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_human_e2e',
+    correlationId: 'cycle_human_2',
+    newMessage: dbMessages[1], // trigger msg 2
+    runtime: runtimeCycle2,
+  });
+
+  assert.equal(res2.handled, true, 'Ciclo 2 deve processar com sucesso o lote unificado');
+  assert.equal(res2.sentToMeta, true, 'Ciclo 2 deve entregar à Meta');
+  assert.equal(metaDelivered.length, 2, 'Ambos os balões da resposta foram entregues');
+  assert.equal(metaDelivered[0], 'Olá! Está disponível sim!');
+  assert.equal(metaDelivered[1], 'Podemos combinar amanhã às 14h, o que acha?');
+
+  const convFinal = supabase.getConversationData();
+  const orchFinal = convFinal.stage_completed_rules.orchestration;
+  const cycle2 = orchFinal.recentCycles?.[0];
+
+  assert.equal(cycle2.claimedMessageIds.length, 2, 'Ciclo 2 agrupou ambas as mensagens (h_msg_1 e h_msg_2)');
+  assert.equal(orchFinal.messageLedger['h_msg_1'], 'processed');
+  assert.equal(orchFinal.messageLedger['h_msg_2'], 'processed');
 });
 
 

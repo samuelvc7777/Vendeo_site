@@ -1062,16 +1062,51 @@ serve(async (req: Request) => {
                         },
                       });
 
-                      // Em caso de concorrência com ciclo ativo, agenda follow-up para processar a nova mensagem assim que o ciclo atual liberar o lock
+                      // Em caso de concorrência com ciclo ativo, sinaliza preempção ao ciclo em andamento e agenda debounce para novo ciclo com snapshot atualizado
                       if (!res.handled && res.error === "Lock ativo concorrente") {
-                        console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Agendando follow-up em 4s.`);
-                        await supabase
-                          .from("instagram_conversations")
-                          .update({
-                            ai_auto_respond: true,
-                            ai_debounce_until: new Date(Date.now() + 4000).toISOString(),
-                          })
-                          .eq("id", conversationId);
+                        console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Sinalizando preempção e debounce de 2.5s.`);
+                        try {
+                          const { data: latestC } = await supabase
+                            .from("instagram_conversations")
+                            .select("stage_completed_rules")
+                            .eq("id", conversationId)
+                            .maybeSingle();
+
+                          const currentStageRules = latestC?.stage_completed_rules || {};
+                          const orch = currentStageRules.orchestration || {};
+                          const currentRev = typeof orch.inboundRevision === "number" ? orch.inboundRevision : 0;
+                          const ledger = { ...(orch.messageLedger || {}) };
+                          if (messageId) {
+                            ledger[messageId] = "pending";
+                          }
+
+                          await supabase
+                            .from("instagram_conversations")
+                            .update({
+                              ai_auto_respond: true,
+                              ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
+                              stage_completed_rules: {
+                                ...currentStageRules,
+                                preempt_requested: true,
+                                orchestration: {
+                                  ...orch,
+                                  inboundRevision: currentRev + 1,
+                                  preemptRequested: true,
+                                  messageLedger: ledger,
+                                },
+                              },
+                            })
+                            .eq("id", conversationId);
+                        } catch (pErr) {
+                          console.warn(`[Orchestrator] Falha ao sinalizar preempção em ${conversationId}:`, pErr);
+                          await supabase
+                            .from("instagram_conversations")
+                            .update({
+                              ai_auto_respond: true,
+                              ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
+                            })
+                            .eq("id", conversationId);
+                        }
                       }
 
                       // BLOQUEIO EXPLÍCITO DO FALLBACK LEGADO:

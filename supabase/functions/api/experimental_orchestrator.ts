@@ -93,7 +93,7 @@ export interface ProcessingCycle {
   claimedMessageIds: string[];
   startedAt: string;
   completedAt?: string | null;
-  status: "in_progress" | "completed" | "failed" | "cancelled";
+  status: "in_progress" | "completed" | "failed" | "cancelled" | "superseded";
   agentVersions: {
     router: string;
     subagent: string;
@@ -110,6 +110,11 @@ export interface ProcessingCycle {
     };
   };
   trace: string[];
+  inputWatermark?: {
+    revision: number;
+    claimedCount: number;
+    snapshotTimestamp: string;
+  };
 }
 
 export interface ConversationOrchestrationState {
@@ -126,6 +131,8 @@ export interface ConversationOrchestrationState {
   durationMs?: number;
   tokens?: number;
   updatedAt: string;
+  inboundRevision?: number;
+  preemptRequested?: boolean;
   // Campos incrementais da arquitetura com Ledger, Cycle e Outbox
   activeCycle?: ProcessingCycle | null;
   recentCycles?: ProcessingCycle[];
@@ -144,6 +151,7 @@ export interface StructuredConversationMessage {
 export interface ConversationContextPayload {
   phase: OrchestrationPhase;
   checkpoint: string;
+  lastLarissaMessage?: StructuredConversationMessage | null;
   newMessages: StructuredConversationMessage[];
   referencedMessages?: Record<string, StructuredConversationMessage>;
   knownFacts?: Record<string, string>;
@@ -446,6 +454,14 @@ export function formatConversationContextForModel(
   lines.push(`fase: ${payload.phase}`);
   lines.push(`checkpoint: ${payload.checkpoint}`);
 
+  // 1.1 [ULTIMA_RESPOSTA_LARISSA] (Âncora de contexto da fala mais recente da Larissa)
+  if (payload.lastLarissaMessage) {
+    lines.push("");
+    lines.push("[ULTIMA_RESPOSTA_LARISSA]");
+    lines.push(`LARISSA | ${payload.lastLarissaMessage.id}`);
+    lines.push(payload.lastLarissaMessage.text || "");
+  }
+
   // 2. [FATOS_CONHECIDOS] - apenas se solicitado ou na camada 'descoberta'
   const shouldIncludeFacts =
     options?.includeKnownFacts ??
@@ -585,6 +601,32 @@ export async function buildConversationContextForCycle(
   const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts } = params;
   const trace: string[] = [];
 
+  // 0. Busca a última mensagem outbound enviada pela Larissa para servir de âncora de contexto
+  let lastLarissaMessage: StructuredConversationMessage | null = null;
+  try {
+    const { data: lastLarissaRows } = await supabase
+      .from("instagram_messages")
+      .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
+      .eq("conversation_id", conversationId)
+      .or("is_mine.eq.true,sender_id.eq.me")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const row = lastLarissaRows?.[0];
+    if (row && row.text) {
+      lastLarissaMessage = {
+        id: String(row.id),
+        sender: "larissa",
+        text: String(row.text).trim(),
+        replyToId: row.reply_to_message_id || null,
+        timestamp: row.timestamp || row.created_at,
+      };
+      trace.push(`last_larissa_anchor=${row.id}`);
+    }
+  } catch (err: any) {
+    trace.push(`last_larissa_fetch_err=${err.message || String(err)}`);
+  }
+
   // Coleta IDs de replies necessários
   const replyIdsNeeded = new Set<string>();
   for (const msg of claimedMessages) {
@@ -646,12 +688,130 @@ export async function buildConversationContextForCycle(
   const payload: ConversationContextPayload = {
     phase: currentPhase,
     checkpoint,
+    lastLarissaMessage,
     newMessages: structuredNewMessages,
     referencedMessages: referencedMap,
     knownFacts: knownFacts || {},
   };
 
   return { payload, trace };
+}
+
+// ----------------------------------------------------------------------------
+// 5.3.1. Divisor de Balões & Freshness Gate (Preempção por Nova Mensagem)
+// ----------------------------------------------------------------------------
+export function splitIntoBalloons(text: string): string[] {
+  if (!text || typeof text !== "string") return [];
+  // Divide por quebra de linha dupla \n\n ou \r\n\r\n
+  const rawParts = text.split(/\n\s*\n/);
+  const result: string[] = [];
+  for (const part of rawParts) {
+    const trimmed = part.trim();
+    if (trimmed) {
+      result.push(trimmed);
+    }
+  }
+  return result.length > 0 ? result : [text.trim()];
+}
+
+export interface FreshnessCheckParams {
+  supabase: any;
+  conversationId: string;
+  claimedMessageIds: string[];
+  cycleStartedAt: string;
+  initialInboundRevision?: number;
+}
+
+export interface FreshnessCheckResult {
+  isFresh: boolean;
+  newerInboundCount: number;
+  newerInboundIds: string[];
+  reason?: string;
+}
+
+export async function checkFreshnessGate(
+  params: FreshnessCheckParams
+): Promise<FreshnessCheckResult> {
+  const { supabase, conversationId, claimedMessageIds, cycleStartedAt, initialInboundRevision } = params;
+
+  try {
+    // 1. Checagem rápida no metadata da conversa (inbound_revision ou preempt_requested)
+    const { data: convData } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    const rules = convData?.stage_completed_rules || {};
+    const orch = rules.orchestration || {};
+
+    if (rules.preempt_requested === true || orch.preemptRequested === true) {
+      return {
+        isFresh: false,
+        newerInboundCount: 1,
+        newerInboundIds: [],
+        reason: "preempt_requested_flag",
+      };
+    }
+
+    if (
+      typeof initialInboundRevision === "number" &&
+      typeof orch.inboundRevision === "number" &&
+      orch.inboundRevision > initialInboundRevision
+    ) {
+      return {
+        isFresh: false,
+        newerInboundCount: orch.inboundRevision - initialInboundRevision,
+        newerInboundIds: [],
+        reason: "inbound_revision_incremented",
+      };
+    }
+
+    // 2. Consulta canônica no banco de mensagens (garantia absoluta contra stale context)
+    const { data: newerRows } = await supabase
+      .from("instagram_messages")
+      .select("id, is_mine, sender_id, text, created_at, timestamp, direction")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true })
+      .limit(50);
+
+    const claimedSet = new Set(claimedMessageIds);
+    const newerIds: string[] = [];
+
+    for (const row of newerRows || []) {
+      const isMine = Boolean(row.is_mine || row.sender_id === "me" || row.direction === "outbound");
+      // Somente mensagens inbound relevantes do pretendente (não da Larissa/Vendeo)
+      if (!isMine && !claimedSet.has(row.id)) {
+        const msgCreatedAt = Date.parse(row.created_at || row.timestamp || 0);
+        const cycleStartMs = Date.parse(cycleStartedAt);
+        if (msgCreatedAt >= cycleStartMs - 1000) {
+          newerIds.push(row.id);
+        }
+      }
+    }
+
+    if (newerIds.length > 0) {
+      return {
+        isFresh: false,
+        newerInboundCount: newerIds.length,
+        newerInboundIds: newerIds,
+        reason: "newer_inbound_messages_detected",
+      };
+    }
+
+    return {
+      isFresh: true,
+      newerInboundCount: 0,
+      newerInboundIds: [],
+    };
+  } catch (err: any) {
+    console.warn(`[FreshnessGate] Erro na checagem de freshness para ${conversationId}:`, err);
+    return {
+      isFresh: true,
+      newerInboundCount: 0,
+      newerInboundIds: [],
+    };
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -1324,6 +1484,9 @@ export async function runExperimentalOrchestration(
       })
       .eq("id", conversationId);
 
+    const initialInboundRevision =
+      typeof orchState.inboundRevision === "number" ? orchState.inboundRevision : 0;
+
     const currentCycle: ProcessingCycle = {
       cycleId: correlationId,
       conversationId,
@@ -1335,8 +1498,14 @@ export async function runExperimentalOrchestration(
         subagent: "1.2.0",
         prompt: "1.2.0",
       },
+      inputWatermark: {
+        revision: initialInboundRevision,
+        claimedCount: claimedMessageIds.length,
+        snapshotTimestamp: new Date().toISOString(),
+      },
       trace: [
         `cycle_started: ${correlationId}`,
+        `input_watermark: rev=${initialInboundRevision}, count=${claimedMessageIds.length}`,
         `messages_claimed: ${claimedMessageIds.length}`,
       ],
     };
@@ -1396,9 +1565,98 @@ export async function runExperimentalOrchestration(
     const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase);
     currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
 
-    console.log(
-      `[Orchestrator] Agente da Conversa roteou ${conversationId} para "${routingDecision.targetSubagent}" (ação=${routingDecision.action}, motivo=${routingDecision.reason}).`
-    );
+    // Helper atômico de preempção segura contra ciclos zumbis e concorrência
+    async function handleCyclePreemption(
+      reasonLabel: string,
+      freshnessInfo: FreshnessCheckResult
+    ): Promise<OrchestrationResult> {
+      console.log(
+        `[Orchestrator] Freshness Gate: Nova mensagem detectada (${reasonLabel}) em ${conversationId} (motivo=${freshnessInfo.reason}, msgs=${freshnessInfo.newerInboundIds.join(",")}). Preemptando ciclo.`
+      );
+      currentCycle.status = "superseded";
+      currentCycle.trace.push(`cycle_preempted_new_input: ${reasonLabel} (new_msgs=${freshnessInfo.newerInboundCount})`);
+      for (const id of claimedMessageIds) {
+        ledger[id] = "pending";
+      }
+
+      // Checa atomicamente se o lock ainda pertence a este ciclo antes de qualquer mutação
+      const { data: convCheck } = await supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .eq("id", conversationId)
+        .maybeSingle();
+
+      const latestRules = convCheck?.stage_completed_rules || stageRules;
+      const latestToken = latestRules.active_cycle_token;
+
+      // Se outro ciclo já assumiu o lock (ex: stale lock roubado por worker B), aborta sem sobrescrever o banco
+      if (latestToken && latestToken !== correlationId) {
+        console.warn(
+          `[Orchestrator] Ciclo ${correlationId} perdeu o lock para ${latestToken}. Abortando preempção sem sobrescrever estado.`
+        );
+        return {
+          mode: orchState.mode,
+          handled: false,
+          sentToMeta: false,
+          blockLegacyFallback: true,
+          error: `Ciclo preemptado por perda de lock para ciclo concorrente (${latestToken})`,
+        };
+      }
+
+      const latestOrch = latestRules.orchestration || orchState;
+      const mergedLedger = { ...(latestOrch.messageLedger || {}), ...ledger };
+
+      await supabase
+        .from("instagram_conversations")
+        .update({
+          stage_completed_rules: {
+            ...latestRules,
+            active_cycle_token: null,
+            ai_auto_respond: true,
+            ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
+            orchestration: {
+              ...latestOrch,
+              messageLedger: mergedLedger,
+              lastProcessingStatus: "idle",
+              recentCycles: [currentCycle, ...(latestOrch.recentCycles || [])].slice(0, 5),
+            },
+          },
+        })
+        .eq("id", conversationId);
+
+      await publishAutoPilotState(supabase, conversationId, {
+        status: "idle",
+        activity: activity(
+          "idle",
+          "Nova mensagem recebida",
+          "Recalculando com contexto atualizado...",
+          { mode: orchState.mode }
+        ),
+      });
+
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: `Ciclo preemptado por nova mensagem inbound (${reasonLabel})`,
+      };
+    }
+
+    // ------------------------------------------------------------------------
+    // FRESHNESS GATE 1: Revalidação imediatamente após o ConversationAgent
+    // ------------------------------------------------------------------------
+    const freshnessAfterRouter = await checkFreshnessGate({
+      supabase,
+      conversationId,
+      claimedMessageIds,
+      cycleStartedAt: currentCycle.startedAt,
+      initialInboundRevision,
+    });
+
+    if (!freshnessAfterRouter.isFresh) {
+      return await handleCyclePreemption("during_conversation_agent", freshnessAfterRouter);
+    }
 
     let finalSubDecision: SubagentDecision;
 
@@ -1454,6 +1712,21 @@ export async function runExperimentalOrchestration(
       const rawSubJson = extractJsonFromText(subRes.content);
       finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
       currentCycle.trace.push(`subagent_executed: ${targetSubagent}`);
+    }
+
+    // ------------------------------------------------------------------------
+    // FRESHNESS GATE 2: Revalidação imediatamente após o Subagente
+    // ------------------------------------------------------------------------
+    const freshnessAfterSubagent = await checkFreshnessGate({
+      supabase,
+      conversationId,
+      claimedMessageIds,
+      cycleStartedAt: currentCycle.startedAt,
+      initialInboundRevision,
+    });
+
+    if (!freshnessAfterSubagent.isFresh) {
+      return await handleCyclePreemption("during_subagent", freshnessAfterSubagent);
     }
 
     // ------------------------------------------------------------------------
@@ -1524,6 +1797,21 @@ export async function runExperimentalOrchestration(
         blockLegacyFallback: true,
         error: `Ciclo preemptado por perda de lock (${recheckRules.active_cycle_token || "lock_expirado"})`,
       };
+    }
+
+    // ------------------------------------------------------------------------
+    // FRESHNESS GATE 3: Revalidação imediatamente antes da criação da Outbox
+    // ------------------------------------------------------------------------
+    const freshnessBeforeOutbox = await checkFreshnessGate({
+      supabase,
+      conversationId,
+      claimedMessageIds,
+      cycleStartedAt: currentCycle.startedAt,
+      initialInboundRevision,
+    });
+
+    if (!freshnessBeforeOutbox.isFresh) {
+      return await handleCyclePreemption("before_outbox", freshnessBeforeOutbox);
     }
 
     // ------------------------------------------------------------------------
@@ -1665,144 +1953,313 @@ export async function runExperimentalOrchestration(
         (decision.action === "reply" || decision.action === "advance_phase") &&
         decision.suggestedResponse
       ) {
-        await publishAutoPilotState(supabase, conversationId, {
-          status: "processing",
-          activity: activity(
-            "sending",
-            "Atria enviando...",
-            "Entregando a mensagem pelo Instagram.",
-            {
-              atriaThought: decision.reasoning,
-              solThought: decision.suggestedResponse,
-              currentResponsePreview: decision.suggestedResponse,
-              totalBalloons: 1,
-              currentBalloon: 1,
-              countdownSeconds: 0,
-              mode: "experimental",
-            }
-          ),
-        });
+        const balloons = splitIntoBalloons(decision.suggestedResponse);
+        let sentBalloonsCount = 0;
 
-        // 1. CLAIM ATÔMICO NO BANCO (Postgres RPC claim_outbox_entry com SELECT ... FOR UPDATE)
-        const claimRes = await claimOutboxEntryAtomic({
-          supabase,
-          conversationId,
-          outboxKey: idempotencyKey,
-          claimToken: correlationId,
-        });
+        for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
+          const balloonText = balloons[bIndex];
 
-        if (!claimRes.success) {
-          console.warn(
-            `[Orchestrator] Falha no claim atômico da outbox para ${conversationId}: motivo=${claimRes.reason}`
-          );
-          if (claimRes.isUncertain || claimRes.reason === "sending_stale_uncertain" || claimRes.reason === "dispatch_uncertain") {
-            sentSuccessfully = true;
-            currentCycle.status = "failed";
-            currentCycle.trace.push(`outbox_claim_uncertain: ${claimRes.reason}`);
-            for (const id of claimedMessageIds) {
-              ledger[id] = "processed";
+          // Pausa humana entre balões subsequentes (se houver mais de 1 balão)
+          if (bIndex > 0) {
+            const isFastTest = Boolean((runtime as any)?._fastTest);
+            if (!isFastTest) {
+              await new Promise((resolve) => setTimeout(resolve, 1500));
             }
-            return {
-              mode: orchState.mode,
-              handled: true,
-              sentToMeta: true,
-              blockLegacyFallback: true,
-              error: `Outbox com envio incerto (${claimRes.reason}). Retry automático bloqueado para evitar duplicação.`,
-            };
-          } else if (claimRes.isInfraFailure) {
-            // FAIL CLOSED: Falha de infraestrutura na execução da RPC no Postgres
-            // Não tenta envio, não assume entrega, não ativa fallback inseguro
-            sentSuccessfully = false;
-            currentCycle.status = "failed";
-            currentCycle.trace.push(`outbox_claim_infra_failure: ${claimRes.reason}`);
-            for (const id of claimedMessageIds) {
-              ledger[id] = "pending";
-            }
-            return {
-              mode: orchState.mode,
-              handled: false,
-              sentToMeta: false,
-              blockLegacyFallback: true,
-              error: `Falha de infraestrutura no claim atômico (${claimRes.reason}). Fail-closed: envio abortado.`,
-            };
-          } else {
-            return {
-              mode: orchState.mode,
-              handled: false,
-              sentToMeta: false,
-              blockLegacyFallback: true,
-              error: `Outbox em envio concorrente ou já processada (${claimRes.reason})`,
-            };
           }
-        }
 
-        if (claimRes.entry) {
-          Object.assign(outboxEntry, claimRes.entry);
-        }
-
-        // 2. DISPATCHER: Envio seguro através da Outbox
-        const dispatchRes = await dispatchOutboxEntry({
-          supabase,
-          outboxEntry,
-          recipientId: conversationId,
-          claimToken: correlationId,
-          runtime,
-        });
-
-        if (dispatchRes.success && outboxEntry.status === "sent") {
-          sentSuccessfully = true;
-          currentCycle.trace.push(`meta_dispatched: ${dispatchRes.providerMessageId}`);
-
-          const nowIso = new Date().toISOString();
-          const messageId = dispatchRes.providerMessageId || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-          await supabase.from("instagram_messages").upsert({
-            id: messageId,
-            conversation_id: conversationId,
-            sender_id: "me",
-            is_mine: true,
-            text: decision.suggestedResponse,
-            status: "sent",
-            created_at: nowIso,
-            timestamp: nowIso,
+          // ------------------------------------------------------------------
+          // FRESHNESS GATE 4: Revalidação imediatamente antes de despachar o balão
+          // ------------------------------------------------------------------
+          const freshnessBeforeBalloon = await checkFreshnessGate({
+            supabase,
+            conversationId,
+            claimedMessageIds,
+            cycleStartedAt: currentCycle.startedAt,
+            initialInboundRevision,
           });
+
+          if (!freshnessBeforeBalloon.isFresh) {
+            console.log(
+              `[Orchestrator] Freshness Gate: Nova mensagem detectada antes do balão ${bIndex + 1}/${balloons.length} em ${conversationId} (motivo=${freshnessBeforeBalloon.reason}, msgs=${freshnessBeforeBalloon.newerInboundIds.join(",")}).`
+            );
+
+            if (sentBalloonsCount === 0) {
+              // CASO A: Zero balões enviados! Cancelamento limpo, sem efeitos colaterais na Meta.
+              return await handleCyclePreemption("before_first_balloon", freshnessBeforeBalloon);
+            } else {
+              // CASO B: Fronteira irreversível! Ao menos um balão já foi entregue à Meta!
+              // Balões restantes são cancelados; mensagens claimed deste ciclo ficam como "processed".
+              // Agenda debounce para o próximo ciclo com o contexto atualizado (incluindo o que já foi enviado).
+              currentCycle.trace.push(
+                `remaining_bubbles_superseded: sent=${sentBalloonsCount}, total=${balloons.length}`
+              );
+              currentCycle.status = "completed";
+              for (const id of claimedMessageIds) {
+                ledger[id] = "processed";
+              }
+
+              const durationMs = Date.now() - startTime;
+              currentCycle.completedAt = new Date().toISOString();
+              currentCycle.metrics = {
+                durationMs,
+                tokens: { total: totalTokens },
+              };
+
+              const updatedState: ConversationOrchestrationState = {
+                version: 1,
+                mode: "experimental",
+                currentPhase: validatedNextPhase,
+                checkpoint: decision.checkpoint,
+                lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
+                lastProcessedAt: new Date().toISOString(),
+                lastProcessingStatus: "sent",
+                lastCorrelationId: correlationId,
+                lastDecision: decision,
+                lastError: null,
+                durationMs,
+                tokens: totalTokens,
+                updatedAt: new Date().toISOString(),
+                activeCycle: null,
+                recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
+                outbox: outboxMap,
+                messageLedger: ledger,
+              };
+
+              await supabase
+                .from("instagram_conversations")
+                .update({
+                  stage_completed_rules: {
+                    ...stageRules,
+                    active_cycle_token: null,
+                    ai_auto_respond: true,
+                    ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
+                    orchestration: updatedState,
+                  },
+                })
+                .eq("id", conversationId);
+
+              await publishAutoPilotState(supabase, conversationId, {
+                status: "idle",
+                activity: activity(
+                  "completed",
+                  "Envio parcial concluído",
+                  `Balão ${sentBalloonsCount}/${balloons.length} enviado. Adaptando para nova mensagem...`,
+                  { mode: "experimental", sentBalloonsCount, totalBalloons: balloons.length }
+                ),
+              });
+
+              return {
+                mode: orchState.mode,
+                handled: true,
+                sentToMeta: true,
+                blockLegacyFallback: true,
+              };
+            }
+          }
+
+          // Chave de outbox para este balão
+          const balloonKey = balloons.length > 1 ? `${idempotencyKey}_b${bIndex}` : idempotencyKey;
+          let balloonOutbox = outboxMap[balloonKey];
+
+          if (!balloonOutbox) {
+            balloonOutbox = {
+              id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_b${bIndex}`,
+              cycleId: correlationId,
+              conversationId,
+              idempotencyKey: balloonKey,
+              content: balloonText,
+              messageType: "text",
+              status: "pending",
+              attempts: 0,
+              maxAttempts: 3,
+              createdAt: new Date().toISOString(),
+            };
+            outboxMap[balloonKey] = balloonOutbox;
+          }
 
           await supabase
             .from("instagram_conversations")
             .update({
-              last_message: decision.suggestedResponse,
-              last_message_preview: decision.suggestedResponse,
-              last_message_at: nowIso,
-              last_direction: "out",
-              last_status: "sent",
+              stage_completed_rules: {
+                ...stageRules,
+                active_cycle_token: correlationId,
+                orchestration: {
+                  ...orchState,
+                  outbox: outboxMap,
+                },
+              },
             })
             .eq("id", conversationId);
 
+          await publishAutoPilotState(supabase, conversationId, {
+            status: "processing",
+            activity: activity(
+              "sending",
+              balloons.length > 1
+                ? `Atria enviando balão ${bIndex + 1}/${balloons.length}...`
+                : "Atria enviando...",
+              "Entregando a mensagem pelo Instagram.",
+              {
+                atriaThought: decision.reasoning,
+                solThought: balloonText,
+                currentResponsePreview: balloonText,
+                totalBalloons: balloons.length,
+                currentBalloon: bIndex + 1,
+                countdownSeconds: 0,
+                mode: "experimental",
+              }
+            ),
+          });
+
+          // 1. CLAIM ATÔMICO NO BANCO
+          const claimRes = await claimOutboxEntryAtomic({
+            supabase,
+            conversationId,
+            outboxKey: balloonKey,
+            claimToken: correlationId,
+          });
+
+          if (!claimRes.success) {
+            console.warn(
+              `[Orchestrator] Falha no claim atômico da outbox para ${conversationId} (balão ${bIndex + 1}): motivo=${claimRes.reason}`
+            );
+            if (claimRes.isUncertain || claimRes.reason === "sending_stale_uncertain" || claimRes.reason === "dispatch_uncertain") {
+              sentSuccessfully = true;
+              currentCycle.status = "failed";
+              currentCycle.trace.push(`outbox_claim_uncertain: ${claimRes.reason}`);
+              for (const id of claimedMessageIds) {
+                ledger[id] = "processed";
+              }
+              return {
+                mode: orchState.mode,
+                handled: true,
+                sentToMeta: true,
+                blockLegacyFallback: true,
+                error: `Outbox com envio incerto (${claimRes.reason}). Retry automático bloqueado para evitar duplicação.`,
+              };
+            } else if (claimRes.isInfraFailure) {
+              sentSuccessfully = false;
+              currentCycle.status = "failed";
+              currentCycle.trace.push(`outbox_claim_infra_failure: ${claimRes.reason}`);
+              if (sentBalloonsCount === 0) {
+                for (const id of claimedMessageIds) {
+                  ledger[id] = "pending";
+                }
+              }
+
+              const { data: latestRow } = await supabase
+                .from("instagram_conversations")
+                .select("stage_completed_rules")
+                .eq("id", conversationId)
+                .maybeSingle();
+              const latestRules = latestRow?.stage_completed_rules || stageRules;
+              const latestOrch = latestRules.orchestration || orchState;
+              const mergedLedger = { ...(latestOrch.messageLedger || {}), ...ledger };
+
+              await supabase
+                .from("instagram_conversations")
+                .update({
+                  stage_completed_rules: {
+                    ...latestRules,
+                    active_cycle_token: null,
+                    orchestration: {
+                      ...latestOrch,
+                      messageLedger: mergedLedger,
+                      lastProcessingStatus: "failed",
+                      recentCycles: [currentCycle, ...(latestOrch.recentCycles || [])].slice(0, 5),
+                    },
+                  },
+                })
+                .eq("id", conversationId);
+
+              return {
+                mode: orchState.mode,
+                handled: false,
+                sentToMeta: sentBalloonsCount > 0,
+                blockLegacyFallback: true,
+                error: `Falha de infraestrutura no claim atômico (${claimRes.reason}). Fail-closed: envio abortado.`,
+              };
+            } else {
+              return {
+                mode: orchState.mode,
+                handled: false,
+                sentToMeta: sentBalloonsCount > 0,
+                blockLegacyFallback: true,
+                error: `Outbox em envio concorrente ou já processada (${claimRes.reason})`,
+              };
+            }
+          }
+
+          if (claimRes.entry) {
+            Object.assign(balloonOutbox, claimRes.entry);
+          }
+
+          // 2. DISPATCHER: Envio seguro do balão através da Outbox
+          const dispatchRes = await dispatchOutboxEntry({
+            supabase,
+            outboxEntry: balloonOutbox,
+            recipientId: conversationId,
+            claimToken: correlationId,
+            runtime,
+          });
+
+          if (dispatchRes.success && balloonOutbox.status === "sent") {
+            sentSuccessfully = true;
+            sentBalloonsCount++;
+            currentCycle.trace.push(`meta_dispatched_b${bIndex + 1}: ${dispatchRes.providerMessageId}`);
+
+            const nowIso = new Date().toISOString();
+            const messageId = dispatchRes.providerMessageId || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+            await supabase.from("instagram_messages").upsert({
+              id: messageId,
+              conversation_id: conversationId,
+              sender_id: "me",
+              is_mine: true,
+              text: balloonText,
+              status: "sent",
+              created_at: nowIso,
+              timestamp: nowIso,
+            });
+
+            await supabase
+              .from("instagram_conversations")
+              .update({
+                last_message: balloonText,
+                last_message_preview: balloonText,
+                last_message_at: nowIso,
+                last_direction: "out",
+                last_status: "sent",
+              })
+              .eq("id", conversationId);
+          } else if (dispatchRes.isUncertain) {
+            sentSuccessfully = true;
+            currentCycle.status = "failed";
+            currentCycle.trace.push(`meta_dispatch_uncertain: ${dispatchRes.error}`);
+            console.warn(
+              `[Orchestrator] Envio com status dispatch_uncertain para ${conversationId}. Bloqueando retry automático e fallback legacy para evitar duplicação.`
+            );
+            for (const id of claimedMessageIds) {
+              ledger[id] = "processed";
+            }
+            break;
+          } else {
+            currentCycle.status = "failed";
+            currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
+            if (sentBalloonsCount === 0) {
+              for (const id of claimedMessageIds) {
+                ledger[id] = "pending";
+              }
+            }
+            throw new Error(`Falha no despacho da outbox: ${dispatchRes.error}`);
+          }
+        }
+
+        if (sentBalloonsCount === balloons.length) {
           for (const id of claimedMessageIds) {
             ledger[id] = "processed";
           }
           currentCycle.status = "completed";
-        } else if (dispatchRes.isUncertain) {
-          // Incerteza de rede (timeout / disconnect na chamada da Meta Graph API)
-          // A Meta pode ter recebido e entregue a mensagem!
-          // NÃO reverte mensagens para pending (para não gerar duplicata) e marca sentSuccessfully como true
-          // para bloquear fallback para legacy no webhook handler.
-          sentSuccessfully = true;
-          currentCycle.status = "failed";
-          currentCycle.trace.push(`meta_dispatch_uncertain: ${dispatchRes.error}`);
-          console.warn(
-            `[Orchestrator] Envio com status dispatch_uncertain para ${conversationId}. Bloqueando retry automático e fallback legacy para evitar duplicação.`
-          );
-          for (const id of claimedMessageIds) {
-            ledger[id] = "processed";
-          }
-        } else {
-          currentCycle.status = "failed";
-          currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
-          for (const id of claimedMessageIds) {
-            ledger[id] = "pending"; // Reverte mensagens para retry limpo apenas em erro determinístico
-          }
-          throw new Error(`Falha no despacho da outbox: ${dispatchRes.error}`);
         }
       } else {
         // Ação 'wait' ou sem resposta: marca mensagens como processadas para não reavaliar no vácuo
@@ -1930,6 +2387,7 @@ export async function runExperimentalOrchestration(
         mode: "experimental",
         handled: true,
         sentToMeta: sentSuccessfully,
+        blockLegacyFallback: true,
         decision,
         durationMs,
         tokens: totalTokens,
