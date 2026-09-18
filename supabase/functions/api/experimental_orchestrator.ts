@@ -643,51 +643,82 @@ export async function buildConversationContextForCycle(
   const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts } = params;
   const trace: string[] = [];
 
-  // 0. Busca o último bloco CONTÍGUO de mensagens outbound enviadas pela Larissa
+  // 0. Busca o último bloco CONTÍGUO de mensagens outbound enviadas pela Larissa (sem limites arbitrários)
   let lastLarissaMessage: StructuredConversationMessage | null = null;
   let lastLarissaTurn: StructuredConversationMessage[] = [];
   try {
-    let recentRows: any[] = [];
-    const q = supabase
-      .from("instagram_messages")
-      .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
-      .eq("conversation_id", conversationId);
-
-    if (typeof q.order === "function") {
-      const res = await q.order("created_at", { ascending: false }).limit(30);
-      recentRows = res?.data || [];
-    } else if (typeof q.or === "function") {
-      // Suporte a mocks legados que encadeiam .or(...)
-      const withOr = q.or("is_mine.eq.true,sender_id.eq.me");
-      if (withOr && typeof withOr.order === "function") {
-        const res = await withOr.order("created_at", { ascending: false }).limit(30);
-        recentRows = res?.data || [];
-      }
-    }
-
     const pendingIds = new Set(claimedMessages.map((m) => String(m.id)));
     const collectedLarissa: StructuredConversationMessage[] = [];
+    const batchSize = 50;
+    let offset = 0;
+    let stopTurnSearch = false;
 
-    for (const row of recentRows) {
-      const rowId = String(row.id);
-      // Pula mensagens que compõem o lote pendente atual do pretendente
-      if (pendingIds.has(rowId)) {
-        continue;
+    while (!stopTurnSearch) {
+      const q = supabase
+        .from("instagram_messages")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
+        .eq("conversation_id", conversationId);
+
+      let batch: any[] = [];
+      if (typeof q.order === "function") {
+        const orderQ = q.order("created_at", { ascending: false });
+        if (typeof (orderQ as any).range === "function") {
+          const res = await (orderQ as any).range(offset, offset + batchSize - 1);
+          batch = res?.data || [];
+        } else if (typeof (orderQ as any).limit === "function") {
+          const res = await (orderQ as any).limit(batchSize);
+          batch = res?.data || [];
+        } else {
+          const res = await orderQ;
+          batch = res?.data || [];
+        }
+      } else if (typeof q.or === "function") {
+        // Suporte a mocks legados que encadeiam .or(...)
+        const withOr = q.or("is_mine.eq.true,sender_id.eq.me");
+        if (withOr && typeof withOr.order === "function") {
+          const orderQ = withOr.order("created_at", { ascending: false });
+          if (typeof (orderQ as any).range === "function") {
+            const res = await (orderQ as any).range(offset, offset + batchSize - 1);
+            batch = res?.data || [];
+          } else {
+            const res = await (orderQ as any).limit(batchSize);
+            batch = res?.data || [];
+          }
+        }
       }
 
-      const isLarissa = Boolean(row.is_mine === true || row.sender_id === "me" || row.sender === "larissa");
-      if (isLarissa && row.text) {
-        collectedLarissa.push({
-          id: rowId,
-          sender: "larissa",
-          text: String(row.text).trim(),
-          replyToId: row.reply_to_message_id || null,
-          timestamp: row.timestamp || row.created_at,
-        });
-      } else {
-        // Encontrou mensagem do pretendente antes da Larissa ou fim do bloco contíguo
+      if (!batch || batch.length === 0) {
         break;
       }
+
+      for (const row of batch) {
+        const rowId = String(row.id);
+        // Pula mensagens que compõem o lote pendente atual do pretendente
+        if (pendingIds.has(rowId)) {
+          continue;
+        }
+
+        const isLarissa = Boolean(row.is_mine === true || row.sender_id === "me" || row.sender === "larissa");
+        if (isLarissa && row.text) {
+          collectedLarissa.push({
+            id: rowId,
+            sender: "larissa",
+            text: String(row.text).trim(),
+            replyToId: row.reply_to_message_id || null,
+            timestamp: row.timestamp || row.created_at,
+          });
+        } else {
+          // Encontrou mensagem do pretendente antes da Larissa: fim estrito do bloco contíguo
+          stopTurnSearch = true;
+          break;
+        }
+      }
+
+      if (batch.length < batchSize || stopTurnSearch) {
+        break;
+      }
+
+      offset += batchSize;
     }
 
     // A coleta foi feita em ordem decrescente (DESC); inverte para ordem cronológica ascendente (ASC)
@@ -1713,7 +1744,7 @@ export function extractFactsFromInboundText(text: string, sourceMessageId?: stri
 
   // 4. Profissão / Ocupação ("self.profession")
   const profMatch = clean.match(
-    /(?:trabalho com|trabalho na área de|sou)\s+(engenharia|engenheiro|médico|advogado|programador|dev|ti|médica|advogada|autônomo|professor|professora|vendedor|contador|arquiteto)/i
+    /(?:trabalho como|trabalho com|trabalho na área de|sou)\s+(engenharia|engenheiro|médico|advogado|programador|dev|ti|médica|advogada|autônomo|professor|professora|vendedor|contador|arquiteto)/i
   );
   if (profMatch) {
     facts.push({
@@ -1976,34 +2007,69 @@ export async function runExperimentalOrchestration(
     const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
 
     // 5. BACKEND DETERMINÍSTICO: Ledger & Seleção de TODAS as mensagens pendentes (Sem cortes arbitrários)
-    const { data: rawMsgs } = await supabase
-      .from("instagram_messages")
-      .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true })
-      .limit(100);
+    const collectedPendingRaw: CanonicalMessage[] = [];
+    const batchSize = 100;
+    let offset = 0;
+    let hasMore = true;
 
-    const canonicalList: CanonicalMessage[] = (rawMsgs || []).map((m: any) =>
-      normalizeToCanonicalMessage(m, conversationId)
-    );
+    while (hasMore) {
+      const q = supabase
+        .from("instagram_messages")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: false });
 
-    const pendingMessages: CanonicalMessage[] = [];
-    for (const msg of canonicalList) {
-      if (msg.sender === "pretendente" && msg.direction === "inbound") {
-        const isActivelyClaimed =
-          ledger[msg.id] === "claimed" &&
-          activeLock &&
-          Date.now() - activeLockAt < 25000 &&
-          activeLock !== correlationId;
-        const isProcessed =
-          ledger[msg.id] === "processed" ||
-          isActivelyClaimed ||
-          (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
-        if (!isProcessed) {
-          pendingMessages.push({ ...msg, status: "pending" });
+      let batch: any[] = [];
+      if (typeof (q as any).range === "function") {
+        const res = await (q as any).range(offset, offset + batchSize - 1);
+        batch = res?.data || [];
+      } else if (typeof (q as any).limit === "function") {
+        const res = await (q as any).limit(batchSize);
+        batch = res?.data || [];
+      } else {
+        const res = await q;
+        batch = res?.data || [];
+      }
+
+      if (!batch || batch.length === 0) {
+        break;
+      }
+
+      let foundProcessedInbound = false;
+      for (const m of batch) {
+        const msg = normalizeToCanonicalMessage(m, conversationId);
+        if (msg.sender === "pretendente" && msg.direction === "inbound") {
+          const isActivelyClaimed =
+            ledger[msg.id] === "claimed" &&
+            activeLock &&
+            Date.now() - activeLockAt < 25000 &&
+            activeLock !== correlationId;
+          const isProcessed =
+            ledger[msg.id] === "processed" ||
+            isActivelyClaimed ||
+            (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
+
+          if (!isProcessed) {
+            collectedPendingRaw.push({ ...msg, status: "pending" });
+          } else {
+            // A busca é reversa (DESC: mais nova -> mais antiga).
+            // Ao encontrar a primeira mensagem inbound já devidamente processada,
+            // atingimos a fronteira de mensagens pendentes.
+            foundProcessedInbound = true;
+            break;
+          }
         }
       }
+
+      if (foundProcessedInbound || batch.length < batchSize || typeof (q as any).range !== "function") {
+        hasMore = false;
+      } else {
+        offset += batchSize;
+      }
     }
+
+    // Inverte para restaurar a ordem cronológica ascendente (ASC)
+    const pendingMessages: CanonicalMessage[] = collectedPendingRaw.reverse();
 
     if (newMessage && !pendingMessages.some((m) => m.id === newMessage.id)) {
       const isActivelyClaimed =
@@ -2030,6 +2096,13 @@ export async function runExperimentalOrchestration(
         );
       }
     }
+
+    // Garante ordenação cronológica ascendente estrita
+    pendingMessages.sort((a, b) => {
+      const timeA = a.timestamp || a.created_at || "";
+      const timeB = b.timestamp || b.created_at || "";
+      return timeA > timeB ? 1 : timeA < timeB ? -1 : 0;
+    });
 
     if (pendingMessages.length === 0) {
       console.log(`[Orchestrator] Nenhuma mensagem pendente para ${conversationId}. Abortando por idempotência.`);
@@ -2290,14 +2363,13 @@ export async function runExperimentalOrchestration(
       });
 
       const MAX_TOOL_ITERATIONS = 3;
-      let loopIterations = 0;
+      let toolCallsCount = 0;
       let currentSubagentPrompt = subagentPrompt;
+      let lastToolResultForFinalCall: any = null;
 
-      while (loopIterations < MAX_TOOL_ITERATIONS) {
-        loopIterations++;
-
+      while (toolCallsCount < MAX_TOOL_ITERATIONS) {
         // Freshness Gate intra-loop: Se nova mensagem chegou enquanto o subagente consultava memória, preempta imediatamente
-        if (loopIterations > 1) {
+        if (toolCallsCount > 0) {
           const freshnessInToolLoop = await checkFreshnessGate({
             supabase,
             conversationId,
@@ -2320,6 +2392,7 @@ export async function runExperimentalOrchestration(
           rawSubJson &&
           (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)
         ) {
+          toolCallsCount++;
           const toolName = String(rawSubJson.tool || rawSubJson.name || "memory_get_fact").trim();
           const toolParams = rawSubJson.parameters || rawSubJson.params || rawSubJson.arguments || {};
           const toolEntity = String(toolParams.entity || "self").trim();
@@ -2356,19 +2429,20 @@ export async function runExperimentalOrchestration(
           const toolDuration = Date.now() - tStart;
           currentCycle.trace.push(`memory_tool_found: ${toolResult.found}`);
           currentCycle.trace.push(`memory_tool_duration_ms: ${toolDuration}`);
+          lastToolResultForFinalCall = toolResult;
 
-          const isLastIteration = loopIterations >= MAX_TOOL_ITERATIONS;
-          const iterationWarning = isLastIteration
-            ? "\n(ATENÇÃO: Limite de consultas de memória atingido. Responda agora com o contexto disponível sem inventar dados)."
-            : "";
+          if (toolCallsCount >= MAX_TOOL_ITERATIONS) {
+            // Atingiu o limite de 3 chamadas de ferramentas. Interrompe o loop para a chamada final obrigatória sem ferramentas.
+            break;
+          }
 
           currentSubagentPrompt = `${subagentPrompt}
 
-### RETORNO DA CONSULTA DE MEMÓRIA (Tool Call #${loopIterations})
+### RETORNO DA CONSULTA DE MEMÓRIA (Tool Call #${toolCallsCount})
 \`\`\`json
 ${JSON.stringify(toolResult, null, 2)}
 \`\`\`
-${iterationWarning}
+
 Agora prossiga e gere sua resposta final em JSON:
 {
   "action": "reply",
@@ -2387,16 +2461,78 @@ Agora prossiga e gere sua resposta final em JSON:
         break;
       }
 
+      // Se atingiu o limite de chamadas de ferramenta sem resposta final:
+      // Executa UMA chamada final obrigatória de resposta ao modelo com ferramentas desabilitadas
       if (!finalSubDecision) {
-        finalSubDecision = {
-          action: "reply",
-          checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-          summary: "Resposta formulada com contexto disponível",
-          suggestedResponse: "Tudo bem por aqui também",
-          nextPhase: currentPhase,
-          reasoning: "Finalização após limite de ferramentas de memória",
-          requiredTools: [],
-        };
+        currentCycle.trace.push("tool_loop_limit_reached_final_call");
+
+        // Freshness Gate antes da chamada final obrigatória
+        const freshnessBeforeFinalCall = await checkFreshnessGate({
+          supabase,
+          conversationId,
+          claimedMessageIds,
+          cycleStartedAt: currentCycle.startedAt,
+          initialInboundRevision,
+        });
+
+        if (!freshnessBeforeFinalCall.isFresh) {
+          return await handleCyclePreemption("during_subagent_tool_loop_final_call", freshnessBeforeFinalCall);
+        }
+
+        const finalCallPrompt = `${subagentPrompt}
+
+### RETORNO DA CONSULTA DE MEMÓRIA
+\`\`\`json
+${JSON.stringify(lastToolResultForFinalCall || {}, null, 2)}
+\`\`\`
+
+AVISO OBRIGATÓRIO:
+Não solicite mais ferramentas. Responda agora com o que sabe e não invente fatos.
+Gere sua resposta final estritamente no formato JSON abaixo:
+{
+  "action": "reply",
+  "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
+  "summary": "resumo conciso do turno",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "nextPhase": "${targetSubagent}",
+  "reasoning": "análise analítica da resposta"
+}`;
+
+        try {
+          const finalRes = await callModelOrAtria(finalCallPrompt, { runtime, supabase });
+          totalTokens += finalRes.tokens;
+          const rawFinalJson = extractJsonFromText(finalRes.content);
+          if (
+            rawFinalJson &&
+            rawFinalJson.action !== "call_tool" &&
+            rawFinalJson.action !== "tool_call" &&
+            !rawFinalJson.tool
+          ) {
+            const validated = validateSubagentDecision(rawFinalJson, currentPhase);
+            if (validated.suggestedResponse || validated.action === "wait") {
+              finalSubDecision = validated;
+              currentCycle.trace.push(`tool_loop_final_call_success: ${finalSubDecision.action}`);
+            }
+          }
+        } catch (finalCallErr: any) {
+          currentCycle.trace.push(`tool_loop_final_call_err: ${finalCallErr.message || String(finalCallErr)}`);
+        }
+
+        // Se ainda assim a resposta final for inválida, não parsear ou falhar:
+        // O subagente falha de forma segura: action: "wait", suggestedResponse: ""
+        // e ZERO mensagem inventada pelo backend.
+        if (!finalSubDecision) {
+          currentCycle.trace.push("tool_loop_exhausted_safe_wait");
+          finalSubDecision = {
+            action: "wait",
+            checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            summary: "Tool loop finalizado sem resposta válida do modelo; adotando wait seguro",
+            suggestedResponse: "",
+            nextPhase: currentPhase,
+            reasoning: "Subagente atingiu o limite de consultas de ferramentas sem gerar resposta válida do modelo",
+            requiredTools: [],
+          };
+        }
       }
     }
 
@@ -2629,6 +2765,9 @@ Agora prossiga e gere sua resposta final em JSON:
       };
     }
 
+    let sentBalloonsCount = 0;
+    let balloons: string[] = [];
+
     // ------------------------------------------------------------------------
     // MODO EXPERIMENTAL: Execução ativa no chat
     // ------------------------------------------------------------------------
@@ -2639,8 +2778,8 @@ Agora prossiga e gere sua resposta final em JSON:
         (decision.action === "reply" || decision.action === "advance_phase") &&
         decision.suggestedResponse
       ) {
-        const balloons = splitIntoBalloons(decision.suggestedResponse);
-        let sentBalloonsCount = 0;
+        balloons = splitIntoBalloons(decision.suggestedResponse);
+        sentBalloonsCount = 0;
 
         for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
           const balloonText = balloons[bIndex];
@@ -2965,18 +3104,28 @@ Agora prossiga e gere sua resposta final em JSON:
       currentCycle.trace.push("cycle_completed");
 
       // MEMORY WRITER: Executa pós-processamento assíncrono de memória de forma fail-safe
-      try {
-        await executeMemoryWriter({
-          conversationId,
-          claimedMessages: canonicalList.filter((m) => claimedMessageIds.includes(m.id)),
-          lastLarissaTurn: baseContextPayload.lastLarissaTurn,
-          sentResponseText: decision.suggestedResponse,
-          memoryProvider,
-          supabase,
-          trace: currentCycle.trace,
-        });
-      } catch (memErr: any) {
-        currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
+      // SOMENTE quando o ciclo concluiu com sucesso (todos os balões enviados confirmados ou ação wait concluída)
+      // NUNCA em caso de falha, incerteza de rede (dispatch_uncertain) ou balões incompletos/abortados
+      const isConfirmedSuccess =
+        currentCycle.status === "completed" &&
+        (decision.action === "wait" || sentBalloonsCount === balloons.length);
+
+      if (isConfirmedSuccess) {
+        try {
+          await executeMemoryWriter({
+            conversationId,
+            claimedMessages: claimedMessages,
+            lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+            sentResponseText: decision.suggestedResponse,
+            memoryProvider,
+            supabase,
+            trace: currentCycle.trace,
+          });
+        } catch (memErr: any) {
+          currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
+        }
+      } else {
+        currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");
       }
 
       const updatedState: ConversationOrchestrationState = {
@@ -3022,11 +3171,38 @@ Agora prossiga e gere sua resposta final em JSON:
         };
       }
 
+      // PRESERVAÇÃO ESTRITA DE MEMÓRIA:
+      // O MemoryWriter (ou SupabaseMemoryProvider) gravou novos fatos em stage_completed_rules.orchestration.memory.
+      // Mesclamos a memória mais recente do banco (e do provider) para JAMAIS sobrescrever com o snapshot antigo da RAM.
+      const freshRules = preCommitData?.stage_completed_rules || stageRules;
+      const latestMemoryFromDb = freshRules?.orchestration?.memory;
+
+      let providerMemoryEntities: Record<string, Record<string, MemoryFact>> = {};
+      if (typeof (memoryProvider as any).getOrCreateStore === "function") {
+        const memStore = (memoryProvider as any).getOrCreateStore(conversationId);
+        if (memStore?.entities) {
+          providerMemoryEntities = memStore.entities;
+        }
+      }
+
+      const mergedEntities = {
+        ...(orchState.memory?.entities || {}),
+        ...(latestMemoryFromDb?.entities || {}),
+        ...providerMemoryEntities,
+      };
+
+      const mergedMemory: ContactMemoryStore = {
+        entities: mergedEntities,
+        snippets: latestMemoryFromDb?.snippets || orchState.memory?.snippets || [],
+      };
+
+      updatedState.memory = mergedMemory;
+
       await supabase
         .from("instagram_conversations")
         .update({
           stage_completed_rules: {
-            ...stageRules,
+            ...freshRules,
             active_cycle_token: null,
             orchestration: updatedState,
           },

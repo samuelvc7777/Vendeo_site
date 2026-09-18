@@ -223,12 +223,14 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
             return createQueryObj(sorted);
           },
           limit: async (n) => ({ data: n !== undefined ? currentMsgs.slice(0, n) : currentMsgs, error: null }),
+          range: async (from, to) => ({ data: currentMsgs.slice(from, to !== undefined ? to + 1 : undefined), error: null }),
           in: async (col, ids) => ({
             data: currentMsgs.filter((m) => ids.includes(m.id)),
             error: null,
             order: () => ({ limit: async () => ({ data: currentMsgs.filter((m) => ids.includes(m.id)), error: null }) }),
           }),
           maybeSingle: async () => ({ data: currentMsgs[0] || null, error: null }),
+          then: (resolve, reject) => Promise.resolve({ data: currentMsgs, error: null }).then(resolve, reject),
         });
         return {
           select: () => createQueryObj(),
@@ -4725,7 +4727,9 @@ test('81. Limite estrito de tool calls: subagente em loop de memória é interro
   });
 
   assert.equal(res.handled, true);
-  assert.equal(toolCallsLoop, 3, 'Loop deve ter sido interrompido exatamente no limite de 3 iterações');
+  assert.equal(toolCallsLoop, 4, 'Loop deve realizar exatamente 3 chamadas de ferramenta + 1 chamada final obrigatória');
+  assert.equal(res.decision.action, 'wait', 'Deve adotar ação wait segura quando o modelo falha na chamada final');
+  assert.equal(res.decision.suggestedResponse, '', 'NENHUM texto inventado pelo backend');
 });
 
 // TESTE 82: ObsidianMemoryAdapter sem credenciais reporta isConfigured(): false com segurança
@@ -5086,6 +5090,576 @@ test('93. Auditoria de Extração - Caso E: "eu tinha 39, fiz 40 semana passada"
   assert.equal(factsE[0].field, 'age');
   assert.equal(factsE[0].value, 40, 'Idade deve ser atualizada para 40');
   assert.equal(factsE[0].sourceMessageId, 'msg_e');
+});
+
+// =========================================================================
+// TESTES CIRÚRGICOS v225 (TESTES A A H)
+// =========================================================================
+
+// TESTE 94 (Teste A do Usuário): 300 mensagens históricas + 4 pending
+test('94. Teste A: 300 mensagens históricas processadas + 4 pending são recuperadas integralmente sem cortes', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const history = [];
+  const ledger = {};
+  const baseTime = Date.now() - 500000;
+
+  // 300 mensagens históricas já processadas
+  for (let i = 1; i <= 300; i++) {
+    const id = `hist_msg_${i}`;
+    history.push({
+      id,
+      conversation_id: 'conv_hist_300',
+      sender_id: i % 2 === 0 ? 'c1' : 'me',
+      is_mine: i % 2 !== 0,
+      direction: i % 2 === 0 ? 'inbound' : 'outbound',
+      text: `Mensagem antiga ${i}`,
+      created_at: new Date(baseTime + i * 1000).toISOString(),
+    });
+    if (i % 2 === 0) {
+      ledger[id] = 'processed';
+    }
+  }
+
+  // 4 mensagens pendentes novas do pretendente
+  const pendingIds = ['pending_1', 'pending_2', 'pending_3', 'pending_4'];
+  for (let p = 0; p < pendingIds.length; p++) {
+    const id = pendingIds[p];
+    history.push({
+      id,
+      conversation_id: 'conv_hist_300',
+      sender_id: 'c1',
+      is_mine: false,
+      direction: 'inbound',
+      text: `Mensagem pendente ${p + 1}`,
+      created_at: new Date(baseTime + (301 + p) * 1000).toISOString(),
+    });
+  }
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+        messageLedger: ledger,
+      },
+    },
+  }, history);
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'atender lote' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          summary: 'Lote de 4 recebido',
+          suggestedResponse: 'Olá! Li todas as 4 mensagens!',
+          nextPhase: 'conexao_inicial',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_94' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_hist_300',
+    correlationId: 'cycle_94',
+    newMessage: history[history.length - 1],
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+
+  const conv = supabase.getConversationData();
+  const recentCycle = conv.stage_completed_rules.orchestration.recentCycles[0];
+  assert.equal(recentCycle.claimedMessageIds.length, 4, 'Deve ter feito claim exatamente das 4 mensagens pendentes');
+  assert.deepEqual(Array.from(recentCycle.claimedMessageIds), pendingIds, 'Ordem cronológica ASC das 4 mensagens pendentes deve ser respeitada');
+  for (const id of pendingIds) {
+    assert.equal(conv.stage_completed_rules.orchestration.messageLedger[id], 'processed');
+  }
+});
+
+// TESTE 95 (Teste B do Usuário): 500 mensagens históricas + 20 pending
+test('95. Teste B: 500 mensagens históricas processadas + 20 pending são recuperadas integralmente sem cortes', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const history = [];
+  const ledger = {};
+  const baseTime = Date.now() - 1000000;
+
+  // 500 mensagens históricas
+  for (let i = 1; i <= 500; i++) {
+    const id = `hist_500_${i}`;
+    history.push({
+      id,
+      conversation_id: 'conv_hist_500',
+      sender_id: i % 2 === 0 ? 'c1' : 'me',
+      is_mine: i % 2 !== 0,
+      direction: i % 2 === 0 ? 'inbound' : 'outbound',
+      text: `Histórico ${i}`,
+      created_at: new Date(baseTime + i * 1000).toISOString(),
+    });
+    if (i % 2 === 0) {
+      ledger[id] = 'processed';
+    }
+  }
+
+  // 20 mensagens pendentes novas do pretendente
+  const pendingIds = [];
+  for (let p = 1; p <= 20; p++) {
+    const id = `pending_20_${p}`;
+    pendingIds.push(id);
+    history.push({
+      id,
+      conversation_id: 'conv_hist_500',
+      sender_id: 'c1',
+      is_mine: false,
+      direction: 'inbound',
+      text: `Pendente lote 20 num ${p}`,
+      created_at: new Date(baseTime + (500 + p) * 1000).toISOString(),
+    });
+  }
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+        messageLedger: ledger,
+      },
+    },
+  }, history);
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'atender lote 20' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          summary: 'Lote de 20 recebido',
+          suggestedResponse: 'Olá! Resposta ao lote de 20!',
+          nextPhase: 'conexao_inicial',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_95' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_hist_500',
+    correlationId: 'cycle_95',
+    newMessage: history[history.length - 1],
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+
+  const conv = supabase.getConversationData();
+  const recentCycle = conv.stage_completed_rules.orchestration.recentCycles[0];
+  assert.equal(recentCycle.claimedMessageIds.length, 20, 'Deve ter feito claim de todas as 20 mensagens pendentes');
+  assert.deepEqual(Array.from(recentCycle.claimedMessageIds), pendingIds, 'Ordem cronológica ASC das 20 mensagens deve ser respeitada');
+});
+
+// TESTE 96 (Teste C do Usuário): Turno da Larissa com 35 balões contíguos sem limit(30)
+test('96. Teste C: buildConversationContextForCycle recupera turno contíguo da Larissa com 35 balões sem truncamento', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const messages = [];
+  const baseTime = Date.now() - 100000;
+
+  // Mensagem do pretendente anterior (fronteira do turno anterior)
+  messages.push({
+    id: 'pretendente_fronteira',
+    conversation_id: 'conv_larissa_35',
+    sender_id: 'c1',
+    is_mine: false,
+    text: 'De onde você é?',
+    created_at: new Date(baseTime).toISOString(),
+  });
+
+  // 35 balões contíguos enviados pela Larissa
+  for (let i = 1; i <= 35; i++) {
+    messages.push({
+      id: `larissa_balloon_${i}`,
+      conversation_id: 'conv_larissa_35',
+      sender_id: 'me',
+      is_mine: true,
+      text: `Balão contíguo da Larissa número ${i}`,
+      created_at: new Date(baseTime + i * 1000).toISOString(),
+    });
+  }
+
+  // 1 nova mensagem do pretendente
+  const claimedMsg = {
+    id: 'pretendente_novo_1',
+    conversation_id: 'conv_larissa_35',
+    sender: 'pretendente',
+    direction: 'inbound',
+    text: 'Entendi perfeitamente!',
+    created_at: new Date(baseTime + 40000).toISOString(),
+  };
+  messages.push({
+    id: claimedMsg.id,
+    conversation_id: 'conv_larissa_35',
+    sender_id: 'c1',
+    is_mine: false,
+    text: claimedMsg.text,
+    created_at: claimedMsg.created_at,
+  });
+
+  const supabase = createMockSupabase({}, messages);
+
+  const { payload, trace } = await buildConversationContextForCycle({
+    conversationId: 'conv_larissa_35',
+    currentPhase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_feita',
+    claimedMessages: [claimedMsg],
+    supabase,
+    knownFacts: {},
+  });
+
+  assert.equal(payload.lastLarissaTurn.length, 35, 'Deve recuperar todos os 35 balões contíguos da Larissa sem truncamento de 30');
+  assert.equal(payload.lastLarissaTurn[0].id, 'larissa_balloon_1', 'Primeiro balão do turno contíguo');
+  assert.equal(payload.lastLarissaTurn[34].id, 'larissa_balloon_35', 'Último balão do turno contíguo');
+  assert.ok(trace.some((t) => t === 'last_larissa_turn_count=35'), 'Trace deve registrar a contagem de 35 balões');
+});
+
+// TESTE 97 (Teste D do Usuário): MemoryWriter grava fato e commit final preserva no banco
+test('97. Teste D: MemoryWriter grava fato e commit final preserva memória sem sobrescrita por snapshot antigo', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const initialMemory = {
+    entities: {
+      self: {
+        city: { entity: 'self', field: 'city', value: 'Belo Horizonte', updatedAt: '2026-09-18T00:00:00Z' },
+      },
+    },
+    snippets: [],
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'descoberta',
+        memory: initialMemory,
+      },
+    },
+  }, [
+    { id: 'm_mem_d', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Tenho 42 anos e trabalho como médico', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'normal' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          summary: 'respondido',
+          suggestedResponse: 'Que profissão nobre!',
+          nextPhase: 'descoberta',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_97' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_97',
+    correlationId: 'cycle_97',
+    newMessage: { id: 'm_mem_d', text: 'Tenho 42 anos e trabalho como médico', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+
+  const conv = supabase.getConversationData();
+  const finalMemory = conv.stage_completed_rules.orchestration.memory;
+
+  // Verifica que os novos fatos gravados pelo MemoryWriter persistem no banco após o commit final
+  assert.ok(finalMemory, 'Memória deve existir no commit final');
+  assert.equal(finalMemory.entities.self.city.value, 'Belo Horizonte', 'Fato antigo city deve ser preservado');
+  assert.equal(finalMemory.entities.self.age.value, 42, 'Novo fato age=42 deve ter sido preservado no commit final');
+  assert.equal(finalMemory.entities.self.profession.value, 'médico', 'Novo fato profession=médico deve ter sido preservado');
+});
+
+// TESTE 98 (Teste E do Usuário): Próximo ciclo enxerga fato gravado no ciclo anterior
+test('98. Teste E: Novo ciclo subsequente consulta e enxerga fato gravado no ciclo anterior', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Começa com conversa que executou o ciclo anterior e gravou age=42
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'descoberta',
+        memory: {
+          entities: {
+            self: {
+              age: { entity: 'self', field: 'age', value: 42, updatedAt: '2026-09-18T10:05:00Z', sourceMessageId: 'm_mem_d' },
+            },
+          },
+          snippets: [],
+        },
+      },
+    },
+  }, [
+    { id: 'm_mem_e', sender_id: 'c1', is_mine: false, direction: 'inbound', text: 'Lembra quantos anos eu tenho?', created_at: '2026-09-18T10:10:00Z' },
+  ]);
+
+  let toolReceivedValue = null;
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'consulta' }), tokens: 10 };
+      }
+      if (!prompt.includes('RETORNO DA CONSULTA DE MEMÓRIA')) {
+        return {
+          content: JSON.stringify({
+            action: 'call_tool',
+            tool: 'memory_get_fact',
+            parameters: { entity: 'self', field: 'age' },
+            reasoning: 'consultando idade salva',
+          }),
+          tokens: 20,
+        };
+      }
+      // O modelo recebe o retorno da ferramenta com o fato
+      const toolMatch = prompt.match(/"value":\s*(\d+)/);
+      if (toolMatch) {
+        toolReceivedValue = Number(toolMatch[1]);
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          summary: 'idade confirmada',
+          suggestedResponse: 'Claro, você tem 42 anos!',
+          nextPhase: 'descoberta',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_98' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_98',
+    correlationId: 'cycle_98',
+    newMessage: { id: 'm_mem_e', text: 'Lembra quantos anos eu tenho?', timestamp: '2026-09-18T10:10:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(toolReceivedValue, 42, 'Novo ciclo deve recuperar age=42 da memória persistida no ciclo anterior');
+});
+
+// TESTE 99 (Teste F do Usuário): 3 tool calls consecutivas seguidas de chamada final-only sem tools
+test('99. Teste F: 3 tool calls consecutivas geram uma 4ª chamada final obrigatória com ferramentas desabilitadas', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let callIndex = 0;
+  let finalCallPrompt = '';
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'teste f' }), tokens: 10 };
+      }
+      callIndex++;
+      if (callIndex <= 3) {
+        return {
+          content: JSON.stringify({
+            action: 'call_tool',
+            tool: 'memory_get_fact',
+            parameters: { entity: 'self', field: `field_${callIndex}` },
+            reasoning: `consulta ${callIndex}`,
+          }),
+          tokens: 20,
+        };
+      }
+      // 4ª chamada: chamada final
+      finalCallPrompt = prompt;
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          summary: 'resposta final após 3 tools',
+          suggestedResponse: 'Respondendo com o que sei agora!',
+          nextPhase: 'descoberta',
+          reasoning: 'resposta com contexto',
+        }),
+        tokens: 30,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_99' }),
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta' } },
+  }, [
+    { id: 'm_99', sender_id: 'c1', is_mine: false, text: 'Pergunta teste F', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_99',
+    correlationId: 'cycle_99',
+    newMessage: { id: 'm_99', text: 'Pergunta teste F', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(callIndex, 4, 'Deve executar exatamente 3 tool calls + 1 chamada final');
+  assert.ok(finalCallPrompt.includes('Não solicite mais ferramentas'), 'Prompt da chamada final deve instruir a não solicitar ferramentas');
+  assert.ok(finalCallPrompt.includes('não invente fatos'), 'Prompt deve instruir a não inventar fatos');
+  assert.equal(res.decision.suggestedResponse, 'Respondendo com o que sei agora!');
+});
+
+// TESTE 100 (Teste G do Usuário): Modelo inválido na chamada final resulta em zero mensagem genérica hardcoded
+test('100. Teste G: Modelo inválido na chamada final resulta em action: wait com zero mensagem hardcoded', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let callIndex = 0;
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'teste g' }), tokens: 10 };
+      }
+      callIndex++;
+      // Retorna sempre call_tool, inclusive na chamada final com ferramentas desabilitadas
+      return {
+        content: JSON.stringify({
+          action: 'call_tool',
+          tool: 'memory_get_fact',
+          parameters: { entity: 'self', field: 'persist_tool' },
+          reasoning: 'insistindo em tool',
+        }),
+        tokens: 20,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_100' }),
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta' } },
+  }, [
+    { id: 'm_100', sender_id: 'c1', is_mine: false, text: 'Pergunta teste G', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_100',
+    correlationId: 'cycle_100',
+    newMessage: { id: 'm_100', text: 'Pergunta teste G', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, false, 'Nenhuma mensagem enviada à Meta');
+  assert.equal(res.decision.action, 'wait', 'Deve adotar ação wait');
+  assert.equal(res.decision.suggestedResponse, '', 'suggestedResponse deve ser vazia sem texto inventado');
+  assert.notEqual(res.decision.suggestedResponse, 'Tudo bem por aqui também', 'JAMAIS usar frase genérica hardcoded');
+
+  const conv = supabase.getConversationData();
+  const cycleTrace = conv.stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(cycleTrace.some((t) => t === 'tool_loop_exhausted_safe_wait'), 'Trace deve conter tool_loop_exhausted_safe_wait');
+});
+
+// TESTE 101 (Teste H do Usuário): dispatch_uncertain não executa MemoryWriter
+test('101. Teste H: dispatch_uncertain não executa MemoryWriter e registra no trace', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let memoryWriterCalled = false;
+  const mockMemoryProvider = {
+    getFact: async () => ({ found: false }),
+    searchMemory: async () => [],
+    writeFact: async () => {
+      memoryWriterCalled = true;
+      return { success: true };
+    },
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta' } },
+  }, [
+    { id: 'm_101', sender_id: 'c1', is_mine: false, text: 'Tenho 50 anos e moro em Curitiba', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'teste h' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          summary: 'tentando responder',
+          suggestedResponse: 'Curitiba é uma cidade linda!',
+          nextPhase: 'descoberta',
+          reasoning: 'normal',
+        }),
+        tokens: 30,
+      };
+    },
+    // Simula timeout/incerteza de rede durante o despacho
+    sendMetaTextMessage: async () => {
+      const err = new Error('The operation was aborted due to timeout');
+      err.name = 'AbortError';
+      throw err;
+    },
+    memoryProvider: mockMemoryProvider,
+  };
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_101',
+    correlationId: 'cycle_101',
+    newMessage: { id: 'm_101', text: 'Tenho 50 anos e moro em Curitiba', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.blockLegacyFallback, true);
+  assert.equal(memoryWriterCalled, false, 'MemoryWriter JAMAIS deve ser executado em status dispatch_uncertain');
+
+  const conv = supabase.getConversationData();
+  const cycleTrace = conv.stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(cycleTrace.some((t) => t === 'memory_writer_skipped_unconfirmed_cycle'), 'Trace deve registrar que memory writer foi pulado');
 });
 
 
