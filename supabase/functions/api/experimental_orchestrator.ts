@@ -1385,6 +1385,7 @@ Se precisar checar fatos já descobertos, consultar biblioteca de áudios ou val
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
 
 Regras:
+- PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact) > contexto da conversa > áudio correspondente. Exemplos de diálogos externos/seeds servem APENAS para calibrar estilo coloquial, NUNCA para inventar ou sobrescrever fatos pessoais da Larissa.
 - Não consulte memória por curiosidade ou se o contexto atual já for suficiente.
 - A Larissa NUNCA tem os dados do pretendente e o pretendente NUNCA tem os dados da Larissa.
 - Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "persona_audio_search", "parameters": {"intent": "oi tudo bem"}, "reasoning": "..."}
@@ -1586,14 +1587,20 @@ export const resolveStageObjectives = resolveStageChecklistGoals;
 // ----------------------------------------------------------------------------
 export const LARISSA_PERSONA_FACTS: Record<string, any> = {
   name: "Larissa",
+  full_name: "Larissa Cristina Paiva Resende",
   age: 23,
-  city: "São João del Rei / BH e região (Minas Gerais)",
-  location: "Minas Gerais",
-  profession: "Estudante de enfermagem (estágio hospitalar) e trabalha com vendas em casa",
-  occupation: "Estudante de enfermagem (estágio hospitalar) e trabalha com vendas em casa",
-  studies: "Faculdade de enfermagem no período noturno com estágio de dia no hospital",
+  birth_date: "2002-11-06",
+  city: "São João del Rei (Minas Gerais)",
+  neighborhood: "Matosinhos",
+  location: "São João del Rei - MG (Bairro Matosinhos)",
+  course: "Enfermagem",
+  college_period: "10º",
+  graduation: "final de 2026",
+  studies: "Faculdade de Enfermagem (10º período, formatura no final de 2026 com estágio em hospital)",
+  profession: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
+  occupation: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
   job: "Vendas online e digitais em casa pelo celular e computador",
-  work: "Trabalho em casa com vendas online",
+  work: "Trabalho em casa com vendas online e estágio no hospital",
   hobbies: "Filmes de terror e suspense, filmes de tubarão, doces e chocolates, vinho suave, passeios ao pôr do sol em mirantes",
   music: "Música brasileira, Tribo da Periferia, Marília Mendonça e sertanejo romântico",
   favorite_food: "Doces, chocolate, sorvete, café com pão de queijo quentinho, pizza e hambúrguer à noite",
@@ -1607,7 +1614,12 @@ export function getPersonaFact(field: string): { found: boolean; field: string; 
     return { found: true, field: normField, value: LARISSA_PERSONA_FACTS[normField] };
   }
   if (normField === "idade") return { found: true, field: "age", value: LARISSA_PERSONA_FACTS.age };
+  if (normField === "nascimento" || normField === "aniversario") return { found: true, field: "birth_date", value: LARISSA_PERSONA_FACTS.birth_date };
   if (normField === "cidade") return { found: true, field: "city", value: LARISSA_PERSONA_FACTS.city };
+  if (normField === "bairro") return { found: true, field: "neighborhood", value: LARISSA_PERSONA_FACTS.neighborhood };
+  if (normField === "curso") return { found: true, field: "course", value: LARISSA_PERSONA_FACTS.course };
+  if (normField === "periodo") return { found: true, field: "college_period", value: LARISSA_PERSONA_FACTS.college_period };
+  if (normField === "formatura") return { found: true, field: "graduation", value: LARISSA_PERSONA_FACTS.graduation };
   if (normField === "trabalho" || normField === "profissao") return { found: true, field: "profession", value: LARISSA_PERSONA_FACTS.profession };
   if (normField === "faculdade" || normField === "estudos") return { found: true, field: "studies", value: LARISSA_PERSONA_FACTS.studies };
   if (normField === "gostos" || normField === "interesses") return { found: true, field: "hobbies", value: LARISSA_PERSONA_FACTS.hobbies };
@@ -1782,6 +1794,7 @@ Se precisar checar fatos já descobertos, consultar a biblioteca de voz ou verif
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
 
 Regras de Uso de Ferramentas:
+- PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact) > contexto da conversa > áudio correspondente. Exemplos de diálogos externos/seeds servem APENAS para calibrar estilo coloquial, NUNCA para inventar ou sobrescrever fatos pessoais da Larissa.
 - Não consulte ferramentas por curiosidade ou se o contexto atual já for suficiente.
 - A Larissa NUNCA tem os fatos do pretendente e o pretendente NUNCA tem os fatos da Larissa.
 - Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}, "reasoning": "..."}
