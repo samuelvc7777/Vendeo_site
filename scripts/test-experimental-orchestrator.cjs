@@ -202,17 +202,33 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
         };
       }
       if (table === 'instagram_messages') {
-        const createQueryObj = () => ({
-          eq: () => createQueryObj(),
-          not: () => createQueryObj(),
-          order: () => createQueryObj(),
-          limit: async () => ({ data: messages, error: null }),
+        const createQueryObj = (currentMsgs = [...messages]) => ({
+          eq: (col, val) => {
+            if (col === 'conversation_id') {
+              return createQueryObj(currentMsgs.filter((m) => !m.conversation_id || m.conversation_id === val));
+            }
+            return createQueryObj(currentMsgs.filter((m) => m[col] === val));
+          },
+          or: () => createQueryObj(currentMsgs),
+          not: () => createQueryObj(currentMsgs),
+          order: (col, opts) => {
+            const sorted = [...currentMsgs].sort((a, b) => {
+              const valA = a[col] || a.created_at || a.timestamp || '';
+              const valB = b[col] || b.created_at || b.timestamp || '';
+              if (opts && opts.ascending === false) {
+                return valB > valA ? 1 : valB < valA ? -1 : 0;
+              }
+              return valA > valB ? 1 : valA < valB ? -1 : 0;
+            });
+            return createQueryObj(sorted);
+          },
+          limit: async (n) => ({ data: n !== undefined ? currentMsgs.slice(0, n) : currentMsgs, error: null }),
           in: async (col, ids) => ({
-            data: messages.filter((m) => ids.includes(m.id)),
+            data: currentMsgs.filter((m) => ids.includes(m.id)),
             error: null,
-            order: () => ({ limit: async () => ({ data: messages.filter((m) => ids.includes(m.id)), error: null }) }),
+            order: () => ({ limit: async () => ({ data: currentMsgs.filter((m) => ids.includes(m.id)), error: null }) }),
           }),
-          maybeSingle: async () => ({ data: messages[0] || null, error: null }),
+          maybeSingle: async () => ({ data: currentMsgs[0] || null, error: null }),
         });
         return {
           select: () => createQueryObj(),
@@ -3742,7 +3758,10 @@ test('59. Âncora de Contexto pós-Caso B: Próximo ciclo enxerga Balão 1 como 
   assert.equal(payload.lastLarissaMessage.text, 'Boa tarde, tudo bem?');
 
   const serialized = formatContextForConversationAgent(payload);
-  assert.ok(serialized.includes('[ULTIMA_RESPOSTA_LARISSA]'), 'Serialização deve conter a tag [ULTIMA_RESPOSTA_LARISSA]');
+  assert.ok(
+    serialized.includes('[ULTIMO_TURNO_LARISSA]') || serialized.includes('[ULTIMA_RESPOSTA_LARISSA]'),
+    'Serialização deve conter a tag de turno da Larissa ([ULTIMO_TURNO_LARISSA] ou [ULTIMA_RESPOSTA_LARISSA])'
+  );
   assert.ok(serialized.includes('Boa tarde, tudo bem?'));
 });
 
@@ -4289,5 +4308,656 @@ test('68. Teste Fim-a-Fim Humano Completo: Msg 1 -> IA pensa -> Msg 2 chega -> C
   assert.equal(orchFinal.messageLedger['h_msg_1'], 'processed');
   assert.equal(orchFinal.messageLedger['h_msg_2'], 'processed');
 });
+
+// -------------------------------------------------------------------------
+// TESTES DO CONTEXTO DO TURNO ATUAL E MEMÓRIA SOB DEMANDA (Testes 69 a 88)
+// -------------------------------------------------------------------------
+
+// TESTE 69: Contexto do Turno: 1 balão da Larissa + 2 do cliente
+test('69. Contexto do Turno: Larissa envia 1 balão + cliente responde 2 -> bloco contíguo correto', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle, formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const messages = [
+    { id: 'm_l1', sender_id: 'me', is_mine: true, text: 'Oi, tudo bem?', created_at: '2026-09-18T10:00:00Z', timestamp: '2026-09-18T10:00:00Z' },
+    { id: 'm_c1', sender_id: 'client_1', is_mine: false, text: 'Oi tudo e vc?', created_at: '2026-09-18T10:00:10Z', timestamp: '2026-09-18T10:00:10Z' },
+    { id: 'm_c2', sender_id: 'client_1', is_mine: false, text: 'Como foi o dia?', created_at: '2026-09-18T10:00:15Z', timestamp: '2026-09-18T10:00:15Z' },
+  ];
+
+  const supabase = createMockSupabase({}, messages);
+  const claimed = [
+    { id: 'm_c1', sender: 'pretendente', text: 'Oi tudo e vc?', timestamp: '2026-09-18T10:00:10Z', direction: 'inbound' },
+    { id: 'm_c2', sender: 'pretendente', text: 'Como foi o dia?', timestamp: '2026-09-18T10:00:15Z', direction: 'inbound' },
+  ];
+
+  const { payload } = await buildConversationContextForCycle({
+    conversationId: 'conv_turn_69',
+    currentPhase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_feita',
+    claimedMessages: claimed,
+    supabase,
+  });
+
+  assert.ok(payload.lastLarissaTurn, 'Deve haver lastLarissaTurn');
+  assert.equal(payload.lastLarissaTurn.length, 1, 'Deve conter exatamente 1 balão da Larissa');
+  assert.equal(payload.lastLarissaTurn[0].id, 'm_l1');
+  assert.equal(payload.lastLarissaTurn[0].text, 'Oi, tudo bem?');
+  assert.equal(payload.newMessages.length, 2, 'Deve conter as 2 novas mensagens do pretendente');
+
+  const serialized = formatConversationContextForModel(payload);
+  assert.ok(serialized.includes('[ULTIMO_TURNO_LARISSA]'), 'Contém tag [ULTIMO_TURNO_LARISSA]');
+  assert.ok(serialized.includes('LARISSA | m_l1'));
+  assert.ok(serialized.includes('PRETENDENTE | m_c1'));
+  assert.ok(serialized.includes('PRETENDENTE | m_c2'));
+});
+
+// TESTE 70: Contexto do Turno: 3 balões contíguos da Larissa + 4 do cliente
+test('70. Contexto do Turno: 3 balões da Larissa + 4 do cliente -> ordem cronológica ASC mantida', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle, formatConversationContextForModel } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const messages = [
+    { id: 'm_l1', sender_id: 'me', is_mine: true, text: 'Boa tarde!', created_at: '2026-09-18T10:00:01Z' },
+    { id: 'm_l2', sender_id: 'me', is_mine: true, text: 'Vi seu interesse no carro', created_at: '2026-09-18T10:00:02Z' },
+    { id: 'm_l3', sender_id: 'me', is_mine: true, text: 'Vc trabalha com o quê?', created_at: '2026-09-18T10:00:03Z' },
+    { id: 'm_c1', sender_id: 'client_1', is_mine: false, text: 'Trabalho com TI', created_at: '2026-09-18T10:00:10Z' },
+    { id: 'm_c2', sender_id: 'client_1', is_mine: false, text: 'Em BH', created_at: '2026-09-18T10:00:11Z' },
+    { id: 'm_c3', sender_id: 'client_1', is_mine: false, text: 'E vc?', created_at: '2026-09-18T10:00:12Z' },
+    { id: 'm_c4', sender_id: 'client_1', is_mine: false, text: 'Ainda tá disponível?', created_at: '2026-09-18T10:00:13Z' },
+  ];
+
+  const supabase = createMockSupabase({}, messages);
+  const claimed = [
+    { id: 'm_c1', sender: 'pretendente', text: 'Trabalho com TI', direction: 'inbound' },
+    { id: 'm_c2', sender: 'pretendente', text: 'Em BH', direction: 'inbound' },
+    { id: 'm_c3', sender: 'pretendente', text: 'E vc?', direction: 'inbound' },
+    { id: 'm_c4', sender: 'pretendente', text: 'Ainda tá disponível?', direction: 'inbound' },
+  ];
+
+  const { payload } = await buildConversationContextForCycle({
+    conversationId: 'conv_turn_70',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_pergunta_sobre_ele',
+    claimedMessages: claimed,
+    supabase,
+  });
+
+  assert.equal(payload.lastLarissaTurn.length, 3, 'Deve conter os 3 balões da Larissa');
+  assert.equal(payload.lastLarissaTurn[0].id, 'm_l1');
+  assert.equal(payload.lastLarissaTurn[1].id, 'm_l2');
+  assert.equal(payload.lastLarissaTurn[2].id, 'm_l3');
+  assert.equal(payload.newMessages.length, 4);
+
+  const serialized = formatConversationContextForModel(payload);
+  assert.ok(serialized.includes('LARISSA | m_l1'));
+  assert.ok(serialized.includes('LARISSA | m_l2'));
+  assert.ok(serialized.includes('LARISSA | m_l3'));
+});
+
+// TESTE 71: Mensagem antiga da Larissa anterior a outro turno NÃO é incluída no turno atual
+test('71. Contiguidade estrita: mensagem antiga da Larissa antes de outro pretendente é cortada', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const messages = [
+    { id: 'm_l_old', sender_id: 'me', is_mine: true, text: 'Mensagem antiga semana passada', created_at: '2026-09-10T10:00:00Z' },
+    { id: 'm_c_old', sender_id: 'client_1', is_mine: false, text: 'Mensagem antiga respondida', created_at: '2026-09-10T10:05:00Z' },
+    { id: 'm_l_turn1', sender_id: 'me', is_mine: true, text: 'Opa tudo bem?', created_at: '2026-09-18T10:00:00Z' },
+    { id: 'm_l_turn2', sender_id: 'me', is_mine: true, text: 'Como vc tá?', created_at: '2026-09-18T10:00:05Z' },
+    { id: 'm_c_new', sender_id: 'client_1', is_mine: false, text: 'Tudo ótimo', created_at: '2026-09-18T10:01:00Z' },
+  ];
+
+  const supabase = createMockSupabase({}, messages);
+  const claimed = [{ id: 'm_c_new', sender: 'pretendente', text: 'Tudo ótimo', direction: 'inbound' }];
+
+  const { payload } = await buildConversationContextForCycle({
+    conversationId: 'conv_turn_71',
+    currentPhase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_feita',
+    claimedMessages: claimed,
+    supabase,
+  });
+
+  assert.equal(payload.lastLarissaTurn.length, 2, 'Apenas as 2 mensagens contíguas recentes da Larissa devem entrar');
+  assert.equal(payload.lastLarissaTurn[0].id, 'm_l_turn1');
+  assert.equal(payload.lastLarissaTurn[1].id, 'm_l_turn2');
+});
+
+// TESTE 72: Mensagem inbound pendente antiga não desaparece do ciclo só porque houve outbound posterior
+test('72. Ledger governa pendências: mensagem pendente antiga não é perdida por outbound posterior', async () => {
+  const { load } = createRuntime();
+  const { normalizeToCanonicalMessage } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const rawMsgs = [
+    { id: 'm_inbound_old', is_mine: false, sender_id: 'client_1', text: 'Pergunta antiga pendente', created_at: '2026-09-18T09:00:00Z' },
+    { id: 'm_outbound_mid', is_mine: true, sender_id: 'me', text: 'Balão no meio', created_at: '2026-09-18T09:30:00Z' },
+    { id: 'm_inbound_new', is_mine: false, sender_id: 'client_1', text: 'Pergunta nova', created_at: '2026-09-18T10:00:00Z' },
+  ];
+
+  const canonical = rawMsgs.map((m) => normalizeToCanonicalMessage(m, 'conv_72'));
+  const ledger = {}; // nenhuma processada
+
+  const pending = canonical.filter((m) => m.sender === 'pretendente' && ledger[m.id] !== 'processed');
+  assert.equal(pending.length, 2, 'Ambas as mensagens inbound continuam pendentes');
+  assert.equal(pending[0].id, 'm_inbound_old');
+  assert.equal(pending[1].id, 'm_inbound_new');
+});
+
+// TESTE 73: Balão cancelado antes da Meta NÃO aparece no turno da Larissa
+test('73. Balão planejado mas cancelado antes de ir à Meta NÃO aparece no turno da Larissa', async () => {
+  const { load } = createRuntime();
+  const { buildConversationContextForCycle } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // No banco existe apenas o Balão 1 confirmado como 'sent'. O Balão 2 foi cancelado e nunca foi inserido.
+  const messages = [
+    { id: 'm_larissa_b1', is_mine: true, sender_id: 'me', text: 'Balão 1 entregue', created_at: '2026-09-18T10:00:00Z', status: 'sent' },
+    { id: 'm_client_next', is_mine: false, sender_id: 'client_1', text: 'Mensagem do cliente', created_at: '2026-09-18T10:00:10Z' },
+  ];
+
+  const supabase = createMockSupabase({}, messages);
+  const claimed = [{ id: 'm_client_next', sender: 'pretendente', text: 'Mensagem do cliente', direction: 'inbound' }];
+
+  const { payload } = await buildConversationContextForCycle({
+    conversationId: 'conv_73',
+    currentPhase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_feita',
+    claimedMessages: claimed,
+    supabase,
+  });
+
+  assert.equal(payload.lastLarissaTurn.length, 1);
+  assert.equal(payload.lastLarissaTurn[0].text, 'Balão 1 entregue');
+});
+
+// TESTE 74: Contexto suficiente -> subagente NÃO chama tool de memória
+test('74. Contexto suficiente: subagente responde normalmente sem chamar tool de memória', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  let modelCallsCount = 0;
+
+  const runtime = {
+    callModel: async (prompt) => {
+      modelCallsCount++;
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'Cumprimento simples' }),
+          tokens: 50,
+        };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Oi tudo bem por aqui também!',
+          nextPhase: 'conexao_inicial',
+          summary: 'Resposta direta sem tool',
+        }),
+        tokens: 60,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_74' }),
+    memoryProvider,
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'conexao_inicial' } },
+  }, [
+    { id: 'm_in_74', sender_id: 'c1', is_mine: false, text: 'Oi tudo bem?', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_74',
+    correlationId: 'cycle_74',
+    newMessage: { id: 'm_in_74', text: 'Oi tudo bem?', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(modelCallsCount, 2, 'Exatamente 1 chamada para roteador + 1 para subagente (zero chamadas de tool)');
+
+  const convData = supabase.getConversationData();
+  const cycleTrace = convData.stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(!cycleTrace.some((t) => t.startsWith('memory_tool_requested')), 'Não deve haver tool call de memória no trace');
+});
+
+// TESTE 75: "Com a minha idade..." -> subagente consulta memory_get_fact(self.age)
+test('75. Subagente consulta memória sob demanda ao perceber necessidade de fato (self.age)', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  await memoryProvider.writeFact('conv_75', {
+    entity: 'self',
+    field: 'age',
+    value: 25,
+    sourceMessageId: 'msg_historica_idade',
+  });
+
+  let toolRequested = false;
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'Pretendente comentou de idade' }),
+          tokens: 50,
+        };
+      }
+      // Na primeira invocação do subagente, ele percebe que precisa da idade
+      if (!prompt.includes('RETORNO DA CONSULTA DE MEMÓRIA')) {
+        toolRequested = true;
+        return {
+          content: JSON.stringify({
+            action: 'call_tool',
+            tool: 'memory_get_fact',
+            parameters: { entity: 'self', field: 'age' },
+            reasoning: 'Preciso da idade para responder ao comentário de motocross',
+          }),
+          tokens: 60,
+        };
+      }
+      // Na segunda invocação, com o fato retornado, ele formula a resposta
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          suggestedResponse: 'Nossa, com 25 anos vc tá novo demais pra desistir de motocross kkk',
+          nextPhase: 'descoberta',
+          summary: 'Resposta considerando idade de 25 anos',
+        }),
+        tokens: 70,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_75' }),
+    memoryProvider,
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta' } },
+  }, [
+    { id: 'm_in_75', sender_id: 'c1', is_mine: false, text: 'Com a minha idade já não tenho pique pra motocross kkk', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_75',
+    correlationId: 'cycle_75',
+    newMessage: { id: 'm_in_75', text: 'Com a minha idade...', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(toolRequested, true, 'Subagente deve ter solicitado a ferramenta de memória');
+
+  const convData = supabase.getConversationData();
+  const cycleTrace = convData.stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(cycleTrace.includes('memory_tool_requested: self.age'), 'Trace deve registrar a consulta de memória self.age');
+  assert.ok(cycleTrace.includes('memory_tool_found: true'), 'Trace deve registrar que a idade foi encontrada');
+});
+
+// TESTE 76: Segregação estrita de entidades: self.age=40 vs prima_maria.age=25
+test('76. Segregação estrita de entidades: self.age=40 vs prima_maria.age=25 nunca se misturam', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const provider = new InMemoryMemoryProvider();
+  await provider.writeFact('conv_76', { entity: 'self', field: 'age', value: 40 });
+  await provider.writeFact('conv_76', { entity: 'prima_maria', field: 'age', value: 25 });
+
+  const selfAge = await provider.getFact('conv_76', 'self', 'age');
+  assert.equal(selfAge.found, true);
+  assert.equal(selfAge.fact.value, 40, 'self.age deve ser 40');
+
+  const primaAge = await provider.getFact('conv_76', 'prima_maria', 'age');
+  assert.equal(primaAge.found, true);
+  assert.equal(primaAge.fact.value, 25, 'prima_maria.age deve ser 25');
+
+  const selfCity = await provider.getFact('conv_76', 'self', 'city');
+  assert.equal(selfCity.found, false, 'Campo não cadastrado deve retornar found: false');
+});
+
+// TESTE 77: Campo inexistente -> retorna found: false
+test('77. Campo inexistente na memória retorna found: false sem inventar valores', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const provider = new InMemoryMemoryProvider();
+  await provider.writeFact('conv_77', { entity: 'self', field: 'name', value: 'Carlos' });
+
+  const result = await provider.getFact('conv_77', 'self', 'signo');
+  assert.equal(result.found, false);
+  assert.equal(result.fact, undefined);
+});
+
+// TESTE 78: Entidade inexistente / ambígua -> retorna found: false
+test('78. Entidade inexistente / ambígua retorna found: false e não inventa pessoa', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const provider = new InMemoryMemoryProvider();
+  await provider.writeFact('conv_78', { entity: 'self', field: 'age', value: 30 });
+
+  const result = await provider.getFact('conv_78', 'tio_desconhecido', 'age');
+  assert.equal(result.found, false);
+});
+
+// TESTE 79: Isolamento estrito de contato: Contato A nunca acessa memória do Contato B
+test('79. Isolamento estrito de contato: conversa A jamais acessa memória da conversa B', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const provider = new InMemoryMemoryProvider();
+  await provider.writeFact('contact_A', { entity: 'self', field: 'city', value: 'Barbacena' });
+  await provider.writeFact('contact_B', { entity: 'self', field: 'city', value: 'São Paulo' });
+
+  const factA = await provider.getFact('contact_A', 'self', 'city');
+  assert.equal(factA.value, 'Barbacena');
+
+  const factB = await provider.getFact('contact_B', 'self', 'city');
+  assert.equal(factB.value, 'São Paulo');
+
+  const leakCheck = await provider.getFact('contact_C', 'self', 'city');
+  assert.equal(leakCheck.found, false, 'Contato sem cadastro não deve receber dados de outro');
+});
+
+// TESTE 80: Busca aberta (memory_search) retorna poucos snippets relevantes
+test('80. Busca aberta (memory_search) retorna apenas trechos relevantes e respeita limit', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const provider = new InMemoryMemoryProvider();
+  await provider.writeFact('conv_80', { entity: 'self', field: 'hobby1', value: 'gosta de fazer trilha na serra' });
+  await provider.writeFact('conv_80', { entity: 'self', field: 'hobby2', value: 'faz trilha de moto todo sábado' });
+  await provider.writeFact('conv_80', { entity: 'self', field: 'hobby3', value: 'vai para a praia em janeiro' });
+
+  const results = await provider.searchMemory('conv_80', 'trilha', { limit: 2 });
+  assert.equal(results.length, 2, 'Deve respeitar o limit de 2 resultados');
+  assert.ok(results[0].snippet.includes('trilha'));
+  assert.ok(results[1].snippet.includes('trilha'));
+});
+
+// TESTE 81: Limite de tool calls: modelo em loop infinito é interrompido após 3 iterações
+test('81. Limite estrito de tool calls: subagente em loop de memória é interrompido em 3 iterações', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  let toolCallsLoop = 0;
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'teste loop' }), tokens: 10 };
+      }
+      toolCallsLoop++;
+      // Sempre retorna pedido de ferramenta
+      return {
+        content: JSON.stringify({
+          action: 'call_tool',
+          tool: 'memory_get_fact',
+          parameters: { entity: 'self', field: `dummy_${toolCallsLoop}` },
+          reasoning: 'tentativa persistente',
+        }),
+        tokens: 20,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_81' }),
+    memoryProvider,
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta' } },
+  }, [
+    { id: 'm_81', sender_id: 'c1', is_mine: false, text: 'Pergunta teste', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_81',
+    correlationId: 'cycle_81',
+    newMessage: { id: 'm_81', text: 'Pergunta teste', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(toolCallsLoop, 3, 'Loop deve ter sido interrompido exatamente no limite de 3 iterações');
+});
+
+// TESTE 82: ObsidianMemoryAdapter sem credenciais reporta isConfigured(): false com segurança
+test('82. ObsidianMemoryAdapter: sem credenciais configuradas reporta isConfigured false sem erros', async () => {
+  const { load } = createRuntime();
+  const { ObsidianMemoryAdapter } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const adapter = new ObsidianMemoryAdapter({ baseUrl: '', apiKey: '' });
+  assert.equal(adapter.isConfigured(), false);
+
+  const factRes = await adapter.getFact('conv_82', 'self', 'age');
+  assert.equal(factRes.found, false);
+
+  const searchRes = await adapter.searchMemory('conv_82', 'trilha');
+  assert.equal(searchRes.length, 0);
+
+  const writeRes = await adapter.writeFact('conv_82', { entity: 'self', field: 'age', value: 30 });
+  assert.equal(writeRes.success, false);
+});
+
+// TESTE 83: MemoryWriter: extrai idade explícita ("tenho 40 anos")
+test('83. MemoryWriter: extrai fato explícito de idade ("tenho 40 anos") com sourceMessageId', async () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const text = 'Eu tenho 40 anos e moro em Barbacena';
+  const facts = extractFactsFromInboundText(text, 'msg_age_40');
+
+  const ageFact = facts.find((f) => f.field === 'age');
+  assert.ok(ageFact, 'Deve extrair fato de idade');
+  assert.equal(ageFact.entity, 'self');
+  assert.equal(ageFact.value, 40);
+  assert.equal(ageFact.sourceMessageId, 'msg_age_40');
+
+  const cityFact = facts.find((f) => f.field === 'city');
+  assert.ok(cityFact, 'Deve extrair fato de cidade');
+  assert.equal(cityFact.value, 'Barbacena');
+});
+
+// TESTE 84: MemoryWriter: extrai idade de parente ("minha prima Maria tem 25 anos")
+test('84. MemoryWriter: extrai fato de parente para entidade de terceiro (prima_maria.age)', async () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const text = 'Minha prima Maria tem 25 anos e adora viajar';
+  const facts = extractFactsFromInboundText(text, 'msg_prima_25');
+
+  const primaFact = facts.find((f) => f.field === 'age');
+  assert.ok(primaFact, 'Deve extrair idade da prima');
+  assert.equal(primaFact.entity, 'prima_maria');
+  assert.equal(primaFact.value, 25);
+});
+
+// TESTE 85: MemoryWriter: frase vaga ("tô ficando velho", "ando cansado") NÃO cria fato
+test('85. MemoryWriter: frases vagas NÃO são transformadas em fatos objetivos inventados', async () => {
+  const { load } = createRuntime();
+  const { extractFactsFromInboundText } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const text1 = 'Nossa, tô ficando velho pra aguentar essa correria kkk';
+  const facts1 = extractFactsFromInboundText(text1, 'msg_vaga_1');
+  assert.equal(facts1.length, 0, 'Frase vaga não deve gerar fatos');
+
+  const text2 = 'Ando meio cansado esses dias';
+  const facts2 = extractFactsFromInboundText(text2, 'msg_vaga_2');
+  assert.equal(facts2.length, 0, 'Frase genérica não deve gerar fatos');
+});
+
+// TESTE 86: MemoryWriter: fato existente é atualizado com nova evidência
+test('86. MemoryWriter: fato existente é atualizado com nova evidência e proveniência', async () => {
+  const { load } = createRuntime();
+  const { InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const provider = new InMemoryMemoryProvider();
+  await provider.writeFact('conv_86', { entity: 'self', field: 'age', value: 39, sourceMessageId: 'msg_ano_passado' });
+
+  const factBefore = await provider.getFact('conv_86', 'self', 'age');
+  assert.equal(factBefore.fact.value, 39);
+
+  // Nova mensagem informando que fez 40 anos
+  await provider.writeFact('conv_86', { entity: 'self', field: 'age', value: 40, sourceMessageId: 'msg_niver_hoje' });
+
+  const factAfter = await provider.getFact('conv_86', 'self', 'age');
+  assert.equal(factAfter.fact.value, 40, 'Fato atualizado com sucesso');
+  assert.equal(factAfter.fact.sourceMessageId, 'msg_niver_hoje', 'Proveniência atualizada');
+});
+
+// TESTE 87: Falha no MemoryWriter não impede resposta nem quebra ciclo
+test('87. Resiliência: falha no MemoryWriter não quebra resposta e mantém blockLegacyFallback', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Provider com falha deliberada no writeFact
+  const faultyProvider = {
+    getFact: async () => ({ found: false }),
+    searchMemory: async () => [],
+    writeFact: async () => {
+      throw new Error('Falha simulada de banco de dados no MemoryWriter');
+    },
+    listEntityFacts: async () => ({}),
+  };
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return { content: JSON.stringify({ targetSubagent: 'conexao_inicial', action: 'delegate', reason: 'ok' }), tokens: 10 };
+      }
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Olá!',
+          nextPhase: 'conexao_inicial',
+          summary: 'ok',
+        }),
+        tokens: 20,
+      };
+    },
+    sendMetaTextMessage: async () => ({ success: true, message_id: 'meta_87' }),
+    memoryProvider: faultyProvider,
+  };
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'conexao_inicial' } },
+  }, [
+    { id: 'm_87', sender_id: 'c1', is_mine: false, text: 'Tenho 30 anos', created_at: '2026-09-18T10:00:00Z' },
+  ]);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_87',
+    correlationId: 'cycle_87',
+    newMessage: { id: 'm_87', text: 'Tenho 30 anos', timestamp: '2026-09-18T10:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(res.handled, true, 'Ciclo deve ter sido tratado');
+  assert.equal(res.sentToMeta, true, 'Envio à Meta deve ter ocorrido');
+  assert.equal(res.blockLegacyFallback, true, 'Fallback legado permanece bloqueado');
+
+  const convData = supabase.getConversationData();
+  const trace = convData.stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(trace.some((t) => t.includes('memory_writer_error')), 'Erro do writer registrado no trace');
+});
+
+// TESTE 88: Teste Fim-a-Fim Integrado com Memória sob Demanda
+test('88. End-to-End Integrado: Memória Sob Demanda + Roteamento + Despacho + MemoryWriter', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  // Estado prévio da memória
+  await memoryProvider.writeFact('conv_e2e_mem', {
+    entity: 'self',
+    field: 'age',
+    value: 28,
+    sourceMessageId: 'msg_passada_28',
+  });
+
+  const deliveredToMeta = [];
+
+  const runtime = {
+    callModel: async (prompt) => {
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({ targetSubagent: 'descoberta', action: 'delegate', reason: 'Pretendente comentou de trilha e idade' }),
+          tokens: 40,
+        };
+      }
+      // Subagente consulta a idade sob demanda
+      if (!prompt.includes('RETORNO DA CONSULTA DE MEMÓRIA')) {
+        return {
+          content: JSON.stringify({
+            action: 'call_tool',
+            tool: 'memory_get_fact',
+            parameters: { entity: 'self', field: 'age' },
+            reasoning: 'Verificar idade para comentar da trilha',
+          }),
+          tokens: 50,
+        };
+      }
+      // Com a idade recebida (28), gera resposta afetuosa
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          suggestedResponse: 'Nossa com 28 anos vc tem pique de sobra pra trilha kkk\n\nQual foi a última que vc fez?',
+          nextPhase: 'descoberta',
+          summary: 'Resposta usando a idade de 28 anos da memória',
+        }),
+        tokens: 60,
+      };
+    },
+    sendMetaTextMessage: async (sb, convId, text) => {
+      deliveredToMeta.push(text);
+      return { success: true, message_id: `meta_${deliveredToMeta.length}` };
+    },
+    memoryProvider,
+  };
+
+  const messages = [
+    { id: 'm_larissa_turn', is_mine: true, sender_id: 'me', text: 'Vc ainda faz aquelas trilhas?', created_at: '2026-09-18T10:00:00Z', status: 'sent' },
+    { id: 'm_inbound_pretendente', is_mine: false, sender_id: 'c1', text: 'Com a minha idade eu já tô velho pra isso kkk', created_at: '2026-09-18T10:00:05Z' },
+  ];
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'descoberta' } },
+  }, messages);
+
+  const res = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'conv_e2e_mem',
+    correlationId: 'cycle_e2e_mem',
+    newMessage: messages[1],
+    runtime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.equal(deliveredToMeta.length, 2, '2 balões despachados à Meta com sucesso');
+  assert.equal(deliveredToMeta[0], 'Nossa com 28 anos vc tem pique de sobra pra trilha kkk');
+  assert.equal(deliveredToMeta[1], 'Qual foi a última que vc fez?');
+
+  const convData = supabase.getConversationData();
+  const orch = convData.stage_completed_rules.orchestration;
+  const cycle = orch.recentCycles[0];
+
+  assert.ok(cycle.trace.includes('memory_tool_requested: self.age'));
+  assert.ok(cycle.trace.includes('memory_tool_found: true'));
+  assert.ok(cycle.trace.includes('memory_writer_started'));
+  assert.ok(cycle.trace.includes('memory_writer_completed'));
+  assert.equal(orch.messageLedger['m_inbound_pretendente'], 'processed');
+});
+
 
 

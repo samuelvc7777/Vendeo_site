@@ -138,6 +138,7 @@ export interface ConversationOrchestrationState {
   recentCycles?: ProcessingCycle[];
   outbox?: Record<string, OutboxEntry>;
   messageLedger?: Record<string, MessageProcessingStatus>;
+  memory?: ContactMemoryStore;
 }
 
 export interface StructuredConversationMessage {
@@ -152,10 +153,43 @@ export interface ConversationContextPayload {
   phase: OrchestrationPhase;
   checkpoint: string;
   lastLarissaMessage?: StructuredConversationMessage | null;
+  lastLarissaTurn?: StructuredConversationMessage[];
   newMessages: StructuredConversationMessage[];
   referencedMessages?: Record<string, StructuredConversationMessage>;
   knownFacts?: Record<string, string>;
 }
+
+// ----------------------------------------------------------------------------
+// Tipos de Memória Estruturada sob Demanda (.agents/ARCHITECTURE.md)
+// ----------------------------------------------------------------------------
+export interface MemoryFact {
+  entity: string; // "self" ou nome de terceiro ("prima_maria", "filho_pedro")
+  field: string;  // "age", "city", "profession", etc.
+  value: any;     // 40, "Barbacena", etc.
+  sourceMessageId?: string;
+  updatedAt: string;
+  confidence?: number;
+}
+
+export interface MemorySearchResult {
+  snippet: string;
+  sourceMessageId?: string;
+  entity?: string;
+  relevance?: number;
+}
+
+export interface ContactMemoryStore {
+  entities: Record<string, Record<string, MemoryFact>>;
+  snippets?: Array<{ snippet: string; entity?: string; sourceMessageId?: string; createdAt: string }>;
+}
+
+export interface MemoryProvider {
+  getFact(contactId: string, entity: string, field: string): Promise<{ found: boolean; fact?: MemoryFact; value?: any }>;
+  searchMemory(contactId: string, query: string, options?: { entity?: string; limit?: number }): Promise<MemorySearchResult[]>;
+  writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }>;
+  listEntityFacts(contactId: string, entity: string): Promise<Record<string, MemoryFact>>;
+}
+
 
 export interface ConversationAgentInput {
   conversationId: string;
@@ -454,12 +488,20 @@ export function formatConversationContextForModel(
   lines.push(`fase: ${payload.phase}`);
   lines.push(`checkpoint: ${payload.checkpoint}`);
 
-  // 1.1 [ULTIMA_RESPOSTA_LARISSA] (Âncora de contexto da fala mais recente da Larissa)
-  if (payload.lastLarissaMessage) {
+  // 1.1 [ULTIMO_TURNO_LARISSA] (Âncora de contexto do último bloco contíguo da Larissa)
+  const larissaTurn = (payload.lastLarissaTurn && payload.lastLarissaTurn.length > 0)
+    ? payload.lastLarissaTurn
+    : (payload.lastLarissaMessage ? [payload.lastLarissaMessage] : []);
+
+  if (larissaTurn.length > 0) {
     lines.push("");
-    lines.push("[ULTIMA_RESPOSTA_LARISSA]");
-    lines.push(`LARISSA | ${payload.lastLarissaMessage.id}`);
-    lines.push(payload.lastLarissaMessage.text || "");
+    lines.push("[ULTIMO_TURNO_LARISSA]");
+    for (let i = 0; i < larissaTurn.length; i++) {
+      const m = larissaTurn[i];
+      if (i > 0) lines.push("");
+      lines.push(`LARISSA | ${m.id}`);
+      lines.push(m.text || "");
+    }
   }
 
   // 2. [FATOS_CONHECIDOS] - apenas se solicitado ou na camada 'descoberta'
@@ -601,27 +643,62 @@ export async function buildConversationContextForCycle(
   const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts } = params;
   const trace: string[] = [];
 
-  // 0. Busca a última mensagem outbound enviada pela Larissa para servir de âncora de contexto
+  // 0. Busca o último bloco CONTÍGUO de mensagens outbound enviadas pela Larissa
   let lastLarissaMessage: StructuredConversationMessage | null = null;
+  let lastLarissaTurn: StructuredConversationMessage[] = [];
   try {
-    const { data: lastLarissaRows } = await supabase
+    let recentRows: any[] = [];
+    const q = supabase
       .from("instagram_messages")
       .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
-      .eq("conversation_id", conversationId)
-      .or("is_mine.eq.true,sender_id.eq.me")
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .eq("conversation_id", conversationId);
 
-    const row = lastLarissaRows?.[0];
-    if (row && row.text) {
-      lastLarissaMessage = {
-        id: String(row.id),
-        sender: "larissa",
-        text: String(row.text).trim(),
-        replyToId: row.reply_to_message_id || null,
-        timestamp: row.timestamp || row.created_at,
-      };
-      trace.push(`last_larissa_anchor=${row.id}`);
+    if (typeof q.order === "function") {
+      const res = await q.order("created_at", { ascending: false }).limit(30);
+      recentRows = res?.data || [];
+    } else if (typeof q.or === "function") {
+      // Suporte a mocks legados que encadeiam .or(...)
+      const withOr = q.or("is_mine.eq.true,sender_id.eq.me");
+      if (withOr && typeof withOr.order === "function") {
+        const res = await withOr.order("created_at", { ascending: false }).limit(30);
+        recentRows = res?.data || [];
+      }
+    }
+
+    const pendingIds = new Set(claimedMessages.map((m) => String(m.id)));
+    const collectedLarissa: StructuredConversationMessage[] = [];
+
+    for (const row of recentRows) {
+      const rowId = String(row.id);
+      // Pula mensagens que compõem o lote pendente atual do pretendente
+      if (pendingIds.has(rowId)) {
+        continue;
+      }
+
+      const isLarissa = Boolean(row.is_mine === true || row.sender_id === "me" || row.sender === "larissa");
+      if (isLarissa && row.text) {
+        collectedLarissa.push({
+          id: rowId,
+          sender: "larissa",
+          text: String(row.text).trim(),
+          replyToId: row.reply_to_message_id || null,
+          timestamp: row.timestamp || row.created_at,
+        });
+      } else {
+        // Encontrou mensagem do pretendente antes da Larissa ou fim do bloco contíguo
+        break;
+      }
+    }
+
+    // A coleta foi feita em ordem decrescente (DESC); inverte para ordem cronológica ascendente (ASC)
+    lastLarissaTurn = collectedLarissa.reverse();
+    lastLarissaMessage = lastLarissaTurn[lastLarissaTurn.length - 1] || null;
+
+    if (lastLarissaTurn.length > 0) {
+      trace.push(`last_larissa_turn_count=${lastLarissaTurn.length}`);
+      if (lastLarissaMessage) {
+        trace.push(`last_larissa_anchor=${lastLarissaMessage.id}`);
+      }
     }
   } catch (err: any) {
     trace.push(`last_larissa_fetch_err=${err.message || String(err)}`);
@@ -689,6 +766,7 @@ export async function buildConversationContextForCycle(
     phase: currentPhase,
     checkpoint,
     lastLarissaMessage,
+    lastLarissaTurn,
     newMessages: structuredNewMessages,
     referencedMessages: referencedMap,
     knownFacts: knownFacts || {},
@@ -1106,6 +1184,17 @@ Seu objetivo é acolher com carinho, simpatia e validação de reciprocidade.
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
+### FERRAMENTAS DE MEMÓRIA SOB DEMANDA
+Trabalhe primeiro apenas com o contexto recebido.
+Se para compreender corretamente a mensagem ou produzir uma resposta natural faltar um fato relevante que possa ter sido informado anteriormente, consulte a memória:
+- memory_get_fact: consulta fato estruturado exato. Ex: {"entity": "self" | "<nome_terceiro>", "field": "age" | "city" | "profession"}
+- memory_search: busca aberta por trechos relevantes. Ex: {"entity": "self", "query": "..."}
+Regras:
+- Não consulte memória por curiosidade.
+- Não consulte memória se o contexto atual já for suficiente.
+- Se a memória não possuir o dado, não invente.
+- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age"}, "reasoning": "..."}
+
 ### CHECKPOINTS DESTA FASE
 - 'chk_saudacao_feita': Se ainda for troca de cumprimento ou reciprocidade inicial. Próxima fase: 'conexao_inicial'.
 - 'chk_rapport_estabelecido': Se o pretendente demonstrou engajamento recíproco e a conexão inicial foi firmada, autorizando avançar para 'descoberta'.
@@ -1140,6 +1229,17 @@ Seu objetivo é descobrir suavemente o que o pretendente faz da vida, onde mora 
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
+
+### FERRAMENTAS DE MEMÓRIA SOB DEMANDA
+Trabalhe primeiro apenas com o contexto recebido.
+Se para compreender corretamente a mensagem ou produzir uma resposta natural faltar um fato relevante que possa ter sido informado anteriormente (ex: idade, cidade, profissão do pretendente ou dados de terceiros mencionados), consulte a memória:
+- memory_get_fact: consulta fato estruturado exato. Ex: {"entity": "self" | "<nome_terceiro>", "field": "age" | "city" | "profession"}
+- memory_search: busca aberta por trechos relevantes. Ex: {"entity": "self", "query": "..."}
+Regras:
+- Não consulte memória por curiosidade.
+- Não consulte memória se o contexto atual já for suficiente.
+- Se a memória não possuir o dado, não invente.
+- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age"}, "reasoning": "..."}
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
@@ -1202,6 +1302,475 @@ ${input.phaseRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
   "requiredTools": ["send_text"],
   "reasoning": "análise analítica da decisão tomada"
 }`;
+}
+
+// ----------------------------------------------------------------------------
+// 7.5. Provedores de Memória Estruturada (Memory Providers) (.agents/ARCHITECTURE.md)
+// ----------------------------------------------------------------------------
+
+/**
+ * Provedor em Memória para Testes e Mock Rápido
+ */
+export class InMemoryMemoryProvider implements MemoryProvider {
+  private stores = new Map<string, ContactMemoryStore>();
+
+  private getOrCreateStore(contactId: string): ContactMemoryStore {
+    let store = this.stores.get(contactId);
+    if (!store) {
+      store = { entities: {}, snippets: [] };
+      this.stores.set(contactId, store);
+    }
+    return store;
+  }
+
+  async getFact(contactId: string, entity: string, field: string): Promise<{ found: boolean; fact?: MemoryFact; value?: any }> {
+    const store = this.getOrCreateStore(contactId);
+    const normEntity = (entity || "self").toLowerCase().trim();
+    const normField = (field || "").toLowerCase().trim();
+    const fact = store.entities[normEntity]?.[normField];
+    if (fact) {
+      return { found: true, fact, value: fact.value };
+    }
+    return { found: false, value: undefined };
+  }
+
+  async searchMemory(contactId: string, query: string, options?: { entity?: string; limit?: number }): Promise<MemorySearchResult[]> {
+    const store = this.getOrCreateStore(contactId);
+    const normQuery = (query || "").toLowerCase().trim();
+    const limit = options?.limit || 3;
+    const targetEntity = options?.entity?.toLowerCase()?.trim();
+
+    const results: MemorySearchResult[] = [];
+
+    // Busca nos snippets livres
+    for (const item of store.snippets || []) {
+      if (targetEntity && item.entity && item.entity.toLowerCase() !== targetEntity) continue;
+      if (normQuery && item.snippet.toLowerCase().includes(normQuery)) {
+        results.push({
+          snippet: item.snippet,
+          sourceMessageId: item.sourceMessageId,
+          entity: item.entity,
+        });
+        if (results.length >= limit) break;
+      }
+    }
+
+    // Se ainda couber, busca nos fatos estruturados
+    if (results.length < limit) {
+      for (const entKey of Object.keys(store.entities)) {
+        if (targetEntity && entKey !== targetEntity) continue;
+        const entObj = store.entities[entKey];
+        for (const fKey of Object.keys(entObj)) {
+          const f = entObj[fKey];
+          const factText = `${entKey}.${fKey}: ${f.value}`;
+          if (normQuery && factText.toLowerCase().includes(normQuery)) {
+            results.push({
+              snippet: factText,
+              sourceMessageId: f.sourceMessageId,
+              entity: entKey,
+            });
+            if (results.length >= limit) break;
+          }
+        }
+        if (results.length >= limit) break;
+      }
+    }
+
+    return results;
+  }
+
+  async writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }> {
+    const store = this.getOrCreateStore(contactId);
+    const normEntity = (fact.entity || "self").toLowerCase().trim();
+    const normField = (fact.field || "").toLowerCase().trim();
+
+    if (!store.entities[normEntity]) {
+      store.entities[normEntity] = {};
+    }
+
+    store.entities[normEntity][normField] = {
+      ...fact,
+      entity: normEntity,
+      field: normField,
+      updatedAt: new Date().toISOString(),
+    };
+    return { success: true };
+  }
+
+  async listEntityFacts(contactId: string, entity: string): Promise<Record<string, MemoryFact>> {
+    const store = this.getOrCreateStore(contactId);
+    const normEntity = (entity || "self").toLowerCase().trim();
+    return store.entities[normEntity] || {};
+  }
+}
+
+/**
+ * Provedor Oficial de Nuvem via Supabase (JSONB persistente em stage_completed_rules.orchestration.memory)
+ */
+export class SupabaseMemoryProvider implements MemoryProvider {
+  constructor(private supabase: any) {}
+
+  private async getStore(contactId: string): Promise<{ store: ContactMemoryStore; stageRules: any }> {
+    try {
+      const { data } = await this.supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .eq("id", contactId)
+        .maybeSingle();
+
+      const stageRules = data?.stage_completed_rules || {};
+      const memory = stageRules.orchestration?.memory || { entities: {}, snippets: [] };
+      return { store: memory, stageRules };
+    } catch {
+      return { store: { entities: {}, snippets: [] }, stageRules: {} };
+    }
+  }
+
+  async getFact(contactId: string, entity: string, field: string): Promise<{ found: boolean; fact?: MemoryFact; value?: any }> {
+    const { store } = await this.getStore(contactId);
+    const normEntity = (entity || "self").toLowerCase().trim();
+    const normField = (field || "").toLowerCase().trim();
+    const fact = store.entities?.[normEntity]?.[normField];
+    if (fact) {
+      return { found: true, fact, value: fact.value };
+    }
+    return { found: false, value: undefined };
+  }
+
+  async searchMemory(contactId: string, query: string, options?: { entity?: string; limit?: number }): Promise<MemorySearchResult[]> {
+    const { store } = await this.getStore(contactId);
+    const normQuery = (query || "").toLowerCase().trim();
+    const limit = options?.limit || 3;
+    const targetEntity = options?.entity?.toLowerCase()?.trim();
+
+    const results: MemorySearchResult[] = [];
+
+    for (const item of store.snippets || []) {
+      if (targetEntity && item.entity && item.entity.toLowerCase() !== targetEntity) continue;
+      if (normQuery && item.snippet.toLowerCase().includes(normQuery)) {
+        results.push({
+          snippet: item.snippet,
+          sourceMessageId: item.sourceMessageId,
+          entity: item.entity,
+        });
+        if (results.length >= limit) break;
+      }
+    }
+
+    if (results.length < limit && store.entities) {
+      for (const entKey of Object.keys(store.entities)) {
+        if (targetEntity && entKey !== targetEntity) continue;
+        const entObj = store.entities[entKey];
+        for (const fKey of Object.keys(entObj)) {
+          const f = entObj[fKey];
+          const factText = `${entKey}.${fKey}: ${f.value}`;
+          if (normQuery && factText.toLowerCase().includes(normQuery)) {
+            results.push({
+              snippet: factText,
+              sourceMessageId: f.sourceMessageId,
+              entity: entKey,
+            });
+            if (results.length >= limit) break;
+          }
+        }
+        if (results.length >= limit) break;
+      }
+    }
+
+    return results;
+  }
+
+  async writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { store, stageRules } = await this.getStore(contactId);
+      const normEntity = (fact.entity || "self").toLowerCase().trim();
+      const normField = (fact.field || "").toLowerCase().trim();
+
+      const entities = { ...(store.entities || {}) };
+      entities[normEntity] = { ...(entities[normEntity] || {}) };
+      entities[normEntity][normField] = {
+        ...fact,
+        entity: normEntity,
+        field: normField,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updatedMemory: ContactMemoryStore = {
+        ...store,
+        entities,
+      };
+
+      const orchestration = {
+        ...(stageRules.orchestration || {}),
+        memory: updatedMemory,
+      };
+
+      await this.supabase
+        .from("instagram_conversations")
+        .update({
+          stage_completed_rules: {
+            ...stageRules,
+            orchestration,
+          },
+        })
+        .eq("id", contactId);
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || String(err) };
+    }
+  }
+
+  async listEntityFacts(contactId: string, entity: string): Promise<Record<string, MemoryFact>> {
+    const { store } = await this.getStore(contactId);
+    const normEntity = (entity || "self").toLowerCase().trim();
+    return store.entities?.[normEntity] || {};
+  }
+}
+
+/**
+ * Adaptador para Obsidian Local REST API
+ * (Pronto para conexão quando houver túnel seguro HTTPS e variáveis de ambiente no Supabase)
+ */
+export class ObsidianMemoryAdapter implements MemoryProvider {
+  private baseUrl: string;
+  private apiKey: string;
+
+  constructor(options?: { baseUrl?: string; apiKey?: string }) {
+    const envUrl = typeof Deno !== "undefined" ? (Deno as any)?.env?.get?.("OBSIDIAN_REST_URL") : (typeof process !== "undefined" ? process?.env?.OBSIDIAN_REST_URL : undefined);
+    const envKey = typeof Deno !== "undefined" ? (Deno as any)?.env?.get?.("OBSIDIAN_API_KEY") : (typeof process !== "undefined" ? process?.env?.OBSIDIAN_API_KEY : undefined);
+    this.baseUrl = (options?.baseUrl !== undefined ? options.baseUrl : (envUrl || "")).replace(/\/$/, "");
+    this.apiKey = (options?.apiKey !== undefined ? options.apiKey : (envKey || "")).trim();
+  }
+
+  isConfigured(): boolean {
+    return Boolean(this.baseUrl && this.apiKey);
+  }
+
+  async getFact(contactId: string, entity: string, field: string): Promise<{ found: boolean; fact?: MemoryFact; value?: any }> {
+    if (!this.isConfigured()) return { found: false, value: undefined };
+    try {
+      const resp = await fetch(`${this.baseUrl}/vault/contacts/${encodeURIComponent(contactId)}/${encodeURIComponent(entity)}.json`, {
+        headers: { Authorization: `Bearer ${this.apiKey}`, Accept: "application/json" },
+      });
+      if (!resp.ok) return { found: false, value: undefined };
+      const data = await resp.json();
+      if (data && data[field] !== undefined) {
+        const fact: MemoryFact = {
+          entity,
+          field,
+          value: data[field],
+          sourceMessageId: data._source?.[field],
+          updatedAt: data._updatedAt?.[field] || new Date().toISOString(),
+        };
+        return {
+          found: true,
+          fact,
+          value: data[field],
+        };
+      }
+      return { found: false, value: undefined };
+    } catch {
+      return { found: false, value: undefined };
+    }
+  }
+
+  async searchMemory(contactId: string, query: string, options?: { entity?: string; limit?: number }): Promise<MemorySearchResult[]> {
+    if (!this.isConfigured()) return [];
+    try {
+      const resp = await fetch(`${this.baseUrl}/search/simple?query=${encodeURIComponent(query)}`, {
+        headers: { Authorization: `Bearer ${this.apiKey}`, Accept: "application/json" },
+      });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      const prefix = `contacts/${contactId}/`;
+      return (Array.isArray(data) ? data : [])
+        .filter((item: any) => item.filename && item.filename.startsWith(prefix))
+        .slice(0, options?.limit || 3)
+        .map((item: any) => ({ snippet: item.matches?.[0]?.context || item.filename, entity: options?.entity }));
+    } catch {
+      return [];
+    }
+  }
+
+  async writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }> {
+    if (!this.isConfigured()) return { success: false, error: "Obsidian não configurado no runtime" };
+    try {
+      const url = `${this.baseUrl}/vault/contacts/${encodeURIComponent(contactId)}/${encodeURIComponent(fact.entity)}.json`;
+      const existing = await fetch(url, { headers: { Authorization: `Bearer ${this.apiKey}` } });
+      let currentData: any = {};
+      if (existing.ok) {
+        currentData = await existing.json();
+      }
+      currentData[fact.field] = fact.value;
+      currentData._source = currentData._source || {};
+      if (fact.sourceMessageId) currentData._source[fact.field] = fact.sourceMessageId;
+      currentData._updatedAt = currentData._updatedAt || {};
+      currentData._updatedAt[fact.field] = new Date().toISOString();
+
+      const putResp = await fetch(url, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(currentData, null, 2),
+      });
+      return { success: putResp.ok };
+    } catch (err: any) {
+      return { success: false, error: err.message || String(err) };
+    }
+  }
+
+  async listEntityFacts(contactId: string, entity: string): Promise<Record<string, MemoryFact>> {
+    if (!this.isConfigured()) return {};
+    return {};
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 7.6. Extração Determinística de Fatos Objetivos & MemoryWriter
+// ----------------------------------------------------------------------------
+
+/**
+ * Extrai fatos objetivos com evidência explícita direta do texto.
+ * NÃO inventa nem infere dados a partir de afirmações vagas.
+ */
+export function extractFactsFromInboundText(text: string, sourceMessageId?: string): Array<Omit<MemoryFact, "updatedAt">> {
+  const facts: Array<Omit<MemoryFact, "updatedAt">> = [];
+  const clean = (text || "").trim();
+  if (!clean || clean.length < 3) return facts;
+
+  // 1. Idade de Terceiros (ex: "minha prima Maria tem 25 anos", "meu filho Pedro tem 8 anos")
+  const thirdPartyAgeMatch = clean.match(
+    /(?:minha prima|meu primo|meu filho|minha filha|minha mãe|meu pai|minha irmã|meu irmão)\s*([a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]+)?\s*(?:tem|tá com|está com|completou|fez)\s*(\d{1,2})\s*(?:anos)?/i
+  );
+  if (thirdPartyAgeMatch) {
+    const kin = clean.toLowerCase().includes("prima")
+      ? "prima"
+      : clean.toLowerCase().includes("filho")
+      ? "filho"
+      : clean.toLowerCase().includes("filha")
+      ? "filha"
+      : clean.toLowerCase().includes("primo")
+      ? "primo"
+      : clean.toLowerCase().includes("mãe") || clean.toLowerCase().includes("mae")
+      ? "mae"
+      : "terceiro";
+    const namePart = thirdPartyAgeMatch[1] ? `_${thirdPartyAgeMatch[1].toLowerCase().trim()}` : "";
+    const entity = `${kin}${namePart}`;
+    const ageVal = parseInt(thirdPartyAgeMatch[2], 10);
+    if (!isNaN(ageVal) && ageVal > 0 && ageVal < 120) {
+      facts.push({
+        entity,
+        field: "age",
+        value: ageVal,
+        sourceMessageId,
+        confidence: 0.95,
+      });
+    }
+  }
+
+  // 2. Idade do Pretendente ("self.age")
+  // Expressões explícitas: "tenho 40 anos", "faço 25 anos", "estou com 30 anos", "tô com 28 anos", "minha idade é 35"
+  // Frases vagas como "tô ficando velho" NÃO casam.
+  const selfAgeMatch = clean.match(
+    /(?:(?:eu\s+)?tenho|complet(?:ei|ando)|faço|estou com|tô com|minha idade [eé])\s+(\d{1,2})\s*(?:anos)?/i
+  );
+  if (selfAgeMatch && !thirdPartyAgeMatch) {
+    const ageVal = parseInt(selfAgeMatch[1], 10);
+    if (!isNaN(ageVal) && ageVal >= 16 && ageVal <= 110) {
+      facts.push({
+        entity: "self",
+        field: "age",
+        value: ageVal,
+        sourceMessageId,
+        confidence: 0.95,
+      });
+    }
+  }
+
+  // 3. Cidade / Residência ("self.city")
+  const cityMatch = clean.match(
+    /(?:moro em|sou de|vivo em|resido em)\s+([A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ][a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ\s]{2,30})/
+  );
+  if (cityMatch) {
+    const city = cityMatch[1].trim();
+    if (!/^(um|uma|aqui|ali|casa|apartamento)$/i.test(city)) {
+      facts.push({
+        entity: "self",
+        field: "city",
+        value: city,
+        sourceMessageId,
+        confidence: 0.9,
+      });
+    }
+  }
+
+  // 4. Profissão / Ocupação ("self.profession")
+  const profMatch = clean.match(
+    /(?:trabalho com|trabalho na área de|sou)\s+(engenharia|engenheiro|médico|advogado|programador|dev|ti|médica|advogada|autônomo|professor|professora|vendedor|contador|arquiteto)/i
+  );
+  if (profMatch) {
+    facts.push({
+      entity: "self",
+      field: "profession",
+      value: profMatch[1].toLowerCase().trim(),
+      sourceMessageId,
+      confidence: 0.9,
+    });
+  }
+
+  // 5. Veículo ("self.vehicle")
+  const vehicleMatch = clean.match(
+    /(?:tenho uma|comprei uma|tenho um|comprei um)\s+(amarok|hilux|corolla|civic|ranger|s10|golf|onix|hb20|tracker|compass|renegade)/i
+  );
+  if (vehicleMatch) {
+    facts.push({
+      entity: "self",
+      field: "vehicle",
+      value: vehicleMatch[1].trim(),
+      sourceMessageId,
+      confidence: 0.95,
+    });
+  }
+
+  return facts;
+}
+
+/**
+ * MemoryWriter: Executado de forma assíncrona pós-despacho de balões.
+ * NUNCA bloqueia o envio nem aciona fallback legado em caso de erro.
+ */
+export async function executeMemoryWriter(params: {
+  conversationId: string;
+  claimedMessages: CanonicalMessage[];
+  lastLarissaTurn?: StructuredConversationMessage[];
+  sentResponseText?: string;
+  memoryProvider: MemoryProvider;
+  supabase?: any;
+  trace: string[];
+}): Promise<{ factsExtracted: number; trace: string[] }> {
+  const { conversationId, claimedMessages, memoryProvider, trace } = params;
+  trace.push("memory_writer_started");
+  let factsCount = 0;
+
+  try {
+    for (const msg of claimedMessages) {
+      if (msg.sender !== "pretendente" && msg.direction !== "inbound") continue;
+      const text = (msg.text || "").trim();
+      if (!text || text.length < 3) continue;
+
+      const extracted = extractFactsFromInboundText(text, msg.id);
+      for (const fact of extracted) {
+        await memoryProvider.writeFact(conversationId, fact);
+        factsCount++;
+        trace.push(`memory_fact_saved=${fact.entity}.${fact.field}`);
+      }
+    }
+  } catch (err: any) {
+    trace.push(`memory_writer_error: ${err.message || String(err)}`);
+  }
+
+  trace.push("memory_writer_completed");
+  return { factsExtracted: factsCount, trace };
 }
 
 // ----------------------------------------------------------------------------
@@ -1281,9 +1850,11 @@ export interface RunOrchestrationParams {
     sender: string;
   };
   correlationId?: string;
+  memoryProvider?: MemoryProvider;
   runtime?: {
     sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
     callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }>;
+    memoryProvider?: MemoryProvider;
   };
 }
 
@@ -1306,6 +1877,10 @@ export async function runExperimentalOrchestration(
   const startTime = Date.now();
   const correlationId =
     params.correlationId || `corr_${startTime}_${Math.random().toString(36).slice(2, 7)}`;
+  const memoryProvider: MemoryProvider =
+    params.memoryProvider ||
+    runtime?.memoryProvider ||
+    new SupabaseMemoryProvider(supabase);
 
   // 1. Carrega o estado atual da conversa
   const { data: convRow, error: convErr } = await supabase
@@ -1707,11 +2282,99 @@ export async function runExperimentalOrchestration(
         ),
       });
 
-      const subRes = await callModelOrAtria(subagentPrompt, { runtime, supabase });
-      totalTokens += subRes.tokens;
-      const rawSubJson = extractJsonFromText(subRes.content);
-      finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
-      currentCycle.trace.push(`subagent_executed: ${targetSubagent}`);
+      const MAX_TOOL_ITERATIONS = 3;
+      let loopIterations = 0;
+      let currentSubagentPrompt = subagentPrompt;
+
+      while (loopIterations < MAX_TOOL_ITERATIONS) {
+        loopIterations++;
+        const subRes = await callModelOrAtria(currentSubagentPrompt, { runtime, supabase });
+        totalTokens += subRes.tokens;
+        const rawSubJson = extractJsonFromText(subRes.content);
+
+        // Verifica se o subagente solicitou ferramenta de memória sob demanda
+        if (
+          rawSubJson &&
+          (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)
+        ) {
+          const toolName = String(rawSubJson.tool || rawSubJson.name || "memory_get_fact").trim();
+          const toolParams = rawSubJson.parameters || rawSubJson.params || rawSubJson.arguments || {};
+          const toolEntity = String(toolParams.entity || "self").trim();
+          const toolField = String(toolParams.field || "").trim();
+
+          currentCycle.trace.push(`memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`);
+          const tStart = Date.now();
+
+          let toolResult: any;
+          if (toolName === "memory_search") {
+            const query = String(toolParams.query || "").trim();
+            const results = await memoryProvider.searchMemory(conversationId, query, {
+              entity: toolEntity,
+              limit: 3,
+            });
+            toolResult = {
+              tool: "memory_search",
+              found: results.length > 0,
+              results,
+            };
+          } else {
+            // memory_get_fact
+            const res = await memoryProvider.getFact(conversationId, toolEntity, toolField);
+            toolResult = {
+              tool: "memory_get_fact",
+              found: res.found,
+              entity: toolEntity,
+              field: toolField,
+              value: res.found ? res.fact?.value : null,
+              sourceMessageId: res.found ? res.fact?.sourceMessageId : undefined,
+            };
+          }
+
+          const toolDuration = Date.now() - tStart;
+          currentCycle.trace.push(`memory_tool_found: ${toolResult.found}`);
+          currentCycle.trace.push(`memory_tool_duration_ms: ${toolDuration}`);
+
+          const isLastIteration = loopIterations >= MAX_TOOL_ITERATIONS;
+          const iterationWarning = isLastIteration
+            ? "\n(ATENÇÃO: Limite de consultas de memória atingido. Responda agora com o contexto disponível sem inventar dados)."
+            : "";
+
+          currentSubagentPrompt = `${subagentPrompt}
+
+### RETORNO DA CONSULTA DE MEMÓRIA (Tool Call #${loopIterations})
+\`\`\`json
+${JSON.stringify(toolResult, null, 2)}
+\`\`\`
+${iterationWarning}
+Agora prossiga e gere sua resposta final em JSON:
+{
+  "action": "reply",
+  "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
+  "summary": "resumo conciso do turno",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "nextPhase": "${targetSubagent}",
+  "reasoning": "análise analítica da resposta"
+}`;
+          continue;
+        }
+
+        // Subagente retornou resposta final
+        finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
+        currentCycle.trace.push(`subagent_executed: ${targetSubagent}`);
+        break;
+      }
+
+      if (!finalSubDecision) {
+        finalSubDecision = {
+          action: "reply",
+          checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+          summary: "Resposta formulada com contexto disponível",
+          suggestedResponse: "Tudo bem por aqui também",
+          nextPhase: currentPhase,
+          reasoning: "Finalização após limite de ferramentas de memória",
+          requiredTools: [],
+        };
+      }
     }
 
     // ------------------------------------------------------------------------
@@ -2278,6 +2941,21 @@ export async function runExperimentalOrchestration(
       };
       currentCycle.trace.push("cycle_completed");
 
+      // MEMORY WRITER: Executa pós-processamento assíncrono de memória de forma fail-safe
+      try {
+        await executeMemoryWriter({
+          conversationId,
+          claimedMessages: canonicalList.filter((m) => claimedMessageIds.includes(m.id)),
+          lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+          sentResponseText: decision.suggestedResponse,
+          memoryProvider,
+          supabase,
+          trace: currentCycle.trace,
+        });
+      } catch (memErr: any) {
+        currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
+      }
+
       const updatedState: ConversationOrchestrationState = {
         version: 1,
         mode: "experimental",
@@ -2296,6 +2974,7 @@ export async function runExperimentalOrchestration(
         recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
         outbox: outboxMap,
         messageLedger: ledger,
+        memory: orchState.memory,
       };
 
       // Checagem de preempção antes do commit final no banco:
