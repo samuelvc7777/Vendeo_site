@@ -59,6 +59,34 @@ export interface OrchestratorInput {
 }
 
 // ----------------------------------------------------------------------------
+// 0. Decodificador Seguro de JSON
+// ----------------------------------------------------------------------------
+export function extractJsonFromText(raw: string): any {
+  if (!raw || typeof raw !== "string") throw new Error("Resposta da IA está vazia.");
+  try {
+    return JSON.parse(raw);
+  } catch {}
+
+  const codeBlockMatch = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch?.[1]) {
+    try {
+      return JSON.parse(codeBlockMatch[1]);
+    } catch {}
+  }
+
+  const firstBrace = raw.indexOf("{");
+  const lastBrace = raw.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    const jsonSubstring = raw.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(jsonSubstring);
+    } catch {}
+  }
+
+  throw new Error(`Falha ao decodificar JSON da resposta da Atria: ${raw.slice(0, 100)}...`);
+}
+
+// ----------------------------------------------------------------------------
 // 1. Validador de Esquema Estrito
 // ----------------------------------------------------------------------------
 export function validateOrchestratorDecision(data: unknown): OrchestratorDecision {
@@ -174,43 +202,43 @@ export function getRulesForPhase(phase: OrchestrationPhase): string[] {
 }
 
 // ----------------------------------------------------------------------------
-// 4. Construtor de Prompt do Agente Principal
+// 4. Construtor de Prompt do Agente Principal (Atria)
 // ----------------------------------------------------------------------------
 export function buildOrchestratorPrompt(input: OrchestratorInput): string {
-  return `Você é o Agente Principal de Orquestração da Persona Larissa (23 anos, moça meiga de Minas Gerais).
-Sua missão é analisar a conversa e gerar a próxima ação e resposta, respeitando rigorosamente a fase atual.
+  return `Você é a IA Atria, Auditora Oficial de Atendimento e Relacionamento do Vendeo.
+Sua missão é auditar a conversa e definir a próxima ação estratégica e resposta, respeitando a fase do funil de conversão.
 
-### CONTEXTO ATUAL
+### DOSSIÊ DA CONVERSA
 - ID da Conversa: ${input.conversationId}
 - Fase Atual: ${input.currentPhase}
-- Resumo Anterior: ${input.conversationSummary || "Início da interação."}
+- Resumo Anterior: ${input.conversationSummary || "Início do atendimento."}
 - Memórias Relevantes: ${input.relevantMemories.length > 0 ? input.relevantMemories.join(" | ") : "Nenhuma memória registrada ainda."}
 - Tarefas Pendentes: ${input.pendingTasks.length > 0 ? input.pendingTasks.join(" | ") : "Nenhuma tarefa pendente."}
 - Ferramentas Permitidas: ${input.allowedTools.join(", ")}
 
-### REGRAS DA FASE [${input.currentPhase}]
+### DIRETRIZES DA FASE [${input.currentPhase}]
 ${input.phaseRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
 
-### NOVA MENSAGEM RECEBIDA
+### ÚLTIMA MENSAGEM DO CLIENTE
 - Remetente: ${input.newMessage.sender}
 - Texto: "${input.newMessage.text}"
 - Horário: ${input.newMessage.timestamp}
 
-### INSTRUÇÕES OBRIGATÓRIAS
-1. Avalie se a mensagem do pretendente permite manter a fase ou se atende aos critérios para avançar.
+### REGRAS OBRIGATÓRIAS DE AUDITORIA
+1. Avalie a interação do cliente com base no dossiê.
 2. Para avançar de 'conexao_inicial' para 'descoberta', você DEVE definir o checkpoint como 'chk_rapport_estabelecido' e próxima fase 'descoberta'.
-3. Se não houver reciprocidade ainda, mantenha a fase 'conexao_inicial' e checkpoint 'chk_saudacao_feita'.
-4. Formule uma resposta humanizada na voz da Larissa (sem clichês de robô, meiga, com pontuação natural).
+3. Se o cliente ainda estiver apenas cumprimentando, mantenha a fase 'conexao_inicial' e checkpoint 'chk_saudacao_feita'.
+4. Formule uma resposta cordial, atenciosa e acolhedora no estilo de atendimento humanizado de Minas Gerais (sem clichês formais de robô, meiga, sem ponto final).
 5. Responda ESTRITAMENTE em formato JSON com o seguinte schema:
 {
-  "action": "reply" | "wait" | "advance_phase" | "escalate",
+  "action": "reply",
   "currentPhase": "${input.currentPhase}",
-  "nextPhase": "conexao_inicial" | "descoberta",
-  "checkpoint": "string_do_checkpoint",
-  "summary": "resumo conciso atualizado da conversa até aqui",
-  "suggestedResponse": "texto da resposta da Larissa para o pretendente",
+  "nextPhase": "conexao_inicial",
+  "checkpoint": "chk_saudacao_feita",
+  "summary": "resumo conciso do turno",
+  "suggestedResponse": "resposta atenciosa e acolhedora para o cliente",
   "requiredTools": [],
-  "reasoning": "explicação estratégica da decisão"
+  "reasoning": "análise analítica da decisão tomada"
 }`;
 }
 
@@ -354,43 +382,45 @@ export async function runExperimentalOrchestration(
       rawContent = res.content;
       tokensUsed = res.tokens || 0;
     } else {
-      // Chamada padrão à API OpenAI (gpt-5.6-terra ou gpt-4o-mini)
-      const { data: cfgSecret } = await supabase
-        .from("instagram_config")
-        .select("app_secret")
-        .eq("id", "openai_api_key")
-        .maybeSingle();
-
-      const apiKey = cfgSecret?.app_secret || Deno?.env?.get?.("OPENAI_API_KEY") || "";
-      if (!apiKey) {
-        throw new Error("Chave de API da OpenAI não configurada.");
+      // Motor Oficial Atria (Atria-Dawn-Preview / api.atria-asi.ai)
+      let atriaKey = (Deno?.env?.get?.("ATRIA_API_KEY") || "").trim();
+      if (!atriaKey) {
+        const { data: cfgSecret } = await supabase
+          .from("instagram_config")
+          .select("app_secret")
+          .eq("id", "atria_api_key")
+          .maybeSingle();
+        atriaKey = (cfgSecret?.app_secret || "").trim();
+      }
+      if (!atriaKey) {
+        throw new Error("Chave de API da Atria (atria_api_key) não configurada.");
       }
 
-      const openAiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      const atriaRes = await fetch("https://api.atria-asi.ai/v1/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${atriaKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-4o-mini",
-          temperature: 0.5,
-          response_format: { type: "json_object" },
+          model: "Atria-Dawn-Preview",
+          temperature: 0.3,
+          max_tokens: 1000,
           messages: [{ role: "user", content: prompt }],
         }),
       });
 
-      if (!openAiRes.ok) {
-        throw new Error(`OpenAI retornou erro HTTP ${openAiRes.status}: ${await openAiRes.text()}`);
+      if (!atriaRes.ok) {
+        throw new Error(`Atria retornou erro HTTP ${atriaRes.status}: ${await atriaRes.text()}`);
       }
 
-      const jsonRes = await openAiRes.json();
+      const jsonRes = await atriaRes.json();
       rawContent = jsonRes.choices?.[0]?.message?.content || "";
       tokensUsed = jsonRes.usage?.total_tokens || 0;
     }
 
     // 7. Validação estrita do Schema da Decisão
-    const parsedJson = JSON.parse(rawContent);
+    const parsedJson = extractJsonFromText(rawContent);
     const decision = validateOrchestratorDecision(parsedJson);
 
     // 8. Validação de Transição de Fase pelo Backend
