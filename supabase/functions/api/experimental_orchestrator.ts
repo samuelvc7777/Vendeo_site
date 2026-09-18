@@ -1,6 +1,7 @@
 // ============================================================================
 // experimental_orchestrator.ts
-// Novo Motor Experimental de Orquestração por Conversa (Clean Architecture)
+// Motor Experimental de Orquestração por Conversa (Clean Architecture)
+// Arquitetura: Backend Determinístico + Agente da Conversa + Subagentes
 // Suporta modos: 'legacy' | 'shadow' | 'experimental'
 // ============================================================================
 import { publishAutoPilotState, activity } from "./cloud_autopilot.ts";
@@ -8,6 +9,7 @@ import { publishAutoPilotState, activity } from "./cloud_autopilot.ts";
 export type OrchestrationMode = "legacy" | "shadow" | "experimental";
 export type OrchestrationPhase = "conexao_inicial" | "descoberta";
 export type OrchestrationAction = "reply" | "wait" | "advance_phase" | "escalate";
+export type SubagentTarget = "conexao_inicial" | "descoberta" | "none";
 export type ProcessingStatus =
   | "idle"
   | "analyzing"
@@ -15,6 +17,22 @@ export type ProcessingStatus =
   | "sent"
   | "shadow_logged"
   | "failed";
+
+export interface ConversationRoutingDecision {
+  targetSubagent: SubagentTarget;
+  action: "delegate" | "wait" | "pause";
+  reason: string;
+}
+
+export interface SubagentDecision {
+  action: OrchestrationAction;
+  checkpoint: string;
+  summary: string;
+  suggestedResponse: string;
+  nextPhase: OrchestrationPhase;
+  reasoning: string;
+  requiredTools?: string[];
+}
 
 export interface OrchestratorDecision {
   action: OrchestrationAction;
@@ -25,6 +43,7 @@ export interface OrchestratorDecision {
   suggestedResponse: string;
   requiredTools: string[];
   reasoning: string;
+  routedSubagent?: SubagentTarget;
 }
 
 export interface ConversationOrchestrationState {
@@ -43,6 +62,31 @@ export interface ConversationOrchestrationState {
   updatedAt: string;
 }
 
+export interface ConversationAgentInput {
+  conversationId: string;
+  currentPhase: OrchestrationPhase;
+  newMessage: {
+    id: string;
+    text: string;
+    timestamp: string;
+    sender: string;
+  };
+  recentHistory: string;
+}
+
+export interface SubagentInput {
+  conversationId: string;
+  currentPhase: OrchestrationPhase;
+  newMessage: {
+    id: string;
+    text: string;
+    timestamp: string;
+    sender: string;
+  };
+  recentHistory: string;
+}
+
+// Mantido para compatibilidade retroativa
 export interface OrchestratorInput {
   conversationId: string;
   newMessage: {
@@ -63,7 +107,9 @@ export interface OrchestratorInput {
 // 0. Decodificador Seguro de JSON
 // ----------------------------------------------------------------------------
 export function extractJsonFromText(raw: string): any {
-  if (!raw || typeof raw !== "string") throw new Error("Resposta da IA está vazia.");
+  if (!raw || typeof raw !== "string" || !raw.trim()) {
+    throw new Error("Resposta da IA está vazia.");
+  }
   try {
     return JSON.parse(raw);
   } catch {}
@@ -84,11 +130,101 @@ export function extractJsonFromText(raw: string): any {
     } catch {}
   }
 
-  throw new Error(`Falha ao decodificar JSON da resposta da Atria: ${raw.slice(0, 100)}...`);
+  throw new Error(`Falha ao decodificar JSON da resposta da IA: ${raw.slice(0, 100)}...`);
 }
 
 // ----------------------------------------------------------------------------
-// 1. Validador de Esquema Estrito
+// 1. Validador do Agente da Conversa (Roteamento)
+// ----------------------------------------------------------------------------
+export function validateRoutingDecision(
+  data: unknown,
+  fallbackPhase: OrchestrationPhase
+): ConversationRoutingDecision {
+  if (!data || typeof data !== "object") {
+    return {
+      targetSubagent: fallbackPhase,
+      action: "delegate",
+      reason: "Fallback por payload não-objeto",
+    };
+  }
+  const obj = data as Record<string, any>;
+
+  if (
+    obj.targetSubagent === "conexao_inicial" ||
+    obj.targetSubagent === "descoberta" ||
+    obj.targetSubagent === "none"
+  ) {
+    const action = obj.action === "wait" || obj.action === "pause" ? obj.action : "delegate";
+    return {
+      targetSubagent: obj.targetSubagent,
+      action,
+      reason: typeof obj.reason === "string" ? obj.reason.trim() : "Decisão de roteamento válida",
+    };
+  }
+
+  // Compatibilidade resiliente com mocks e decisões diretas
+  if (obj.currentPhase === "descoberta" || obj.nextPhase === "descoberta") {
+    return {
+      targetSubagent: "descoberta",
+      action: "delegate",
+      reason: "Roteado com base na fase da decisão",
+    };
+  }
+
+  return {
+    targetSubagent: fallbackPhase || "conexao_inicial",
+    action: obj.action === "wait" ? "wait" : "delegate",
+    reason: typeof obj.reasoning === "string" ? obj.reasoning.trim() : "Roteamento padrão para fase atual",
+  };
+}
+
+// ----------------------------------------------------------------------------
+// 2. Validador de Decisão de Subagente
+// ----------------------------------------------------------------------------
+export function validateSubagentDecision(
+  data: unknown,
+  currentPhase: OrchestrationPhase
+): SubagentDecision {
+  if (!data || typeof data !== "object") {
+    throw new Error("Decisão do subagente inválida: payload não é um objeto.");
+  }
+  const obj = data as Record<string, any>;
+
+  const action: OrchestrationAction =
+    obj.action === "wait" || obj.action === "advance_phase" || obj.action === "escalate"
+      ? obj.action
+      : "reply";
+
+  const nextPhase: OrchestrationPhase =
+    obj.nextPhase === "descoberta" ? "descoberta" : "conexao_inicial";
+
+  const checkpoint =
+    typeof obj.checkpoint === "string" && obj.checkpoint.trim()
+      ? obj.checkpoint.trim()
+      : currentPhase === "descoberta"
+      ? "chk_pergunta_sobre_ele"
+      : "chk_saudacao_feita";
+
+  const summary = typeof obj.summary === "string" ? obj.summary.trim() : "Turno processado";
+  const suggestedResponse = typeof obj.suggestedResponse === "string" ? obj.suggestedResponse.trim() : "";
+  const reasoning =
+    typeof obj.reasoning === "string" && obj.reasoning.trim()
+      ? obj.reasoning.trim()
+      : "Execução especializada do subagente";
+
+  return {
+    action,
+    checkpoint,
+    summary,
+    suggestedResponse,
+    nextPhase,
+    reasoning,
+    requiredTools: Array.isArray(obj.requiredTools) ? obj.requiredTools.map(String) : ["send_text"],
+  };
+}
+
+// ----------------------------------------------------------------------------
+// 3. Validador de Esquema Estrito (Compatibilidade Retroativa)
 // ----------------------------------------------------------------------------
 export function validateOrchestratorDecision(data: unknown): OrchestratorDecision {
   if (!data || typeof data !== "object") {
@@ -142,14 +278,13 @@ export function validateOrchestratorDecision(data: unknown): OrchestratorDecisio
 }
 
 // ----------------------------------------------------------------------------
-// 2. Validador de Transição de Fase pelo Backend (Guarda de Integridade)
+// 4. Validador de Transição de Fase pelo Backend (Guarda de Integridade)
 // ----------------------------------------------------------------------------
 export function validatePhaseTransition(
   currentPhase: OrchestrationPhase,
   requestedNextPhase: OrchestrationPhase,
   checkpoint: string
 ): { allowed: boolean; validatedNextPhase: OrchestrationPhase; reason?: string } {
-  // Se não solicitou avanço, mantém a fase atual
   if (requestedNextPhase === currentPhase) {
     return { allowed: true, validatedNextPhase: currentPhase };
   }
@@ -180,7 +315,7 @@ export function validatePhaseTransition(
 }
 
 // ----------------------------------------------------------------------------
-// 3. Regras de Cada Fase
+// 5. Regras de Cada Fase (Diretrizes Operacionais)
 // ----------------------------------------------------------------------------
 export function getRulesForPhase(phase: OrchestrationPhase): string[] {
   if (phase === "conexao_inicial") {
@@ -203,8 +338,104 @@ export function getRulesForPhase(phase: OrchestrationPhase): string[] {
 }
 
 // ----------------------------------------------------------------------------
-// 4. Construtor de Prompt do Agente Principal (Atria)
+// 6. Construtor de Prompt do Agente da Conversa (Camada 1 - Roteador Enxuto)
 // ----------------------------------------------------------------------------
+export function buildConversationAgentPrompt(input: ConversationAgentInput): string {
+  return `Você é o Agente da Conversa da Larissa no Vendeo.
+Sua missão é estritamente de roteamento: analisar o estágio do diálogo e decidir qual subagente especializado deve responder ao pretendente.
+
+### SUBAGENTES DISPONÍVEIS:
+1. "conexao_inicial": Atendimento inicial, troca de saudações ("oi", "tudo bem", "como foi seu dia"), acolhimento caloroso e estabelecimento de reciprocidade inicial.
+2. "descoberta": Quando o contato inicial já foi correspondido e o diálogo deve aprofundar em quem ele é (profissão/trabalho, cidade onde mora, rotina, gostos).
+3. "none": Mensagem não exige resposta imediata ou deve aguardar.
+
+### DADOS ESSENCIAIS DA CONVERSA
+- ID da Conversa: ${input.conversationId}
+- Fase Atual Registrada: ${input.currentPhase}
+- Remetente: ${input.newMessage.sender}
+- Última Mensagem do Pretendente: "${input.newMessage.text}"
+- Histórico Recente:
+${input.recentHistory || "Início da interação"}
+
+### DIRETRIZ DE DECISÃO
+- Se a fase atual for 'conexao_inicial' e o pretendente estiver apenas cumprimentando ou trocando amenidades, direcione para "conexao_inicial".
+- Se ele já cumprimentou, respondeu com reciprocidade e deu abertura para saber mais, ou se a conversa já estiver na fase 'descoberta', direcione para "descoberta".
+
+Responda ESTRITAMENTE em JSON puro com as seguintes chaves:
+{
+  "targetSubagent": "conexao_inicial" | "descoberta" | "none",
+  "action": "delegate" | "wait" | "pause",
+  "reason": "explicação curta da escolha do subagente"
+}`;
+}
+
+// ----------------------------------------------------------------------------
+// 7. Construtores de Prompt dos Subagentes Especializados (Camada 2 - Enxutos)
+// ----------------------------------------------------------------------------
+export function buildConexaoInicialPrompt(input: SubagentInput): string {
+  return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
+Seu objetivo é acolher com carinho, simpatia e validação de reciprocidade.
+
+### DIRETRIZES DA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
+- Tom: meigo, carinhoso, mineiro natural (usando 'uai', 'né', 'kkk' com moderação).
+- PROIBIDO terminar balão com ponto final (.)
+- PROIBIDO usar ponto de exclamação (!)
+- Jamais chame o pretendente de Larissa.
+- Responda ao que ele falou antes de fazer qualquer pergunta leve.
+- Mantenha o balão curto e natural de celular.
+
+### CONTEXTO
+- Última Mensagem do Pretendente: "${input.newMessage.text}"
+- Histórico Recente:
+${input.recentHistory || "Início da conversa"}
+
+### CHECKPOINTS DESTA FASE
+- 'chk_saudacao_feita': Se ainda for troca de cumprimento ou reciprocidade inicial. Próxima fase: 'conexao_inicial'.
+- 'chk_rapport_estabelecido': Se o pretendente demonstrou engajamento recíproco e a conexão inicial foi firmada, autorizando avançar para 'descoberta'.
+
+Responda ESTRITAMENTE em JSON puro:
+{
+  "action": "reply",
+  "checkpoint": "chk_saudacao_feita" | "chk_rapport_estabelecido",
+  "summary": "resumo conciso do turno",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "nextPhase": "conexao_inicial" | "descoberta",
+  "reasoning": "análise analítica da resposta"
+}`;
+}
+
+export function buildDescobertaPrompt(input: SubagentInput): string {
+  return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
+Seu objetivo é descobrir suavemente o que o pretendente faz da vida, onde mora e sua rotina.
+
+### DIRETRIZES DA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
+- Aplique sempre a Regra da Reciprocidade: se perguntar sobre ele, conte algo breve sobre você (estuda enfermagem, mora em São João del Rei, trabalha com vendas em casa).
+- Tom: meigo, carinhoso, mineiro natural (usando 'uai', 'né', 'kkk' com moderação).
+- PROIBIDO terminar balão com ponto final (.)
+- PROIBIDO usar ponto de exclamação (!)
+- Uma pergunta leve por vez, sem interrogatório. Balão curto de celular.
+
+### CONTEXTO
+- Última Mensagem do Pretendente: "${input.newMessage.text}"
+- Histórico Recente:
+${input.recentHistory || "Início da conversa"}
+
+### CHECKPOINTS DESTA FASE
+- 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
+- 'chk_troca_cidade': Falou/perguntou sobre cidade ou moradia.
+
+Responda ESTRITAMENTE em JSON puro:
+{
+  "action": "reply",
+  "checkpoint": "chk_pergunta_sobre_ele" | "chk_troca_cidade",
+  "summary": "resumo conciso do turno",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "nextPhase": "descoberta",
+  "reasoning": "análise analítica da resposta"
+}`;
+}
+
+// Construtor unificado mantido para compatibilidade retroativa
 export function buildOrchestratorPrompt(input: OrchestratorInput): string {
   return `Você é a IA Atria, Auditora Oficial de Atendimento e Relacionamento do Vendeo.
 Você atua na condução estratégica do atendimento para a persona **Larissa** (23 anos, moça meiga de Minas Gerais, estudante de enfermagem e trabalha com vendas).
@@ -253,7 +484,71 @@ ${input.phaseRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
 }
 
 // ----------------------------------------------------------------------------
-// 5. Motor de Execução Principal (runExperimentalOrchestration)
+// 8. Helper de Invocação de Modelo (Runtime Mock ou Atria-Dawn-Preview)
+// ----------------------------------------------------------------------------
+async function callModelOrAtria(
+  prompt: string,
+  options: {
+    runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }> };
+    supabase: any;
+  }
+): Promise<{ content: string; tokens: number }> {
+  if (options.runtime?.callModel) {
+    const res = await options.runtime.callModel(prompt);
+    return { content: res.content, tokens: res.tokens || 0 };
+  }
+
+  // Motor Oficial Atria (Atria-Dawn-Preview / api.atria-asi.ai)
+  let atriaKey = (Deno?.env?.get?.("ATRIA_API_KEY") || "").trim();
+  if (!atriaKey) {
+    const { data: cfgSecret } = await options.supabase
+      .from("instagram_config")
+      .select("app_secret")
+      .eq("id", "atria_api_key")
+      .maybeSingle();
+    atriaKey = (cfgSecret?.app_secret || "").trim();
+  }
+  if (!atriaKey) {
+    throw new Error("Chave de API da Atria (atria_api_key) não configurada.");
+  }
+
+  const atriaRes = await fetch("https://api.atria-asi.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${atriaKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "Atria-Dawn-Preview",
+      temperature: 0.2,
+      max_tokens: 3000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!atriaRes.ok) {
+    throw new Error(`Atria retornou erro HTTP ${atriaRes.status}: ${await atriaRes.text()}`);
+  }
+
+  const jsonRes = await atriaRes.json();
+  const choice = jsonRes.choices?.[0];
+  const content = choice?.message?.content || "";
+  const tokens = jsonRes.usage?.total_tokens || 0;
+
+  if (!content) {
+    console.error(
+      `[Orchestrator] Atria retornou content vazio! finish_reason=${choice?.finish_reason}, tokens=${JSON.stringify(jsonRes.usage)}`
+    );
+    if (choice?.message?.reasoning_content) {
+      console.log(`[Orchestrator] reasoning_content da Atria (${choice.message.reasoning_content.length} chars): ${choice.message.reasoning_content.slice(0, 300)}...`);
+    }
+  }
+
+  return { content, tokens };
+}
+
+// ----------------------------------------------------------------------------
+// 9. Motor Operacional Determinístico do Backend (runExperimentalOrchestration)
 // ----------------------------------------------------------------------------
 export interface RunOrchestrationParams {
   supabase: any;
@@ -290,7 +585,7 @@ export async function runExperimentalOrchestration(
     params.correlationId ||
     `corr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-  // 1. Busca estado da conversa e metadados de orquestração
+  // 1. BACKEND DETERMINÍSTICO: Busca conversa e estado
   const { data: convRow, error: convErr } = await supabase
     .from("instagram_conversations")
     .select("id, full_name, stage_completed_rules")
@@ -317,12 +612,12 @@ export async function runExperimentalOrchestration(
     updatedAt: new Date().toISOString(),
   };
 
-  // 2. Se o modo for 'legacy', NÃO executa o novo orquestrador
+  // 2. ISOLAMENTO TOTAL: Conversas no modo 'legacy' retornam imediatamente
   if (orchState.mode === "legacy") {
     return { mode: "legacy", handled: false };
   }
 
-  // 3. IDEMPOTÊNCIA: Verifica se a mensagem já foi processada anteriormente
+  // 3. BACKEND DETERMINÍSTICO: Idempotência estrita
   if (orchState.lastProcessedMessageId && orchState.lastProcessedMessageId === newMessage.id) {
     console.log(
       `[Orchestrator] Mensagem ${newMessage.id} já processada em ${conversationId}. Abortando por idempotência.`
@@ -330,7 +625,7 @@ export async function runExperimentalOrchestration(
     return { mode: orchState.mode, handled: true, skippedDuplicate: true };
   }
 
-  // 4. LOCK ATÔMICO: Previne concorrência e processamentos duplicados simultâneos
+  // 4. BACKEND DETERMINÍSTICO: Lock Atômico concorrente
   const activeLock = stageRules.active_cycle_token;
   const activeLockAt = stageRules.active_cycle_at ? Date.parse(stageRules.active_cycle_at) : 0;
   if (activeLock && Date.now() - activeLockAt < 25000 && activeLock !== correlationId) {
@@ -353,129 +648,162 @@ export async function runExperimentalOrchestration(
     .eq("id", conversationId);
 
   try {
-    // 5. Prepara entrada para o agente principal
-    const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
-    const phaseRules = getRulesForPhase(currentPhase);
+    // 5. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
+    if (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual") {
+      console.log(`[Orchestrator] Ciclo cancelado pelo operador para ${conversationId}.`);
+      await supabase
+        .from("instagram_conversations")
+        .update({
+          stage_completed_rules: {
+            ...stageRules,
+            active_cycle_token: null,
+            cancel_current_cycle: null,
+          },
+        })
+        .eq("id", conversationId);
+      return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
+    }
 
-    // Carrega histórico recente para montar resumo se não houver
+    const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
+
+    // 6. BACKEND DETERMINÍSTICO: Extração Mínima de Contexto (máximo 5 mensagens)
     const { data: recentMsgs } = await supabase
       .from("instagram_messages")
       .select("sender_id, is_mine, text")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(5);
 
-    const historySnippet = (recentMsgs || [])
+    const recentSnippet = (recentMsgs || [])
       .reverse()
       .map((m: any) => `${m.is_mine ? "Larissa" : "Pretendente"}: ${m.text || ""}`)
       .join("\n");
 
-    const input: OrchestratorInput = {
-      conversationId,
-      newMessage,
-      currentPhase,
-      conversationSummary: historySnippet || orchState.lastDecision?.summary || "Início do diálogo",
-      relevantMemories: [],
-      pendingTasks: [],
-      allowedTools: ["send_text", "send_audio"],
-      phaseRules,
-    };
+    let totalTokens = 0;
 
-    // Publica estado visual imediato para a tela do chat
+    // Publica estado visual imediato na tela
     await publishAutoPilotState(supabase, conversationId, {
       status: "processing",
       activity: activity(
         "atria",
-        orchState.mode === "shadow" ? "Atria (Shadow)" : "Atria analisando...",
-        "Avaliando conversa e diretrizes de atendimento...",
+        orchState.mode === "shadow" ? "Atria (Shadow)" : "Agente da Conversa analisando...",
+        "Avaliando roteamento da conversa...",
         {
-          atriaThought: "Analisando histórico, contexto do pretendente e definindo diretrizes...",
+          atriaThought: "Identificando subagente apropriado para o turno...",
           mode: orchState.mode,
           currentPhase,
         }
       ),
     });
 
-    const prompt = buildOrchestratorPrompt(input);
+    // ------------------------------------------------------------------------
+    // CAMADA 1: AGENTE DA CONVERSA (ROTEADOR DE DECISÃO)
+    // ------------------------------------------------------------------------
+    const routingPrompt = buildConversationAgentPrompt({
+      conversationId,
+      currentPhase,
+      newMessage,
+      recentHistory: recentSnippet,
+    });
 
-    // 6. Chamada de Inferência do Modelo
-    let rawContent = "";
-    let tokensUsed = 0;
+    const routingRes = await callModelOrAtria(routingPrompt, { runtime, supabase });
+    totalTokens += routingRes.tokens;
+    const rawRoutingJson = extractJsonFromText(routingRes.content);
+    const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase);
 
-    if (runtime?.callModel) {
-      const res = await runtime.callModel(prompt);
-      rawContent = res.content;
-      tokensUsed = res.tokens || 0;
+    console.log(
+      `[Orchestrator] Agente da Conversa roteou ${conversationId} para "${routingDecision.targetSubagent}" (ação=${routingDecision.action}, motivo=${routingDecision.reason}).`
+    );
+
+    let finalSubDecision: SubagentDecision;
+
+    // Se a decisão de roteamento for aguardar ou não acionar subagente
+    if (routingDecision.action === "wait" || routingDecision.targetSubagent === "none") {
+      finalSubDecision = {
+        action: "wait",
+        checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+        summary: `Aguardando pretendente: ${routingDecision.reason}`,
+        suggestedResponse: "",
+        nextPhase: currentPhase,
+        reasoning: routingDecision.reason,
+        requiredTools: [],
+      };
     } else {
-      // Motor Oficial Atria (Atria-Dawn-Preview / api.atria-asi.ai)
-      let atriaKey = (Deno?.env?.get?.("ATRIA_API_KEY") || "").trim();
-      if (!atriaKey) {
-        const { data: cfgSecret } = await supabase
-          .from("instagram_config")
-          .select("app_secret")
-          .eq("id", "atria_api_key")
-          .maybeSingle();
-        atriaKey = (cfgSecret?.app_secret || "").trim();
-      }
-      if (!atriaKey) {
-        throw new Error("Chave de API da Atria (atria_api_key) não configurada.");
+      // ----------------------------------------------------------------------
+      // CAMADA 2: SUBAGENTE ESPECIALIZADO (CONEXÃO INICIAL OU DESCOBERTA)
+      // ----------------------------------------------------------------------
+      const targetSubagent = routingDecision.targetSubagent;
+      let subagentPrompt = "";
+
+      if (targetSubagent === "descoberta") {
+        subagentPrompt = buildDescobertaPrompt({
+          conversationId,
+          currentPhase: "descoberta",
+          newMessage,
+          recentHistory: recentSnippet,
+        });
+      } else {
+        subagentPrompt = buildConexaoInicialPrompt({
+          conversationId,
+          currentPhase: "conexao_inicial",
+          newMessage,
+          recentHistory: recentSnippet,
+        });
       }
 
-      const atriaRes = await fetch("https://api.atria-asi.ai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${atriaKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "Atria-Dawn-Preview",
-          temperature: 0.2,
-          max_tokens: 3000,
-          messages: [{ role: "user", content: prompt }],
-        }),
+      // Notifica visualmente a transição para o subagente
+      await publishAutoPilotState(supabase, conversationId, {
+        status: "processing",
+        activity: activity(
+          "atria",
+          orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${targetSubagent}`,
+          `Formulando resposta na fase ${targetSubagent}...`,
+          {
+            atriaThought: `Executando diretrizes do subagente ${targetSubagent}...`,
+            mode: orchState.mode,
+            currentPhase,
+          }
+        ),
       });
 
-      if (!atriaRes.ok) {
-        throw new Error(`Atria retornou erro HTTP ${atriaRes.status}: ${await atriaRes.text()}`);
-      }
-
-      const jsonRes = await atriaRes.json();
-      const choice = jsonRes.choices?.[0];
-      rawContent = choice?.message?.content || "";
-      tokensUsed = jsonRes.usage?.total_tokens || 0;
-
-      if (!rawContent) {
-        console.error(
-          `[Orchestrator] Atria retornou content vazio! finish_reason=${choice?.finish_reason}, tokens=${JSON.stringify(jsonRes.usage)}`
-        );
-        if (choice?.message?.reasoning_content) {
-          console.log(`[Orchestrator] reasoning_content da Atria (${choice.message.reasoning_content.length} chars): ${choice.message.reasoning_content.slice(0, 300)}...`);
-        }
-      }
+      const subRes = await callModelOrAtria(subagentPrompt, { runtime, supabase });
+      totalTokens += subRes.tokens;
+      const rawSubJson = extractJsonFromText(subRes.content);
+      finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
     }
 
-    // 7. Validação estrita do Schema da Decisão
-    const parsedJson = extractJsonFromText(rawContent);
-    const decision = validateOrchestratorDecision(parsedJson);
-
-    // 8. Validação de Transição de Fase pelo Backend
+    // ------------------------------------------------------------------------
+    // GUARDA DE INTEGRIDADE DO BACKEND: Valida transição de fase
+    // ------------------------------------------------------------------------
     const transitionCheck = validatePhaseTransition(
       currentPhase,
-      decision.nextPhase,
-      decision.checkpoint
+      finalSubDecision.nextPhase,
+      finalSubDecision.checkpoint
     );
 
     const validatedNextPhase = transitionCheck.validatedNextPhase;
     if (!transitionCheck.allowed) {
       console.warn(
-        `[Orchestrator] Transição para ${decision.nextPhase} rejeitada pelo backend: ${transitionCheck.reason}. Mantendo ${validatedNextPhase}.`
+        `[Orchestrator] Transição para ${finalSubDecision.nextPhase} rejeitada pelo backend: ${transitionCheck.reason}. Mantendo ${validatedNextPhase}.`
       );
     }
 
     const durationMs = Date.now() - startTime;
 
+    const decision: OrchestratorDecision = {
+      action: finalSubDecision.action,
+      currentPhase,
+      nextPhase: validatedNextPhase,
+      checkpoint: finalSubDecision.checkpoint,
+      summary: finalSubDecision.summary,
+      suggestedResponse: finalSubDecision.suggestedResponse,
+      requiredTools: finalSubDecision.requiredTools || ["send_text"],
+      reasoning: finalSubDecision.reasoning,
+      routedSubagent: routingDecision.targetSubagent,
+    };
+
     // ------------------------------------------------------------------------
-    // MODO SHADOW: Registra tudo sem ações externas e sem enviar pela Meta
+    // MODO SHADOW: Registra tudo sem ações externas, ZERO envio à Meta
     // ------------------------------------------------------------------------
     if (orchState.mode === "shadow") {
       const updatedState: ConversationOrchestrationState = {
@@ -490,7 +818,7 @@ export async function runExperimentalOrchestration(
         lastDecision: decision,
         lastError: null,
         durationMs,
-        tokens: tokensUsed,
+        tokens: totalTokens,
         updatedAt: new Date().toISOString(),
       };
 
@@ -505,7 +833,7 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
-      // Publica estado visual na tela com histórico de pensamento preservado
+      // Publica estado visual na tela com histórico preservado
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
         lastThoughts: {
@@ -516,7 +844,7 @@ export async function runExperimentalOrchestration(
         activity: activity(
           "completed",
           "Atria (Shadow)",
-          `Decisão: ${decision.action} | Sugestão: "${(decision.suggestedResponse || "").slice(0, 45)}..."`,
+          `Decisão: ${decision.action} [${decision.routedSubagent}] | Sugestão: "${(decision.suggestedResponse || "").slice(0, 45)}..."`,
           {
             atriaThought: decision.reasoning,
             solThought: decision.suggestedResponse,
@@ -528,7 +856,7 @@ export async function runExperimentalOrchestration(
       });
 
       console.log(
-        `[Orchestrator] [SHADOW] Decisão registrada com sucesso para ${conversationId} (${durationMs}ms, checkpoint=${decision.checkpoint}). Nenhum envio realizado.`
+        `[Orchestrator] [SHADOW] Decisão registrada com sucesso para ${conversationId} (${durationMs}ms, subagente=${decision.routedSubagent}). Nenhum envio realizado.`
       );
 
       return {
@@ -536,22 +864,20 @@ export async function runExperimentalOrchestration(
         handled: true,
         decision,
         durationMs,
-        tokens: tokensUsed,
+        tokens: totalTokens,
       };
     }
 
     // ------------------------------------------------------------------------
-    // MODO EXPERIMENTAL: Executa fluxo ativo somente no chat marcado
+    // MODO EXPERIMENTAL: Execução ativa no chat marcado
     // ------------------------------------------------------------------------
     if (orchState.mode === "experimental") {
       let sentSuccessfully = false;
 
-      // Executa envio se a ação sugerida for resposta
       if (
         (decision.action === "reply" || decision.action === "advance_phase") &&
         decision.suggestedResponse
       ) {
-        // Notifica visualmente que está despachando o envio (fase: "sending")
         await publishAutoPilotState(supabase, conversationId, {
           status: "processing",
           activity: activity(
@@ -574,7 +900,7 @@ export async function runExperimentalOrchestration(
           await runtime.sendMetaTextMessage(supabase, conversationId, decision.suggestedResponse);
           sentSuccessfully = true;
         } else {
-          // Envio padrão via Meta Graph API buscando config oficial
+          // Despacho via Meta Graph API oficial
           const { data: configRow } = await supabase
             .from("instagram_config")
             .select("access_token")
@@ -587,14 +913,14 @@ export async function runExperimentalOrchestration(
           }
 
           let recipientIgsid = conversationId;
-          if (!/^\d+$/.test(conversationId)) {
+          if (!/^d+$/.test(conversationId)) {
             const { data: convMsgs } = await supabase
               .from("instagram_messages")
               .select("sender_id, is_mine")
               .eq("conversation_id", conversationId)
               .eq("is_mine", false)
               .limit(5);
-            const foundNumeric = (convMsgs || []).find((m: any) => /^\d+$/.test(m.sender_id));
+            const foundNumeric = (convMsgs || []).find((m: any) => /^d+$/.test(m.sender_id));
             if (foundNumeric) recipientIgsid = foundNumeric.sender_id;
           }
 
@@ -619,7 +945,6 @@ export async function runExperimentalOrchestration(
             const nowIso = new Date().toISOString();
             const messageId = metaJson.message_id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
-            // Salva mensagem no histórico
             await supabase.from("instagram_messages").upsert({
               id: messageId,
               conversation_id: conversationId,
@@ -631,7 +956,6 @@ export async function runExperimentalOrchestration(
               timestamp: nowIso,
             });
 
-            // Atualiza prévia e status da conversa para refletir no painel
             await supabase
               .from("instagram_conversations")
               .update({
@@ -660,7 +984,7 @@ export async function runExperimentalOrchestration(
         lastDecision: decision,
         lastError: null,
         durationMs,
-        tokens: tokensUsed,
+        tokens: totalTokens,
         updatedAt: new Date().toISOString(),
       };
 
@@ -675,7 +999,6 @@ export async function runExperimentalOrchestration(
         })
         .eq("id", conversationId);
 
-      // Publica estado visual na tela com histórico de pensamento preservado
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
         lastThoughts: {
@@ -699,7 +1022,7 @@ export async function runExperimentalOrchestration(
       });
 
       console.log(
-        `[Orchestrator] [EXPERIMENTAL] Execução concluída para ${conversationId} (ação=${decision.action}, fase=${validatedNextPhase}).`
+        `[Orchestrator] [EXPERIMENTAL] Execução concluída para ${conversationId} (subagente=${decision.routedSubagent}, ação=${decision.action}, fase=${validatedNextPhase}).`
       );
 
       return {
@@ -707,7 +1030,7 @@ export async function runExperimentalOrchestration(
         handled: true,
         decision,
         durationMs,
-        tokens: tokensUsed,
+        tokens: totalTokens,
       };
     }
 
@@ -715,7 +1038,6 @@ export async function runExperimentalOrchestration(
   } catch (err: any) {
     console.error(`[Orchestrator] Erro na execução de ${conversationId}:`, err);
 
-    // Grava erro mantendo o estado de orquestração seguro e libera o lock
     const fallbackState: ConversationOrchestrationState = {
       ...orchState,
       lastError: err.message || "Erro desconhecido",
@@ -734,7 +1056,6 @@ export async function runExperimentalOrchestration(
       })
       .eq("id", conversationId);
 
-    // Publica erro visual na tela para o operador ver imediatamente
     await publishAutoPilotState(supabase, conversationId, {
       status: "failed",
       activity: activity(
@@ -750,5 +1071,24 @@ export async function runExperimentalOrchestration(
       handled: false,
       error: err.message || "Erro na orquestração experimental",
     };
+  } finally {
+    try {
+      const { data: finalCheck } = await supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .eq("id", conversationId)
+        .maybeSingle();
+      if (finalCheck?.stage_completed_rules?.active_cycle_token === correlationId) {
+        await supabase
+          .from("instagram_conversations")
+          .update({
+            stage_completed_rules: {
+              ...finalCheck.stage_completed_rules,
+              active_cycle_token: null,
+            },
+          })
+          .eq("id", conversationId);
+      }
+    } catch (_fErr) {}
   }
 }

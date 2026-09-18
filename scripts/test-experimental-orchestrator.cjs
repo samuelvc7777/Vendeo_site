@@ -515,3 +515,270 @@ test('9. Isolamento total: conversas no modo Legado não sofrem interferência d
   assert.equal(result.mode, 'legacy');
   assert.equal(result.handled, false);
 });
+
+// -------------------------------------------------------------------------
+// TESTE 10: ROTEAMENTO DO AGENTE DA CONVERSA (CONEXÃO INICIAL)
+// -------------------------------------------------------------------------
+test('10. Agente da Conversa: roteia saudação inicial para o subagente conexao_inicial', () => {
+  const { load } = createRuntime();
+  const { validateRoutingDecision, buildConversationAgentPrompt } = load(
+    'supabase/functions/api/experimental_orchestrator.ts'
+  );
+
+  const prompt = buildConversationAgentPrompt({
+    conversationId: 'test_conv_123',
+    currentPhase: 'conexao_inicial',
+    newMessage: {
+      id: 'm1',
+      text: 'Oii tudo bem?',
+      timestamp: new Date().toISOString(),
+      sender: 'them',
+    },
+    recentHistory: 'Pretendente: Oii tudo bem?',
+  });
+
+  // Prompt enxuto contém dados essenciais e não é megaprompt de 500 linhas
+  assert.ok(prompt.includes('Agente da Conversa'));
+  assert.ok(prompt.includes('conexao_inicial'));
+  assert.ok(prompt.includes('descoberta'));
+  assert.ok(prompt.includes('Oii tudo bem?'));
+
+  const routing = validateRoutingDecision(
+    {
+      targetSubagent: 'conexao_inicial',
+      action: 'delegate',
+      reason: 'Troca inicial de saudações',
+    },
+    'conexao_inicial'
+  );
+
+  assert.equal(routing.targetSubagent, 'conexao_inicial');
+  assert.equal(routing.action, 'delegate');
+  assert.equal(routing.reason, 'Troca inicial de saudações');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 11: ROTEAMENTO DO AGENTE DA CONVERSA (DESCOBERTA)
+// -------------------------------------------------------------------------
+test('11. Agente da Conversa: roteia avanço de diálogo para o subagente descoberta', () => {
+  const { load } = createRuntime();
+  const { validateRoutingDecision } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const routing = validateRoutingDecision(
+    {
+      targetSubagent: 'descoberta',
+      action: 'delegate',
+      reason: 'Pretendente já cumprimentou e contou sua profissão',
+    },
+    'conexao_inicial'
+  );
+
+  assert.equal(routing.targetSubagent, 'descoberta');
+  assert.equal(routing.action, 'delegate');
+  assert.ok(routing.reason.includes('profissão'));
+});
+
+// -------------------------------------------------------------------------
+// TESTE 12: SUBAGENTE CONEXÃO INICIAL (PROMPT E DECISÃO)
+// -------------------------------------------------------------------------
+test('12. Subagente Conexão Inicial: valida decisão e checkpoint com tom da Larissa', () => {
+  const { load } = createRuntime();
+  const { buildConexaoInicialPrompt, validateSubagentDecision } = load(
+    'supabase/functions/api/experimental_orchestrator.ts'
+  );
+
+  const prompt = buildConexaoInicialPrompt({
+    conversationId: 'test_conv_123',
+    currentPhase: 'conexao_inicial',
+    newMessage: {
+      id: 'm2',
+      text: 'Tudo bem sim e com vc?',
+      timestamp: new Date().toISOString(),
+      sender: 'them',
+    },
+    recentHistory: 'Pretendente: Tudo bem sim e com vc?',
+  });
+
+  assert.ok(prompt.includes('subagente especialista em CONEXÃO INICIAL'));
+  assert.ok(prompt.includes('PROIBIDO terminar balão com ponto final'));
+
+  const subDecision = validateSubagentDecision(
+    {
+      action: 'reply',
+      checkpoint: 'chk_rapport_estabelecido',
+      summary: 'Pretendente foi simpático e perguntou como ela está',
+      suggestedResponse: 'Tudo ótimo por aqui também 🥰',
+      nextPhase: 'descoberta',
+      reasoning: 'Rapport inicial estabelecido',
+    },
+    'conexao_inicial'
+  );
+
+  assert.equal(subDecision.action, 'reply');
+  assert.equal(subDecision.checkpoint, 'chk_rapport_estabelecido');
+  assert.equal(subDecision.nextPhase, 'descoberta');
+  assert.equal(subDecision.suggestedResponse, 'Tudo ótimo por aqui também 🥰');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 13: SUBAGENTE DESCOBERTA (PROMPT E DECISÃO)
+// -------------------------------------------------------------------------
+test('13. Subagente Descoberta: valida decisão focada em interesses e rotina', () => {
+  const { load } = createRuntime();
+  const { buildDescobertaPrompt, validateSubagentDecision } = load(
+    'supabase/functions/api/experimental_orchestrator.ts'
+  );
+
+  const prompt = buildDescobertaPrompt({
+    conversationId: 'test_conv_123',
+    currentPhase: 'descoberta',
+    newMessage: {
+      id: 'm3',
+      text: 'Eu trabalho em uma oficina mecânica',
+      timestamp: new Date().toISOString(),
+      sender: 'them',
+    },
+    recentHistory: 'Pretendente: Eu trabalho em uma oficina mecânica',
+  });
+
+  assert.ok(prompt.includes('subagente especialista em DESCOBERTA'));
+  assert.ok(prompt.includes('Regra da Reciprocidade'));
+
+  const subDecision = validateSubagentDecision(
+    {
+      action: 'reply',
+      checkpoint: 'chk_pergunta_sobre_ele',
+      summary: 'Pretendente contou que trabalha em oficina',
+      suggestedResponse: 'Nossa que legal, oficina deve ser bem corrido né kkk você mexe com carro há muito tempo?',
+      nextPhase: 'descoberta',
+      reasoning: 'Explorar rotina de trabalho com reciprocidade',
+    },
+    'descoberta'
+  );
+
+  assert.equal(subDecision.action, 'reply');
+  assert.equal(subDecision.checkpoint, 'chk_pergunta_sobre_ele');
+  assert.equal(subDecision.nextPhase, 'descoberta');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 14: BACKEND DETERMINÍSTICO: CANCELAMENTO PELO OPERADOR
+// -------------------------------------------------------------------------
+test('14. Backend Determinístico: aborta ciclo imediatamente se cancel_current_cycle for ativo', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let modelWasCalled = false;
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      cancel_current_cycle: true, // Operador clicou em cancelar no painel
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+      },
+    },
+  });
+
+  const mockRuntime = {
+    callModel: async () => {
+      modelWasCalled = true;
+      return { content: '{}', tokens: 0 };
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'test_conv_123',
+    newMessage: {
+      id: 'mid_cancel_1',
+      text: 'Oi',
+      timestamp: new Date().toISOString(),
+      sender: 'them',
+    },
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, false);
+  assert.equal(result.error, 'Cancelado pelo operador');
+  assert.equal(modelWasCalled, false, 'Nenhuma IA deve ser chamada se o operador cancelou');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 15: FLUXO COMPLETO DUAS CAMADAS (AGENTE CONVERSA -> SUBAGENTE DESCOBERTA)
+// -------------------------------------------------------------------------
+test('15. Fluxo Completo: Agente da Conversa roteia para Descoberta e subagente formula resposta', async () => {
+  let sentText = null;
+  let callCount = 0;
+
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        currentPhase: 'descoberta',
+        checkpoint: 'chk_rapport_estabelecido',
+      },
+    },
+  });
+
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      callCount++;
+      // Chamada 1: Agente da Conversa
+      if (prompt.includes('Agente da Conversa')) {
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'descoberta',
+            action: 'delegate',
+            reason: 'Conversa já está na fase de descoberta de rotina e profissão',
+          }),
+          tokens: 50,
+        };
+      }
+      // Chamada 2: Subagente de Descoberta
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_pergunta_sobre_ele',
+          summary: 'Pretendente falou do sítio dele',
+          suggestedResponse: 'Que delícia sítio, uai! Eu amo lugar calmo assim kkk você vai pra lá direto?',
+          nextPhase: 'descoberta',
+          reasoning: 'Validar amor pelo campo com reciprocidade mineira',
+        }),
+        tokens: 120,
+      };
+    },
+    sendMetaTextMessage: async (_sb, _convId, text) => {
+      sentText = text;
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId: 'test_conv_123',
+    newMessage: {
+      id: 'mid_duas_camadas',
+      text: 'Gosto muito de ir pro meu sítio no final de semana',
+      timestamp: new Date().toISOString(),
+      sender: 'them',
+    },
+    runtime: mockRuntime,
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(result.mode, 'experimental');
+  assert.equal(callCount, 2, 'Deve ter executado o Agente da Conversa e depois o Subagente');
+  assert.equal(result.decision.routedSubagent, 'descoberta');
+  assert.equal(result.decision.checkpoint, 'chk_pergunta_sobre_ele');
+  assert.equal(result.decision.nextPhase, 'descoberta');
+  assert.equal(sentText, 'Que delícia sítio, uai! Eu amo lugar calmo assim kkk você vai pra lá direto?');
+
+  const convData = supabase.getConversationData();
+  assert.equal(convData.stage_completed_rules.orchestration.lastProcessingStatus, 'sent');
+  assert.equal(convData.stage_completed_rules.active_cycle_token, null);
+});
