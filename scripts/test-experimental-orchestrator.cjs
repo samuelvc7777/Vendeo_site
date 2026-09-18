@@ -8028,4 +8028,294 @@ test('166. Teste AQ: Conclusão semântica via objectiveCompletion valida evidê
   assert.equal(validated.objectiveCompletion.value, 'Solteiro');
 });
 
+// ============================================================================
+// TESTES 167 A 175: PERSONA MEMORY PERSISTENTE DA LARISSA NO SUPABASE
+// ============================================================================
+
+test('167. Teste AR: Exact key lookup na Persona Memory persistente', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const testFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'estudos',
+      key: 'curso',
+      value: 'Enfermagem',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['faculdade', 'graduacao'],
+      valid_from: null,
+      valid_until: null,
+    },
+    {
+      persona_id: 'larissa',
+      category: 'identidade',
+      key: 'nome_completo',
+      value: 'Larissa Cristina Paiva Resende',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['nome', 'identidade'],
+      valid_from: null,
+      valid_until: null,
+    }
+  ];
+
+  const cursoRes = await resolvePersonaFact('curso', { cachedFacts: testFacts });
+  assert.equal(cursoRes.found, true);
+  assert.equal(cursoRes.value, 'Enfermagem');
+  assert.equal(cursoRes.source_type, 'canonical');
+
+  const nomeRes = await resolvePersonaFact('nome_completo', { cachedFacts: testFacts });
+  assert.equal(nomeRes.found, true);
+  assert.equal(nomeRes.value, 'Larissa Cristina Paiva Resende');
+});
+
+test('168. Teste AS: Alias lookup na Persona Memory persistente', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const testFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'estudos',
+      key: 'curso',
+      value: 'Enfermagem',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['faculdade', 'graduacao', 'o_que_estuda'],
+      valid_from: null,
+      valid_until: null,
+    },
+    {
+      persona_id: 'larissa',
+      category: 'identidade',
+      key: 'cidade_natal',
+      value: 'São João del-Rei',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['onde_nasceu', 'natural_de'],
+      valid_from: null,
+      valid_until: null,
+    }
+  ];
+
+  const faculdadeRes = await resolvePersonaFact('faculdade', { cachedFacts: testFacts });
+  assert.equal(faculdadeRes.found, true);
+  assert.equal(faculdadeRes.field, 'curso');
+  assert.equal(faculdadeRes.value, 'Enfermagem');
+
+  const naturalRes = await resolvePersonaFact('onde_nasceu', { cachedFacts: testFacts });
+  assert.equal(naturalRes.found, true);
+  assert.equal(naturalRes.field, 'cidade_natal');
+  assert.equal(naturalRes.value, 'São João del-Rei');
+});
+
+test('169. Teste AT: Vigência temporal - fato temporal ativo é retornado com sucesso', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const testFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'identidade',
+      key: 'idade',
+      value: 23,
+      source_type: 'temporal',
+      confidence: 1.0,
+      aliases: ['quantos_anos', 'idade_larissa'],
+      valid_from: '2025-11-06T00:00:00Z',
+      valid_until: '2026-11-06T00:00:00Z',
+    }
+  ];
+
+  // Consulta em 2026-06-01 (dentro da vigência)
+  const res = await resolvePersonaFact('idade', {
+    cachedFacts: testFacts,
+    now: new Date('2026-06-01T12:00:00Z')
+  });
+
+  assert.equal(res.found, true);
+  assert.equal(res.value, 23);
+  assert.equal(res.source_type, 'temporal');
+});
+
+test('170. Teste AU: Vigência temporal expirada é descartada na resolução', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const testFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'estudos',
+      key: 'periodo_antigo',
+      value: '9º período',
+      source_type: 'temporal',
+      confidence: 1.0,
+      aliases: ['periodo_anterior'],
+      valid_from: '2025-01-01T00:00:00Z',
+      valid_until: '2025-12-31T23:59:59Z', // Expirado em 2026
+    }
+  ];
+
+  // Consulta em 2026-06-01 (após o término da vigência)
+  const res = await resolvePersonaFact('periodo_antigo', {
+    cachedFacts: testFacts,
+    now: new Date('2026-06-01T12:00:00Z')
+  });
+
+  // Fato expirado deve ser descartado
+  assert.equal(res.found, false, 'Fato temporal expirado não deve ser retornado');
+});
+
+test('171. Teste AV: Prioridade estrita: canonical vence generated e temporal', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const testFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'trabalho',
+      key: 'profissao',
+      value: 'Profissão alucinada por modelo',
+      source_type: 'generated',
+      confidence: 0.7,
+      aliases: ['trabalho'],
+      valid_from: null,
+      valid_until: null,
+    },
+    {
+      persona_id: 'larissa',
+      category: 'trabalho',
+      key: 'profissao',
+      value: 'Vendas online e estágio hospitalar de enfermagem',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['trabalho'],
+      valid_from: null,
+      valid_until: null,
+    }
+  ];
+
+  const res = await resolvePersonaFact('profissao', { cachedFacts: testFacts });
+
+  assert.equal(res.found, true);
+  assert.equal(res.source_type, 'canonical', 'Fato canônico deve vencer absolutamente');
+  assert.equal(res.value, 'Vendas online e estágio hospitalar de enfermagem');
+});
+
+test('172. Teste AW: persona_search busca textual por termos múltiplos com relevância ponderada', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaMemory } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const testFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'estudos',
+      key: 'curso',
+      value: 'Faculdade de Enfermagem',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['faculdade', 'graduacao'],
+      valid_from: null,
+      valid_until: null,
+    },
+    {
+      persona_id: 'larissa',
+      category: 'trabalho',
+      key: 'hospital',
+      value: 'Plantão de estágio supervisionado em hospital de São João del-Rei',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['rotina_hospitalar', 'plantao'],
+      valid_from: null,
+      valid_until: null,
+    },
+    {
+      persona_id: 'larissa',
+      category: 'preferencias',
+      key: 'comida_favorita',
+      value: 'Doces, chocolate e café com pão de queijo',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['comida', 'doce'],
+      valid_from: null,
+      valid_until: null,
+    }
+  ];
+
+  const results = await searchPersonaMemory({
+    query: 'hospital estágio enfermagem',
+    limit: 5,
+    cachedFacts: testFacts,
+  });
+
+  assert.ok(results.length >= 2, 'Deve retornar ao menos 2 resultados para hospital e estágio');
+  assert.ok(results[0].key === 'hospital' || results[0].key === 'curso', 'Resultados de hospital/curso devem vir no topo');
+  assert.ok(results[0].score > 0);
+});
+
+test('173. Teste AX: Saneamento canônico estrito - proibição de fatos descartados', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaMemory } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Consulta usando fatos legados (LARISSA_PERSONA_FACTS)
+  const results = await searchPersonaMemory({
+    query: 'tubarão vinho tribo liquido',
+    limit: 5,
+  });
+
+  // Não deve retornar nada relacionado a vinho suave, tribo da periferia ou filmes de tubarão
+  const textMatches = results.filter(r => {
+    const val = String(r.value).toLowerCase();
+    return val.includes('tubarão') || val.includes('vinho') || val.includes('tribo');
+  });
+
+  assert.equal(textMatches.length, 0, 'Nenhum fato descartado (vinho suave, tubarão, tribo) deve constar');
+});
+
+test('174. Teste AY: Isolamento de segurança: ContactMemory (pretendente) nunca sobrescreve persona_memory (Larissa)', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  // Pretendente é engenheiro e mora em Barbacena
+  await memoryProvider.writeFact('conv_sec_test', { entity: 'self', field: 'profession', value: 'Engenheiro Civil' });
+  await memoryProvider.writeFact('conv_sec_test', { entity: 'self', field: 'city', value: 'Barbacena' });
+
+  const testLarissaFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'trabalho',
+      key: 'profissao',
+      value: 'Trabalha com vendas online em casa e faz estágio hospitalar de enfermagem',
+      source_type: 'canonical',
+      confidence: 1.0,
+      aliases: ['trabalho', 'profession'],
+      valid_from: null,
+      valid_until: null,
+    }
+  ];
+
+  const larissaFact = await resolvePersonaFact('profession', { cachedFacts: testLarissaFacts });
+  const pretendenteFact = await memoryProvider.getFact('conv_sec_test', 'self', 'profession');
+
+  assert.equal(larissaFact.value, 'Trabalha com vendas online em casa e faz estágio hospitalar de enfermagem');
+  assert.equal(pretendenteFact.fact.value, 'Engenheiro Civil');
+  assert.notEqual(larissaFact.value, pretendenteFact.fact.value, 'Fatos da Larissa e do pretendente jamais devem se misturar');
+});
+
+test('175. Teste AZ: Fallback legado funcional quando persona_memory não possui o fato', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Passando cachedFacts vazio simula ausência do fato no Supabase
+  const fallbackRes = await resolvePersonaFact('neighborhood', { cachedFacts: [] });
+
+  assert.equal(fallbackRes.found, true);
+  assert.equal(fallbackRes.value, 'Matosinhos');
+  assert.equal(fallbackRes.source_type, 'legacy_fallback');
+});
+
+
 

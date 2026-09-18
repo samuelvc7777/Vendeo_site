@@ -1477,6 +1477,26 @@ serve(async (req: Request) => {
         };
       });
 
+      let personaData: any = null;
+      try {
+        const { data: pFacts } = await supabase
+          .from("persona_memory")
+          .select("id, persona_id, category, key, value, source_type, confidence, aliases, valid_from, valid_until, updated_at")
+          .eq("persona_id", "larissa")
+          .order("category", { ascending: true })
+          .order("key", { ascending: true });
+
+        if (Array.isArray(pFacts) && pFacts.length > 0) {
+          personaData = {
+            personaId: "larissa",
+            totalFacts: pFacts.length,
+            facts: pFacts,
+          };
+        }
+      } catch (pErr) {
+        console.warn("[MemoryExport] Falha ao consultar persona_memory:", pErr);
+      }
+
       return new Response(
         JSON.stringify({
           success: true,
@@ -1486,6 +1506,7 @@ serve(async (req: Request) => {
           offset: targetContactId ? 0 : offset,
           hasMore: targetContactId ? false : contacts.length === limit,
           contacts,
+          persona: personaData,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

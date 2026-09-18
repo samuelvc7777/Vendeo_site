@@ -1381,6 +1381,7 @@ Trabalhe primeiro apenas com o contexto recebido.
 Se precisar checar fatos já descobertos, consultar biblioteca de áudios ou validar informações:
 - persona_audio_search: busca áudios da Larissa no cofre por tema/intenção. Ex: {"action": "call_tool", "tool": "persona_audio_search", "parameters": {"intent": "saudação calorosa"}}
 - persona_get_fact: consulta fatos sobre a Larissa (PersonaMemory). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "age" | "city" | "profession"}}
+- persona_search: busca aberta por tópicos/fatos sobre a Larissa na PersonaMemory por texto. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
 - memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
 
@@ -1583,8 +1584,36 @@ export async function resolveStageChecklistGoals(params: {
 export const resolveStageObjectives = resolveStageChecklistGoals;
 
 // ----------------------------------------------------------------------------
-// Persona Memory da Larissa (Dossiê Canônico)
+// Persona Memory da Larissa (Dossiê Canônico Estruturado & Persistente)
 // ----------------------------------------------------------------------------
+export interface PersonaMemoryFact {
+  id?: string;
+  persona_id: string;
+  category: string;
+  key: string;
+  value: any;
+  source_type: "canonical" | "temporal" | "generated";
+  confidence: number;
+  aliases: string[];
+  valid_from: string | null;
+  valid_until: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PersonaFactResult {
+  found: boolean;
+  field: string;
+  value: any;
+  category?: string;
+  source_type?: "canonical" | "temporal" | "generated" | "legacy_fallback";
+  confidence?: number;
+  valid_from?: string | null;
+  valid_until?: string | null;
+}
+
+// Objeto de fallback mantido estritamente para compatibilidade operacional temporária
+// Saneamento canônico estrito: excluídos vinho suave, Tribo da Periferia, filmes de tubarão e almoço sem líquido.
 export const LARISSA_PERSONA_FACTS: Record<string, any> = {
   name: "Larissa",
   full_name: "Larissa Cristina Paiva Resende",
@@ -1601,30 +1630,300 @@ export const LARISSA_PERSONA_FACTS: Record<string, any> = {
   occupation: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
   job: "Vendas online e digitais em casa pelo celular e computador",
   work: "Trabalho em casa com vendas online e estágio no hospital",
-  hobbies: "Filmes de terror e suspense, filmes de tubarão, doces e chocolates, vinho suave, passeios ao pôr do sol em mirantes",
-  music: "Música brasileira, Tribo da Periferia, Marília Mendonça e sertanejo romântico",
+  hobbies: "Filmes de terror e suspense, doces e chocolates, passeios ao pôr do sol em mirantes",
+  music: "Música brasileira, Marília Mendonça e sertanejo romântico/modão",
   favorite_food: "Doces, chocolate, sorvete, café com pão de queijo quentinho, pizza e hambúrguer à noite",
   values: "Moça certinha de família, de igreja, honra pai, mãe e avó",
   dislikes: "Odeia pessoa seca ou respostas monossilábicas, odeia baladas lotadas e barulhentas com bebida jogada, não tolera vulgaridade de primeira",
 };
 
-export function getPersonaFact(field: string): { found: boolean; field: string; value: any } {
+let personaMemoryCache: {
+  facts: PersonaMemoryFact[];
+  expiresAt: number;
+} | null = null;
+const PERSONA_CACHE_TTL_MS = 60 * 1000;
+
+export function setPersonaMemoryCache(facts: PersonaMemoryFact[], ttlMs: number = PERSONA_CACHE_TTL_MS) {
+  personaMemoryCache = {
+    facts: [...facts],
+    expiresAt: Date.now() + ttlMs,
+  };
+}
+
+export function clearPersonaMemoryCache() {
+  personaMemoryCache = null;
+}
+
+export function isTemporalFactActive(fact: PersonaMemoryFact, checkDate: Date = new Date()): boolean {
+  if (fact.source_type !== "temporal") return true;
+  const t = checkDate.getTime();
+  if (fact.valid_from && new Date(fact.valid_from).getTime() > t) return false;
+  if (fact.valid_until && new Date(fact.valid_until).getTime() < t) return false;
+  return true;
+}
+
+export async function loadPersonaMemoryFacts(params: {
+  supabase?: any;
+  personaId?: string;
+  forceRefresh?: boolean;
+}): Promise<PersonaMemoryFact[]> {
+  const personaId = params.personaId || "larissa";
+  const now = Date.now();
+  if (
+    !params.forceRefresh &&
+    personaMemoryCache &&
+    personaMemoryCache.expiresAt > now &&
+    personaMemoryCache.facts.length > 0
+  ) {
+    return personaMemoryCache.facts;
+  }
+
+  if (params.supabase) {
+    try {
+      const { data, error } = await params.supabase
+        .from("persona_memory")
+        .select("*")
+        .eq("persona_id", personaId);
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        personaMemoryCache = {
+          facts: data as PersonaMemoryFact[],
+          expiresAt: now + PERSONA_CACHE_TTL_MS,
+        };
+        return data as PersonaMemoryFact[];
+      }
+    } catch (err) {
+      console.warn("[PersonaMemory] Falha ao carregar fatos de persona_memory:", err);
+    }
+  }
+
+  return personaMemoryCache?.facts || [];
+}
+
+/**
+ * Resolução de fato a partir de coleção com prioridade estrita:
+ * canonical (3) > temporal vigente (2) > generated (1)
+ */
+export function resolveFactFromCollection(
+  field: string,
+  facts: PersonaMemoryFact[],
+  nowDate: Date = new Date()
+): PersonaFactResult | null {
+  const norm = (field || "").trim().toLowerCase();
+  if (!norm) return null;
+
+  // Busca correspondência direta na chave ou nos aliases
+  const matchingFacts = facts.filter((f) => {
+    const keyMatch = (f.key || "").toLowerCase() === norm;
+    const aliasMatch = Array.isArray(f.aliases) && f.aliases.some((a) => (a || "").toLowerCase() === norm);
+    return keyMatch || aliasMatch;
+  });
+
+  // Filtra vigência temporal
+  const activeMatches = matchingFacts.filter((f) => isTemporalFactActive(f, nowDate));
+  if (activeMatches.length === 0) return null;
+
+  const priorityWeight = (source: string) => {
+    if (source === "canonical") return 3;
+    if (source === "temporal") return 2;
+    if (source === "generated") return 1;
+    return 0;
+  };
+
+  activeMatches.sort((a, b) => {
+    const pwDiff = priorityWeight(b.source_type) - priorityWeight(a.source_type);
+    if (pwDiff !== 0) return pwDiff;
+    return (b.confidence || 1) - (a.confidence || 1);
+  });
+
+  const best = activeMatches[0];
+  return {
+    found: true,
+    field: best.key,
+    value: best.value,
+    category: best.category,
+    source_type: best.source_type,
+    confidence: best.confidence,
+    valid_from: best.valid_from,
+    valid_until: best.valid_until,
+  };
+}
+
+export function resolveLegacyFactFallback(field: string): PersonaFactResult {
   const normField = (field || "").trim().toLowerCase();
   if (normField in LARISSA_PERSONA_FACTS) {
-    return { found: true, field: normField, value: LARISSA_PERSONA_FACTS[normField] };
+    return {
+      found: true,
+      field: normField,
+      value: LARISSA_PERSONA_FACTS[normField],
+      source_type: "legacy_fallback",
+    };
   }
-  if (normField === "idade") return { found: true, field: "age", value: LARISSA_PERSONA_FACTS.age };
-  if (normField === "nascimento" || normField === "aniversario") return { found: true, field: "birth_date", value: LARISSA_PERSONA_FACTS.birth_date };
-  if (normField === "cidade") return { found: true, field: "city", value: LARISSA_PERSONA_FACTS.city };
-  if (normField === "bairro") return { found: true, field: "neighborhood", value: LARISSA_PERSONA_FACTS.neighborhood };
-  if (normField === "curso") return { found: true, field: "course", value: LARISSA_PERSONA_FACTS.course };
-  if (normField === "periodo") return { found: true, field: "college_period", value: LARISSA_PERSONA_FACTS.college_period };
-  if (normField === "formatura") return { found: true, field: "graduation", value: LARISSA_PERSONA_FACTS.graduation };
-  if (normField === "trabalho" || normField === "profissao") return { found: true, field: "profession", value: LARISSA_PERSONA_FACTS.profession };
-  if (normField === "faculdade" || normField === "estudos") return { found: true, field: "studies", value: LARISSA_PERSONA_FACTS.studies };
-  if (normField === "gostos" || normField === "interesses") return { found: true, field: "hobbies", value: LARISSA_PERSONA_FACTS.hobbies };
+  if (normField === "idade") return { found: true, field: "age", value: LARISSA_PERSONA_FACTS.age, source_type: "legacy_fallback" };
+  if (normField === "nascimento" || normField === "aniversario") return { found: true, field: "birth_date", value: LARISSA_PERSONA_FACTS.birth_date, source_type: "legacy_fallback" };
+  if (normField === "cidade") return { found: true, field: "city", value: LARISSA_PERSONA_FACTS.city, source_type: "legacy_fallback" };
+  if (normField === "bairro") return { found: true, field: "neighborhood", value: LARISSA_PERSONA_FACTS.neighborhood, source_type: "legacy_fallback" };
+  if (normField === "curso") return { found: true, field: "course", value: LARISSA_PERSONA_FACTS.course, source_type: "legacy_fallback" };
+  if (normField === "periodo") return { found: true, field: "college_period", value: LARISSA_PERSONA_FACTS.college_period, source_type: "legacy_fallback" };
+  if (normField === "formatura") return { found: true, field: "graduation", value: LARISSA_PERSONA_FACTS.graduation, source_type: "legacy_fallback" };
+  if (normField === "trabalho" || normField === "profissao") return { found: true, field: "profession", value: LARISSA_PERSONA_FACTS.profession, source_type: "legacy_fallback" };
+  if (normField === "faculdade" || normField === "estudos") return { found: true, field: "studies", value: LARISSA_PERSONA_FACTS.studies, source_type: "legacy_fallback" };
+  if (normField === "gostos" || normField === "interesses") return { found: true, field: "hobbies", value: LARISSA_PERSONA_FACTS.hobbies, source_type: "legacy_fallback" };
 
   return { found: false, field: normField, value: null };
+}
+
+/**
+ * Função síncrona retrocompatível para testes e consumidores locais
+ */
+export function getPersonaFact(
+  field: string,
+  options?: { now?: Date | string; cachedFacts?: PersonaMemoryFact[] }
+): PersonaFactResult {
+  const checkDate = options?.now ? new Date(options.now) : new Date();
+  const facts = options?.cachedFacts || personaMemoryCache?.facts || [];
+
+  if (facts.length > 0) {
+    const resolved = resolveFactFromCollection(field, facts, checkDate);
+    if (resolved) return resolved;
+  }
+
+  return resolveLegacyFactFallback(field);
+}
+
+/**
+ * Resolução assíncrona principal: consulta Supabase persona_memory com prioridade estrita e fallback
+ */
+export async function resolvePersonaFact(
+  field: string,
+  options?: {
+    supabase?: any;
+    personaId?: string;
+    now?: Date | string;
+    cachedFacts?: PersonaMemoryFact[];
+  }
+): Promise<PersonaFactResult> {
+  const checkDate = options?.now ? new Date(options.now) : new Date();
+  let facts = options?.cachedFacts || [];
+
+  if (facts.length === 0) {
+    facts = await loadPersonaMemoryFacts({
+      supabase: options?.supabase,
+      personaId: options?.personaId,
+    });
+  }
+
+  if (facts.length > 0) {
+    const resolved = resolveFactFromCollection(field, facts, checkDate);
+    if (resolved) return resolved;
+  }
+
+  return resolveLegacyFactFallback(field);
+}
+
+/**
+ * Ferramenta persona_search(query, limit = 8) para busca textual/semântica sob demanda
+ */
+export async function searchPersonaMemory(params: {
+  supabase?: any;
+  personaId?: string;
+  query: string;
+  limit?: number;
+  now?: Date | string;
+  cachedFacts?: PersonaMemoryFact[];
+}): Promise<Array<{
+  key: string;
+  category: string;
+  value: any;
+  source_type: string;
+  score: number;
+}>> {
+  const { supabase, query } = params;
+  const personaId = params.personaId || "larissa";
+  const limit = Math.min(Math.max(params.limit || 8, 1), 20);
+  const checkDate = params.now ? new Date(params.now) : new Date();
+
+  let facts = params.cachedFacts || [];
+  if (facts.length === 0) {
+    facts = await loadPersonaMemoryFacts({ supabase, personaId });
+  }
+
+  // Se o Supabase estiver sem fatos (ex: teste local puro), usa chaves do fallback legado
+  if (facts.length === 0) {
+    facts = Object.entries(LARISSA_PERSONA_FACTS).map(([k, v]) => ({
+      persona_id: personaId,
+      category: "geral",
+      key: k,
+      value: v,
+      source_type: "canonical" as const,
+      confidence: 1.0,
+      aliases: [k],
+      valid_from: null,
+      valid_until: null,
+    }));
+  }
+
+  const searchTerms = (query || "")
+    .toLowerCase()
+    .replace(/[^\w\sáéíóúâêîôûãõç]/gi, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+
+  if (searchTerms.length === 0) {
+    return [];
+  }
+
+  const scored: Array<{
+    key: string;
+    category: string;
+    value: any;
+    source_type: string;
+    score: number;
+  }> = [];
+
+  for (const fact of facts) {
+    if (!isTemporalFactActive(fact, checkDate)) {
+      continue;
+    }
+
+    let score = 0;
+    const factKey = (fact.key || "").toLowerCase();
+    const factCategory = (fact.category || "").toLowerCase();
+    const factValStr =
+      typeof fact.value === "string" ? fact.value.toLowerCase() : JSON.stringify(fact.value).toLowerCase();
+    const factAliases = (fact.aliases || []).map((a) => (a || "").toLowerCase());
+
+    for (const term of searchTerms) {
+      if (factKey === term) score += 10;
+      else if (factKey.includes(term)) score += 5;
+
+      for (const alias of factAliases) {
+        if (alias === term) score += 8;
+        else if (alias.includes(term)) score += 4;
+      }
+
+      if (factCategory === term) score += 6;
+      else if (factCategory.includes(term)) score += 3;
+
+      if (factValStr.includes(term)) score += 3;
+    }
+
+    if (score > 0) {
+      if (fact.source_type === "canonical") score += 2;
+      else if (fact.source_type === "temporal") score += 1;
+
+      scored.push({
+        key: fact.key,
+        category: fact.category,
+        value: fact.value,
+        source_type: fact.source_type,
+        score,
+      });
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit);
 }
 
 // ----------------------------------------------------------------------------
@@ -1790,6 +2089,7 @@ Se precisar checar fatos já descobertos, consultar a biblioteca de voz ou verif
 - stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
 - persona_audio_search: busca áudios da Larissa no cofre por tema/intenção. Ex: {"action": "call_tool", "tool": "persona_audio_search", "parameters": {"intent": "hobbies finais de semana"}}
 - persona_get_fact: consulta fatos sobre a Larissa (PersonaMemory). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "age" | "city" | "profession" | "hobbies"}}
+- persona_search: busca aberta por tópicos/fatos sobre a Larissa na PersonaMemory por texto. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "rotina trabalho estágio"}}
 - memory_get_fact: consulta fatos estruturados sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
 
@@ -2972,6 +3272,8 @@ export async function runExperimentalOrchestration(
               ? `persona_audio_search_requested: ${toolParams.intent || toolParams.query}`
               : toolName === "persona_get_fact"
               ? `persona_fact_requested: ${toolParams.field || toolField}`
+              : toolName === "persona_search"
+              ? `persona_search_requested: ${toolParams.query || toolParams.intent || ""}`
               : `memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`
           );
           const tStart = Date.now();
@@ -3012,13 +3314,31 @@ export async function runExperimentalOrchestration(
             };
           } else if (toolName === "persona_get_fact") {
             const fieldToQuery = String(toolParams.field || toolField || "").trim();
-            const pFact = getPersonaFact(fieldToQuery);
+            const pFact = await resolvePersonaFact(fieldToQuery, { supabase, personaId: "larissa" });
 
             toolResult = {
               tool: "persona_get_fact",
               found: pFact.found,
               field: pFact.field,
               value: pFact.value,
+              category: pFact.category,
+              source_type: pFact.source_type,
+            };
+          } else if (toolName === "persona_search") {
+            const query = String(toolParams.query || toolParams.intent || "").trim();
+            const limit = typeof toolParams.limit === "number" ? toolParams.limit : 8;
+            const results = await searchPersonaMemory({
+              supabase,
+              personaId: "larissa",
+              query,
+              limit,
+            });
+
+            toolResult = {
+              tool: "persona_search",
+              found: results.length > 0,
+              query,
+              results,
             };
           } else if (toolName === "memory_search") {
             const query = String(toolParams.query || "").trim();
@@ -3052,6 +3372,8 @@ export async function runExperimentalOrchestration(
               ? `persona_audio_count: ${toolResult.audios?.length || 0}`
               : toolName === "persona_get_fact"
               ? `persona_fact_found: ${toolResult.found}`
+              : toolName === "persona_search"
+              ? `persona_search_count: ${toolResult.results?.length || 0}`
               : `memory_tool_found: ${toolResult.found}`
           );
           currentCycle.trace.push(`tool_duration_ms: ${toolDuration}`);

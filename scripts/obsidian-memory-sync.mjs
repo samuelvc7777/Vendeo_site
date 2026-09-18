@@ -442,6 +442,111 @@ export function syncContactToVault(vaultRoot, contact) {
 }
 
 /**
+ * Formata o Markdown de uma categoria da Persona (ex: Identidade.md, Estudos.md)
+ */
+export function formatPersonaCategoryMarkdown(personaId, category, facts) {
+  const categoryTitle = category.charAt(0).toUpperCase() + category.slice(1);
+  const now = new Date().toISOString();
+
+  let factsSection = '';
+  if (!facts || facts.length === 0) {
+    factsSection = 'Nenhum fato registrado nesta categoria.';
+  } else {
+    factsSection = facts
+      .map((f) => {
+        const keyFormatted = (f.key || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+        let valStr = typeof f.value === 'object' ? JSON.stringify(f.value) : String(f.value);
+        let note = '';
+        if (f.source_type === 'temporal') {
+          const fromStr = f.valid_from ? new Date(f.valid_from).toLocaleDateString('pt-BR') : '';
+          const untilStr = f.valid_until ? new Date(f.valid_until).toLocaleDateString('pt-BR') : '';
+          note = ` *(temporal: vigente de ${fromStr || 'início'} até ${untilStr || 'em aberto'})*`;
+        } else if (f.source_type === 'canonical') {
+          note = ` *(canônico)*`;
+        }
+        const aliasesStr =
+          Array.isArray(f.aliases) && f.aliases.length > 0
+            ? `\n  - *Aliases:* \`${f.aliases.join('`, `')}\``
+            : '';
+        return `- **${keyFormatted}:** ${valStr}${note}${aliasesStr}`;
+      })
+      .join('\n');
+  }
+
+  return `---
+vendeo_managed: true
+vendeo_type: "persona"
+persona_id: "${personaId}"
+category: "${category}"
+updated_at: "${now}"
+---
+
+# Persona ${personaId.charAt(0).toUpperCase() + personaId.slice(1)} — ${categoryTitle}
+
+${factsSection}
+`;
+}
+
+/**
+ * Sincroniza os fatos da Persona Memory no vault local:
+ * Vendeo Memory/Persona/<PersonaName>/<Categoria>.md
+ */
+export function syncPersonaToVault(vaultRoot, personaFacts, personaName = 'Larissa') {
+  const personaDir = path.join(vaultRoot, 'Vendeo Memory', 'Persona', personaName);
+
+  let updatedCount = 0;
+  let unchangedCount = 0;
+  let preservedCount = 0;
+
+  // Agrupa fatos por categoria
+  const byCategory = {};
+  for (const fact of personaFacts) {
+    const cat = fact.category || 'geral';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(fact);
+  }
+
+  // Grava cada categoria em seu arquivo Markdown isolado
+  for (const [cat, facts] of Object.entries(byCategory)) {
+    const catTitle = cat.charAt(0).toUpperCase() + cat.slice(1);
+    const filePath = path.join(personaDir, `${catTitle}.md`);
+    const content = formatPersonaCategoryMarkdown(personaName.toLowerCase(), cat, facts);
+    const res = atomicWriteFileIfChanged(filePath, content);
+    if (res.written) updatedCount++;
+    else if (res.skippedUnchanged) unchangedCount++;
+    else if (res.skippedManual) preservedCount++;
+  }
+
+  return { personaDir, updatedCount, unchangedCount, preservedCount };
+}
+
+/**
+ * Busca a Persona Memory do Supabase
+ */
+export async function fetchRemotePersona(supabaseUrl, token, personaId = 'larissa') {
+  const baseUrl = supabaseUrl.replace(/\/$/, '');
+  const endpoint = `${baseUrl}/functions/v1/api/internal/memory-export?include_persona=true&limit=1`;
+  try {
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.persona?.facts && Array.isArray(data.persona.facts)) {
+        return data.persona.facts;
+      }
+    }
+  } catch (err) {
+    console.warn('[Obsidian Sync] Aviso ao buscar persona via endpoint:', err.message);
+  }
+  return null;
+}
+
+/**
  * Busca dados da Edge Function do Supabase com paginação determinística
  */
 export async function fetchRemoteMemories(supabaseUrl, token, contactId = null) {
@@ -542,6 +647,26 @@ export async function runSync(options = {}) {
     totalUpdated += res.updatedCount;
     totalUnchanged += res.unchangedCount;
     totalPreserved += res.preservedCount;
+  }
+
+  // Sincronização da Persona Memory da Larissa em Vendeo Memory/Persona/Larissa/
+  try {
+    let personaFacts = await fetchRemotePersona(supabaseUrl, token, 'larissa');
+    if (!personaFacts || personaFacts.length === 0) {
+      const { LARISSA_CANONICAL_FACTS } = await import('./import-larissa-persona-memory.mjs').catch(() => ({
+        LARISSA_CANONICAL_FACTS: [],
+      }));
+      personaFacts = LARISSA_CANONICAL_FACTS;
+    }
+    if (personaFacts && personaFacts.length > 0) {
+      const pRes = syncPersonaToVault(vaultPath, personaFacts, 'Larissa');
+      totalUpdated += pRes.updatedCount;
+      totalUnchanged += pRes.unchangedCount;
+      totalPreserved += pRes.preservedCount;
+      console.log(`[Obsidian Sync] Persona Larissa sincronizada: ${pRes.updatedCount} arquivo(s) gravado(s), ${pRes.unchangedCount} inalterado(s).`);
+    }
+  } catch (pErr) {
+    console.warn(`[Obsidian Sync] Aviso na sincronização da Persona:`, pErr.message);
   }
 
   console.log(`[Obsidian Sync] Concluído: ${totalUpdated} arquivo(s) gravado(s)/atualizado(s), ${totalUnchanged} inalterado(s), ${totalPreserved} manual(is) preservado(s).`);
