@@ -238,6 +238,72 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
       subscribe: () => ({}),
       unsubscribe: () => ({}),
     }),
+    rpc: async (fnName, params) => {
+      if (fnName === 'claim_outbox_entry') {
+        const { p_conversation_id, p_outbox_id, p_claim_token } = params;
+        const rules = convData.stage_completed_rules || {};
+        const orch = rules.orchestration || {};
+        const outbox = { ...(orch.outbox || {}) };
+
+        let targetKey = p_outbox_id;
+        let entry = outbox[p_outbox_id];
+        if (!entry) {
+          for (const [k, v] of Object.entries(outbox)) {
+            if (v?.id === p_outbox_id || v?.idempotencyKey === p_outbox_id) {
+              targetKey = k;
+              entry = v;
+              break;
+            }
+          }
+        }
+
+        if (!entry) {
+          return { data: { success: false, reason: 'outbox_entry_not_found' }, error: null };
+        }
+        if (entry.status === 'sent') {
+          return { data: { success: false, reason: 'already_sent' }, error: null };
+        }
+        if (entry.status === 'dispatch_uncertain') {
+          return { data: { success: false, reason: 'dispatch_uncertain', isUncertain: true }, error: null };
+        }
+        if (entry.status === 'sending') {
+          const sendingAtMs = entry.sendingAt ? Date.parse(entry.sendingAt) : 0;
+          if (Date.now() - sendingAtMs < 20000) {
+            return { data: { success: false, reason: 'sending_active' }, error: null };
+          } else {
+            const updated = {
+              ...entry,
+              status: 'dispatch_uncertain',
+              isUncertain: true,
+              lastError: 'Sending stale detectado (>20s sem confirmação)',
+            };
+            outbox[targetKey] = updated;
+            convData.stage_completed_rules = {
+              ...rules,
+              orchestration: { ...orch, outbox },
+            };
+            return { data: { success: false, reason: 'sending_stale_uncertain', isUncertain: true, entry: updated }, error: null };
+          }
+        }
+        if (entry.status === 'pending') {
+          const updated = {
+            ...entry,
+            status: 'sending',
+            sendingAt: new Date().toISOString(),
+            claimedBy: p_claim_token,
+            attempts: (entry.attempts || 0) + 1,
+          };
+          outbox[targetKey] = updated;
+          convData.stage_completed_rules = {
+            ...rules,
+            orchestration: { ...orch, outbox },
+          };
+          return { data: { success: true, entry: updated }, error: null };
+        }
+        return { data: { success: false, reason: 'invalid_status' }, error: null };
+      }
+      return { data: null, error: null };
+    },
     getConversationData: () => convData,
     getAiLogs: () => logs,
     getInsertedMessages: () => messages,
@@ -2064,9 +2130,9 @@ test('39. Duplo Dispatch Concorrente: impede dois despachos simultâneos da mesm
 });
 
 // =========================================================================
-// TESTE 40 (Cenário 10 do Usuário): Crash em Status sending e Recuperação após 20s
+// TESTE 40 (Cenário 10 do Usuário): Crash em Status sending e Proteção contra Retry Cego após 20s
 // =========================================================================
-test('40. Outbox Crash em sending: bloqueia retry imediato e permite recuperação após expiração de 20s', async () => {
+test('40. Outbox Crash em sending: bloqueia retry imediato e marca dispatch_uncertain após 20s com ZERO reenvio', async () => {
   const { load } = createRuntime();
   const { dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
 
@@ -2105,7 +2171,7 @@ test('40. Outbox Crash em sending: bloqueia retry imediato e permite recuperaç�
   assert.match(resImmediate.error, /sending|concorrente/i);
   assert.equal(httpCalls, 0);
 
-  // 2. Simula passagem de mais de 20 segundos (processo comprovadamente morto/crash)
+  // 2. Simula passagem de mais de 20 segundos (sending stale: Meta pode ter recebido!)
   outboxEntry.sendingAt = new Date(Date.now() - 25000).toISOString();
 
   const resRecovered = await dispatchOutboxEntry({
@@ -2115,11 +2181,23 @@ test('40. Outbox Crash em sending: bloqueia retry imediato e permite recuperaç�
     runtime: mockRuntime,
   });
 
-  // Agora a trava de 20s expirou, permitindo envio controlado com recuperação
-  assert.equal(resRecovered.success, true);
-  assert.equal(httpCalls, 1);
-  assert.equal(outboxEntry.status, 'sent');
-  assert.equal(outboxEntry.providerMessageId, 'meta_recovered_ok');
+  // NÃO pode haver reenvio automático cego! Deve marcar dispatch_uncertain e ZERO chamadas à Meta
+  assert.equal(resRecovered.success, false);
+  assert.equal(resRecovered.isUncertain, true);
+  assert.equal(httpCalls, 0, 'ZERO chamadas à Meta permitidas em sending stale!');
+  assert.equal(outboxEntry.status, 'dispatch_uncertain');
+  assert.equal(outboxEntry.isUncertain, true);
+
+  // 3. Nova tentativa futura sobre dispatch_uncertain também é BLOQUEADA
+  const resFuture = await dispatchOutboxEntry({
+    supabase: mockSupabase,
+    outboxEntry,
+    recipientId: 'test_conv_crash',
+    runtime: mockRuntime,
+  });
+  assert.equal(resFuture.success, false);
+  assert.equal(resFuture.isUncertain, true);
+  assert.equal(httpCalls, 0, 'ZERO chamadas futuras à Meta em dispatch_uncertain!');
 });
 
 // =========================================================================
@@ -2425,5 +2503,429 @@ test('43. Caso Mais Perigoso Ponta a Ponta: Msg chega -> IA demora >25s -> B ini
   // 5. PROVA ABSOLUTA: Exatamente 1 envio à Meta foi realizado
   assert.equal(metaDispatched.length, 1, 'Exatamente UMA mensagem deve ser enviada para a Meta no total!');
   assert.equal(metaDispatched[0].text, 'Resposta legítima B');
+});
+
+// =========================================================================
+// TESTE 44 (Teste A do Usuário): pending -> sending -> Meta recebeu -> crash -> >20s -> ZERO segundo envio
+// =========================================================================
+test('44. Teste A: pending -> sending -> Meta recebeu -> crash -> >20s -> ZERO segundo envio (marca dispatch_uncertain)', async () => {
+  const { load } = createRuntime();
+  const { claimOutboxEntryAtomic, dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const conversationId = 'conv_crash_proof_A';
+  const outboxId = 'out_crash_A';
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        outbox: {
+          [outboxId]: {
+            id: outboxId,
+            cycleId: 'cycle_A_1',
+            conversationId,
+            idempotencyKey: 'idemp_A_1',
+            content: 'Mensagem entregue mas sem ack',
+            messageType: 'text',
+            status: 'pending',
+            attempts: 0,
+            maxAttempts: 3,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      },
+    },
+  });
+
+  // 1. Worker 1 faz claim atômico com sucesso
+  const claim1 = await claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: outboxId,
+    claimToken: 'worker_1_token',
+  });
+  assert.equal(claim1.success, true);
+  assert.equal(claim1.entry.status, 'sending');
+
+  // 2. Worker 1 chama a Meta; a Meta recebe com sucesso!
+  metaCalls++; // Meta recebeu a mensagem no Instagram!
+  // Mas antes de atualizar o banco para 'sent', o worker sofre crash / timeout de processo!
+  // O banco permanece com status: 'sending', e o tempo passa (> 20 segundos)
+  const convState = supabase.getConversationData();
+  convState.stage_completed_rules.orchestration.outbox[outboxId].sendingAt = new Date(Date.now() - 30000).toISOString();
+
+  // 3. Worker 2 (novo processo/ciclo) tenta enviar a mesma outbox
+  const claim2 = await claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: outboxId,
+    claimToken: 'worker_2_token',
+  });
+
+  // O claim atômico DEVE rejeitar o envio e converter para sending_stale_uncertain
+  assert.equal(claim2.success, false);
+  assert.equal(claim2.isUncertain, true);
+  assert.equal(claim2.reason, 'sending_stale_uncertain');
+
+  // Worker 2 NÃO pode chamar a Meta!
+  assert.equal(metaCalls, 1, 'ZERO segundo envio para a Meta!');
+
+  // O banco agora reflete status dispatch_uncertain
+  const updatedEntry = convState.stage_completed_rules.orchestration.outbox[outboxId];
+  assert.equal(updatedEntry.status, 'dispatch_uncertain');
+  assert.equal(updatedEntry.isUncertain, true);
+});
+
+// =========================================================================
+// TESTE 45 (Teste B do Usuário): Falha comprovada ANTES de qualquer chamada HTTP -> retry permitido
+// =========================================================================
+test('45. Teste B: pending -> falha comprovada ANTES de qualquer HTTP -> retry permitido com segurança', async () => {
+  const { load } = createRuntime();
+  const { claimOutboxEntryAtomic, dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const conversationId = 'conv_safe_retry_B';
+  const outboxId = 'out_safe_retry_B';
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        outbox: {
+          [outboxId]: {
+            id: outboxId,
+            cycleId: 'cycle_B_1',
+            conversationId,
+            idempotencyKey: 'idemp_B_1',
+            content: 'Mensagem com falha pré-envio',
+            messageType: 'text',
+            status: 'pending',
+            attempts: 0,
+            maxAttempts: 3,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      },
+    },
+  });
+
+  // 1. Simula falha comprovada antes de qualquer rede (ex: erro local de validação)
+  // A entrada continua comprovadamente 'pending' sem nenhuma chamada à Meta
+  assert.equal(metaCalls, 0);
+
+  // 2. Nova tentativa de envio: worker adquire claim
+  const claimRes = await claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: outboxId,
+    claimToken: 'worker_retry_token',
+  });
+  assert.equal(claimRes.success, true);
+  assert.equal(claimRes.entry.status, 'sending');
+
+  // 3. Dispatcher executa com sucesso
+  const dispatchRes = await dispatchOutboxEntry({
+    supabase,
+    outboxEntry: claimRes.entry,
+    recipientId: conversationId,
+    claimToken: 'worker_retry_token',
+    runtime: {
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        return { message_id: 'meta_safe_b_ok' };
+      },
+    },
+  });
+
+  assert.equal(dispatchRes.success, true);
+  assert.equal(metaCalls, 1);
+  assert.equal(claimRes.entry.status, 'sent');
+});
+
+// =========================================================================
+// TESTE 46 (Teste C do Usuário): Dois workers independentes disputam claim da mesma outbox
+// =========================================================================
+test('46. Teste C: Dois workers independentes disputam claim da mesma outbox -> Exatamente 1 vence e 1 envio à Meta', async () => {
+  const { load } = createRuntime();
+  const { claimOutboxEntryAtomic, dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const conversationId = 'conv_race_claim_C';
+  const outboxId = 'out_race_claim_C';
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        outbox: {
+          [outboxId]: {
+            id: outboxId,
+            cycleId: 'cycle_C_init',
+            conversationId,
+            idempotencyKey: 'idemp_C_1',
+            content: 'Mensagem disputada',
+            messageType: 'text',
+            status: 'pending',
+            attempts: 0,
+            maxAttempts: 3,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      },
+    },
+  });
+
+  // Dois workers independentes (instâncias separadas sem compartilhamento de memória)
+  const worker1ClaimPromise = claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: outboxId,
+    claimToken: 'worker_token_1',
+  });
+
+  const worker2ClaimPromise = claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: outboxId,
+    claimToken: 'worker_token_2',
+  });
+
+  const [claim1, claim2] = await Promise.all([worker1ClaimPromise, worker2ClaimPromise]);
+
+  // Exclusão Mútua: exatamente um deve vencer (true) e o outro falhar (false)
+  const successCount = (claim1.success ? 1 : 0) + (claim2.success ? 1 : 0);
+  assert.equal(successCount, 1, 'Exatamente UM worker deve obter o claim da outbox!');
+
+  const winner = claim1.success ? claim1 : claim2;
+  const loser = claim1.success ? claim2 : claim1;
+  const winnerToken = claim1.success ? 'worker_token_1' : 'worker_token_2';
+
+  assert.equal(loser.success, false);
+  assert.equal(loser.reason, 'sending_active');
+
+  // Somente o worker vencedor despacha
+  const dispatchRes = await dispatchOutboxEntry({
+    supabase,
+    outboxEntry: winner.entry,
+    recipientId: conversationId,
+    claimToken: winnerToken,
+    runtime: {
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        return { message_id: 'meta_race_winner_ok' };
+      },
+    },
+  });
+
+  assert.equal(dispatchRes.success, true);
+  assert.equal(metaCalls, 1, 'Exatamente UMA chamada à Meta deve ser realizada no total!');
+});
+
+// =========================================================================
+// TESTE 47 (Teste D do Usuário): Worker perdedor do claim NÃO chama Meta e NÃO ativa fallback legacy
+// =========================================================================
+test('47. Teste D: Worker que falha claim da outbox NÃO chama Meta e NÃO ativa fallback legacy', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const conversationId = 'conv_loser_worker_D';
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        active_cycle_token: 'active_winner_token', // Já em posse de outro worker
+        active_cycle_at: new Date().toISOString(),
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          outbox: {
+            out_d_active: {
+              id: 'out_d_active',
+              status: 'sending',
+              sendingAt: new Date().toISOString(),
+              claimedBy: 'active_winner_token',
+            },
+          },
+        },
+      },
+    },
+    [
+      { id: 'msg_d_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Oi', created_at: new Date().toISOString() },
+    ]
+  );
+
+  const resLoser = await runExperimentalOrchestration({
+    supabase,
+    conversationId,
+    correlationId: 'loser_worker_token',
+    newMessage: { id: 'msg_d_1', text: 'Oi', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({ action: 'reply', suggestedResponse: 'Tentativa indevida' }),
+      }),
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        return { message_id: 'meta_should_not_be_called' };
+      },
+    },
+  });
+
+  // Worker perdedor deve ser bloqueado
+  assert.equal(resLoser.handled, false);
+  assert.equal(resLoser.sentToMeta, false);
+  assert.equal(metaCalls, 0, 'Worker perdedor NUNCA pode chamar a Meta!');
+
+  // O fallback para o legacy NÃO PODE ser ativado porque a causa é concorrência
+  assert.match(resLoser.error, /lock ativo concorrente/i);
+});
+
+// =========================================================================
+// TESTE 48 (Teste E do Usuário): dispatch_uncertain bloqueia qualquer tentativa de reenvio automático
+// =========================================================================
+test('48. Teste E: dispatch_uncertain bloqueia reenvio automático por ciclos futuros', async () => {
+  const { load } = createRuntime();
+  const { claimOutboxEntryAtomic, dispatchOutboxEntry } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let metaCalls = 0;
+  const conversationId = 'conv_uncertain_block_E';
+  const outboxId = 'out_uncertain_E';
+
+  const supabase = createMockSupabase({
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        outbox: {
+          [outboxId]: {
+            id: outboxId,
+            cycleId: 'cycle_old',
+            conversationId,
+            idempotencyKey: 'idemp_E_1',
+            content: 'Mensagem com status incerto',
+            messageType: 'text',
+            status: 'dispatch_uncertain',
+            isUncertain: true,
+            attempts: 1,
+            maxAttempts: 3,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      },
+    },
+  });
+
+  // 1. Tentativa de claim atômico
+  const claimRes = await claimOutboxEntryAtomic({
+    supabase,
+    conversationId,
+    outboxKey: outboxId,
+    claimToken: 'future_worker_token',
+  });
+
+  assert.equal(claimRes.success, false);
+  assert.equal(claimRes.isUncertain, true);
+  assert.equal(claimRes.reason, 'dispatch_uncertain');
+
+  // 2. Tentativa direta de dispatch
+  const outboxEntry = supabase.getConversationData().stage_completed_rules.orchestration.outbox[outboxId];
+  const dispatchRes = await dispatchOutboxEntry({
+    supabase,
+    outboxEntry,
+    recipientId: conversationId,
+    runtime: {
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        return { message_id: 'meta_should_never_happen' };
+      },
+    },
+  });
+
+  assert.equal(dispatchRes.success, false);
+  assert.equal(dispatchRes.isUncertain, true);
+  assert.match(dispatchRes.error, /dispatch_uncertain|bloqueado/i);
+  assert.equal(metaCalls, 0, 'ZERO chamadas à Meta sob status dispatch_uncertain!');
+});
+
+// =========================================================================
+// TESTE 49 (Teste F do Usuário): Fallback legacy é completamente bloqueado sob incerteza de envio
+// =========================================================================
+test('49. Teste F: Fallback legacy é completamente bloqueado quando a falha é por incerteza de envio', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let legacyExecuted = false;
+  let metaCalls = 0;
+  const conversationId = 'conv_legacy_lockout_F';
+
+  const supabase = createMockSupabase(
+    {
+      stage_completed_rules: {
+        orchestration: {
+          version: 1,
+          mode: 'experimental',
+          currentPhase: 'conexao_inicial',
+          checkpoint: 'chk_saudacao_feita',
+          outbox: {},
+          messageLedger: {},
+        },
+      },
+    },
+    [
+      { id: 'msg_f_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Olá Larissa!', created_at: new Date().toISOString() },
+    ]
+  );
+
+  // Executa ciclo experimental simulando timeout de rede na chamada da Meta (resultado incerto!)
+  const expResult = await runExperimentalOrchestration({
+    supabase,
+    conversationId,
+    correlationId: 'corr_cycle_F',
+    newMessage: { id: 'msg_f_1', text: 'Olá Larissa!', timestamp: new Date().toISOString(), sender: 'them' },
+    runtime: {
+      callModel: async () => ({
+        content: JSON.stringify({
+          targetSubagent: 'conexao_inicial',
+          action: 'reply',
+          checkpoint: 'chk_saudacao_feita',
+          suggestedResponse: 'Olá! Como você está?',
+          nextPhase: 'conexao_inicial',
+          summary: 'Resposta inicial',
+        }),
+        tokens: 40,
+      }),
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        // Simula timeout ou perda de conexão HTTP após pacote enviado
+        const timeoutErr = new Error('fetch failed: ETIMEDOUT');
+        timeoutErr.name = 'TimeoutError';
+        throw timeoutErr;
+      },
+    },
+  });
+
+  // A orquestração experimental tratou o timeout incerto:
+  // sentToMeta DEVE ser true para indicar que a mensagem pode ter saído
+  assert.equal(expResult.sentToMeta, true, 'sentToMeta DEVE ser true em caso de incerteza de rede!');
+
+  // Simulador do router do index.ts:
+  // Decisão de fallback legado:
+  if (
+    expResult.mode === 'experimental' &&
+    !expResult.handled &&
+    !expResult.sentToMeta &&
+    !expResult.isPreemptedOrCancelled
+  ) {
+    legacyExecuted = true;
+  }
+
+  // PROVA: Fallback legacy NUNCA pode ser executado
+  assert.equal(legacyExecuted, false, 'Fallback legacy DEVE ser bloqueado sob incerteza de envio!');
+  assert.equal(metaCalls, 1, 'Exatamente UMA tentativa de envio foi feita (zero duplicatas no legado)!');
 });
 

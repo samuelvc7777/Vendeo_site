@@ -655,12 +655,149 @@ export async function buildConversationContextForCycle(
 }
 
 // ----------------------------------------------------------------------------
-// 5.4. Dispatcher da Outbox com Idempotência Estrita
+// 5.4. Atomic Claim no Postgres & Dispatcher da Outbox
 // ----------------------------------------------------------------------------
+export interface ClaimOutboxAtomicParams {
+  supabase: any;
+  conversationId: string;
+  outboxKey: string;
+  claimToken: string;
+}
+
+export async function claimOutboxEntryAtomic(
+  params: ClaimOutboxAtomicParams
+): Promise<{
+  success: boolean;
+  reason?: string;
+  isUncertain?: boolean;
+  entry?: any;
+}> {
+  const { supabase, conversationId, outboxKey, claimToken } = params;
+
+  // 1. Tenta RPC atômico no PostgreSQL com lock exclusivo FOR UPDATE
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("claim_outbox_entry", {
+        p_conversation_id: conversationId,
+        p_outbox_id: outboxKey,
+        p_claim_token: claimToken,
+      });
+
+      if (!error && data && typeof data === "object") {
+        return {
+          success: Boolean(data.success),
+          reason: data.reason,
+          isUncertain: Boolean(data.isUncertain || data.reason === "sending_stale_uncertain"),
+          entry: data.entry,
+        };
+      }
+    } catch (_rpcErr) {
+      // Fallback para PostgREST ou mock local
+    }
+  }
+
+  // 2. Fallback determinístico no banco (PostgREST / Mock)
+  const { data: convRow } = await supabase
+    .from("instagram_conversations")
+    .select("stage_completed_rules")
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  const rules = convRow?.stage_completed_rules || {};
+  const orch = rules.orchestration || {};
+  const outboxMap = { ...(orch.outbox || {}) };
+
+  let targetKey = outboxKey;
+  let entry = outboxMap[outboxKey];
+  if (!entry) {
+    for (const [k, v] of Object.entries(outboxMap)) {
+      if ((v as any)?.id === outboxKey || (v as any)?.idempotencyKey === outboxKey) {
+        targetKey = k;
+        entry = v;
+        break;
+      }
+    }
+  }
+
+  if (!entry) {
+    return { success: false, reason: "outbox_entry_not_found" };
+  }
+
+  if (entry.status === "sent") {
+    return { success: false, reason: "already_sent" };
+  }
+
+  if (entry.status === "dispatch_uncertain") {
+    return { success: false, reason: "dispatch_uncertain", isUncertain: true };
+  }
+
+  const now = Date.now();
+  if (entry.status === "sending") {
+    const sendingAtMs = entry.sendingAt ? Date.parse(entry.sendingAt) : 0;
+    if (now - sendingAtMs < 20000) {
+      return { success: false, reason: "sending_active" };
+    } else {
+      // SENDING STALE (>= 20s): O processo anterior pode ter entregue a mensagem!
+      // Marca imediatamente dispatch_uncertain no banco e bloqueia retry automático
+      const updatedEntry = {
+        ...entry,
+        status: "dispatch_uncertain",
+        isUncertain: true,
+        lastError: "Sending stale detectado (>20s sem confirmação) - processo anterior pode ter entregue",
+      };
+      outboxMap[targetKey] = updatedEntry;
+
+      await supabase
+        .from("instagram_conversations")
+        .update({
+          stage_completed_rules: {
+            ...rules,
+            orchestration: {
+              ...orch,
+              outbox: outboxMap,
+            },
+          },
+        })
+        .eq("id", conversationId);
+
+      return { success: false, reason: "sending_stale_uncertain", isUncertain: true, entry: updatedEntry };
+    }
+  }
+
+  if (entry.status === "pending") {
+    const updatedEntry = {
+      ...entry,
+      status: "sending",
+      sendingAt: new Date().toISOString(),
+      claimedBy: claimToken,
+      attempts: (entry.attempts || 0) + 1,
+    };
+    outboxMap[targetKey] = updatedEntry;
+
+    await supabase
+      .from("instagram_conversations")
+      .update({
+        stage_completed_rules: {
+          ...rules,
+          orchestration: {
+            ...orch,
+            outbox: outboxMap,
+          },
+        },
+      })
+      .eq("id", conversationId);
+
+    return { success: true, entry: updatedEntry };
+  }
+
+  return { success: false, reason: "invalid_status", entry };
+}
+
 export interface DispatchOutboxParams {
   supabase: any;
   outboxEntry: OutboxEntry;
   recipientId: string;
+  claimToken?: string;
   runtime?: {
     sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
   };
@@ -669,25 +806,44 @@ export interface DispatchOutboxParams {
 export async function dispatchOutboxEntry(
   params: DispatchOutboxParams
 ): Promise<{ success: boolean; providerMessageId?: string; isUncertain?: boolean; error?: string }> {
-  const { supabase, outboxEntry, recipientId, runtime } = params;
+  const { supabase, outboxEntry, recipientId, runtime, claimToken } = params;
 
   // 1. Idempotência estrita: se já foi enviada com sucesso, não repete envio
   if (outboxEntry.status === "sent" && outboxEntry.providerMessageId) {
     return { success: true, providerMessageId: outboxEntry.providerMessageId };
   }
 
-  // 2. Proteção contra duplo dispatch concorrente: impede que duas chamadas quase simultâneas disparem o mesmo envio
+  // 2. Proteção contra duplo dispatch concorrente e sending stale:
   const now = Date.now();
   const sendingAtMs = outboxEntry.sendingAt ? Date.parse(outboxEntry.sendingAt) : 0;
-  if (outboxEntry.status === "sending" && now - sendingAtMs < 20000) {
-    console.warn(
-      `[Dispatcher] Outbox ${outboxEntry.id} já está em processo de envio ativo (status: sending). Bloqueando despacho concorrente.`
-    );
-    return { success: false, error: "Outbox em envio concorrente (status: sending)" };
+  const isClaimedByMe = Boolean(claimToken && (outboxEntry as any).claimedBy === claimToken);
+
+  if (outboxEntry.status === "sending" && !isClaimedByMe) {
+    if (now - sendingAtMs < 20000) {
+      console.warn(
+        `[Dispatcher] Outbox ${outboxEntry.id} já está em processo de envio ativo por outro worker. Bloqueando despacho concorrente.`
+      );
+      return { success: false, error: "Outbox em envio concorrente (status: sending)" };
+    } else {
+      // SENDING STALE (>= 20s): O processo anterior iniciou a chamada HTTP e morreu/travou.
+      // NÃO PODEMOS ASSUMIR NÃO-ENVIO! A Meta pode ter recebido e entregue a mensagem!
+      // Marca imediatamente como dispatch_uncertain e bloqueia retry automático para evitar duplicação!
+      console.warn(
+        `[Dispatcher] Outbox ${outboxEntry.id} permaneceu em 'sending' por mais de 20s. Marcando como dispatch_uncertain para impedir envio duplicado.`
+      );
+      outboxEntry.status = "dispatch_uncertain";
+      outboxEntry.isUncertain = true;
+      outboxEntry.lastError = "Sending stale detectado (>20s) - processo anterior pode ter entregue a mensagem";
+      return {
+        success: false,
+        isUncertain: true,
+        error: "Sending stale detectado. Envio incerto: retry automático bloqueado para evitar duplicação.",
+      };
+    }
   }
 
   // 3. Proteção contra retry cego em incerteza: se o envio anterior sofreu timeout na conexão com a Meta,
-  // a Meta pode ter recebido e entregue a mensagem. Bloqueia retry automático cego para evitar duplicação!
+  // ou sending stale, a Meta pode ter recebido e entregue a mensagem. Bloqueia retry automático cego!
   if (outboxEntry.status === "dispatch_uncertain") {
     console.warn(
       `[Dispatcher] Outbox ${outboxEntry.id} possui status dispatch_uncertain. Retry automático bloqueado para evitar duplicação.`
@@ -696,8 +852,11 @@ export async function dispatchOutboxEntry(
   }
 
   outboxEntry.status = "sending";
-  outboxEntry.sendingAt = new Date().toISOString();
-  outboxEntry.attempts += 1;
+  outboxEntry.sendingAt = outboxEntry.sendingAt || new Date().toISOString();
+  if (claimToken) {
+    (outboxEntry as any).claimedBy = claimToken;
+  }
+  outboxEntry.attempts = (outboxEntry.attempts || 0) + (isClaimedByMe ? 0 : 1);
 
   try {
     if (runtime?.sendMetaTextMessage) {
@@ -1087,7 +1246,7 @@ export async function runExperimentalOrchestration(
     console.log(
       `[Orchestrator] Lock ativo detectado (${activeLock}) para ${conversationId}. Abortando execução concorrente.`
     );
-    return { mode: orchState.mode, handled: false, error: "Lock ativo concorrente" };
+    return { mode: orchState.mode, handled: false, sentToMeta: false, error: "Lock ativo concorrente" };
   }
 
   // Adquire o lock
@@ -1121,7 +1280,7 @@ export async function runExperimentalOrchestration(
           },
         })
         .eq("id", conversationId);
-      return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
+      return { mode: orchState.mode, handled: false, sentToMeta: false, error: "Cancelado pelo operador" };
     }
 
     const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
@@ -1379,6 +1538,46 @@ export async function runExperimentalOrchestration(
     currentCycle.decision = decision;
 
     // ------------------------------------------------------------------------
+    // Checagem de cancelamento e preempção após inferência antes de qualquer mutação
+    // ------------------------------------------------------------------------
+    const { data: recheckData } = await supabase
+      .from("instagram_conversations")
+      .select("ai_auto_respond, stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    const recheckRules = recheckData?.stage_completed_rules || {};
+
+    // 1. Cancelamento manual pelo operador durante a inferência
+    if (
+      (recheckData && recheckData.ai_auto_respond === false) ||
+      recheckRules.cancel_current_cycle === true ||
+      recheckRules.status === "paused_manual"
+    ) {
+      currentCycle.status = "cancelled";
+      currentCycle.trace.push("cycle_cancelled_before_dispatch");
+      for (const id of claimedMessageIds) {
+        ledger[id] = "pending";
+      }
+      return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
+    }
+
+    // 2. Preempção por novo ciclo concorrente ou expiração de lock (Stale Lock / Zombie Cycle Prevention)
+    if (recheckRules.active_cycle_token !== correlationId) {
+      console.warn(
+        `[Orchestrator] Ciclo ${correlationId} perdeu o lock (token atual: ${recheckRules.active_cycle_token || "null"}). Abortando envio para evitar duplo envio.`
+      );
+      currentCycle.status = "failed";
+      currentCycle.trace.push(`cycle_preempted: lock_lost`);
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        error: `Ciclo preemptado por perda de lock (${recheckRules.active_cycle_token || "lock_expirado"})`,
+      };
+    }
+
+    // ------------------------------------------------------------------------
     // OUTBOX PATTERN: Criação da Intenção de Envio com IdempotencyKey
     // ------------------------------------------------------------------------
     const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
@@ -1402,46 +1601,23 @@ export async function runExperimentalOrchestration(
     currentCycle.outboxEntryId = outboxEntry.id;
     currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
-    // Checagem de cancelamento e preempção após inferência antes do despacho
-    const { data: recheckData } = await supabase
+    // Persiste imediatamente a Outbox com status 'pending' no banco antes de qualquer claim ou despacho
+    await supabase
       .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-
-    const recheckRules = recheckData?.stage_completed_rules || {};
-
-    // 1. Cancelamento manual pelo operador
-    if (
-      recheckRules.cancel_current_cycle === true ||
-      recheckRules.status === "paused_manual"
-    ) {
-      currentCycle.status = "cancelled";
-      currentCycle.trace.push("cycle_cancelled_before_dispatch");
-      for (const id of claimedMessageIds) {
-        ledger[id] = "pending";
-      }
-      outboxEntry.status = "failed";
-      outboxEntry.lastError = "Cancelado pelo operador";
-      return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
-    }
-
-    // 2. Preempção por novo ciclo concorrente ou expiração de lock (Stale Lock / Zombie Cycle Prevention)
-    if (recheckRules.active_cycle_token !== correlationId) {
-      console.warn(
-        `[Orchestrator] Ciclo ${correlationId} perdeu o lock (token atual: ${recheckRules.active_cycle_token || "null"}). Abortando envio para evitar duplo envio.`
-      );
-      currentCycle.status = "failed";
-      currentCycle.trace.push(`cycle_preempted: lock_lost`);
-      outboxEntry.status = "failed";
-      outboxEntry.lastError = `Preemptado (lock ativo: ${recheckRules.active_cycle_token || "nenhum"})`;
-      return {
-        mode: orchState.mode,
-        handled: false,
-        sentToMeta: false,
-        error: `Ciclo preemptado por perda de lock (${recheckRules.active_cycle_token || "lock_expirado"})`,
-      };
-    }
+      .update({
+        stage_completed_rules: {
+          ...stageRules,
+          active_cycle_token: correlationId,
+          active_cycle_at: new Date().toISOString(),
+          orchestration: {
+            ...orchState,
+            outbox: outboxMap,
+            messageLedger: ledger,
+            lastDecision: decision,
+          },
+        },
+      })
+      .eq("id", conversationId);
 
     // ------------------------------------------------------------------------
     // MODO SHADOW: Registra tudo sem envio externo à Meta
@@ -1558,11 +1734,51 @@ export async function runExperimentalOrchestration(
           ),
         });
 
-        // DISPATCHER: Envio seguro através da Outbox
+        // 1. CLAIM ATÔMICO NO BANCO (Postgres RPC claim_outbox_entry com SELECT ... FOR UPDATE)
+        const claimRes = await claimOutboxEntryAtomic({
+          supabase,
+          conversationId,
+          outboxKey: idempotencyKey,
+          claimToken: correlationId,
+        });
+
+        if (!claimRes.success) {
+          console.warn(
+            `[Orchestrator] Falha no claim atômico da outbox para ${conversationId}: motivo=${claimRes.reason}`
+          );
+          if (claimRes.isUncertain || claimRes.reason === "sending_stale_uncertain" || claimRes.reason === "dispatch_uncertain") {
+            sentSuccessfully = true;
+            currentCycle.status = "failed";
+            currentCycle.trace.push(`outbox_claim_uncertain: ${claimRes.reason}`);
+            for (const id of claimedMessageIds) {
+              ledger[id] = "processed";
+            }
+            return {
+              mode: orchState.mode,
+              handled: true,
+              sentToMeta: true,
+              error: `Outbox com envio incerto (${claimRes.reason}). Retry automático bloqueado para evitar duplicação.`,
+            };
+          } else {
+            return {
+              mode: orchState.mode,
+              handled: false,
+              sentToMeta: false,
+              error: `Outbox em envio concorrente ou já processada (${claimRes.reason})`,
+            };
+          }
+        }
+
+        if (claimRes.entry) {
+          Object.assign(outboxEntry, claimRes.entry);
+        }
+
+        // 2. DISPATCHER: Envio seguro através da Outbox
         const dispatchRes = await dispatchOutboxEntry({
           supabase,
           outboxEntry,
           recipientId: conversationId,
+          claimToken: correlationId,
           runtime,
         });
 
