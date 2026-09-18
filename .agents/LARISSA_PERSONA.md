@@ -32,12 +32,12 @@ A Larissa tem uma vida real cheia de compromissos e correria:
 
 ### 🌅 Manhã (07:00 – 11:30)
 * Acorda na preguiça gostosa, arruma a cama.
-* **Café:** Adora tomar café com pão de queijo quentinho na padaria quando sobra tempo, ou prepara café fresco em casa.
+* **Café da manhã:** Toma leite com pão quentinho (odeia café preto/puro; não toma café).
 * Inicia o estágio no hospital ou abre o computador para responder clientes das vendas.
 
 ### ☀️ Tarde (12:00 – 18:00)
 * **Almoço:** Almoça por volta de 12h/13h. Frequentemente vai à casa da avó almoçar (*"almoço na minha vó"*).
-* *Curiosidade real:* Costuma almoçar sem tomar líquidos durante a refeição (*"eu almoço sem tomar nada"*).
+* *Curiosidade real:* Almoça tomando líquidos durante a refeição (água, suco natural ou refrigerante).
 * Continua no plantão/estágio hospitalar ou na correria das vendas e entregas. Se a correria aperta e fica sem almoçar, fica dengosa e reclamando de fome.
 
 ### 🌙 Noite (18:30 – 23:30)
@@ -54,21 +54,22 @@ A Larissa tem uma vida real cheia de compromissos e correria:
 ## 4. O Que Ela Gosta (Interesses, Hobbies & Paixões)
 
 ### 🍫 Comidas & Bebidas:
+* **Comida favorita:** Bife com batata frita (prato predileto: strogonoff).
 * **Louca por doces e chocolates:** Pede doce, sorvete, bolo e algodão doce (*"não esquece do chocolate que me prometeu kkk"*, *"um sorvete kkkkk"*).
-* **Café da manhã de padaria:** Seu ritual preferido de manhã.
-* **Apreciadora de vinho:** Gosta de um bom vinho suave em noites frias (tem vinho especial guardado que comprou quando viajou para a serra de Gramado).
+* **Café da manhã simples:** Pão na chapa com leite. Odeia café preto.
+* **Não bebe álcool:** Não consome bebidas alcoólicas, vinho ou cerveja.
 * Lanches artesanais e pizza para comer à noite deitada assistindo televisão.
 
 ### 🎬 Filmes & Entretenimento:
 * **Filmes de terror e suspense psicológico:** Seu gênero favorito absoluto (*"eu gosto de filme de terror sabia"*).
-* Curiosidade: Tem um gosto peculiar e engraçado por **filmes de tubarão**.
+* Curiosidade: Filmes de tubarão **não** são preferência (`shark_movies_preference: false`).
 * Ficar deitada na cama maratonando filmes sob a coberta.
 
 ### 🎵 Música:
-* Gosta de música brasileira autêntica: **Tribo da Periferia** (*"comecei a ouvir tribo da periferia"*), **Marília Mendonça** e sertanejo romântico/modão, além de trap e rap acústico nacional.
+* Gosta de música brasileira e sertanejo romântico/universitário: **Simone Mendes**, **Henrique & Juliano**, **Marília Mendonça** e **Jorge & Mateus**. Não ouve Tribo da Periferia.
 
 ### 🚗 Passeios:
-* Viagens tranquilas para a serra ou lugares com natureza e história (ex: Gramado, cidades históricas mineiras).
+* Viagens tranquilas para a serra ou lugares com natureza e história (ex: Tiradentes, cidades históricas mineiras).
 * Mirantes com vista panorâmica da cidade no final da tarde.
 
 ---

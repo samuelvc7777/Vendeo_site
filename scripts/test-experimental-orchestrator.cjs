@@ -8317,5 +8317,223 @@ test('175. Teste AZ: Fallback legado funcional quando persona_memory não possui
   assert.equal(fallbackRes.source_type, 'legacy_fallback');
 });
 
+test('176. Teste BA: Validação de comida favorita (bife com batata frita) e prato favorito (strogonoff)', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const favFood = await resolvePersonaFact('food.favorite_food', { cachedFacts: fullFacts });
+  assert.equal(favFood.found, true);
+  assert.equal(favFood.value, 'bife com batata frita');
+  assert.equal(favFood.source_type, 'canonical');
+
+  const favDish = await resolvePersonaFact('food.favorite_dish', { cachedFacts: fullFacts });
+  assert.equal(favDish.found, true);
+  assert.equal(favDish.value, 'strogonoff');
+  assert.equal(favDish.source_type, 'canonical');
+
+  // Consulta por alias em português
+  const favFoodAlias = await resolvePersonaFact('comida favorita', { cachedFacts: fullFacts });
+  assert.equal(favFoodAlias.found, true);
+  assert.ok(favFoodAlias.value.includes('bife com batata frita'));
+});
+
+test('177. Teste BB: Saneamento estrito de café - odeia café puro/preto e toma leite com pão', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const coffeeDrink = await resolvePersonaFact('drinks.likes_coffee', { cachedFacts: fullFacts });
+  assert.equal(coffeeDrink.found, true);
+  assert.equal(coffeeDrink.value, false);
+
+  const blackCoffee = await resolvePersonaFact('routine.likes_black_coffee', { cachedFacts: fullFacts });
+  assert.equal(blackCoffee.found, true);
+  assert.equal(blackCoffee.value, false);
+
+  const breakfast = await resolvePersonaFact('routine.breakfast', { cachedFacts: fullFacts });
+  assert.equal(breakfast.found, true);
+  assert.ok(JSON.stringify(breakfast.value).includes('leite'));
+});
+
+test('178. Teste BC: Saneamento estrito de bebidas alcoólicas - não bebe álcool, vinho ou cerveja', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const alcohol = await resolvePersonaFact('drinks.drinks_alcohol', { cachedFacts: fullFacts });
+  assert.equal(alcohol.found, true);
+  assert.equal(alcohol.value, false);
+
+  const wine = await resolvePersonaFact('drinks.likes_wine', { cachedFacts: fullFacts });
+  assert.equal(wine.found, true);
+  assert.equal(wine.value, false);
+
+  const beer = await resolvePersonaFact('drinks.likes_beer', { cachedFacts: fullFacts });
+  assert.equal(beer.found, true);
+  assert.equal(beer.value, false);
+});
+
+test('179. Teste BD: Saneamento de rotina alimentar - bebe líquidos durante a refeição', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const drinksWhileEating = await resolvePersonaFact('routine.drinks_while_eating', { cachedFacts: fullFacts });
+  assert.equal(drinksWhileEating.found, true);
+  assert.equal(drinksWhileEating.value, true);
+
+  const aliasDrink = await resolvePersonaFact('bebe liquido almocando', { cachedFacts: fullFacts });
+  assert.equal(aliasDrink.found, true);
+  assert.equal(aliasDrink.value, true);
+});
+
+test('180. Teste BE: Preferências musicais canônicas - Simone Mendes, Henrique & Juliano (NÃO Tribo da Periferia)', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const artist = await resolvePersonaFact('music.favorite_female_artist', { cachedFacts: fullFacts });
+  assert.equal(artist.found, true);
+  assert.equal(artist.value, 'Simone Mendes');
+
+  const duo = await resolvePersonaFact('music.favorite_duo', { cachedFacts: fullFacts });
+  assert.equal(duo.found, true);
+  assert.equal(duo.value, 'Henrique & Juliano');
+
+  const tribo = await resolvePersonaFact('music.likes_tribo_da_periferia', { cachedFacts: fullFacts });
+  assert.equal(tribo.found, true);
+  assert.equal(tribo.value, false);
+});
+
+test('181. Teste BF: Cinema - terror/suspense psicológico e filmes de tubarão NÃO são preferência', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const horror = await resolvePersonaFact('movies.likes_horror', { cachedFacts: fullFacts });
+  assert.equal(horror.found, true);
+  assert.equal(horror.value, true);
+
+  const shark = await resolvePersonaFact('movies.shark_movies_preference', { cachedFacts: fullFacts });
+  assert.equal(shark.found, true);
+  assert.equal(shark.value, false);
+});
+
+test('182. Teste BG: Validade temporal rigorosa para idade 23 e 10º período com expiração', async () => {
+  const { load } = createRuntime();
+  const { resolvePersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  // Em 2026 está vigente
+  const ageNow = await resolvePersonaFact('identity.age', { cachedFacts: fullFacts, now: '2026-05-01T12:00:00Z' });
+  assert.equal(ageNow.found, true);
+  assert.equal(ageNow.value, 23);
+  assert.equal(ageNow.source_type, 'temporal');
+
+  // No ano de 2028 o fato temporal expira e persona_get_fact recorre ao fallback seguro
+  const ageFuture = await resolvePersonaFact('identity.age', { cachedFacts: fullFacts, now: '2028-01-01T00:00:00Z' });
+  assert.equal(ageFuture.found, true);
+  assert.equal(ageFuture.source_type, 'legacy_fallback');
+});
+
+test('183. Teste BH: persona_search localiza prato predileto (strogonoff) com score elevado', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaMemory } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const results = await searchPersonaMemory({
+    query: 'strogonoff',
+    limit: 5,
+    cachedFacts: fullFacts,
+  });
+
+  assert.ok(results.length >= 1);
+  assert.equal(results[0].key, 'food.favorite_dish');
+  assert.equal(results[0].value, 'strogonoff');
+  assert.ok(results[0].score >= 8);
+});
+
+test('184. Teste BI: persona_search recupera histórias e anedotas pessoais da Larissa', async () => {
+  const { load } = createRuntime();
+  const { searchPersonaMemory } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const fs = require('fs');
+  const fullFacts = JSON.parse(fs.readFileSync('data/larissa-persona-memory.json', 'utf8'));
+
+  const results = await searchPersonaMemory({
+    query: 'chuva moto faculdade',
+    limit: 5,
+    cachedFacts: fullFacts,
+  });
+
+  assert.ok(results.length >= 1);
+  const story = results.find(r => r.key === 'stories.motorcycle_rain_college');
+  assert.ok(story, 'Deve encontrar a história da moto na chuva para a faculdade');
+  assert.ok(story.value.includes('moto'));
+});
+
+test('185. Teste BJ: Precedência estrita: canonical > temporal > generated', async () => {
+  const { load } = createRuntime();
+  const { resolveFactFromCollection } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const conflictingFacts = [
+    {
+      persona_id: 'larissa',
+      category: 'teste',
+      key: 'conflito',
+      value: 'Gerado por IA',
+      source_type: 'generated',
+      aliases: ['conflito'],
+    },
+    {
+      persona_id: 'larissa',
+      category: 'teste',
+      key: 'conflito',
+      value: 'Fato Temporal',
+      source_type: 'temporal',
+      valid_from: '2026-01-01T00:00:00Z',
+      valid_until: '2026-12-31T00:00:00Z',
+      aliases: ['conflito'],
+    },
+    {
+      persona_id: 'larissa',
+      category: 'teste',
+      key: 'conflito',
+      value: 'Canônico Direto do Usuário',
+      source_type: 'canonical',
+      aliases: ['conflito'],
+    }
+  ];
+
+  const resolved = resolveFactFromCollection('conflito', conflictingFacts, new Date('2026-06-01'));
+  assert.equal(resolved.value, 'Canônico Direto do Usuário');
+  assert.equal(resolved.source_type, 'canonical');
+});
+
+test('186. Teste BK: Saneamento do fallback legado LARISSA_PERSONA_FACTS em memória', () => {
+  const { load } = createRuntime();
+  const { LARISSA_PERSONA_FACTS, getPersonaFact } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  assert.ok(LARISSA_PERSONA_FACTS.favorite_food.includes('bife com batata frita'));
+  assert.equal(LARISSA_PERSONA_FACTS.favorite_dish, 'strogonoff');
+  assert.ok(LARISSA_PERSONA_FACTS.music.includes('Simone Mendes'));
+  assert.ok(LARISSA_PERSONA_FACTS.music.includes('Henrique & Juliano'));
+  assert.ok(!LARISSA_PERSONA_FACTS.music.includes('Tribo da Periferia'));
+  assert.ok(LARISSA_PERSONA_FACTS.dislikes.includes('café preto'));
+
+  const fact = getPersonaFact('favorite_dish', { cachedFacts: [] });
+  assert.equal(fact.found, true);
+  assert.equal(fact.value, 'strogonoff');
+});
+
+
 
 

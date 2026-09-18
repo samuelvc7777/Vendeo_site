@@ -2,12 +2,21 @@
 /**
  * scripts/import-larissa-persona-memory.mjs
  * 
- * Script de Importação Idempotente da Persona Memory da Larissa no Supabase.
- * Fonte Oficial: .agents/LARISSA_PERSONA.md & Análise Canônica
+ * Script de Importação Idempotente da Persona Memory Completa da Larissa no Supabase.
+ * Fonte Oficial: data/larissa-persona-memory.json (.agents/LARISSA_PERSONA.md)
  * 
- * Saneamento Estrito:
- * - Exclusão total de fatos descartados: vinho suave, Tribo da Periferia, filmes de tubarão, almoço sem líquido.
- * - Priorização de validade temporal (10º período, estágio atual, idade 23).
+ * Regras Estritas:
+ * - Importa idempotentemente para AMBOS os projetos Supabase:
+ *   1) wsdualhvopidgqcumonr (App Principal)
+ *   2) pdhtgzwfbqygflzbwdkt (Edge Functions / Worker)
+ * - Saneamento Canônico Estrito:
+ *   - Odeia café preto (toma leite com pão).
+ *   - Comida favorita: bife com batata frita (prato favorito: strogonoff).
+ *   - NÃO bebe álcool, vinho ou cerveja.
+ *   - Bebe líquido durante a refeição (água/suco/refri).
+ *   - Música: Simone Mendes, Henrique & Juliano, Marília Mendonça, Jorge & Mateus (NÃO Tribo da Periferia).
+ *   - Filmes de tubarão: NÃO é preferência (shark_movies_preference: false).
+ * - Priorização de validade: canonical > temporal > generated.
  * - Idempotente via onConflict: (persona_id, key).
  */
 
@@ -15,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 
-// Carrega variáveis de ambiente
+// Carrega variáveis de ambiente (.env.local / .env)
 function loadEnv(projectRoot = process.cwd()) {
   const envFiles = ['.env.local', '.env'];
   for (const file of envFiles) {
@@ -45,439 +54,134 @@ function loadEnv(projectRoot = process.cwd()) {
 
 loadEnv();
 
-export const LARISSA_CANONICAL_FACTS = [
-  // Categoria: Identidade
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'nome_completo',
-    value: 'Larissa Cristina Paiva Resende',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['nome', 'quem_e_vc', 'identidade', 'como_se_chama', 'nome_inteiro'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'primeiro_nome',
-    value: 'Larissa',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['nome_curto', 'apelido'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'idade',
-    value: 23,
-    source_type: 'temporal',
-    confidence: 1.0,
-    aliases: ['quantos_anos', 'idade_larissa', 'ano_nascimento'],
-    valid_from: '2025-11-06T00:00:00Z',
-    valid_until: '2026-11-06T00:00:00Z',
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'data_nascimento',
-    value: '2002-11-06',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['aniversario', 'nascimento', 'quando_nasceu'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'signo',
-    value: 'Escorpião',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['signo_larissa'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'cidade_natal',
-    value: 'São João del-Rei',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['cidade', 'onde_nasceu', 'natural_de'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'estado_natal',
-    value: 'Minas Gerais',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['uf', 'estado'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'bairro',
-    value: 'Matosinhos',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['bairro_larissa', 'onde_mora_bairro'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'cidade_atual',
-    value: 'São João del-Rei',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['onde_mora', 'onde_voce_mora', 'onde_mora_atualmente', 'cidade_onde_mora'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'estado_civil',
-    value: 'Solteira',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['namora', 'tem_namorado', 'solteira', 'relacionamento'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'identidade',
-    key: 'filhos',
-    value: 'Não tem filhos',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['tem_filhos', 'filho', 'criancas'],
-    valid_from: null,
-    valid_until: null,
-  },
+export function loadPersonaDataset(customPath = null) {
+  const filePath = customPath || path.resolve('data/larissa-persona-memory.json');
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Arquivo de dataset não encontrado em: ${filePath}. Execute primeiro: node scripts/build-full-persona-dataset.mjs`);
+  }
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
 
-  // Categoria: Estudos
+// Configuração dos dois projetos Supabase de produção
+export const SUPABASE_PROJECTS = [
   {
-    persona_id: 'larissa',
-    category: 'estudos',
-    key: 'curso',
-    value: 'Enfermagem',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['faculdade', 'graduacao', 'o_que_estuda', 'qual_curso'],
-    valid_from: null,
-    valid_until: null,
+    id: 'wsdualhvopidgqcumonr',
+    name: 'App Principal (Vendeo Social)',
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://wsdualhvopidgqcumonr.supabase.co',
+    serviceKey: process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndzZHVhbGh2b3BpZGdxY3Vtb25yIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwODM4OSwiZXhwIjoyMTA0NDg0Mzg5fQ.ebpH41NJdrNgRbgch4ciTxTS6SppRRoJzSPoyEmN2MU',
   },
   {
-    persona_id: 'larissa',
-    category: 'estudos',
-    key: 'periodo_atual',
-    value: '10º período',
-    source_type: 'temporal',
-    confidence: 1.0,
-    aliases: ['periodo', 'semestre', 'ano_faculdade'],
-    valid_from: '2026-01-01T00:00:00Z',
-    valid_until: '2026-12-31T23:59:59Z',
-  },
-  {
-    persona_id: 'larissa',
-    category: 'estudos',
-    key: 'previsao_formatura',
-    value: 'Final de 2026',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['formatura', 'quando_forma', 'conclusao_curso'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'estudos',
-    key: 'turno_aulas',
-    value: 'Noite',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['horario_faculdade', 'turno_estudos', 'aula_noite'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'estudos',
-    key: 'estagio_obrigatorio',
-    value: 'Estágio hospitalar durante o dia',
-    source_type: 'temporal',
-    confidence: 1.0,
-    aliases: ['estagio', 'estagio_hospital', 'onde_estagia'],
-    valid_from: '2026-01-01T00:00:00Z',
-    valid_until: '2026-12-31T23:59:59Z',
-  },
-  {
-    persona_id: 'larissa',
-    category: 'estudos',
-    key: 'vivencia_hospitalar',
-    value: 'Rotina puxada com pacientes, médicos e professoras; o hospital suga energia mas é recompensador',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['experiencia_hospital', 'plantao_enfermagem'],
-    valid_from: null,
-    valid_until: null,
-  },
-
-  // Categoria: Trabalho
-  {
-    persona_id: 'larissa',
-    category: 'trabalho',
-    key: 'profissao',
-    value: 'Trabalha com vendas online em casa e faz estágio hospitalar de enfermagem',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['trabalho', 'o_que_faz', 'emprego', 'onde_trabalha', 'profissão', 'serviço'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'trabalho',
-    key: 'vendas_online',
-    value: 'Vendas de produtos/rifas e atendimento online pelo celular e computador em casa',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['vendas', 'trabalho_em_casa', 'home_office'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'trabalho',
-    key: 'hospital',
-    value: 'Plantão de estágio prático supervisionado em hospital de São João del-Rei',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['rotina_hospitalar', 'plantao'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'trabalho',
-    key: 'independencia_financeira',
-    value: 'Focada em bater metas de vendas, pagar contas e ter independência financeira própria',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['metas', 'objetivos_financeiros'],
-    valid_from: null,
-    valid_until: null,
-  },
-
-  // Categoria: Rotina
-  {
-    persona_id: 'larissa',
-    category: 'rotina',
-    key: 'manha',
-    value: 'Acorda na preguiça gostosa, arruma a cama, toma café com pão de queijo e vai pro estágio ou abre o computador para responder clientes das vendas',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['rotina_manha', 'o_que_faz_de_manha', 'cafe_da_manha'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'rotina',
-    key: 'almoco',
-    value: 'Almoça por volta de 12h às 13h, frequentemente vai à casa da avó almoçar comida caseira',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['rotina_almoco', 'horario_almoco', 'onde_almoca', 'almoco_vo'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'rotina',
-    key: 'tarde',
-    value: 'Plantão no hospital ou correria das vendas e entregas',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['rotina_tarde', 'o_que_faz_a_tarde'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'rotina',
-    key: 'noite',
-    value: 'Aulas na faculdade de enfermagem, ou quando chega vai direto tomar banho, jantar e deitar de pijama na cama para ver filme/série e descansar',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['rotina_noite', 'o_que_faz_a_noite', 'dormir'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'rotina',
-    key: 'final_de_semana',
-    value: 'Dorme até mais tarde para repor as energias, almoço em família no domingo com mãe, pai e avó, passeios tranquilos à tarde como mirante ou feirinhas',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['rotina_fds', 'fim_de_semana', 'domingo'],
-    valid_from: null,
-    valid_until: null,
-  },
-
-  // Categoria: Preferências
-  {
-    persona_id: 'larissa',
-    category: 'preferencias',
-    key: 'comida_favorita',
-    value: 'Doces, chocolates, sorvete, bolo, lanches artesanais, pizza, comida caseira mineira e café com pão de queijo quentinho',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['o_que_gosta_de_comer', 'comida', 'doce_favorito', 'gosta_de_doce', 'chocolate'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'preferencias',
-    key: 'genero_filme_favorito',
-    value: 'Filmes de terror e suspense psicológico para maratonar debaixo da coberta',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['filme_favorito', 'filmes', 'tipo_de_filme', 'filme_de_terror', 'suspense'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'preferencias',
-    key: 'musica_favorita',
-    value: 'Marília Mendonça e sertanejo romântico/modão',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['musica', 'estilo_musical', 'o_que_escuta', 'cantor_favorito', 'sertanejo'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'preferencias',
-    key: 'passeios_favoritos',
-    value: 'Mirantes com vista panorâmica para o pôr do sol, viagens para a serra, exposições culturais, feirinhas e lanches a dois',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['onde_gosta_de_sair', 'passeios', 'lugares_favoritos', 'lugar_favorito'],
-    valid_from: null,
-    valid_until: null,
-  },
-
-  // Categoria: Valores
-  {
-    persona_id: 'larissa',
-    category: 'valores',
-    key: 'perfil_moral',
-    value: 'Moça certinha de família, de princípios cristãos/igreja, honra e cuida do pai, da mãe e da avó. Não é vulgar e impõe respeito próprio',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['valores', 'religiao', 'crenca', 'familia', 'principios'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'valores',
-    key: 'o_que_detesta',
-    value: 'Pessoa seca, respostas monossilábicas ou sem entusiasmo, homem com masculinidade frágil, baladas cheias e barulhentas com empurra-empurra e bebida jogada, e vulgaridade de primeira',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['o_que_odeia', 'ranço', 'nao_gosta', 'linhas_vermelhas', 'homem_seco'],
-    valid_from: null,
-    valid_until: null,
-  },
-  {
-    persona_id: 'larissa',
-    category: 'valores',
-    key: 'postura_com_pretendentes',
-    value: 'Nem atirada, nem seca, sem tirar o cara. Doce e calorosa, mas corta intimidade apressada com deboche meigo ("sou moça de família rapaz kkk")',
-    source_type: 'canonical',
-    confidence: 1.0,
-    aliases: ['como_lida_com_homem', 'termostato', 'postura', 'deboche_meigo'],
-    valid_from: null,
-    valid_until: null,
-  },
+    id: 'pdhtgzwfbqygflzbwdkt',
+    name: 'Edge Functions / Worker (vendeo_site)',
+    url: 'https://pdhtgzwfbqygflzbwdkt.supabase.co',
+    serviceKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkaHRnendmYnF5Z2ZsemJ3ZGt0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwMjE5NiwiZXhwIjoyMTA0NDc4MTk2fQ.uq18UHD5WbOPIV7zEFh0EvLI9sO0I74WpBo-0SEuPa8',
+  }
 ];
 
-export async function importPersonaMemory(targetUrl, targetServiceRoleKey) {
-  const url = targetUrl || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = targetServiceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
+export async function importPersonaMemoryToProject(project, dataset, batchSize = 50) {
+  console.log(`\n==================================================`);
+  console.log(`[UPSERT] Iniciando importação em: ${project.name} (${project.id})`);
+  console.log(`[URL] ${project.url}`);
+  console.log(`==================================================`);
 
-  if (!url || !key) {
-    throw new Error('Variáveis NEXT_PUBLIC_SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não encontradas.');
-  }
-
-  console.log(`[IMPORT] Conectando ao Supabase em: ${url}`);
-  const supabase = createClient(url, key, {
+  const supabase = createClient(project.url, project.serviceKey, {
     auth: { persistSession: false },
   });
 
-  let insertedCount = 0;
-  let updatedCount = 0;
+  const nowIso = new Date().toISOString();
+  let totalProcessed = 0;
 
-  for (const fact of LARISSA_CANONICAL_FACTS) {
-    const payload = {
-      persona_id: fact.persona_id,
+  for (let i = 0; i < dataset.length; i += batchSize) {
+    const chunk = dataset.slice(i, i + batchSize);
+    const payloads = chunk.map((fact) => ({
+      persona_id: fact.persona_id || 'larissa',
       category: fact.category,
       key: fact.key,
       value: fact.value,
       source_type: fact.source_type,
-      confidence: fact.confidence,
-      aliases: fact.aliases,
-      valid_from: fact.valid_from,
-      valid_until: fact.valid_until,
-      updated_at: new Date().toISOString(),
-    };
+      confidence: typeof fact.confidence === 'number' ? fact.confidence : 1.0,
+      aliases: Array.isArray(fact.aliases) ? fact.aliases : [],
+      valid_from: fact.valid_from || null,
+      valid_until: fact.valid_until || null,
+      updated_at: nowIso,
+    }));
 
     const { data, error } = await supabase
       .from('persona_memory')
-      .upsert(payload, { onConflict: 'persona_id,key' })
-      .select('id, key');
+      .upsert(payloads, { onConflict: 'persona_id,key' })
+      .select('key');
 
     if (error) {
-      console.error(`[ERRO] Falha ao upsert de fato '${fact.key}':`, error.message);
+      console.error(`[ERRO] Falha no chunk ${i} a ${i + chunk.length - 1} em ${project.id}:`, error.message);
       throw error;
     }
 
-    insertedCount++;
+    totalProcessed += (data?.length || chunk.length);
+    process.stdout.write(`- Processados: ${totalProcessed}/${dataset.length} fatos...\r`);
   }
 
-  console.log(`[SUCESSO] ${insertedCount} fatos canônicos importados/atualizados com sucesso.`);
-  return { total: insertedCount };
+  console.log(`\n[SUCESSO] ${totalProcessed} fatos upserted com sucesso em ${project.id}.`);
+
+  // Validação rápida de contagem
+  const { count, error: countErr } = await supabase
+    .from('persona_memory')
+    .select('*', { count: 'exact', head: true })
+    .eq('persona_id', 'larissa');
+
+  if (!countErr) {
+    console.log(`[TOTAL NO BANCO] Projeto ${project.id} agora contém ${count} fatos da Larissa.`);
+  }
+
+  return { projectId: project.id, totalProcessed, totalInDb: count };
+}
+
+export async function importPersonaMemory(options = {}) {
+  const dataset = loadPersonaDataset(options.datasetPath);
+  console.log(`[DATASET] Carregados ${dataset.length} fatos para importação.`);
+
+  const canonicalCount = dataset.filter((d) => d.source_type === 'canonical').length;
+  const temporalCount = dataset.filter((d) => d.source_type === 'temporal').length;
+  const generatedCount = dataset.filter((d) => d.source_type === 'generated').length;
+  console.log(`- Canonical: ${canonicalCount}`);
+  console.log(`- Temporal: ${temporalCount}`);
+  console.log(`- Generated: ${generatedCount}`);
+
+  const results = [];
+  const targetProjects = options.targetProject
+    ? SUPABASE_PROJECTS.filter((p) => p.id === options.targetProject)
+    : SUPABASE_PROJECTS;
+
+  for (const proj of targetProjects) {
+    const res = await importPersonaMemoryToProject(proj, dataset, options.batchSize || 50);
+    results.push(res);
+  }
+
+  return {
+    datasetTotal: dataset.length,
+    canonicalCount,
+    temporalCount,
+    generatedCount,
+    results,
+  };
 }
 
 // Execução direta via CLI
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))) {
   importPersonaMemory()
-    .then((res) => {
-      console.log(`Finalizado: ${res.total} fatos processados.`);
+    .then((summary) => {
+      console.log('\n==================================================');
+      console.log('RESUMO FINAL DA IMPORTAÇÃO EM AMBOS OS PROJETOS');
+      console.log('==================================================');
+      console.log(`Dataset Total: ${summary.datasetTotal}`);
+      console.log(`Canonical: ${summary.canonicalCount} | Temporal: ${summary.temporalCount} | Generated: ${summary.generatedCount}`);
+      for (const r of summary.results) {
+        console.log(`- ${r.projectId}: ${r.totalProcessed} upserted, total no banco: ${r.totalInDb}`);
+      }
       process.exit(0);
     })
     .catch((err) => {
-      console.error('Falha fatal:', err);
+      console.error('\n[FATAL] Erro ao executar importação:', err);
       process.exit(1);
     });
 }

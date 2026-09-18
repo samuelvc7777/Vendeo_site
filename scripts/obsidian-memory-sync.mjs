@@ -506,15 +506,38 @@ export function syncPersonaToVault(vaultRoot, personaFacts, personaName = 'Laris
     byCategory[cat].push(fact);
   }
 
+  const generatedFiles = new Set();
+
   // Grava cada categoria em seu arquivo Markdown isolado
   for (const [cat, facts] of Object.entries(byCategory)) {
     const catTitle = cat.charAt(0).toUpperCase() + cat.slice(1);
-    const filePath = path.join(personaDir, `${catTitle}.md`);
+    const fileName = `${catTitle}.md`;
+    generatedFiles.add(fileName);
+    const filePath = path.join(personaDir, fileName);
     const content = formatPersonaCategoryMarkdown(personaName.toLowerCase(), cat, facts);
     const res = atomicWriteFileIfChanged(filePath, content);
     if (res.written) updatedCount++;
     else if (res.skippedUnchanged) unchangedCount++;
     else if (res.skippedManual) preservedCount++;
+  }
+
+  // Remove arquivos legados gerenciados que não existem mais entre as 25 categorias (ex: Preferencias.md, Valores.md)
+  if (fs.existsSync(personaDir)) {
+    try {
+      const existingFiles = fs.readdirSync(personaDir);
+      for (const f of existingFiles) {
+        if (f.endsWith('.md') && !generatedFiles.has(f)) {
+          const fullP = path.join(personaDir, f);
+          try {
+            const head = fs.readFileSync(fullP, 'utf8').slice(0, 300);
+            if (head.includes('vendeo_managed: true')) {
+              fs.unlinkSync(fullP);
+              console.log(`[Obsidian Sync] Arquivo obsoleto removido da Persona: ${f}`);
+            }
+          } catch {}
+        }
+      }
+    } catch {}
   }
 
   return { personaDir, updatedCount, unchangedCount, preservedCount };
@@ -525,6 +548,30 @@ export function syncPersonaToVault(vaultRoot, personaFacts, personaName = 'Laris
  */
 export async function fetchRemotePersona(supabaseUrl, token, personaId = 'larissa') {
   const baseUrl = supabaseUrl.replace(/\/$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  // 1. Tenta buscar direto na tabela persona_memory via REST do Supabase
+  if (serviceKey) {
+    try {
+      const res = await fetch(`${baseUrl}/rest/v1/persona_memory?persona_id=eq.${encodeURIComponent(personaId)}&select=*&limit=1000`, {
+        headers: {
+          apikey: serviceKey,
+          Authorization: `Bearer ${serviceKey}`,
+          Accept: 'application/json',
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          return data;
+        }
+      }
+    } catch (err) {
+      console.warn('[Obsidian Sync] Aviso ao buscar persona via REST:', err.message);
+    }
+  }
+
+  // 2. Tenta buscar via endpoint interno da Edge Function
   const endpoint = `${baseUrl}/functions/v1/api/internal/memory-export?include_persona=true&limit=1`;
   try {
     const res = await fetch(endpoint, {
@@ -536,13 +583,25 @@ export async function fetchRemotePersona(supabaseUrl, token, personaId = 'lariss
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.persona?.facts && Array.isArray(data.persona.facts)) {
+      if (data.persona?.facts && Array.isArray(data.persona.facts) && data.persona.facts.length > 0) {
         return data.persona.facts;
       }
     }
   } catch (err) {
     console.warn('[Obsidian Sync] Aviso ao buscar persona via endpoint:', err.message);
   }
+
+  // 3. Fallback para dataset local estruturado
+  try {
+    const jsonPath = path.resolve('data/larissa-persona-memory.json');
+    if (fs.existsSync(jsonPath)) {
+      const localData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      if (Array.isArray(localData) && localData.length > 0) {
+        return localData;
+      }
+    }
+  } catch {}
+
   return null;
 }
 

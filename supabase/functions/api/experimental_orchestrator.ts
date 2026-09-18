@@ -1613,7 +1613,7 @@ export interface PersonaFactResult {
 }
 
 // Objeto de fallback mantido estritamente para compatibilidade operacional temporária
-// Saneamento canônico estrito: excluídos vinho suave, Tribo da Periferia, filmes de tubarão e almoço sem líquido.
+// Saneamento canônico estrito: excluídos café preto, vinho suave, cerveja, álcool, Tribo da Periferia, filmes de tubarão e almoço sem líquido.
 export const LARISSA_PERSONA_FACTS: Record<string, any> = {
   name: "Larissa",
   full_name: "Larissa Cristina Paiva Resende",
@@ -1630,11 +1630,13 @@ export const LARISSA_PERSONA_FACTS: Record<string, any> = {
   occupation: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
   job: "Vendas online e digitais em casa pelo celular e computador",
   work: "Trabalho em casa com vendas online e estágio no hospital",
-  hobbies: "Filmes de terror e suspense, doces e chocolates, passeios ao pôr do sol em mirantes",
-  music: "Música brasileira, Marília Mendonça e sertanejo romântico/modão",
-  favorite_food: "Doces, chocolate, sorvete, café com pão de queijo quentinho, pizza e hambúrguer à noite",
+  hobbies: "Filmes de terror e suspense psicológico, doces e chocolates, passeios ao pôr do sol em mirantes",
+  music: "Simone Mendes, Henrique & Juliano, Marília Mendonça, Jorge & Mateus e sertanejo romântico/universitário",
+  favorite_food: "bife com batata frita (prato favorito: strogonoff)",
+  favorite_dish: "strogonoff",
+  drinks: "Água, sucos naturais e refrigerante (não consome bebidas alcoólicas; bebe líquido durante as refeições)",
   values: "Moça certinha de família, de igreja, honra pai, mãe e avó",
-  dislikes: "Odeia pessoa seca ou respostas monossilábicas, odeia baladas lotadas e barulhentas com bebida jogada, não tolera vulgaridade de primeira",
+  dislikes: "Odeia pessoa seca ou respostas monossilábicas, café preto, bebidas alcoólicas, baladas lotadas e barulhentas com bebida jogada, e falta de consideração",
 };
 
 let personaMemoryCache: {
@@ -1759,16 +1761,16 @@ export function resolveLegacyFactFallback(field: string): PersonaFactResult {
       source_type: "legacy_fallback",
     };
   }
-  if (normField === "idade") return { found: true, field: "age", value: LARISSA_PERSONA_FACTS.age, source_type: "legacy_fallback" };
-  if (normField === "nascimento" || normField === "aniversario") return { found: true, field: "birth_date", value: LARISSA_PERSONA_FACTS.birth_date, source_type: "legacy_fallback" };
-  if (normField === "cidade") return { found: true, field: "city", value: LARISSA_PERSONA_FACTS.city, source_type: "legacy_fallback" };
-  if (normField === "bairro") return { found: true, field: "neighborhood", value: LARISSA_PERSONA_FACTS.neighborhood, source_type: "legacy_fallback" };
-  if (normField === "curso") return { found: true, field: "course", value: LARISSA_PERSONA_FACTS.course, source_type: "legacy_fallback" };
-  if (normField === "periodo") return { found: true, field: "college_period", value: LARISSA_PERSONA_FACTS.college_period, source_type: "legacy_fallback" };
-  if (normField === "formatura") return { found: true, field: "graduation", value: LARISSA_PERSONA_FACTS.graduation, source_type: "legacy_fallback" };
-  if (normField === "trabalho" || normField === "profissao") return { found: true, field: "profession", value: LARISSA_PERSONA_FACTS.profession, source_type: "legacy_fallback" };
-  if (normField === "faculdade" || normField === "estudos") return { found: true, field: "studies", value: LARISSA_PERSONA_FACTS.studies, source_type: "legacy_fallback" };
-  if (normField === "gostos" || normField === "interesses") return { found: true, field: "hobbies", value: LARISSA_PERSONA_FACTS.hobbies, source_type: "legacy_fallback" };
+  if (normField === "idade" || normField === "age" || normField === "identity.age") return { found: true, field: "age", value: LARISSA_PERSONA_FACTS.age, source_type: "legacy_fallback" };
+  if (normField === "nascimento" || normField === "aniversario" || normField === "birth_date" || normField === "identity.birth_date") return { found: true, field: "birth_date", value: LARISSA_PERSONA_FACTS.birth_date, source_type: "legacy_fallback" };
+  if (normField === "cidade" || normField === "city" || normField === "location.city") return { found: true, field: "city", value: LARISSA_PERSONA_FACTS.city, source_type: "legacy_fallback" };
+  if (normField === "bairro" || normField === "neighborhood") return { found: true, field: "neighborhood", value: LARISSA_PERSONA_FACTS.neighborhood, source_type: "legacy_fallback" };
+  if (normField === "curso" || normField === "course" || normField === "education.course") return { found: true, field: "course", value: LARISSA_PERSONA_FACTS.course, source_type: "legacy_fallback" };
+  if (normField === "periodo" || normField === "college_period" || normField === "education.period") return { found: true, field: "college_period", value: LARISSA_PERSONA_FACTS.college_period, source_type: "legacy_fallback" };
+  if (normField === "formatura" || normField === "graduation") return { found: true, field: "graduation", value: LARISSA_PERSONA_FACTS.graduation, source_type: "legacy_fallback" };
+  if (normField === "trabalho" || normField === "profissao" || normField === "profession") return { found: true, field: "profession", value: LARISSA_PERSONA_FACTS.profession, source_type: "legacy_fallback" };
+  if (normField === "faculdade" || normField === "estudos" || normField === "studies") return { found: true, field: "studies", value: LARISSA_PERSONA_FACTS.studies, source_type: "legacy_fallback" };
+  if (normField === "gostos" || normField === "interesses" || normField === "hobbies") return { found: true, field: "hobbies", value: LARISSA_PERSONA_FACTS.hobbies, source_type: "legacy_fallback" };
 
   return { found: false, field: normField, value: null };
 }
