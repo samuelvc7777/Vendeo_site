@@ -150,6 +150,73 @@ export function useChatStages(activeConversationId?: string) {
     }
   };
 
+  // Ações de Objetivos da Conversa (Goals)
+  const addGoal = async (
+    stageId: string,
+    data: {
+      label: string;
+      memoryEntity?: string;
+      memoryField: string;
+      description?: string;
+      required?: boolean;
+      enabled?: boolean;
+    }
+  ) => {
+    try {
+      const created = await stagesUseCase.addGoal(stageId, data);
+      toast.success(`Objetivo "${created.label}" adicionado à etapa!`);
+      await refresh();
+      return created;
+    } catch (err: any) {
+      toast.error(err.message || "Erro ao adicionar objetivo.");
+      throw err;
+    }
+  };
+
+  const updateGoal = async (
+    stageId: string,
+    goalId: string,
+    updates: Partial<import("@/domain/entities/ChatStage").ConversationGoal>
+  ) => {
+    try {
+      await stagesUseCase.updateGoal(stageId, goalId, updates);
+      toast.success("Objetivo atualizado com sucesso!");
+      await refresh();
+    } catch (err: any) {
+      toast.error(err.message || "Erro ao atualizar objetivo.");
+      throw err;
+    }
+  };
+
+  const deleteGoal = async (stageId: string, goalId: string) => {
+    try {
+      await stagesUseCase.deleteGoal(stageId, goalId);
+      toast.success("Objetivo excluído.");
+      await refresh();
+    } catch (err: any) {
+      toast.error(err.message || "Erro ao excluir objetivo.");
+      throw err;
+    }
+  };
+
+  const moveGoalUp = async (stageId: string, goalId: string) => {
+    try {
+      await stagesUseCase.moveGoalUp(stageId, goalId);
+      await fetchStages();
+    } catch (err: any) {
+      toast.error(err.message || "Erro ao reordenar objetivo.");
+    }
+  };
+
+  const moveGoalDown = async (stageId: string, goalId: string) => {
+    try {
+      await stagesUseCase.moveGoalDown(stageId, goalId);
+      await fetchStages();
+    } catch (err: any) {
+      toast.error(err.message || "Erro ao reordenar objetivo.");
+    }
+  };
+
   // Ações na Conversa Ativa
   const toggleItem = async (itemId: string, isCompleted: boolean) => {
     if (!activeConversationId) return;
@@ -256,6 +323,11 @@ export function useChatStages(activeConversationId?: string) {
     deleteStage,
     moveStageUp,
     moveStageDown,
+    addGoal,
+    updateGoal,
+    deleteGoal,
+    moveGoalUp,
+    moveGoalDown,
     toggleItem,
     advanceStage,
     setStage,

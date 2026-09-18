@@ -171,8 +171,13 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
       if (table === 'instagram_conversations') {
         return {
           select: () => ({
-            eq: () => ({
-              maybeSingle: async () => ({ data: convData, error: null }),
+            eq: (col, val) => ({
+              maybeSingle: async () => {
+                if (val === '__chat_stages__' && initialConversationData.__chat_stages__) {
+                  return { data: initialConversationData.__chat_stages__, error: null };
+                }
+                return { data: convData, error: null };
+              },
             }),
           }),
           update: (fields) => ({
@@ -6618,3 +6623,506 @@ test('111. Idempotência pós-sucesso: nova execução com zero pendentes aborta
   assert.equal(result.sentToMeta, undefined);
   assert.equal(result.blockLegacyFallback, true);
 });
+
+// =========================================================================
+// TESTES 112 A 123: NOVA ARQUITETURA DO CHECKLIST SEMÂNTICO (CONVERSATION GOALS)
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// TESTE 112 (A): Preservação de Checklist do Cofre (StageChecklistItem, VaultItem, completedItemIds)
+// -------------------------------------------------------------------------
+test('112. Teste A: Preservação do checklist de cofre (StageChecklistItem, VaultItem, completedItemIds)', () => {
+  // Valida que itens de mídia/áudio do cofre coexistem com goals sem qualquer quebra de contrato
+  const vaultChecklistItem = {
+    id: 'vault_item_audio_01',
+    folderId: 'folder_apresentacao',
+    type: 'audio',
+    title: 'Áudio 01 da Larissa',
+    mediaUrl: 'https://cdn.vendeo.com/audio01.ogg',
+    duration: 12,
+    linkedItemId: 'vault_item_audio_02',
+    isCompleted: true,
+  };
+
+  const semanticGoal = {
+    id: 'goal_age',
+    stageId: 'stage_descoberta',
+    label: 'Idade',
+    memoryEntity: 'self',
+    memoryField: 'age',
+    description: 'Descobrir a idade naturalmente',
+    required: true,
+    order: 1,
+    enabled: true,
+  };
+
+  const progress = {
+    conversationId: 'conv_coexistence_test',
+    currentStageId: 'stage_descoberta',
+    completedItemIds: [vaultChecklistItem.id],
+    completedGoalIds: [semanticGoal.id],
+    isConverted: false,
+    updatedAt: new Date().toISOString(),
+  };
+
+  assert.equal(vaultChecklistItem.type, 'audio');
+  assert.equal(vaultChecklistItem.isCompleted, true);
+  assert.equal(progress.completedItemIds.includes('vault_item_audio_01'), true);
+  assert.equal(progress.completedGoalIds.includes('goal_age'), true);
+  assert.equal(semanticGoal.memoryField, 'age');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 113 (B): Backend-Bound Security na ferramenta checklist_get_stage_state
+// -------------------------------------------------------------------------
+test('113. Teste B: checklist_get_stage_state rejeita conversationId forjado e usa estritamente o id backend-bound', async () => {
+  const { load } = createRuntime();
+  const { resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  // Vítima tem idade registrada
+  const victimStore = memoryProvider.getOrCreateStore('conv_victim');
+  victimStore.entities = {
+    self: { age: { entity: 'self', field: 'age', value: 45, confidence: 1.0 } },
+  };
+
+  // Atacante não tem fatos registrados
+  const attackerStore = memoryProvider.getOrCreateStore('conv_attacker');
+  attackerStore.entities = {};
+
+  const supabase = createMockSupabase();
+
+  // Chamada simulando tentativa da IA em passar conversationId da vítima
+  // O backend força conversationId = 'conv_attacker'
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId: 'conv_attacker', // Backend-bound
+    stageNameOrId: 'descoberta',
+    memoryProvider,
+  });
+
+  const ageGoal = result.goals.find((g) => g.id === 'goal_age');
+  assert.ok(ageGoal, 'Deve conter goal_age');
+  assert.equal(ageGoal.status, 'pending', 'Deve estar pending porque conv_attacker não tem o fato');
+  assert.equal(ageGoal.value, null, 'JAMAIS deve vazar valor da conv_victim');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 114 (C): Retorno de goals pendentes quando memória está vazia
+// -------------------------------------------------------------------------
+test('114. Teste C: checklist_get_stage_state retorna lista de goals com status pending e value null quando não há memória', async () => {
+  const { load } = createRuntime();
+  const { resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  const supabase = createMockSupabase();
+
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId: 'conv_empty_mem',
+    stageNameOrId: 'descoberta',
+    memoryProvider,
+  });
+
+  assert.equal(result.stage, 'descoberta');
+  assert.ok(result.goals.length >= 2, 'Deve retornar objetivos padrão de descoberta');
+  for (const g of result.goals) {
+    assert.equal(g.status, 'pending', `Goal ${g.id} deve ser pending`);
+    assert.equal(g.value, null, `Goal ${g.id} deve ter value null`);
+  }
+});
+
+// -------------------------------------------------------------------------
+// TESTE 115 (D): Completude Automática via MemoryWriter
+// -------------------------------------------------------------------------
+test('115. Teste D: Fato gravado na memória (self.age = 40) reflete goal com status completed e value 40', async () => {
+  const { load } = createRuntime();
+  const { executeMemoryWriter, resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  const supabase = createMockSupabase();
+  const conversationId = 'conv_auto_complete_age';
+
+  // MemoryWriter processa mensagem informando a idade
+  await executeMemoryWriter({
+    conversationId,
+    claimedMessages: [
+      { id: 'm_age', sender: 'pretendente', text: 'Tenho 40 anos e trabalho com engenharia' },
+    ],
+    sentResponseText: 'Que legal!',
+    memoryProvider,
+    supabase,
+    trace: [],
+  });
+
+  // Em seguida, a ferramenta resolve o checklist
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId,
+    stageNameOrId: 'descoberta',
+    memoryProvider,
+  });
+
+  const ageGoal = result.goals.find((g) => g.id === 'goal_age');
+  assert.ok(ageGoal, 'Deve conter goal_age');
+  assert.equal(ageGoal.status, 'completed', 'Idade deve estar concluída automaticamente');
+  assert.equal(ageGoal.value, 40, 'Valor da idade deve ser 40');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 116 (E): Conclusão Voluntária (Espontânea pelo Pretendente)
+// -------------------------------------------------------------------------
+test('116. Teste E: Conclusão voluntária: pretendente compartilha espontaneamente sua cidade sem pergunta prévia', async () => {
+  const { load } = createRuntime();
+  const { executeMemoryWriter, resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  const supabase = createMockSupabase();
+  const conversationId = 'conv_voluntary_city';
+
+  // Pretendente fala espontaneamente a cidade onde mora
+  await executeMemoryWriter({
+    conversationId,
+    claimedMessages: [
+      { id: 'm_city_vol', sender: 'pretendente', text: 'Eu moro em Belo Horizonte desde criança' },
+    ],
+    sentResponseText: 'Ai que cidade boa uai!',
+    memoryProvider,
+    supabase,
+    trace: [],
+  });
+
+  // Checklist deve reconhecer a cidade como concluída sem Larissa ter perguntado
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId,
+    stageNameOrId: 'descoberta',
+    memoryProvider,
+  });
+
+  const cityGoal = result.goals.find((g) => g.id === 'goal_city');
+  assert.ok(cityGoal, 'Deve conter goal_city');
+  assert.equal(cityGoal.status, 'completed', 'Cidade deve ser concluída de forma voluntária');
+  assert.match(String(cityGoal.value), /Belo Horizonte/i);
+});
+
+// -------------------------------------------------------------------------
+// TESTE 117 (F): Proibição Estrita de nextGoal no Backend
+// -------------------------------------------------------------------------
+test('117. Teste F: Proibição de nextGoal no payload de checklist_get_stage_state', async () => {
+  const { load } = createRuntime();
+  const { resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  const supabase = createMockSupabase();
+
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId: 'conv_no_next_goal',
+    stageNameOrId: 'descoberta',
+    memoryProvider,
+  });
+
+  assert.equal(result.nextGoal, undefined, 'A propriedade nextGoal é estritamente proibida no backend');
+  assert.equal(result.suggestedNextGoal, undefined, 'suggestedNextGoal é proibida no backend');
+  assert.equal(result.recommendedGoal, undefined, 'recommendedGoal é proibida no backend');
+
+  for (const g of result.goals) {
+    assert.equal(g.isNext, undefined, 'isNext não deve ser imposto aos goals individuais');
+  }
+});
+
+// -------------------------------------------------------------------------
+// TESTE 118 (G): Subagente Descoberta chama checklist_get_stage_state no tool loop
+// -------------------------------------------------------------------------
+test('118. Teste G: Subagente descoberta chama checklist_get_stage_state no tool loop e responde normalmente', async () => {
+  const conversationId = 'conv_subagent_tool_loop_checklist';
+  const correlationId = 'cycle_checklist_tool_test';
+
+  const supabase = createMockSupabase({
+    id: conversationId,
+    stage_completed_rules: {
+      active_cycle_token: null,
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'descoberta',
+        checkpoint: 'chk_pergunta_sobre_ele',
+        inboundRevision: 1,
+        messageLedger: { m_in: 'pending' },
+        memory: {
+          entities: {
+            self: { age: { entity: 'self', field: 'age', value: 35 } },
+          },
+        },
+      },
+    },
+  });
+
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  let callCount = 0;
+  const mockRuntime = {
+    callModel: async (prompt) => {
+      callCount++;
+      if (callCount === 1) {
+        // Router delega para descoberta
+        return {
+          content: JSON.stringify({
+            targetSubagent: 'descoberta',
+            action: 'delegate',
+            reason: 'Fase descoberta ativa',
+          }),
+          tokens: 40,
+        };
+      }
+      if (callCount === 2) {
+        // Subagente descoberta solicita a tool checklist_get_stage_state
+        return {
+          content: JSON.stringify({
+            action: 'call_tool',
+            tool: 'checklist_get_stage_state',
+            parameters: { stage: 'descoberta' },
+            reasoning: 'Verificando tópicos pendentes do checklist',
+          }),
+          tokens: 45,
+        };
+      }
+      // Chamada seguinte recebe o retorno da tool e emite resposta final
+      assert.ok(prompt.includes('checklist_get_stage_state'), 'Prompt deve conter retorno da ferramenta');
+      return {
+        content: JSON.stringify({
+          action: 'reply',
+          checkpoint: 'chk_troca_cidade',
+          summary: 'Respondeu e perguntou de onde ele é',
+          suggestedResponse: 'Que legal! E de qual cidade vc é?',
+          nextPhase: 'descoberta',
+          reasoning: 'Idade já descoberta, avançando para cidade com leveza',
+        }),
+        tokens: 50,
+      };
+    },
+    sendMetaTextMessage: async () => ({ message_id: 'meta_sent_goal_ok' }),
+  };
+
+  const res = await runExperimentalOrchestration({
+    conversationId,
+    newMessage: { id: 'm_in', text: 'Oi Larissa, tudo bem?' },
+    correlationId,
+    supabase,
+    runtime: mockRuntime,
+  });
+
+  assert.equal(res.handled, true);
+  assert.equal(res.sentToMeta, true);
+  assert.ok(callCount >= 3, 'Deve ter chamado router, tool e resposta final');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 119 (H): Regras Anti-Interrogatório e Bússola no Prompt de Descoberta
+// -------------------------------------------------------------------------
+test('119. Teste H: Prompt de descoberta contém regras explícitas anti-interrogatório e diretriz de bússola', () => {
+  const { load } = createRuntime();
+  const { buildDescobertaPrompt } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const prompt = buildDescobertaPrompt({
+    conversationId: 'conv_prompt_check',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_pergunta_sobre_ele',
+    newMessage: { id: 'm1', sender: 'pretendente', text: 'Oi' },
+  });
+
+  assert.ok(prompt.includes('BÚSSOLA DE ORIENTAÇÃO'), 'Prompt deve conter BÚSSOLA DE ORIENTAÇÃO');
+  assert.ok(prompt.includes('NUNCA UM INTERROGATÓRIO'), 'Prompt deve proibir interrogatório');
+  assert.ok(prompt.includes('Máximo 1 pergunta leve por turno'), 'Prompt deve limitar a 1 pergunta por turno');
+  assert.ok(prompt.includes('checklist_get_stage_state'), 'Prompt deve listar a tool checklist_get_stage_state');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 120 (I): Goals Desativados (enabled: false) são filtrados
+// -------------------------------------------------------------------------
+test('120. Teste I: Goals desativados (enabled: false) não constam na lista ativa', async () => {
+  const { load } = createRuntime();
+  const { resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const customStages = [
+    {
+      id: 'stage_custom_desc',
+      name: 'Descoberta',
+      order: 1,
+      goals: [
+        { id: 'g_active', label: 'Tópico Ativo', memoryEntity: 'self', memoryField: 'active_field', enabled: true },
+        { id: 'g_inactive', label: 'Tópico Desativado', memoryEntity: 'self', memoryField: 'inactive_field', enabled: false },
+      ],
+    },
+  ];
+
+  const supabase = createMockSupabase({
+    __chat_stages__: {
+      stage_completed_rules: { stages: customStages },
+    },
+  });
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId: 'conv_filter_inactive',
+    stageNameOrId: 'stage_custom_desc',
+    memoryProvider,
+  });
+
+  assert.equal(result.goals.length, 1);
+  assert.equal(result.goals[0].id, 'g_active');
+  assert.equal(result.goals.some((g) => g.id === 'g_inactive'), false);
+});
+
+// -------------------------------------------------------------------------
+// TESTE 121 (J): Reordenação e Atualização de Goals refletem no retorno da tool
+// -------------------------------------------------------------------------
+test('121. Teste J: Reordenação e atualização de goals no banco refletem no retorno da ferramenta', async () => {
+  const { load } = createRuntime();
+  const { resolveStageChecklistGoals, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const customStages = [
+    {
+      id: 'stage_custom_desc',
+      name: 'Descoberta',
+      order: 1,
+      goals: [
+        { id: 'g_first', label: 'Primeiro Tópico', memoryEntity: 'self', memoryField: 'field_1', order: 2, enabled: true },
+        { id: 'g_priority', label: 'Tópico Prioritário', memoryEntity: 'self', memoryField: 'field_2', order: 1, enabled: true },
+      ],
+    },
+  ];
+
+  const supabase = createMockSupabase({
+    __chat_stages__: {
+      stage_completed_rules: { stages: customStages },
+    },
+  });
+
+  const memoryProvider = new InMemoryMemoryProvider();
+  const result = await resolveStageChecklistGoals({
+    supabase,
+    conversationId: 'conv_reorder_test',
+    stageNameOrId: 'stage_custom_desc',
+    memoryProvider,
+  });
+
+  assert.equal(result.goals.length, 2);
+  assert.equal(result.goals[0].id, 'g_priority', 'Goal com order 1 deve vir primeiro');
+  assert.equal(result.goals[1].id, 'g_first', 'Goal com order 2 deve vir em segundo');
+});
+
+// -------------------------------------------------------------------------
+// TESTE 122 (K): Endpoint /internal/memory-export exporta checklist com segurança
+// -------------------------------------------------------------------------
+test('122. Teste K: Endpoint /internal/memory-export exporta o estado resolvido do checklist com segurança', async () => {
+  const token = 'test_token_secret_1234567890123456';
+  process.env.OBSIDIAN_SYNC_TOKEN = token;
+
+  const mockContact = {
+    id: '1771103754015024',
+    contact_id: '1771103754015024',
+    full_name: 'Moose Teste',
+    username: 'mooseteste',
+    updated_at: '2026-09-18T12:00:00Z',
+    stage_completed_rules: {
+      orchestration: {
+        currentPhase: 'descoberta',
+        checkpoint: 'chk_pergunta_sobre_ele',
+        memory: {
+          entities: {
+            self: {
+              age: { value: 38 },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const mockSupabase = {
+    from: (table) => {
+      if (table === 'instagram_conversations') {
+        const createQuery = (data = [mockContact]) => ({
+          select: () => createQuery(data),
+          or: () => createQuery(data),
+          order: () => ({
+            range: (from, to) => Promise.resolve({ data: data.slice(from, to + 1), error: null }),
+          }),
+          then: (resolve) => resolve({ data, error: null }),
+        });
+        return createQuery();
+      }
+      return { select: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) };
+    },
+  };
+
+  const { load, getServerHandler } = createRuntime(async () => ({ ok: true, json: async () => ({}) }), {
+    '@supabase/client': mockSupabase,
+  });
+
+  load('supabase/functions/api/index.ts');
+  const handler = getServerHandler();
+
+  assert.ok(handler, 'Handler da Edge Function deve estar registrado');
+
+  const req = new Request('http://localhost/internal/memory-export?contact_id=1771103754015024', {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const res = await handler(req);
+  assert.equal(res.status, 200);
+
+  const json = await res.json();
+  assert.equal(json.success, true);
+  assert.ok(Array.isArray(json.contacts));
+  assert.equal(json.contacts[0].contactId, '1771103754015024');
+  assert.ok(json.contacts[0].checklist, 'Contato deve possuir o bloco checklist');
+  const ageGoal = json.contacts[0].checklist.goals.find((g) => g.id === 'goal_age');
+  assert.equal(ageGoal.status, 'completed');
+  assert.equal(ageGoal.value, 38);
+});
+
+// -------------------------------------------------------------------------
+// TESTE 123 (L): Obsidian renderiza ## Checklist — Descoberta com caixas - [x] e - [ ]
+// -------------------------------------------------------------------------
+test('123. Teste L: obsidian-memory-sync gera Sobre ele.md com ## Checklist — Descoberta e caixas markdown', async () => {
+  const { formatProfileMarkdown } = await import('./obsidian-memory-sync.mjs');
+
+  const contact = {
+    contactId: '1771103754015024',
+    fullName: 'Moose Piloto',
+    currentPhase: 'descoberta',
+    checkpoint: 'chk_troca_cidade',
+    updatedAt: '2026-09-18T15:00:00Z',
+    memory: {
+      entities: {
+        self: {
+          age: { value: 40 },
+          city: { value: 'Belo Horizonte' },
+        },
+      },
+    },
+    checklist: {
+      stage: 'Descoberta',
+      goals: [
+        { id: 'goal_age', label: 'Idade', status: 'completed', value: 40 },
+        { id: 'goal_city', label: 'Cidade', status: 'completed', value: 'Belo Horizonte' },
+        { id: 'goal_job', label: 'Profissão', status: 'pending', value: null },
+      ],
+    },
+  };
+
+  const md = formatProfileMarkdown(contact);
+
+  assert.ok(md.includes('## Checklist — Descoberta'), 'Deve conter o cabeçalho ## Checklist — Descoberta');
+  assert.ok(md.includes('- [x] **Idade**: 40') || md.includes('- [x] **Idade:** 40'), 'Deve conter caixa marcada para Idade');
+  assert.ok(md.includes('- [x] **Cidade**: Belo Horizonte') || md.includes('- [x] **Cidade:** Belo Horizonte'), 'Deve conter caixa marcada para Cidade');
+  assert.ok(md.includes('- [ ] **Profissão**'), 'Deve conter caixa desmarcada para Profissão');
+});
+

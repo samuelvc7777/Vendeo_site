@@ -1428,9 +1428,34 @@ serve(async (req: Request) => {
 
       // 4. Sanitização e mapeamento: apenas memória e metadados de orquestração
       // ZERO tokens da Meta, ZERO secrets, ZERO histórico bruto de mensagens
+      const DEFAULT_GOALS = [
+        { id: "goal_age", label: "Idade", memoryEntity: "self", memoryField: "age" },
+        { id: "goal_city", label: "Cidade", memoryEntity: "self", memoryField: "city" },
+        { id: "goal_job", label: "Profissão", memoryEntity: "self", memoryField: "job" },
+        { id: "goal_relationship", label: "Relacionamento / Filhos", memoryEntity: "self", memoryField: "relationship_status" },
+      ];
+
       const contacts = (convs || []).map((conv: any) => {
         const orch = conv.stage_completed_rules?.orchestration || {};
         const mem = orch.memory || {};
+        const completedGoalIds = (orch as any).completedGoalIds || conv.stage_completed_rules?.completed_goals || [];
+        const entities = mem.entities || {};
+
+        const resolvedGoals = DEFAULT_GOALS.map((g) => {
+          const entity = entities[g.memoryEntity] || {};
+          const fact = entity[g.memoryField];
+          const hasFact = fact !== undefined && fact !== null && (fact.value !== undefined ? fact.value !== null : true);
+          const isExplicit = completedGoalIds.includes(g.id);
+          const isDone = hasFact || isExplicit;
+          const val = hasFact ? (fact.value !== undefined ? fact.value : fact) : null;
+          return {
+            id: g.id,
+            label: g.label,
+            status: isDone ? "completed" : "pending",
+            value: isDone ? val : null,
+          };
+        });
+
         return {
           id: String(conv.id || ""),
           contactId: String(conv.contact_id || conv.id || ""),
@@ -1443,6 +1468,10 @@ serve(async (req: Request) => {
             entities: mem.entities || {},
             snippets: Array.isArray(mem.snippets) ? mem.snippets : [],
             lastUpdated: mem.lastUpdated || "",
+          },
+          checklist: {
+            stage: orch.currentPhase === "conexao_inicial" ? "Conexão Inicial" : "Descoberta",
+            goals: resolvedGoals,
           },
         };
       });

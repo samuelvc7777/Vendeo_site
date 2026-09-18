@@ -1,5 +1,5 @@
 import { IChatStageRepository } from "@/domain/repositories/IChatStageRepository";
-import { ChatStage, ChatProgress } from "@/domain/entities/ChatStage";
+import { ChatStage, ChatProgress, ConversationGoal } from "@/domain/entities/ChatStage";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 
@@ -257,6 +257,112 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     return reordered;
   }
 
+  // --- GESTÃO DE OBJETIVOS DA CONVERSA (GOALS) ---
+
+  async addGoal(
+    stageId: string,
+    goalData: Omit<ConversationGoal, "id" | "stageId">
+  ): Promise<ConversationGoal> {
+    const stages = await this.getStages();
+    const stage = stages.find((s) => s.id === stageId);
+    if (!stage) {
+      throw new Error(`Etapa com id ${stageId} não encontrada.`);
+    }
+
+    const currentGoals = stage.goals || [];
+    const newGoal: ConversationGoal = {
+      ...goalData,
+      id: "goal_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+      stageId,
+      order: goalData.order ?? currentGoals.length,
+      enabled: goalData.enabled ?? true,
+      required: goalData.required ?? false,
+    };
+
+    stage.goals = [...currentGoals, newGoal].sort((a, b) => a.order - b.order);
+    stage.updatedAt = new Date().toISOString();
+
+    await this.persistStagesToCloud(stages);
+    return newGoal;
+  }
+
+  async updateGoal(
+    stageId: string,
+    goalId: string,
+    updates: Partial<ConversationGoal>
+  ): Promise<void> {
+    const stages = await this.getStages();
+    const stage = stages.find((s) => s.id === stageId);
+    if (!stage) {
+      throw new Error(`Etapa com id ${stageId} não encontrada.`);
+    }
+
+    const goals = stage.goals || [];
+    const index = goals.findIndex((g) => g.id === goalId);
+    if (index === -1) {
+      throw new Error(`Objetivo com id ${goalId} não encontrado na etapa ${stageId}.`);
+    }
+
+    goals[index] = {
+      ...goals[index],
+      ...updates,
+    };
+    goals.sort((a, b) => a.order - b.order);
+    stage.goals = goals;
+    stage.updatedAt = new Date().toISOString();
+
+    await this.persistStagesToCloud(stages);
+  }
+
+  async deleteGoal(stageId: string, goalId: string): Promise<void> {
+    const stages = await this.getStages();
+    const stage = stages.find((s) => s.id === stageId);
+    if (!stage) {
+      throw new Error(`Etapa com id ${stageId} não encontrada.`);
+    }
+
+    const filtered = (stage.goals || []).filter((g) => g.id !== goalId);
+    filtered.forEach((g, idx) => {
+      g.order = idx;
+    });
+    stage.goals = filtered;
+    stage.updatedAt = new Date().toISOString();
+
+    await this.persistStagesToCloud(stages);
+  }
+
+  async reorderGoals(stageId: string, goalIds: string[]): Promise<void> {
+    const stages = await this.getStages();
+    const stage = stages.find((s) => s.id === stageId);
+    if (!stage) {
+      throw new Error(`Etapa com id ${stageId} não encontrada.`);
+    }
+
+    const currentGoals = stage.goals || [];
+    const goalMap = new Map(currentGoals.map((g) => [g.id, g]));
+    const reordered: ConversationGoal[] = [];
+
+    goalIds.forEach((id, idx) => {
+      const g = goalMap.get(id);
+      if (g) {
+        g.order = idx;
+        reordered.push(g);
+      }
+    });
+
+    currentGoals.forEach((g) => {
+      if (!goalIds.includes(g.id)) {
+        g.order = reordered.length;
+        reordered.push(g);
+      }
+    });
+
+    stage.goals = reordered;
+    stage.updatedAt = new Date().toISOString();
+
+    await this.persistStagesToCloud(stages);
+  }
+
   // --- MÉTODOS DE PROGRESSO POR CONVERSA ---
 
   async getAllChatProgresses(force = false): Promise<Record<string, ChatProgress>> {
@@ -364,6 +470,39 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     const updated: ChatProgress = {
       ...existing,
       completedItemIds: Array.from(completed),
+      updatedAt: new Date().toISOString(),
+    };
+
+    all[conversationId] = updated;
+    await this.persistProgressToCloud(all);
+    return updated;
+  }
+
+  async toggleGoalCompletion(
+    conversationId: string,
+    goalId: string,
+    isCompleted: boolean
+  ): Promise<ChatProgress> {
+    const all = await this.getAllChatProgresses();
+    const existing = all[conversationId] || {
+      conversationId,
+      currentStageId: "",
+      completedItemIds: [],
+      completedGoalIds: [],
+      isConverted: false,
+      updatedAt: new Date().toISOString(),
+    };
+
+    let completedGoals = new Set(existing.completedGoalIds || []);
+    if (isCompleted) {
+      completedGoals.add(goalId);
+    } else {
+      completedGoals.delete(goalId);
+    }
+
+    const updated: ChatProgress = {
+      ...existing,
+      completedGoalIds: Array.from(completedGoals),
       updatedAt: new Date().toISOString(),
     };
 

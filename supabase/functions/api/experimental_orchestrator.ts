@@ -1320,6 +1320,160 @@ Responda ESTRITAMENTE em JSON puro:
 }`;
 }
 
+export interface SemanticGoalDefinition {
+  id: string;
+  stageId?: string;
+  label: string;
+  memoryEntity: string;
+  memoryField: string;
+  description?: string;
+  required?: boolean;
+  order?: number;
+  enabled?: boolean;
+}
+
+export interface ResolvedStageGoal {
+  id: string;
+  label: string;
+  status: "completed" | "pending";
+  value: any;
+  required?: boolean;
+}
+
+export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
+  {
+    id: "goal_age",
+    label: "Idade",
+    memoryEntity: "self",
+    memoryField: "age",
+    description: "Descobrir a idade naturalmente",
+    required: true,
+    order: 1,
+    enabled: true,
+  },
+  {
+    id: "goal_city",
+    label: "Cidade",
+    memoryEntity: "self",
+    memoryField: "city",
+    description: "Descobrir onde ele mora",
+    required: true,
+    order: 2,
+    enabled: true,
+  },
+  {
+    id: "goal_job",
+    label: "Profissão",
+    memoryEntity: "self",
+    memoryField: "job",
+    description: "Descobrir o trabalho ou ocupação dele",
+    required: false,
+    order: 3,
+    enabled: true,
+  },
+  {
+    id: "goal_relationship",
+    label: "Relacionamento / Filhos",
+    memoryEntity: "self",
+    memoryField: "relationship_status",
+    description: "Saber sobre status de relacionamento ou se tem filhos",
+    required: false,
+    order: 4,
+    enabled: true,
+  },
+];
+
+export async function resolveStageChecklistGoals(params: {
+  supabase: any;
+  conversationId: string;
+  stageNameOrId?: string;
+  memoryProvider: MemoryProvider;
+  completedGoalIds?: string[];
+}): Promise<{ stage: string; goals: ResolvedStageGoal[] }> {
+  const { supabase, conversationId, stageNameOrId, memoryProvider, completedGoalIds = [] } = params;
+  const targetStageQuery = (stageNameOrId || "descoberta").trim().toLowerCase();
+
+  let stagesList: any[] = [];
+  try {
+    const { data: stagesRow } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", "__chat_stages__")
+      .maybeSingle();
+
+    if (stagesRow?.stage_completed_rules?.stages && Array.isArray(stagesRow.stage_completed_rules.stages)) {
+      stagesList = stagesRow.stage_completed_rules.stages;
+    }
+  } catch (err) {
+    // Fail-safe silencioso
+  }
+
+  // Busca a etapa correspondente por id ou name
+  let matchedStage = stagesList.find((s) => {
+    const idMatch = s.id && s.id.toLowerCase() === targetStageQuery;
+    const nameMatch = s.name && s.name.toLowerCase().includes(targetStageQuery);
+    return idMatch || nameMatch;
+  });
+
+  if (!matchedStage && targetStageQuery.includes("descoberta")) {
+    matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("descoberta"));
+  }
+
+  let rawGoals: SemanticGoalDefinition[] = [];
+  if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
+    rawGoals = matchedStage.goals;
+  } else if (targetStageQuery.includes("descoberta") || targetStageQuery === "descoberta") {
+    rawGoals = DEFAULT_DESCOBERTA_GOALS;
+  }
+
+  // Filtra apenas habilitados
+  const activeGoals = rawGoals
+    .filter((g) => g.enabled !== false)
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  const resolvedGoals: ResolvedStageGoal[] = [];
+
+  for (const goal of activeGoals) {
+    const entity = (goal.memoryEntity || "self").trim().toLowerCase();
+    const field = (goal.memoryField || "").trim().toLowerCase();
+
+    // 1. Consulta fato estruturado na memória do contato (deterministico)
+    const factRes = await memoryProvider.getFact(conversationId, entity, field);
+
+    if (factRes.found && factRes.value !== undefined && factRes.value !== null && factRes.value !== "") {
+      resolvedGoals.push({
+        id: goal.id,
+        label: goal.label,
+        status: "completed",
+        value: factRes.value,
+        required: goal.required,
+      });
+    } else if (completedGoalIds.includes(goal.id)) {
+      resolvedGoals.push({
+        id: goal.id,
+        label: goal.label,
+        status: "completed",
+        value: true,
+        required: goal.required,
+      });
+    } else {
+      resolvedGoals.push({
+        id: goal.id,
+        label: goal.label,
+        status: "pending",
+        value: null,
+        required: goal.required,
+      });
+    }
+  }
+
+  // ZERO nextGoal no backend: a IA decide organicamente
+  return {
+    stage: matchedStage?.name || targetStageQuery,
+    goals: resolvedGoals,
+  };
+}
+
 export function buildDescobertaPrompt(input: SubagentInput): string {
   const contextBlock =
     input.contextText ||
@@ -1328,7 +1482,7 @@ export function buildDescobertaPrompt(input: SubagentInput): string {
       : input.recentHistory || "Início da conversa");
 
   return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
-Seu objetivo é descobrir suavemente o que o pretendente faz da vida, onde mora e sua rotina.
+Seu objetivo é conduzir um diálogo afetuoso, recíproco e natural para conhecer quem o pretendente é.
 
 ### DIRETRIZES DA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
 - Aplique sempre a Regra da Reciprocidade: se perguntar sobre ele, conte algo breve sobre você (estuda enfermagem, mora em São João del Rei, trabalha com vendas em casa).
@@ -1337,19 +1491,28 @@ Seu objetivo é descobrir suavemente o que o pretendente faz da vida, onde mora 
 - PROIBIDO usar ponto de exclamação (!)
 - Uma pergunta leve por vez, sem interrogatório. Balão curto de celular.
 
+### REGRAS DE OURO DO CHECKLIST SEMÂNTICO (BÚSSOLA DE CONVERSA)
+1. O checklist é uma **BÚSSOLA DE ORIENTAÇÃO** para a conversa, **NUNCA UM INTERROGATÓRIO**.
+2. **Máximo 1 pergunta leve por turno**: Jamais dispare múltiplas perguntas ou perguntas em sequência se ele não respondeu.
+3. Responda e acolha com afeto o que o pretendente acabou de falar ANTES de qualquer pergunta.
+4. Se o pretendente mudou de assunto, fez outra pergunta ou ignorou sua curiosidade anterior, **NÃO INSISTA**; acompanhe o fluxo dele com naturalidade.
+5. Se ele já informou espontaneamente algo (ex: cidade, idade ou trabalho), registre como conhecido e **NÃO PERGUNTE DE NOVO**.
+6. Você decide organicamente qual tópico abordar ou se neste turno deve apenas acolher sem fazer pergunta alguma.
+
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
-### FERRAMENTAS DE MEMÓRIA SOB DEMANDA
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-Se para compreender corretamente a mensagem ou produzir uma resposta natural faltar um fato relevante que possa ter sido informado anteriormente (ex: idade, cidade, profissão do pretendente ou dados de terceiros mencionados), consulte a memória:
-- memory_get_fact: consulta fato estruturado exato. Ex: {"entity": "self" | "<nome_terceiro>", "field": "age" | "city" | "profession"}
+Se precisar checar fatos já descobertos ou verificar os objetivos da fase:
+- checklist_get_stage_state: consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}}
+- memory_get_fact: consulta fato estruturado exato. Ex: {"entity": "self" | "<nome_terceiro>", "field": "age" | "city" | "job"}
 - memory_search: busca aberta por trechos relevantes. Ex: {"entity": "self", "query": "..."}
 Regras:
 - Não consulte memória por curiosidade.
 - Não consulte memória se o contexto atual já for suficiente.
 - Se a memória não possuir o dado, não invente.
-- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age"}, "reasoning": "..."}
+- Para acionar ferramenta, responda em JSON: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}, "reasoning": "..."}
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
@@ -2508,11 +2671,32 @@ export async function runExperimentalOrchestration(
           const toolEntity = String(toolParams.entity || "self").trim();
           const toolField = String(toolParams.field || "").trim();
 
-          currentCycle.trace.push(`memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`);
+          currentCycle.trace.push(
+            toolName === "checklist_get_stage_state"
+              ? `checklist_tool_requested: ${toolParams.stage || currentPhase}`
+              : `memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`
+          );
           const tStart = Date.now();
 
           let toolResult: any;
-          if (toolName === "memory_search") {
+          if (toolName === "checklist_get_stage_state") {
+            const requestedStage = String(toolParams.stage || currentPhase).trim();
+            // BACKEND-BOUND SECURITY: O conversationId é injetado pelo runtime, ignorando qualquer valor externo
+            const completedGoalIds = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
+            const stageChecklist = await resolveStageChecklistGoals({
+              supabase,
+              conversationId, // Backend-bound estrito
+              stageNameOrId: requestedStage,
+              memoryProvider,
+              completedGoalIds,
+            });
+
+            toolResult = {
+              tool: "checklist_get_stage_state",
+              stage: stageChecklist.stage,
+              goals: stageChecklist.goals,
+            };
+          } else if (toolName === "memory_search") {
             const query = String(toolParams.query || "").trim();
             const results = await memoryProvider.searchMemory(conversationId, query, {
               entity: toolEntity,
@@ -2537,8 +2721,12 @@ export async function runExperimentalOrchestration(
           }
 
           const toolDuration = Date.now() - tStart;
-          currentCycle.trace.push(`memory_tool_found: ${toolResult.found}`);
-          currentCycle.trace.push(`memory_tool_duration_ms: ${toolDuration}`);
+          currentCycle.trace.push(
+            toolName === "checklist_get_stage_state"
+              ? `checklist_tool_goals_count: ${toolResult.goals?.length || 0}`
+              : `memory_tool_found: ${toolResult.found}`
+          );
+          currentCycle.trace.push(`tool_duration_ms: ${toolDuration}`);
           lastToolResultForFinalCall = toolResult;
 
           if (toolCallsCount >= MAX_TOOL_ITERATIONS) {

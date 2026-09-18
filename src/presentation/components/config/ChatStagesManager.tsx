@@ -14,8 +14,15 @@ import {
   Sparkles,
   AlertCircle,
   HelpCircle,
+  Target,
+  ChevronDown,
+  ChevronUp,
+  Sliders,
+  CheckCircle2,
+  CircleDot,
+  Power,
 } from "lucide-react";
-import { ChatStage } from "@/domain/entities/ChatStage";
+import { ChatStage, ConversationGoal } from "@/domain/entities/ChatStage";
 import { VaultFolderWithStats } from "@/domain/entities/Vault";
 import { useVault } from "@/presentation/hooks/useVault";
 
@@ -34,11 +41,31 @@ interface ChatStagesManagerProps {
       folderId?: string;
       color?: string;
       description?: string;
+      goals?: ConversationGoal[];
     }
   ) => Promise<any>;
   onDeleteStage: (id: string) => Promise<any>;
   onMoveUp: (id: string) => Promise<any>;
   onMoveDown: (id: string) => Promise<any>;
+  onAddGoal?: (
+    stageId: string,
+    data: {
+      label: string;
+      memoryEntity?: string;
+      memoryField: string;
+      description?: string;
+      required?: boolean;
+      enabled?: boolean;
+    }
+  ) => Promise<any>;
+  onUpdateGoal?: (
+    stageId: string,
+    goalId: string,
+    updates: Partial<ConversationGoal>
+  ) => Promise<any>;
+  onDeleteGoal?: (stageId: string, goalId: string) => Promise<any>;
+  onMoveGoalUp?: (stageId: string, goalId: string) => Promise<any>;
+  onMoveGoalDown?: (stageId: string, goalId: string) => Promise<any>;
 }
 
 const PRESET_COLORS = [
@@ -59,21 +86,213 @@ export function ChatStagesManager({
   onDeleteStage,
   onMoveUp,
   onMoveDown,
+  onAddGoal,
+  onUpdateGoal,
+  onDeleteGoal,
+  onMoveGoalUp,
+  onMoveGoalDown,
 }: ChatStagesManagerProps) {
   const { folders, refreshFolders } = useVault();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStage, setEditingStage] = useState<ChatStage | null>(null);
 
-  // Form states
+  // Form states para Etapas
   const [name, setName] = useState("");
   const [selectedFolderId, setSelectedFolderId] = useState("");
   const [selectedColor, setSelectedColor] = useState(PRESET_COLORS[0]);
   const [description, setDescription] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Estados para Objetivos da Conversa (Goals)
+  const [expandedStageGoals, setExpandedStageGoals] = useState<Record<string, boolean>>({});
+  const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [activeGoalStageId, setActiveGoalStageId] = useState<string | null>(null);
+  const [editingGoal, setEditingGoal] = useState<ConversationGoal | null>(null);
+
+  const [goalLabel, setGoalLabel] = useState("");
+  const [goalMemoryEntity, setGoalMemoryEntity] = useState("self");
+  const [goalMemoryField, setGoalMemoryField] = useState("");
+  const [goalDescription, setGoalDescription] = useState("");
+  const [goalRequired, setGoalRequired] = useState(true);
+  const [goalEnabled, setGoalEnabled] = useState(true);
+  const [isGoalSubmitting, setIsGoalSubmitting] = useState(false);
+
   useEffect(() => {
     refreshFolders();
   }, [refreshFolders]);
+
+  const toggleStageGoals = (stageId: string) => {
+    setExpandedStageGoals((prev) => ({
+      ...prev,
+      [stageId]: !prev[stageId],
+    }));
+  };
+
+  const openAddGoalModal = (stageId: string) => {
+    setActiveGoalStageId(stageId);
+    setEditingGoal(null);
+    setGoalLabel("");
+    setGoalMemoryEntity("self");
+    setGoalMemoryField("");
+    setGoalDescription("");
+    setGoalRequired(true);
+    setGoalEnabled(true);
+    setIsGoalModalOpen(true);
+  };
+
+  const openEditGoalModal = (stageId: string, goal: ConversationGoal) => {
+    setActiveGoalStageId(stageId);
+    setEditingGoal(goal);
+    setGoalLabel(goal.label);
+    setGoalMemoryEntity(goal.memoryEntity || "self");
+    setGoalMemoryField(goal.memoryField || "");
+    setGoalDescription(goal.description || "");
+    setGoalRequired(goal.required ?? false);
+    setGoalEnabled(goal.enabled ?? true);
+    setIsGoalModalOpen(true);
+  };
+
+  const closeGoalModal = () => {
+    setIsGoalModalOpen(false);
+    setActiveGoalStageId(null);
+    setEditingGoal(null);
+  };
+
+  const handleGoalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeGoalStageId || !goalLabel.trim() || !goalMemoryField.trim()) return;
+
+    setIsGoalSubmitting(true);
+    try {
+      if (editingGoal) {
+        if (onUpdateGoal) {
+          await onUpdateGoal(activeGoalStageId, editingGoal.id, {
+            label: goalLabel.trim(),
+            memoryEntity: (goalMemoryEntity || "self").trim().toLowerCase(),
+            memoryField: goalMemoryField.trim().toLowerCase(),
+            description: goalDescription.trim(),
+            required: goalRequired,
+            enabled: goalEnabled,
+          });
+        } else {
+          // Fallback via onUpdateStage
+          const targetStage = stages.find((s) => s.id === activeGoalStageId);
+          if (targetStage) {
+            const updatedGoals = (targetStage.goals || []).map((g) =>
+              g.id === editingGoal.id
+                ? {
+                    ...g,
+                    label: goalLabel.trim(),
+                    memoryEntity: (goalMemoryEntity || "self").trim().toLowerCase(),
+                    memoryField: goalMemoryField.trim().toLowerCase(),
+                    description: goalDescription.trim(),
+                    required: goalRequired,
+                    enabled: goalEnabled,
+                  }
+                : g
+            );
+            await onUpdateStage(activeGoalStageId, { goals: updatedGoals });
+          }
+        }
+      } else {
+        if (onAddGoal) {
+          await onAddGoal(activeGoalStageId, {
+            label: goalLabel.trim(),
+            memoryEntity: (goalMemoryEntity || "self").trim().toLowerCase(),
+            memoryField: goalMemoryField.trim().toLowerCase(),
+            description: goalDescription.trim(),
+            required: goalRequired,
+            enabled: goalEnabled,
+          });
+        } else {
+          // Fallback via onUpdateStage
+          const targetStage = stages.find((s) => s.id === activeGoalStageId);
+          if (targetStage) {
+            const currentGoals = targetStage.goals || [];
+            const newG: ConversationGoal = {
+              id: "goal_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+              stageId: activeGoalStageId,
+              label: goalLabel.trim(),
+              memoryEntity: (goalMemoryEntity || "self").trim().toLowerCase(),
+              memoryField: goalMemoryField.trim().toLowerCase(),
+              description: goalDescription.trim(),
+              required: goalRequired,
+              order: currentGoals.length,
+              enabled: goalEnabled,
+            };
+            await onUpdateStage(activeGoalStageId, { goals: [...currentGoals, newG] });
+          }
+        }
+      }
+      closeGoalModal();
+    } finally {
+      setIsGoalSubmitting(false);
+    }
+  };
+
+  const handleToggleGoalEnabled = async (stageId: string, goal: ConversationGoal) => {
+    const updated = !goal.enabled;
+    if (onUpdateGoal) {
+      await onUpdateGoal(stageId, goal.id, { enabled: updated });
+    } else {
+      const targetStage = stages.find((s) => s.id === stageId);
+      if (targetStage) {
+        const updatedGoals = (targetStage.goals || []).map((g) =>
+          g.id === goal.id ? { ...g, enabled: updated } : g
+        );
+        await onUpdateStage(stageId, { goals: updatedGoals });
+      }
+    }
+  };
+
+  const handleDeleteGoal = async (stageId: string, goalId: string) => {
+    if (confirm("Deseja realmente excluir este objetivo da conversa?")) {
+      if (onDeleteGoal) {
+        await onDeleteGoal(stageId, goalId);
+      } else {
+        const targetStage = stages.find((s) => s.id === stageId);
+        if (targetStage) {
+          const updatedGoals = (targetStage.goals || []).filter((g) => g.id !== goalId);
+          updatedGoals.forEach((g, i) => { g.order = i; });
+          await onUpdateStage(stageId, { goals: updatedGoals });
+        }
+      }
+    }
+  };
+
+  const handleMoveGoalUp = async (stageId: string, goalId: string) => {
+    if (onMoveGoalUp) {
+      await onMoveGoalUp(stageId, goalId);
+    } else {
+      const targetStage = stages.find((s) => s.id === stageId);
+      if (!targetStage) return;
+      const goals = [...(targetStage.goals || [])].sort((a, b) => a.order - b.order);
+      const idx = goals.findIndex((g) => g.id === goalId);
+      if (idx <= 0) return;
+      const temp = goals[idx - 1];
+      goals[idx - 1] = goals[idx];
+      goals[idx] = temp;
+      goals.forEach((g, i) => { g.order = i; });
+      await onUpdateStage(stageId, { goals });
+    }
+  };
+
+  const handleMoveGoalDown = async (stageId: string, goalId: string) => {
+    if (onMoveGoalDown) {
+      await onMoveGoalDown(stageId, goalId);
+    } else {
+      const targetStage = stages.find((s) => s.id === stageId);
+      if (!targetStage) return;
+      const goals = [...(targetStage.goals || [])].sort((a, b) => a.order - b.order);
+      const idx = goals.findIndex((g) => g.id === goalId);
+      if (idx === -1 || idx >= goals.length - 1) return;
+      const temp = goals[idx + 1];
+      goals[idx + 1] = goals[idx];
+      goals[idx] = temp;
+      goals.forEach((g, i) => { g.order = i; });
+      await onUpdateStage(stageId, { goals });
+    }
+  };
 
   const openCreateModal = () => {
     setEditingStage(null);
@@ -188,94 +407,258 @@ export function ChatStagesManager({
             const folderName = getFolderName(stage.folderId);
             const itemCount = getFolderItemCount(stage.folderId);
 
+            const isGoalsExpanded = !!expandedStageGoals[stage.id];
+            const stageGoals = (stage.goals || []).sort((a, b) => a.order - b.order);
+
             return (
               <div
                 key={stage.id}
-                className="p-3 rounded-xl bg-[#18181b] border border-[#27272a] hover:border-zinc-700 transition-all flex items-center justify-between gap-3"
+                className="rounded-xl bg-[#18181b] border border-[#27272a] hover:border-zinc-700 transition-all overflow-hidden"
               >
-                {/* Lado Esquerdo: Posição, Cor, Nome e Pasta */}
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <div className="flex flex-col items-center justify-center w-6 shrink-0">
-                    <span className="text-xs font-bold text-zinc-400">#{index + 1}</span>
-                  </div>
+                {/* Linha Principal da Etapa */}
+                <div className="p-3 flex items-center justify-between gap-3">
+                  {/* Lado Esquerdo: Posição, Cor, Nome e Pasta */}
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <div className="flex flex-col items-center justify-center w-6 shrink-0">
+                      <span className="text-xs font-bold text-zinc-400">#{index + 1}</span>
+                    </div>
 
-                  <div
-                    className="w-3 h-8 rounded-full shrink-0 shadow-sm"
-                    style={{ backgroundColor: stage.color || "#3b82f6" }}
-                  />
+                    <div
+                      className="w-3 h-8 rounded-full shrink-0 shadow-sm"
+                      style={{ backgroundColor: stage.color || "#3b82f6" }}
+                    />
 
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-bold text-white truncate">{stage.name}</h4>
-                      {isLast && (
-                        <span className="shrink-0 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
-                          Etapa Final
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-bold text-white truncate">{stage.name}</h4>
+                        {isLast && (
+                          <span className="shrink-0 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
+                            Etapa Final
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-zinc-400 mt-0.5">
+                        <span className="flex items-center gap-1 truncate text-zinc-300">
+                          <Folder className="w-3 h-3 text-sky-400 shrink-0" />
+                          {folderName}
                         </span>
-                      )}
+                        <span>•</span>
+                        <span className="text-zinc-400">{itemCount} itens no cofre</span>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleStageGoals(stage.id)}
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors text-[11px] font-medium"
+                          title="Ver e gerenciar objetivos semânticos"
+                        >
+                          <Target className="w-3 h-3 text-sky-400" />
+                          <span>{stageGoals.length} objetivos</span>
+                          {isGoalsExpanded ? (
+                            <ChevronUp className="w-3 h-3 text-zinc-400" />
+                          ) : (
+                            <ChevronDown className="w-3 h-3 text-zinc-400" />
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-zinc-400 mt-0.5">
-                      <span className="flex items-center gap-1 truncate text-zinc-300">
-                        <Folder className="w-3 h-3 text-sky-400 shrink-0" />
-                        {folderName}
-                      </span>
-                      <span>•</span>
-                      <span className="text-zinc-400">{itemCount} itens no checklist</span>
-                    </div>
+                  </div>
+
+                  {/* Lado Direito: Ações (Reordenar ⬆️ ⬇️, Editar, Excluir) */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    {/* Seta Subir */}
+                    <button
+                      type="button"
+                      disabled={isFirst}
+                      onClick={() => onMoveUp(stage.id)}
+                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-90 transition-transform"
+                      title="Mover para cima"
+                      aria-label="Mover para cima"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* Seta Descer */}
+                    <button
+                      type="button"
+                      disabled={isLast}
+                      onClick={() => onMoveDown(stage.id)}
+                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-90 transition-transform"
+                      title="Mover para baixo"
+                      aria-label="Mover para baixo"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* Editar */}
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(stage)}
+                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-1"
+                      title="Editar etapa"
+                      aria-label="Editar etapa"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* Excluir */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Deseja realmente excluir a etapa "${stage.name}"?`)) {
+                          onDeleteStage(stage.id);
+                        }
+                      }}
+                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-red-400 active:scale-90 transition-all"
+                      title="Excluir etapa"
+                      aria-label="Excluir etapa"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
 
-                {/* Lado Direito: Ações (Reordenar ⬆️ ⬇️, Editar, Excluir) */}
-                <div className="flex items-center gap-1 shrink-0">
-                  {/* Seta Subir */}
-                  <button
-                    type="button"
-                    disabled={isFirst}
-                    onClick={() => onMoveUp(stage.id)}
-                    className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-90 transition-transform"
-                    title="Mover para cima"
-                    aria-label="Mover para cima"
-                  >
-                    <ArrowUp className="w-3.5 h-3.5" />
-                  </button>
+                {/* Seção Expandida: Objetivos da Conversa (Checklist Semântico) */}
+                {isGoalsExpanded && (
+                  <div className="border-t border-[#27272a] bg-zinc-950/40 p-3 space-y-2.5 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Target className="w-3.5 h-3.5 text-sky-400" />
+                        <span className="text-xs font-bold text-white">
+                          Objetivos Semânticos da Conversa
+                        </span>
+                        <span className="text-[11px] text-zinc-500">
+                          (Bússola para subagentes, sem interrogatório)
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openAddGoalModal(stage.id)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 text-xs font-semibold active:scale-95 transition-all"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Adicionar Objetivo</span>
+                      </button>
+                    </div>
 
-                  {/* Seta Descer */}
-                  <button
-                    type="button"
-                    disabled={isLast}
-                    onClick={() => onMoveDown(stage.id)}
-                    className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-90 transition-transform"
-                    title="Mover para baixo"
-                    aria-label="Mover para baixo"
-                  >
-                    <ArrowDown className="w-3.5 h-3.5" />
-                  </button>
+                    {stageGoals.length === 0 ? (
+                      <div className="p-3 rounded-lg border border-dashed border-zinc-800 text-center">
+                        <p className="text-xs text-zinc-400">
+                          Nenhum objetivo conversacional definido para esta etapa.
+                        </p>
+                        <p className="text-[11px] text-zinc-500 mt-0.5">
+                          Adicione tópicos que a persona deve descobrir organicamente (ex: Idade, Cidade, Profissão).
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {stageGoals.map((goal, gIdx) => {
+                          const isFirstGoal = gIdx === 0;
+                          const isLastGoal = gIdx === stageGoals.length - 1;
 
-                  {/* Editar */}
-                  <button
-                    type="button"
-                    onClick={() => openEditModal(stage)}
-                    className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-1"
-                    title="Editar etapa"
-                    aria-label="Editar etapa"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
+                          return (
+                            <div
+                              key={goal.id}
+                              className={`p-2.5 rounded-lg border flex items-center justify-between gap-2 transition-all ${
+                                goal.enabled
+                                  ? "bg-zinc-900/80 border-zinc-800"
+                                  : "bg-zinc-900/30 border-zinc-800/50 opacity-60"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <span className="text-[11px] font-mono text-zinc-500 w-4 shrink-0">
+                                  #{gIdx + 1}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-xs font-semibold text-zinc-200">
+                                      {goal.label}
+                                    </span>
+                                    <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 text-[10px] font-mono border border-zinc-700/50">
+                                      {goal.memoryEntity || "self"}.{goal.memoryField}
+                                    </span>
+                                    {goal.required && (
+                                      <span className="px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 text-[10px] font-medium border border-amber-500/20">
+                                        Obrigatório
+                                      </span>
+                                    )}
+                                    {!goal.enabled && (
+                                      <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-500 text-[10px]">
+                                        Inativo
+                                      </span>
+                                    )}
+                                  </div>
+                                  {goal.description && (
+                                    <p className="text-[11px] text-zinc-400 truncate mt-0.5">
+                                      {goal.description}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
 
-                  {/* Excluir */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirm(`Deseja realmente excluir a etapa "${stage.name}"?`)) {
-                        onDeleteStage(stage.id);
-                      }
-                    }}
-                    className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:text-red-400 active:scale-90 transition-all"
-                    title="Excluir etapa"
-                    aria-label="Excluir etapa"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {/* Toggle Ativo / Inativo */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleGoalEnabled(stage.id, goal)}
+                                  className={`p-1 rounded-md transition-colors ${
+                                    goal.enabled
+                                      ? "text-emerald-400 hover:bg-emerald-500/10"
+                                      : "text-zinc-500 hover:bg-zinc-800"
+                                  }`}
+                                  title={goal.enabled ? "Desativar objetivo" : "Ativar objetivo"}
+                                >
+                                  <Power className="w-3.5 h-3.5" />
+                                </button>
+
+                                {/* Seta Subir */}
+                                <button
+                                  type="button"
+                                  disabled={isFirstGoal}
+                                  onClick={() => handleMoveGoalUp(stage.id, goal.id)}
+                                  className="p-1 rounded-md text-zinc-400 hover:text-white disabled:opacity-20 transition-colors"
+                                  title="Subir prioridade"
+                                >
+                                  <ArrowUp className="w-3 h-3" />
+                                </button>
+
+                                {/* Seta Descer */}
+                                <button
+                                  type="button"
+                                  disabled={isLastGoal}
+                                  onClick={() => handleMoveGoalDown(stage.id, goal.id)}
+                                  className="p-1 rounded-md text-zinc-400 hover:text-white disabled:opacity-20 transition-colors"
+                                  title="Descer prioridade"
+                                >
+                                  <ArrowDown className="w-3 h-3" />
+                                </button>
+
+                                {/* Editar */}
+                                <button
+                                  type="button"
+                                  onClick={() => openEditGoalModal(stage.id, goal)}
+                                  className="p-1 rounded-md text-zinc-400 hover:text-sky-400 transition-colors"
+                                  title="Editar objetivo"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                </button>
+
+                                {/* Excluir */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteGoal(stage.id, goal.id)}
+                                  className="p-1 rounded-md text-zinc-400 hover:text-red-400 transition-colors"
+                                  title="Excluir objetivo"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -405,6 +788,136 @@ export function ChatStagesManager({
                     : editingStage
                     ? "Salvar Alterações"
                     : "Criar Etapa"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Criação / Edição de Objetivo Semântico (Goal) */}
+      {isGoalModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-md bg-[#18181b] border border-[#27272a] rounded-2xl shadow-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
+              <h4 className="text-base font-bold text-white flex items-center gap-2">
+                <Target className="w-4 h-4 text-sky-400" />
+                {editingGoal ? "Editar Objetivo" : "Novo Objetivo da Conversa"}
+              </h4>
+              <button
+                type="button"
+                onClick={closeGoalModal}
+                className="p-1 rounded-lg text-zinc-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleGoalSubmit} className="space-y-3.5">
+              {/* Rótulo do Goal */}
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-300">
+                  Rótulo do Objetivo *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Idade, Cidade onde mora, Profissão"
+                  value={goalLabel}
+                  onChange={(e) => setGoalLabel(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+
+              {/* Mapeamento de Memória: Entidade e Campo */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-zinc-300">
+                    Entidade de Memória *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="self"
+                    value={goalMemoryEntity}
+                    onChange={(e) => setGoalMemoryEntity(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
+                  />
+                  <p className="text-[10px] text-zinc-500">Padrão: &quot;self&quot; (o pretendente)</p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-zinc-300">
+                    Campo de Memória *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="age, city, occupation"
+                    value={goalMemoryField}
+                    onChange={(e) => setGoalMemoryField(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
+                  />
+                  <p className="text-[10px] text-zinc-500">Campo salvo pelo MemoryWriter</p>
+                </div>
+              </div>
+
+              {/* Descrição / Orientação para a IA */}
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-300">
+                  Orientação para a IA (Opcional)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Ex: Descobrir a idade naturalmente quando falar de estudos ou trabalho, sem parecer interrogatório..."
+                  value={goalDescription}
+                  onChange={(e) => setGoalDescription(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none"
+                />
+              </div>
+
+              {/* Flags: Obrigatório e Ativo */}
+              <div className="pt-1 flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={goalRequired}
+                    onChange={(e) => setGoalRequired(e.target.checked)}
+                    className="w-4 h-4 rounded text-sky-500 bg-zinc-900 border-zinc-700 focus:ring-0 focus:ring-offset-0"
+                  />
+                  <span className="text-xs text-zinc-300">Obrigatório na etapa</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={goalEnabled}
+                    onChange={(e) => setGoalEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded text-emerald-500 bg-zinc-900 border-zinc-700 focus:ring-0 focus:ring-offset-0"
+                  />
+                  <span className="text-xs text-zinc-300">Ativo</span>
+                </label>
+              </div>
+
+              {/* Botões do Modal */}
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#27272a]">
+                <button
+                  type="button"
+                  onClick={closeGoalModal}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isGoalSubmitting || !goalLabel.trim() || !goalMemoryField.trim()}
+                  className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95"
+                >
+                  {isGoalSubmitting
+                    ? "Salvando..."
+                    : editingGoal
+                    ? "Salvar Alterações"
+                    : "Adicionar Objetivo"}
                 </button>
               </div>
             </form>

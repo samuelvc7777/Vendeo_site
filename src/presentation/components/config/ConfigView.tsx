@@ -38,6 +38,11 @@ export function ConfigView() {
     deleteStage,
     moveStageUp,
     moveStageDown,
+    addGoal,
+    updateGoal,
+    deleteGoal,
+    moveGoalUp,
+    moveGoalDown,
   } = useChatStages();
 
   const [tinderSession, setTinderSession] = useState<TinderSession | null>(null);
@@ -731,6 +736,11 @@ export function ConfigView() {
               onDeleteStage={deleteStage}
               onMoveUp={moveStageUp}
               onMoveDown={moveStageDown}
+              onAddGoal={addGoal}
+              onUpdateGoal={updateGoal}
+              onDeleteGoal={deleteGoal}
+              onMoveGoalUp={moveGoalUp}
+              onMoveGoalDown={moveGoalDown}
             />
           </div>
         </div>

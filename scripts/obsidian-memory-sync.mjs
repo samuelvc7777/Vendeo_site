@@ -22,10 +22,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+let envLoaded = false;
+
 /**
  * Lê arquivos .env ou .env.local sem dependências externas
  */
-export function loadEnv(projectRoot = process.cwd()) {
+export function loadEnv(projectRoot = process.cwd(), force = false) {
+  if (envLoaded && !force) return;
+  envLoaded = true;
   const envFiles = ['.env.local', '.env'];
   for (const file of envFiles) {
     const fullPath = path.resolve(projectRoot, file);
@@ -51,6 +55,9 @@ export function loadEnv(projectRoot = process.cwd()) {
     }
   }
 }
+
+// Carrega variáveis no carregamento inicial do módulo
+loadEnv();
 
 /**
  * Detecta o caminho do vault do Obsidian com regras estritas:
@@ -237,6 +244,35 @@ export function formatProfileMarkdown(contact) {
       .join('\n');
   }
 
+  // Checklist Semântico da Fase (Goals)
+  const checklistGoals = Array.isArray(contact.checklist?.goals) ? contact.checklist.goals : [];
+  let checklistSection = '';
+  if (checklistGoals.length > 0) {
+    checklistSection = checklistGoals
+      .map((g) => {
+        const isDone = g.status === 'completed';
+        const box = isDone ? '[x]' : '[ ]';
+        const valStr = isDone && g.value !== undefined && g.value !== null && g.value !== true
+          ? `: ${g.value}`
+          : '';
+        return `- ${box} **${g.label}**${valStr}`;
+      })
+      .join('\n');
+  } else {
+    // Derivação automática resiliente a partir de selfFacts
+    const ageVal = selfFacts.age?.value !== undefined ? selfFacts.age.value : selfFacts.age;
+    const cityVal = selfFacts.city?.value !== undefined ? selfFacts.city.value : selfFacts.city;
+    const jobVal = selfFacts.job?.value !== undefined ? selfFacts.job.value : selfFacts.job;
+    const relVal = selfFacts.relationship_status?.value !== undefined ? selfFacts.relationship_status.value : selfFacts.relationship_status;
+
+    checklistSection = [
+      `- [${ageVal ? 'x' : ' '}] **Idade**${ageVal ? `: ${ageVal}` : ''}`,
+      `- [${cityVal ? 'x' : ' '}] **Cidade**${cityVal ? `: ${cityVal}` : ''}`,
+      `- [${jobVal ? 'x' : ' '}] **Profissão**${jobVal ? `: ${jobVal}` : ''}`,
+      `- [${relVal ? 'x' : ' '}] **Relacionamento / Filhos**${relVal ? `: ${relVal}` : ''}`,
+    ].join('\n');
+  }
+
   const snippets = Array.isArray(contact.memory?.snippets) ? contact.memory.snippets : [];
   let snippetsSection = 'Nenhum trecho registrado.';
   if (snippets.length > 0) {
@@ -274,6 +310,12 @@ updated_at: "${updatedAt}"
 ## Fatos Conhecidos (Sobre Ele)
 
 ${selfSection}
+
+---
+
+## Checklist — Descoberta
+
+${checklistSection}
 
 ---
 
