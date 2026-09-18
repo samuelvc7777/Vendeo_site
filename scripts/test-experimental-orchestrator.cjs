@@ -8,9 +8,25 @@ const ts = require('typescript');
 /**
  * Cria o ambiente de runtime para carregar módulos TypeScript do Deno/Supabase
  */
-function createRuntime(mockFetch = async () => ({ ok: true, json: async () => ({}) })) {
+function createRuntime(mockFetch = async () => ({ ok: true, json: async () => ({}) }), customModules = {}) {
   const cache = new Map();
+  let serverHandler = null;
+  const backgroundPromises = [];
+
   function load(file) {
+    if (customModules[file]) return customModules[file];
+    if (file.includes('server.ts') || file.startsWith('https://deno.land')) {
+      return {
+        serve: (handler) => {
+          serverHandler = handler;
+        },
+      };
+    }
+    if (file.includes('@supabase/supabase-js') || file.startsWith('https://esm.sh')) {
+      return {
+        createClient: () => customModules['@supabase/client'] || {},
+      };
+    }
     let resolved = path.resolve(file);
     if (!resolved.endsWith('.ts') && !resolved.endsWith('.js')) resolved += '.ts';
     if (cache.has(resolved)) return cache.get(resolved).exports;
@@ -24,7 +40,11 @@ function createRuntime(mockFetch = async () => ({ ok: true, json: async () => ({
       {
         module,
         exports: module.exports,
-        require: (ref) => load(path.resolve(path.dirname(resolved), ref)),
+        require: (ref) => {
+          if (customModules[ref]) return customModules[ref];
+          if (ref.startsWith('https://') || ref.startsWith('http://')) return load(ref);
+          return load(path.resolve(path.dirname(resolved), ref));
+        },
         fetch: mockFetch,
         AbortSignal,
         console,
@@ -32,12 +52,30 @@ function createRuntime(mockFetch = async () => ({ ok: true, json: async () => ({
         TextEncoder,
         setTimeout,
         clearTimeout,
+        Deno: {
+          env: {
+            get: (k) => process.env[k] || 'test_val',
+          },
+        },
+        EdgeRuntime: {
+          waitUntil: (p) => {
+            backgroundPromises.push(p);
+          },
+        },
+        Request: globalThis.Request,
+        Response: globalThis.Response,
+        Headers: globalThis.Headers,
+        URL: globalThis.URL,
       },
       { filename: resolved }
     );
     return module.exports;
   }
-  return { load };
+  return {
+    load,
+    getServerHandler: () => serverHandler,
+    getBackgroundPromises: () => backgroundPromises,
+  };
 }
 
 // -------------------------------------------------------------------------
@@ -3070,6 +3108,238 @@ test('52. Distinção Semântica: Perda normal de claim (isInfraFailure=false) v
   assert.equal(infraLoss.success, false);
   assert.equal(infraLoss.isInfraFailure, true, 'Exceção de banco DEVE ser marcada como isInfraFailure');
   assert.equal(infraLoss.reason, 'rpc_exception_fail_closed');
+});
+
+// =========================================================================
+// TESTE 53: Fim-a-Fim no Webhook Real: Falha de RPC no Claim Atômico
+// -> Sinal explícito blockLegacyFallback: true
+// -> ZERO chamadas ao fluxo legado (runCloudAutoPilot)
+// -> ZERO chamadas à Meta Graph API
+// =========================================================================
+test('53. Webhook Real Fim-a-Fim: falha de infraestrutura na RPC do Postgres bloqueia terminantemente fallback legado (ZERO chamadas ao legado e ZERO à Meta)', async () => {
+  let legacyCalls = 0;
+  let metaCalls = 0;
+  const conversationId = '1771103754015024';
+
+  const baseMock = {
+    id: conversationId,
+    contact_id: conversationId,
+    full_name: 'Moose Test',
+    ai_auto_respond: true,
+    stage_completed_rules: {
+      orchestration: {
+        version: 1,
+        mode: 'experimental',
+        currentPhase: 'conexao_inicial',
+        checkpoint: 'chk_saudacao_feita',
+        outbox: {},
+        messageLedger: {},
+      },
+    },
+  };
+
+  let convState = { ...baseMock };
+  const mockMessages = [
+    {
+      id: 'mid_webhook_real_msg_1',
+      conversation_id: conversationId,
+      sender_id: conversationId,
+      is_mine: false,
+      text: 'Olá, gostaria de saber sobre a Amarok',
+      created_at: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
+      direction: 'inbound',
+    },
+  ];
+
+  const mockSupabase = {
+    from: (table) => {
+      if (table === 'instagram_conversations') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: convState, error: null }),
+            }),
+            or: () => ({
+              limit: () => ({
+                maybeSingle: async () => ({ data: convState, error: null }),
+              }),
+            }),
+          }),
+          update: (fields) => ({
+            eq: async (col, val) => {
+              convState = {
+                ...convState,
+                ...fields,
+                stage_completed_rules: {
+                  ...(convState.stage_completed_rules || {}),
+                  ...(fields.stage_completed_rules || {}),
+                },
+              };
+              return { error: null };
+            },
+          }),
+        };
+      }
+      if (table === 'instagram_messages') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: async () => ({ data: mockMessages, error: null }),
+                }),
+              }),
+              order: () => ({
+                limit: async () => ({ data: mockMessages, error: null }),
+                data: mockMessages,
+                error: null,
+              }),
+            }),
+            or: () => ({
+              neq: () => ({
+                limit: () => ({
+                  maybeSingle: async () => ({ data: null, error: null }),
+                }),
+              }),
+            }),
+          }),
+          upsert: async (msg) => {
+            mockMessages.push(msg);
+            return { error: null };
+          },
+          insert: async (msg) => {
+            mockMessages.push(msg);
+            return { error: null };
+          },
+        };
+      }
+      if (table === 'instagram_config') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: { verify_token: 'vendeo_ig_secret_token' }, error: null }),
+            }),
+          }),
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: null, error: null }),
+            order: () => ({ limit: async () => ({ data: [], error: null }) }),
+          }),
+        }),
+        insert: async () => ({ error: null }),
+        update: () => ({ eq: async () => ({ error: null }) }),
+        upsert: async () => ({ error: null }),
+      };
+    },
+    channel: () => ({
+      send: async () => ({}),
+      subscribe: () => ({}),
+    }),
+    rpc: async (fnName) => {
+      if (fnName === 'claim_outbox_entry') {
+        // SIMULA FALHA CRÍTICA DE INFRAESTRUTURA NA RPC DO POSTGRES
+        return {
+          data: null,
+          error: { message: 'connection to server was lost', code: '08006' },
+        };
+      }
+      return { data: null, error: null };
+    },
+  };
+
+  const customModules = {
+    '@supabase/client': mockSupabase,
+    './cloud_autopilot.ts': {
+      runCloudAutoPilot: async () => {
+        legacyCalls++;
+      },
+      publishAutoPilotState: async () => {},
+      activity: () => ({}),
+    },
+  };
+
+  const mockFetch = async (url) => {
+    if (url.includes('graph.instagram.com') || url.includes('facebook.com')) {
+      metaCalls++;
+      return { ok: true, json: async () => ({ message_id: 'meta_sent_id' }) };
+    }
+    if (url.includes('atria-asi.ai') || url.includes('groq.com') || url.includes('googleapis.com')) {
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: 'reply',
+                  currentPhase: 'conexao_inicial',
+                  nextPhase: 'conexao_inicial',
+                  checkpoint: 'chk_saudacao_feita',
+                  targetSubagent: 'conexao_inicial',
+                  suggestedResponse: 'Olá! Como posso te ajudar com a Amarok?',
+                  reasoning: 'Atendimento do interesse do cliente',
+                }),
+              },
+            },
+          ],
+          usage: { total_tokens: 30 },
+        }),
+      };
+    }
+    return { ok: true, json: async () => ({ success: true }) };
+  };
+
+  const runtime = createRuntime(mockFetch, customModules);
+  runtime.load('supabase/functions/api/index.ts');
+
+  const serverHandler = runtime.getServerHandler();
+  assert.ok(serverHandler, 'O handler do serve() no index.ts DEVE ser registrado');
+
+  // Dispara a Request HTTP real do Webhook recebendo mensagem para o chat experimental
+  const webhookRequest = new Request('https://api.vendeo.com/meta/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      object: 'instagram',
+      entry: [
+        {
+          id: 'ig_page_id',
+          time: Date.now(),
+          messaging: [
+            {
+              sender: { id: conversationId },
+              recipient: { id: 'me' },
+              timestamp: Date.now(),
+              message: {
+                mid: 'mid_webhook_real_msg_1',
+                text: 'Olá, gostaria de saber sobre a Amarok',
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const httpResponse = await serverHandler(webhookRequest);
+  assert.equal(httpResponse.status, 200, 'O webhook da Meta deve receber status 200 (EVENT_RECEIVED)');
+
+  // Aguarda a finalização das tarefas assíncronas no EdgeRuntime.waitUntil
+  const bgPromises = runtime.getBackgroundPromises();
+  await Promise.all(bgPromises);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // PROVA RIGOROSA E INEQUÍVOCA:
+  assert.equal(legacyCalls, 0, 'ZERO chamadas ao fluxo legado (runCloudAutoPilot) permitidas quando RPC falha!');
+  assert.equal(metaCalls, 0, 'ZERO chamadas à Meta Graph API permitidas sob falha de RPC!');
+
+  // Comprova que as mensagens no ledger permanecem pendentes no banco para retry seguro
+  const ledger = convState.stage_completed_rules.orchestration.messageLedger;
+  assert.equal(ledger['mid_webhook_real_msg_1'], 'pending', 'Mensagem claimed deve reverter para pending após fail-closed da RPC');
 });
 
 

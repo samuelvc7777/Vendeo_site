@@ -1132,6 +1132,7 @@ export interface OrchestrationResult {
   handled: boolean;
   skippedDuplicate?: boolean;
   sentToMeta?: boolean;
+  blockLegacyFallback?: boolean; // SINAL EXPLÍCITO: Quando true, bloqueia terminantemente qualquer fallback para o legado
   decision?: OrchestratorDecision;
   durationMs?: number;
   tokens?: number;
@@ -1155,7 +1156,7 @@ export async function runExperimentalOrchestration(
 
   if (convErr) {
     console.error(`[Orchestrator] Erro ao buscar conversa ${conversationId}:`, convErr);
-    return { mode: "legacy", handled: false, error: convErr.message };
+    return { mode: "legacy", handled: false, blockLegacyFallback: true, error: convErr.message };
   }
 
   const stageRules = convRow?.stage_completed_rules || {};
@@ -1183,7 +1184,7 @@ export async function runExperimentalOrchestration(
     console.log(
       `[Orchestrator] Mensagem ${newMessage.id} já processada em ${conversationId}. Abortando por idempotência.`
     );
-    return { mode: orchState.mode, handled: true, skippedDuplicate: true };
+    return { mode: orchState.mode, handled: true, skippedDuplicate: true, blockLegacyFallback: true };
   }
 
   // 3. BACKEND DETERMINÍSTICO: Lock Atômico concorrente
@@ -1193,7 +1194,7 @@ export async function runExperimentalOrchestration(
     console.log(
       `[Orchestrator] Lock ativo detectado (${activeLock}) para ${conversationId}. Abortando execução concorrente.`
     );
-    return { mode: orchState.mode, handled: false, sentToMeta: false, error: "Lock ativo concorrente" };
+    return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Lock ativo concorrente" };
   }
 
   // Adquire o lock
@@ -1227,7 +1228,7 @@ export async function runExperimentalOrchestration(
           },
         })
         .eq("id", conversationId);
-      return { mode: orchState.mode, handled: false, sentToMeta: false, error: "Cancelado pelo operador" };
+      return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
 
     const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
@@ -1290,7 +1291,7 @@ export async function runExperimentalOrchestration(
 
     if (pendingMessages.length === 0) {
       console.log(`[Orchestrator] Nenhuma mensagem pendente para ${conversationId}. Abortando por idempotência.`);
-      return { mode: orchState.mode, handled: true, skippedDuplicate: true };
+      return { mode: orchState.mode, handled: true, skippedDuplicate: true, blockLegacyFallback: true };
     }
 
     // SNAPSHOT IMUTÁVEL DO CICLO: Claims all pending messages
@@ -1506,7 +1507,7 @@ export async function runExperimentalOrchestration(
       for (const id of claimedMessageIds) {
         ledger[id] = "pending";
       }
-      return { mode: orchState.mode, handled: false, error: "Cancelado pelo operador" };
+      return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
 
     // 2. Preempção por novo ciclo concorrente ou expiração de lock (Stale Lock / Zombie Cycle Prevention)
@@ -1520,6 +1521,7 @@ export async function runExperimentalOrchestration(
         mode: orchState.mode,
         handled: false,
         sentToMeta: false,
+        blockLegacyFallback: true,
         error: `Ciclo preemptado por perda de lock (${recheckRules.active_cycle_token || "lock_expirado"})`,
       };
     }
@@ -1704,6 +1706,7 @@ export async function runExperimentalOrchestration(
               mode: orchState.mode,
               handled: true,
               sentToMeta: true,
+              blockLegacyFallback: true,
               error: `Outbox com envio incerto (${claimRes.reason}). Retry automático bloqueado para evitar duplicação.`,
             };
           } else if (claimRes.isInfraFailure) {
@@ -1719,6 +1722,7 @@ export async function runExperimentalOrchestration(
               mode: orchState.mode,
               handled: false,
               sentToMeta: false,
+              blockLegacyFallback: true,
               error: `Falha de infraestrutura no claim atômico (${claimRes.reason}). Fail-closed: envio abortado.`,
             };
           } else {
@@ -1726,6 +1730,7 @@ export async function runExperimentalOrchestration(
               mode: orchState.mode,
               handled: false,
               sentToMeta: false,
+              blockLegacyFallback: true,
               error: `Outbox em envio concorrente ou já processada (${claimRes.reason})`,
             };
           }
@@ -1853,6 +1858,7 @@ export async function runExperimentalOrchestration(
           mode: orchState.mode,
           handled: false,
           sentToMeta: sentSuccessfully,
+          blockLegacyFallback: true,
           error: `Ciclo preemptado antes do commit por ${latestCycleToken || "lock_expirado"}`,
         };
       }
@@ -1963,6 +1969,7 @@ export async function runExperimentalOrchestration(
         mode: orchState.mode,
         handled: false,
         sentToMeta: sentSuccessfully,
+        blockLegacyFallback: true,
         error: err.message || "Ciclo preemptado",
       };
     }
@@ -1992,6 +1999,7 @@ export async function runExperimentalOrchestration(
       mode: orchState.mode,
       handled: false,
       sentToMeta: sentSuccessfully,
+      blockLegacyFallback: orchState.mode === "experimental",
       error: err.message || "Erro na orquestração experimental",
     };
   } finally {

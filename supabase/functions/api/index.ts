@@ -1074,14 +1074,18 @@ serve(async (req: Request) => {
                           .eq("id", conversationId);
                       }
 
-                      // Em caso de falha do novo orquestrador ANTES de qualquer envio à Meta (e sem ser lock, duplicata, preempção ou incerteza), fallback seguro para o fluxo legado
-                      const isPreemptedOrCancelled =
-                        res.error?.includes("preemptado") ||
-                        res.error?.includes("Cancelado pelo operador") ||
-                        res.error?.includes("Incerteza de rede");
+                      // BLOQUEIO EXPLÍCITO DO FALLBACK LEGADO:
+                      // Respeita estritamente o sinal blockLegacyFallback ou flags de sucesso/envio/duplicata,
+                      // SEM depender de matching de string no erro!
+                      if (res.blockLegacyFallback === true || res.sentToMeta || res.handled || res.skippedDuplicate) {
+                        console.log(
+                          `[Orchestrator] Fallback legado BLOQUEADO explicitamente para ${conversationId} (blockLegacyFallback=${res.blockLegacyFallback}, handled=${res.handled}, sentToMeta=${res.sentToMeta})`
+                        );
+                        return;
+                      }
 
-                      if (!res.handled && res.error && !res.sentToMeta && res.error !== "Lock ativo concorrente" && !res.skippedDuplicate && !isPreemptedOrCancelled) {
-                        console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) antes de qualquer envio. Acionando fallback para fluxo legado.`);
+                      if (!res.handled && res.error) {
+                        console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) com fallback legado liberado. Acionando legado.`);
                         await runCloudAutoPilot({
                           supabase,
                           conversationId,
