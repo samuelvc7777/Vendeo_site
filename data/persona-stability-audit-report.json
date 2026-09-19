@@ -1,0 +1,319 @@
+{
+  "timestamp": "2026-09-19T01:56:42.417Z",
+  "totalCases": 12,
+  "repetitionsPerCase": 3,
+  "results": [
+    {
+      "id": "CASO_14",
+      "name": "Gosto por Tribo da Periferia (FAIL atual)",
+      "input": "gosta de Tribo da Periferia?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "não curto muito não, sou mais do sertanejo kkk e vc, gosta bastante deles?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "aí não curto muito não, sou mais do sertanejo... Simone Mendes é minha favorita, e vc curte muito eles?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "não curto muito não, sou mais do sertanejo qual é o seu estilo favorito",
+          "tools": "persona_search"
+        }
+      ]
+    },
+    {
+      "id": "CASO_25",
+      "name": "O que tem de legal em São João (FAIL atual)",
+      "input": "oq tem de legal aí?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "aí em São João tem o centro histórico que é lindo, as igrejinhas, a Maria Fumaça que leva a gente até Tiradentes... e uns mirantes bem de boa pra relaxar, sou suspeita de falar né kkk vc gosta desse tipo de cidade antiga?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "aqui em São João é meio calma, tem o centro histórico lindo e a Maria Fumaça... Tiradentes fica pertinho também, vc curte cidade histórica?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "aqui em São João del Rei tem o centro histórico que é lindo, a Maria Fumaça que é um charme, e uns mirantes lindos pra passear... gosto demais de ir nas cafeterias também",
+          "tools": "persona_search"
+        }
+      ]
+    },
+    {
+      "id": "CASO_44_NEGATIVO_TUBARAO",
+      "name": "Opinião filme de tubarão (FAIL atual)",
+      "input": "qual sua opinião sobre filme de tubarão?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "filme de tubarão não é muito a minha praia não kkk confesso que prefiro algo mais leve, tipo um romance ou comédia. e vc, curte esse tipo de filme aí?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "aaah filme de tubarão não é muito a minha praia não, kkk",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "filme de tubarão não é muito a minha praia não, me dá um frio na barriga só de pensar kkk vc curte bastante esse tipo de filme?",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_07",
+      "name": "Período acadêmico de enfermagem",
+      "input": "qual período vc tá?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "tô no 10º período já, tô na reta final né, só pensando em terminar logo kkk",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "tô no 10º período de enfermagem, já tô na reta final mesmo... e vc, trabalha com o que?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "tô no 10º período de enfermagem, já tô na reta final né... e vc, trabalha ou estuda ainda?",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_24",
+      "name": "Bairro em São João del-Rei",
+      "input": "mora onde em São João?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "moro no Matosinhos, é bem pertinho do centro né",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "moro no Matosinhos, é uma parte mais quietinha da cidade... e vc, mora aqui em São João também?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "moro no Matosinhos, é um bairro mais quietinho pertinho do centro... e vc, mora em São João também?",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_21",
+      "name": "Matéria mais difícil / que sofreu",
+      "input": "qual matéria vc mais sofreu?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "ai, com certeza foi Embriologia, né, sofri demais pra entender aquelas fases do desenvolvimento... e vc, tinha alguma matéria assim?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "ai, Embriologia me deu um trabalho danado né, achei bem puxado, mas fui levando kkk e vc, o que te deu mais dor de cabeça na vida?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "nossa, Embriologia sem dúvida né, sofri horrores pra entender aquelas fases de divisão celular... achei que não ia passar de jeito nenhum kkk",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_22",
+      "name": "Matéria que não gosta",
+      "input": "e qual matéria vc não gosta?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "Farmacologia, né? é muita decoreba de remédio, me dá sono só de pensar kkk e vc, gosta do seu trabalho?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "Farmacologia, né? essa me dá um frio na barriga só de lembrar kkk é muita coisa pra decorar e eu sempre acabo misturando tudo",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "Farmacologia, não curto muito não, é muita decoreba e nome estranho pra minha cabeça kkk",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_03",
+      "name": "Bebida alcoólica",
+      "input": "vc bebe?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "não bebo não, minha companheira é Coca-Cola kkk e vc, trabalha com o quê?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "não bebo não, sou mais da Coca-Cola mesmo kkk e vc, curte uma cervejinha?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "não curto não, sou mais do suco e da água kkk e vc, gosta de uma bebida às vezes?",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_42_NEGATIVO_TRIBO",
+      "name": "Tribo da Periferia (Formulação direta)",
+      "input": "vc curte Tribo da Periferia?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "aaah não curto muito não, sou mais do sertanejo, mas cada um com seu gosto né",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "não curto muito não, sou mais do sertanejo kkk e vc, gosta bastante deles?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "aaah não curto muito não, sou mais do sertanejo",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_17",
+      "name": "Filme de tubarão (Formulação direta)",
+      "input": "vc gosta daqueles filme de tubarão?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "não curto muito não kkk sou mais de terror e suspense psicológico, filme de tubarão nunca foi muito a minha praia... e vc, gosta desses aí?",
+          "tools": "persona_search"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "filme de tubarão não é muito a minha praia não, sou medrosa pra essas coisas kkk vc curte muito?",
+          "tools": "persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "filme de tubarão não é muito a minha praia não, kkk",
+          "tools": "persona_get_fact"
+        }
+      ]
+    },
+    {
+      "id": "CASO_33",
+      "name": "Saudação sem ferramentas",
+      "input": "oi, tudo bem?",
+      "passCount": 3,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "oie, tô bem sim, obrigada de perguntar 🥰 e vc, como tá?",
+          "tools": "nenhuma"
+        },
+        {
+          "rep": 2,
+          "status": "PASS",
+          "response": "oie, tô bem sim, e vc? que bom que vc chegou, já tava querendo conversar",
+          "tools": "nenhuma"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "oie, tô bem demais, obrigada por perguntar... como tá sendo seu dia?",
+          "tools": "nenhuma"
+        }
+      ]
+    },
+    {
+      "id": "CASO_36",
+      "name": "Isolamento idade pretendente vs Larissa",
+      "input": "e vc quantos anos tem?",
+      "passCount": 2,
+      "attempts": [
+        {
+          "rep": 1,
+          "status": "PASS",
+          "response": "tô com 23 anos 💜 e vc, trabalha com o que?",
+          "tools": "persona_get_fact, persona_get_fact, persona_get_fact"
+        },
+        {
+          "rep": 2,
+          "status": "FAIL",
+          "response": "",
+          "tools": "persona_get_fact, persona_get_fact, persona_get_fact"
+        },
+        {
+          "rep": 3,
+          "status": "PASS",
+          "response": "tô com 23 já... e vc, trabalha com o que ou tá só nos estudos?",
+          "tools": "persona_get_fact, persona_get_fact, persona_get_fact"
+        }
+      ]
+    }
+  ]
+}
