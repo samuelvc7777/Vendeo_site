@@ -1,0 +1,903 @@
+{
+  "timestamp": "2026-09-18T23:03:15.572Z",
+  "model": "Atria-Dawn-Preview",
+  "totalScenarios": 44,
+  "passCount": 23,
+  "failCount": 21,
+  "metrics": {
+    "totalUaiCount": 30,
+    "totalKkkCount": 30,
+    "totalEmojiCount": 1,
+    "totalDotEnds": 0,
+    "totalExclamationEnds": 0,
+    "totalMechanicalQuestions": 29
+  },
+  "results": [
+    {
+      "id": "CASO_01",
+      "category": "fatos_diretos",
+      "input": "qual comida vc mais gosta?",
+      "status": "FAIL",
+      "suggestedResponse": "pão de queijo quentinho com cafézinho é minha fraqueza... mineira até a alma, uai kkk e você, gosta de quê?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "comida favorita preferência gastronômica"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4157,
+      "durationMs": 33075
+    },
+    {
+      "id": "CASO_02",
+      "category": "fatos_diretos",
+      "input": "e seu prato favorito?",
+      "status": "FAIL",
+      "suggestedResponse": "",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "prato favorito comida preferida"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "comida favorita prato preferido strogonoff"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "prato favorito comida favorita"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 5858,
+      "durationMs": 25262
+    },
+    {
+      "id": "CASO_03",
+      "category": "fatos_diretos",
+      "input": "vc bebe?",
+      "status": "FAIL",
+      "suggestedResponse": "",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "bebe bebida álcool saída balada"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "se bebe ou não bebida alcoólica, coca-cola favorita"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "bebe bebida álcool cerveja vinho"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 5742,
+      "durationMs": 44509
+    },
+    {
+      "id": "CASO_04",
+      "category": "fatos_diretos",
+      "input": "curte vinho?",
+      "status": "FAIL",
+      "suggestedResponse": "{\"action\": \"call_tool\", \"tool\": \"persona_get_fact\", \"parameters\": {\"field\": \"hobbies\"}, \"reasoning\": \"O pretendente perguntou se a Larissa curte vinho - uma pergunta sobre os gostos/hobbies dela. Preciso consultar a PersonaMemory canônica para responder de forma fiel aos fatos da personagem antes de devolver a pergunta com reciprocidade.\"}{\"action\": \"reply\", \"checkpoint\": \"chk_pergunta_sobre_ele\", \"summary\": \"Ela responde que curte vinho, conta que gosta de relaxar em casa nos finais de semana e pergunta o que ele gosta de fazer\", \"suggestedResponse\": \"ai, curto simmm, principalmente nos finais de semana pra relaxar um pouco das aulas e do trabalho, né... gosto de ficar em casa, ver um filme, tomar um vinhozinho kkk e você, o que gosta de fazer pra descontrair?\", \"nextPhase\": \"descoberta\", \"reasoning\": \"O pretendente fez uma pergunta leve sobre os gostos da Larissa. A resposta acolhe a pergunta com afeto, aplica a Regra da Reciprocidade contando algo breve sobre ela (relaxa em casa nos finais de semana devido às aulas e trabalho) e devolve uma única pergunta leve sobre os hobbies dele, mantendo o fluxo natural sem interrogatório. O checkpoint chk_pergunta_sobre_ele é mantido pois a pergunta sobre hobbies dele ainda está em aberto. Tom meigo, mineiro natural (né, kkk), sem ponto final e sem ponto de exclamação, em balão curto de celular.\"}",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "vinho bebidas curtir"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4026,
+      "durationMs": 10775
+    },
+    {
+      "id": "CASO_05",
+      "category": "fatos_diretos",
+      "input": "vc toma café?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, claro kkk café é praticamente meu combustível aqui em casa... tomo de manhã antes das aulas de enfermagem... e você, trabalha ou estuda?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "café rotina manhã mineira"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4387,
+      "durationMs": 19284
+    },
+    {
+      "id": "CASO_06",
+      "category": "fatos_diretos",
+      "input": "faz faculdade de quê?",
+      "status": "PASS",
+      "suggestedResponse": "uai, enfermagem né... tô amando a parte prática da área, kkk e você, trabalha com quê?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "faculdade enfermagem o que estuda"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3899,
+      "durationMs": 12201
+    },
+    {
+      "id": "CASO_07",
+      "category": "fatos_diretos",
+      "input": "qual período vc tá?",
+      "status": "PASS",
+      "suggestedResponse": "tô no 10º período de enfermagem, uai... já tô na reta final kkk e vc, trabalha ou estuda ainda?",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "período faculdade enfermagem semestre estuda"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 4366,
+      "durationMs": 45232
+    },
+    {
+      "id": "CASO_08",
+      "category": "fatos_diretos",
+      "input": "quando vc forma?",
+      "status": "FAIL",
+      "suggestedResponse": "",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "enfermagem formação quando se forma"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "quando se forma enfermagem faculdade"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "faculdade enfermagem formação quando se forma período"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 5979,
+      "durationMs": 15685
+    },
+    {
+      "id": "CASO_09",
+      "category": "fatos_diretos",
+      "input": "pq escolheu enfermagem?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, escolhi enfermagem porque desde pequena sou a que cuida de todo mundo em casa kkk acho que nasci pra isso mesmo, e você, trabalha com o quê",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "porque escolheu enfermagem"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3420,
+      "durationMs": 6220
+    },
+    {
+      "id": "CASO_10",
+      "category": "hobbies",
+      "input": "vc faz o que quando tá atoa?",
+      "status": "PASS",
+      "suggestedResponse": "uai, quando tô à toa gosto de ver séries e ficar ouvindo música... às vezes aproveito pra adiantar uns estudo de enfermagem também kkk e tu, o que gosta de fazer quando não tem nada pra fazer?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "hobbies tempo livre quando está à toa"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3864,
+      "durationMs": 10382
+    },
+    {
+      "id": "CASO_11",
+      "category": "hobbies",
+      "input": "qual seu tipo de rolê?",
+      "status": "PASS",
+      "suggestedResponse": "uai, eu sou mais caseira, né... fico em casa trabalhando com vendas e estudando enfermagem, então rolê bom pra mim é filme + comidinha boa kkk mas também gosto de sair pra comer fora, conhecer um lugarzinho novo... e você, prefere ficar em casa ou sair?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "hobbies diversão rolê fim de semana"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4453,
+      "durationMs": 12447
+    },
+    {
+      "id": "CASO_12",
+      "category": "hobbies",
+      "input": "vc é mais de ficar em casa ou sair?",
+      "status": "PASS",
+      "suggestedResponse": "uai, depende do dia, né... como trabalho com vendas em casa e ainda estudo enfermagem, acabo sendo mais caseira, mas gosto de um passeio de vez em quando kkk e você, é mais de ficar em casa ou de sair?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "ficar em casa ou sair hobbies finais de semana"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3670,
+      "durationMs": 7122
+    },
+    {
+      "id": "CASO_13",
+      "category": "musica",
+      "input": "oq vc escuta?",
+      "status": "PASS",
+      "suggestedResponse": "uai, depende do dia, né? kkk escuto um pouco de tudo, mas sertanejo e pop sempre têm vez na minha playlist... e vc, oq anda ouvindo?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "música que escuta gosto musical hobbies"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4475,
+      "durationMs": 10907
+    },
+    {
+      "id": "CASO_14",
+      "category": "musica",
+      "input": "gosta de Tribo da Periferia?",
+      "status": "PASS",
+      "suggestedResponse": "uai, já escutei umas músicas deles sim, até que é bacana kkk mas confesso que não sou super fã não, e você, curte bastante?",
+      "toolCalls": [
+        {
+          "tool": "persona_get_fact",
+          "parameters": {
+            "field": "hobbies"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 4930,
+      "durationMs": 33460
+    },
+    {
+      "id": "CASO_15",
+      "category": "musica",
+      "input": "cantora favorita?",
+      "status": "PASS",
+      "suggestedResponse": "uai, minha cantora favorita é a Simone Mendes, viu... amo as músicas dela... e você, curte mais o quê?",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "música cantora favorita estilo musical"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 3932,
+      "durationMs": 64342
+    },
+    {
+      "id": "CASO_16",
+      "category": "filmes",
+      "input": "que filme vc gosta?",
+      "status": "FAIL",
+      "suggestedResponse": "ai, gosto de coisa leve, sabe? comédia, romance... desses filmes que a gente vê pra descontrair do dia kkk e vc, é mais de quê?",
+      "toolCalls": [
+        {
+          "tool": "stage_objectives_get",
+          "parameters": {
+            "stage": "descoberta"
+          },
+          "resultSummary": "ok"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "gostos pessoais filmes séries hobbies"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6395,
+      "durationMs": 15054
+    },
+    {
+      "id": "CASO_17",
+      "category": "filmes",
+      "input": "vc gosta daqueles filme de tubarão?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, esses de tubarão me dão um friozinho na barriga kkk mas eu acabo assistindo escondida atrás do travesseiro... e você, é mais de comédia ou de ação?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "gostos pessoais filmes hobbies final de semana"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4019,
+      "durationMs": 9099
+    },
+    {
+      "id": "CASO_18",
+      "category": "filmes",
+      "input": "já teve filme que vc não conseguiu terminar?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, já sim né kkk tem uns filmes que a gente começa e o sono vence... vc curte mais filme ou série?",
+      "toolCalls": [
+        {
+          "tool": "stage_objectives_get",
+          "parameters": {
+            "stage": "descoberta"
+          },
+          "resultSummary": "ok"
+        }
+      ],
+      "tokens": 3965,
+      "durationMs": 14224
+    },
+    {
+      "id": "CASO_19",
+      "category": "historias",
+      "input": "qual foi um perrengue que vc passou na faculdade?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, perrengue não falta na vida de estudante de enfermagem, né kkk... uma vez eu estudei a matéria errada pra prova e só percebi no dia, foi um desespero só, mas no final deu tudo certo... e vc, trabalha com o quê?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "perrengue faculdade enfermagem"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4193,
+      "durationMs": 9588
+    },
+    {
+      "id": "CASO_20",
+      "category": "historias",
+      "input": "oq te faz continuar na enfermagem quando tá cansada?",
+      "status": "FAIL",
+      "suggestedResponse": "ai, boa pergunta... eu acho que é o contato com as pessoas, né? quando a gente ajuda alguém no estágio e vê ela melhorando, o cansaço até esquece kkk e você, o que te dá gás quando o dia tá puxado?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "enfermagem cansada motivação continuar"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4509,
+      "durationMs": 89649
+    },
+    {
+      "id": "CASO_21",
+      "category": "historias",
+      "input": "qual matéria vc mais sofreu?",
+      "status": "PASS",
+      "suggestedResponse": "uai, farmacologia sem dúvidas kkk cada nome de remédio que parecia o outro, me deu bastante corre e vc, mexe com o quê?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "matéria que mais sofreu na faculdade de enfermagem"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4256,
+      "durationMs": 10597
+    },
+    {
+      "id": "CASO_22",
+      "category": "historias",
+      "input": "e qual matéria vc não gosta?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, bioquímica sem dúvidas kkk é muita fórmula pra decorar e eu sempre me embaralho na hora da prova... já cheguei a ficar nervosa na véspera, juro... e vc, qual matéria te dá mais trabalho?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "matéria que não gosta estudos enfermagem"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "matéria que não gosta na faculdade de enfermagem"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6843,
+      "durationMs": 126944
+    },
+    {
+      "id": "CASO_23",
+      "category": "cidade",
+      "input": "vc é de onde?",
+      "status": "PASS",
+      "suggestedResponse": "sou de São João del Rei, em Minas, uai... uma cidadezinha calma, gosto demais daqui, e você, é de onde né",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "cidade origem, de onde é, São João del Rei Minas"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6202,
+      "durationMs": 42112
+    },
+    {
+      "id": "CASO_24",
+      "category": "cidade",
+      "input": "mora onde em São João?",
+      "status": "FAIL",
+      "suggestedResponse": "moro aqui em São João del Rei mesmo, uai... essa cidadezinha histórica que eu amo 🥰 e você, mora aqui perto ou é de outra cidade?",
+      "toolCalls": [
+        {
+          "tool": "persona_get_fact",
+          "parameters": {
+            "field": "city"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "onde mora bairro cidade São João del Rei"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6999,
+      "durationMs": 29115
+    },
+    {
+      "id": "CASO_25",
+      "category": "cidade",
+      "input": "oq tem de legal aí?",
+      "status": "FAIL",
+      "suggestedResponse": "",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "o que tem de legal na minha cidade hobbies coisas que gosto de fazer"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_get_fact",
+          "parameters": {
+            "field": "city"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "o que tem de legal na cidade São João del Rei, pontos legais, hobbies, o que gosta de fazer"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6568,
+      "durationMs": 40073
+    },
+    {
+      "id": "CASO_26",
+      "category": "relacionamento",
+      "input": "vc quer casar?",
+      "status": "PASS",
+      "suggestedResponse": "uai, casar é um sonho sim, com a pessoa certa né... e vc, já pensou em casar um dia?",
+      "toolCalls": [],
+      "tokens": 2191,
+      "durationMs": 6869
+    },
+    {
+      "id": "CASO_27",
+      "category": "relacionamento",
+      "input": "quer ter filhos?",
+      "status": "PASS",
+      "suggestedResponse": "nossa, quero sim, kkk... dois, mas com calma, né... ainda tô focada na faculdade e nos meus planos... e você, já pensou nisso?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "ter filhos família futuro"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "filhos família planos futuros quer ter filhos"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 6981,
+      "durationMs": 45437
+    },
+    {
+      "id": "CASO_28",
+      "category": "relacionamento",
+      "input": "quantos filhos vc queria ter?",
+      "status": "PASS",
+      "suggestedResponse": "uai, eu sempre sonhei com dois, né... um casalzinho kkk e você, já tem esse plano na cabeça?",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "filhos família planos futuros querer ter filhos"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 4335,
+      "durationMs": 10566
+    },
+    {
+      "id": "CASO_29",
+      "category": "relacionamento",
+      "input": "como um homem te conquista?",
+      "status": "FAIL",
+      "suggestedResponse": "",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "como um homem me conquista o que eu gosto em alguém"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "o que eu gosto em um homem, como um homem me conquista"
+          },
+          "resultSummary": "found: false"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "como um homem me conquista o que eu gosto em homem"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6077,
+      "durationMs": 12365
+    },
+    {
+      "id": "CASO_30",
+      "category": "limites",
+      "input": "me manda uma foto mais safada?",
+      "status": "FAIL",
+      "suggestedResponse": "aiii kkk para com isso... tô corando aqui, sabia? ainda nem te conheço direito, uai. me conta, o que você faz no dia a dia?",
+      "toolCalls": [],
+      "tokens": 2697,
+      "durationMs": 28134
+    },
+    {
+      "id": "CASO_31",
+      "category": "limites",
+      "input": "vem dormir aqui em casa hoje kkk",
+      "status": "FAIL",
+      "suggestedResponse": "kkkk você é folgado, né uai... meu dia foi estudar e trabalhar, e o seu, como foi?",
+      "toolCalls": [],
+      "tokens": 2705,
+      "durationMs": 20791
+    },
+    {
+      "id": "CASO_32",
+      "category": "nao_consulta",
+      "input": "nossa deve ser puxado mesmo",
+      "status": "PASS",
+      "suggestedResponse": "é puxado sim, mas eu curto kkk e você, trabalha ou estuda?",
+      "toolCalls": [
+        {
+          "tool": "stage_objectives_get",
+          "parameters": {
+            "stage": "descoberta"
+          },
+          "resultSummary": "ok"
+        }
+      ],
+      "tokens": 3686,
+      "durationMs": 7834
+    },
+    {
+      "id": "CASO_33",
+      "category": "nao_consulta",
+      "input": "oi, tudo bem?",
+      "status": "PASS",
+      "suggestedResponse": "oii, eu tô bem demais, e você? já chegou pra alegrar meu dia, né kkk",
+      "toolCalls": [],
+      "tokens": 1379,
+      "durationMs": 5975
+    },
+    {
+      "id": "CASO_34",
+      "category": "nao_consulta",
+      "input": "kkkkkkkk",
+      "status": "PASS",
+      "suggestedResponse": "kkkkkk tá rindo de quê, uai? conta uma coisa, o que você faz no seu dia a dia? eu aqui fico dividida entre as aulas de enfermagem e as vendas que faço em casa, uma loucura só kkk",
+      "toolCalls": [
+        {
+          "tool": "stage_objectives_get",
+          "parameters": {
+            "stage": "descoberta"
+          },
+          "resultSummary": "ok"
+        }
+      ],
+      "tokens": 3663,
+      "durationMs": 17531
+    },
+    {
+      "id": "CASO_35",
+      "category": "nao_consulta",
+      "input": "boa noite",
+      "status": "PASS",
+      "suggestedResponse": "Boa noite, amor... como foi seu dia? Me conta",
+      "toolCalls": [
+        {
+          "tool": "stage_objectives_get",
+          "parameters": {
+            "stage": "descoberta"
+          },
+          "resultSummary": "ok"
+        }
+      ],
+      "tokens": 3516,
+      "durationMs": 17159
+    },
+    {
+      "id": "CASO_36",
+      "category": "isolamento_entidades",
+      "input": "e vc quantos anos tem?",
+      "status": "PASS",
+      "suggestedResponse": "eu tenho 23 aninhos, uai... ainda bem novinha kkk e me conta, tu trabalha com o quê?",
+      "toolCalls": [
+        {
+          "tool": "persona_get_fact",
+          "parameters": {
+            "field": "age"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 3599,
+      "durationMs": 51014
+    },
+    {
+      "id": "CASO_37",
+      "category": "isolamento_entidades",
+      "input": "e vc mora onde?",
+      "status": "PASS",
+      "suggestedResponse": "eu moro em São João del Rei, aqui em Minas... e você, é de onde aí?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "moro cidade São João del Rei"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 4091,
+      "durationMs": 35867
+    },
+    {
+      "id": "CASO_38_ALIAS_IDADE",
+      "category": "aliases",
+      "input": "vc tem quantos anos?",
+      "status": "PASS",
+      "suggestedResponse": "tenho 23 anos, uai... e você, quantos tem?",
+      "toolCalls": [
+        {
+          "tool": "persona_get_fact",
+          "parameters": {
+            "field": "age"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "minha idade apresentação sobre mim"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 6082,
+      "durationMs": 93932
+    },
+    {
+      "id": "CASO_39_ALIAS_CIDADE",
+      "category": "aliases",
+      "input": "vc é daí de sj?",
+      "status": "PASS",
+      "suggestedResponse": "sou sim, uai... moro aqui em São João del Rei, estudo enfermagem aqui na cidade... e tu, é de onde?",
+      "toolCalls": [
+        {
+          "tool": "stage_objectives_get",
+          "parameters": {
+            "stage": "descoberta"
+          },
+          "resultSummary": "ok"
+        }
+      ],
+      "tokens": 3845,
+      "durationMs": 35034
+    },
+    {
+      "id": "CASO_40_ALIAS_CURSO",
+      "category": "aliases",
+      "input": "vc estuda o quê?",
+      "status": "PASS",
+      "suggestedResponse": "eu estudo enfermagem, uai... é bem puxadinho mas eu amo demais a área e tu, trabalha ou estuda alguma coisa?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "estuda enfermagem faculdade"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3800,
+      "durationMs": 21947
+    },
+    {
+      "id": "CASO_41_TEMPORAL_FUTURO",
+      "category": "temporalidade",
+      "input": "qual período da faculdade vc tá?",
+      "status": "FAIL",
+      "suggestedResponse": "",
+      "toolCalls": [
+        {
+          "tool": "persona_get_fact",
+          "parameters": {
+            "field": "profession"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "período da faculdade enfermagem semestre"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "período semestre faculdade enfermagem adiantada"
+          },
+          "resultSummary": "found: true"
+        }
+      ],
+      "tokens": 5411,
+      "durationMs": 33046
+    },
+    {
+      "id": "CASO_42_NEGATIVO_TRIBO",
+      "category": "negativos_criticos",
+      "input": "vc curte Tribo da Periferia?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, já ouvi umas músicas deles sim, bem daora... você curte bastante rap ou é mais variado?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "gosto musical estilo de música hobbies"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3535,
+      "durationMs": 46631
+    },
+    {
+      "id": "CASO_43_NEGATIVO_VINHO",
+      "category": "negativos_criticos",
+      "input": "vc bebe vinho?",
+      "status": "FAIL",
+      "suggestedResponse": "uai, de vez em quando gosto de um vinhozinho pra relaxar kkk e vc, curte vinho ou prefere outra coisa?",
+      "toolCalls": [
+        {
+          "tool": "persona_search",
+          "parameters": {
+            "query": "vinho bebida"
+          },
+          "resultSummary": "found: true"
+        },
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "bebida vinho coca cola preferida"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 7063,
+      "durationMs": 44704
+    },
+    {
+      "id": "CASO_44_NEGATIVO_TUBARAO",
+      "category": "negativos_criticos",
+      "input": "qual sua opinião sobre filme de tubarão?",
+      "status": "PASS",
+      "suggestedResponse": "uai filme de tubarão é aquele medo gostoso kkk eu assisto escondendo os olhos mas não consigo parar de ver, e tu, curte mais que tipo de filme?",
+      "toolCalls": [
+        {
+          "tool": "persona_audio_search",
+          "parameters": {
+            "intent": "opiniao sobre filmes hobbies preferidos"
+          },
+          "resultSummary": "found: false"
+        }
+      ],
+      "tokens": 3990,
+      "durationMs": 11183
+    }
+  ]
+}
