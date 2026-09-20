@@ -91,7 +91,7 @@ class MockMemoryProvider {
 
 async function runTests() {
   console.log("================================================================================");
-  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (53 CENÁRIOS)");
+  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (55 CENÁRIOS)");
   console.log("================================================================================\n");
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
@@ -1446,6 +1446,7 @@ async function runTests() {
     let savedStageRules = null;
     let sentBalloons = [];
     let balloonCount = 0;
+    let episodicUpserts = [];
 
     const conversationRow = {
       id: "conv_test_48",
@@ -1528,7 +1529,12 @@ async function runTests() {
             return Promise.resolve({ data: null, error: null });
           },
         }),
-        upsert: (payload) => Promise.resolve({ data: null, error: null }),
+        upsert: (payload) => ({
+          select: () => {
+            episodicUpserts.push(payload);
+            return Promise.resolve({ data: [{ id: "ep_48" }], error: null });
+          },
+        }),
       }),
     };
 
@@ -1637,6 +1643,15 @@ async function runTests() {
       memoryEntities?.self?.job,
       undefined,
       "ContactMemory NÃO deve conter self.job após preempção parcial"
+    );
+
+    // 5. EpisodeWriter executou exatamente 1 vez com apenas o primeiro balão entregue
+    assert.equal(episodicUpserts.length, 1, "EpisodeWriter deve executar exatamente 1 vez no envio parcial");
+    const episodesRecorded = episodicUpserts[0];
+    assert(Array.isArray(episodesRecorded), "upsert deve receber um array de episódios");
+    assert(
+      !episodesRecorded.some((ep) => ep.original_text?.includes("trabalhar como engenheiro")),
+      "Segundo balão (não entregue) JAMAIS pode estar gravado em episódios da memória episódica"
     );
   });
 
@@ -2004,7 +2019,9 @@ async function runTests() {
             return Promise.resolve({ data: null, error: null });
           },
         }),
-        upsert: () => Promise.resolve({ data: null, error: null }),
+        upsert: () => ({
+          select: () => Promise.resolve({ data: [{ id: "ep_52" }], error: null }),
+        }),
       }),
     };
 
@@ -2160,7 +2177,9 @@ async function runTests() {
             return Promise.resolve({ data: null, error: null });
           },
         }),
-        upsert: () => Promise.resolve({ data: null, error: null }),
+        upsert: () => ({
+          select: () => Promise.resolve({ data: [{ id: "ep_53" }], error: null }),
+        }),
       }),
     };
 
@@ -2303,8 +2322,371 @@ async function runTests() {
     );
   });
 
+  // 54. Perda de lock DEPOIS do envio: Zero chamadas a saveFact/writeFact, zero contaminação de completed_goals e ContactMemory
+  await runTest(54, "Perda de lock DEPOIS do envio: Zero chamadas a saveFact/writeFact, zero contaminação de completed_goals e ContactMemory", async () => {
+    let savedStageRules = null;
+    let balloonCount = 0;
+    let episodicUpserts = [];
+
+    class StrictSpiesMemoryProvider {
+      constructor() {
+        this.saveCalls = 0;
+        this.writeCalls = 0;
+        this.storage = new Map();
+      }
+      async getFact(conversationId, entity, field) {
+        return { found: false, value: null };
+      }
+      async saveFact(conversationId, entity, field, value) {
+        this.saveCalls++;
+        return { success: true };
+      }
+      async writeFact(conversationId, fact) {
+        this.writeCalls++;
+        return { success: true };
+      }
+      async listEntityFacts() {
+        return {};
+      }
+    }
+
+    const memoryProvider = new StrictSpiesMemoryProvider();
+
+    const conversationRow = {
+      id: "conv_test_54",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        active_cycle_token: null,
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+          memory: { entities: {}, snippets: [] },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: {
+                id: params?.p_outbox_id || "out_test_54",
+                status: "sending",
+                claimedBy: params?.p_claim_token,
+                sendingAt: new Date().toISOString(),
+              },
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_in_54_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
+                ] : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: (col, val) => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              savedStageRules = conversationRow.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: (payload) => ({
+          select: () => {
+            episodicUpserts.push(payload);
+            return Promise.resolve({ data: [{ id: "ep_54" }], error: null });
+          },
+        }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Conexao inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Que bom saber que você é de Barbacena!",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Que bom saber que você é de Barbacena!"],
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async (supabase, convId, text) => {
+        balloonCount++;
+        // CENÁRIO CRÍTICO:
+        // O envio para o Meta foi feito com sucesso, MAS logo após o envio, outro ciclo assume o lock
+        // antes do preCommitData ser verificado pelo orchestrator!
+        conversationRow.stage_completed_rules.active_cycle_token = "other_cycle_token_stolen";
+        return { message_id: "mid_54" };
+      },
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_54",
+      newMessage: {
+        id: "msg_in_54",
+        text: "sou de Barbacena",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    // 1. O ciclo foi preemptado antes do commit: handled deve ser false e blockLegacyFallback true
+    assert.equal(res.handled, false, "Ciclo que perdeu lock antes do commit final não pode ser handled");
+    assert.equal(res.sentToMeta, true, "Balão foi enviado ao Meta antes da perda do lock");
+    assert(res.error?.includes("Ciclo preemptado antes do commit"), "Erro deve indicar ciclo preemptado antes do commit");
+    assert.equal(balloonCount, 1, "Balão foi entregue");
+
+    // 2. ZERO chamadas a saveFact e writeFact no provider real!
+    assert.equal(memoryProvider.saveCalls, 0, "NÃO pode chamar saveFact se o lock foi perdido antes do commit");
+    assert.equal(memoryProvider.writeCalls, 0, "NÃO pode chamar writeFact se o lock foi perdido antes do commit");
+
+    // 3. ZERO contaminação de completed_goals no banco!
+    assert.deepEqual(
+      conversationRow.stage_completed_rules.completed_goals,
+      ["goal_initial_reciprocity"],
+      "completed_goals DEVE continuar ['goal_initial_reciprocity'] sem goal_city"
+    );
+    assert.deepEqual(
+      conversationRow.stage_completed_rules.orchestration.completedGoalIds,
+      ["goal_initial_reciprocity"],
+      "orchestration.completedGoalIds DEVE continuar ['goal_initial_reciprocity'] sem goal_city"
+    );
+
+    // 4. ZERO contaminação de ContactMemory no banco!
+    assert.equal(
+      conversationRow.stage_completed_rules.orchestration?.memory?.entities?.self?.city,
+      undefined,
+      "ContactMemory NÃO pode conter self.city de ciclo abortado por perda de lock"
+    );
+
+    // 5. EpisodeWriter NÃO foi chamado para o ciclo abortado
+    assert.equal(
+      episodicUpserts.length,
+      0,
+      "EpisodeWriter NÃO pode ser executado para ciclo normal que perdeu lock antes do commit"
+    );
+  });
+
+  // 55. Deduplicação de EpisodeWriter em ciclo normal: Executa exatamente 1 vez com todos os balões entregues
+  await runTest(55, "Deduplicação de EpisodeWriter em ciclo normal: Executa exatamente 1 vez com todos os balões entregues", async () => {
+    let savedStageRules = null;
+    let balloonCount = 0;
+    let episodicUpserts = [];
+
+    const memoryProvider = new MockMemoryProvider();
+
+    const conversationRow = {
+      id: "conv_test_55",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        active_cycle_token: null,
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+          memory: { entities: {}, snippets: [] },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: {
+                id: params?.p_outbox_id || "out_test_55",
+                status: "sending",
+                claimedBy: params?.p_claim_token,
+                sendingAt: new Date().toISOString(),
+              },
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_in_55_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
+                ] : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: (col, val) => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              savedStageRules = conversationRow.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: (payload) => ({
+          select: () => {
+            episodicUpserts.push(payload);
+            return Promise.resolve({ data: [{ id: "ep_55" }], error: null });
+          },
+        }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Conexao inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Oi! Tudo bem?\nComo foi seu dia por aí?",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Oi! Tudo bem?", "Como foi seu dia por aí?"],
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async (supabase, convId, text) => {
+        balloonCount++;
+        return { message_id: `mid_55_${balloonCount}` };
+      },
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_55",
+      newMessage: {
+        id: "msg_in_55",
+        text: "oi",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(res.handled, true, "Ciclo confirmado deve ser handled com sucesso");
+    assert.equal(balloonCount, 2, "Devem ser entregues 2 balões");
+
+    // ASSERÇÃO PRINCIPAL DO BUG 2:
+    // EpisodeWriter deve executar EXATAMENTE UMA VEZ no ciclo normal completo confirmado
+    assert.equal(
+      episodicUpserts.length,
+      1,
+      "EpisodeWriter DEVE executar EXATAMENTE 1 vez por ciclo normal confirmado (Deduplicação garantida)"
+    );
+
+    const episodesRecorded = episodicUpserts[0];
+    assert(Array.isArray(episodesRecorded), "upsert deve receber um array de episódios");
+    assert(episodesRecorded.length > 0, "Devem ser gerados episódios para os balões enviados");
+    const larissaEpisodes = episodesRecorded.filter((ep) => ep.actor === "larissa");
+    assert(larissaEpisodes.length > 0, "Deve haver episódios da Larissa gravados");
+    assert(
+      larissaEpisodes.every((ep) => ep.source_message_id && ep.source_message_id.startsWith("out_")),
+      "source_message_id de todos os episódios da Larissa devem começar com out_"
+    );
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/53 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/55 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

@@ -6813,8 +6813,54 @@ Responda ESTRITAMENTE em JSON puro:
         advancementReason: undefined as string | undefined,
       };
 
-      if (isConfirmedSuccess) {
-        // Persistência confirmada atômica: grava fatos espontâneos detectados no memoryProvider real SOMENTE após ciclo confirmado
+      if (!isConfirmedSuccess) {
+        currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");
+      } else {
+        // 1. Calcula progressão determinística usando ESTADO LOCAL/OVERLAY (cycleMemoryProvider)
+        // O overlay permite que a progressão enxergue os fatos do turno sem NENHUMA escrita no banco!
+        stageProgression = await processDeterministicStageProgression({
+          supabase,
+          conversationId,
+          currentPhase,
+          currentStageId,
+          decision,
+          claimedMessages: claimedMessages || [],
+          rawInbounds: rawInbounds || [],
+          stageRules,
+          orchState,
+          currentCycle,
+          memoryProvider: cycleMemoryProvider,
+          episodicMemory: [],
+        });
+        decision.nextPhase = stageProgression.nextPhase;
+
+        // 2. PRE-COMMIT RECHECK: Checagem atômica de lock e preempção ANTES de qualquer escrita!
+        // Se outro ciclo assumiu o lock ou preempção foi solicitada, este ciclo NÃO toca na ContactMemory,
+        // nem no MemoryWriter, nem no banco!
+        const { data: preCommitData } = await supabase
+          .from("instagram_conversations")
+          .select("stage_completed_rules")
+          .eq("id", conversationId)
+          .maybeSingle();
+
+        const latestCycleToken = preCommitData?.stage_completed_rules?.active_cycle_token;
+        const isPreemptRequested = Boolean(preCommitData?.stage_completed_rules?.preempt_requested);
+
+        if (latestCycleToken !== correlationId || isPreemptRequested) {
+          console.warn(
+            `[Orchestrator] Ciclo ${correlationId} perdeu o lock antes do commit final (token atual: ${latestCycleToken || "null"}, preemptRequested: ${isPreemptRequested}). Abortando sobrescrita de estado e zero gravação de ContactMemory.`
+          );
+          return {
+            mode: orchState.mode,
+            handled: false,
+            sentToMeta: sentSuccessfully,
+            blockLegacyFallback: true,
+            error: `Ciclo preemptado antes do commit por ${latestCycleToken || "lock_expirado"}`,
+          };
+        }
+
+        // 3. SOMENTE APÓS PRE-COMMIT AUTORIZADO (Lock verificado e intacto):
+        // Persistência confirmada de fatos espontâneos no memoryProvider real
         const pendingFacts = cycleMemoryProvider.getPendingFacts();
         for (const f of pendingFacts) {
           try {
@@ -6838,6 +6884,7 @@ Responda ESTRITAMENTE em JSON puro:
           }
         }
 
+        // Executa MemoryWriter no provider real
         try {
           await executeMemoryWriter({
             conversationId,
@@ -6852,117 +6899,48 @@ Responda ESTRITAMENTE em JSON puro:
           currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
         }
 
-        // Executa EpisodeWriter para registrar fatos episódicos no Supabase de forma fail-safe
-        try {
-          await executeEpisodeWriter({
-            conversationId,
-            claimedMessages: (claimedMessages || []).map((m: any) => ({
-              id: String(m.id),
-              text: m.text || "",
-              sender: "pretendente",
-              direction: "inbound",
-            })),
-            sentBalloons: balloons.slice(0, sentBalloonsCount),
-            sentMessageIds: sentBalloonsCount > 0 ? [`out_${Date.now()}`] : [],
-            audioPayload: audioPayload ? {
-              id: audioPayload.id,
-              theme: (audioPayload as any).theme || (audioPayload as any).category,
-              transcript: (audioPayload as any).transcript,
-            } : null,
-            supabase,
-            trace: currentCycle.trace,
-          });
-        } catch (epErr: any) {
-          currentCycle.trace.push(`episode_writer_error: ${epErr.message || String(epErr)}`);
-        }
+        const finalPhaseForExp = stageProgression.nextPhase || currentPhase;
 
-        // Validação e conclusão determinística de checkpoints e avanço de etapa
-        stageProgression = await processDeterministicStageProgression({
-          supabase,
-          conversationId,
-          currentPhase,
-          currentStageId,
-          decision,
-          claimedMessages: claimedMessages || [],
-          rawInbounds: rawInbounds || [],
-          stageRules,
-          orchState,
-          currentCycle,
-          memoryProvider,
-          episodicMemory: [],
-        });
-        decision.nextPhase = stageProgression.nextPhase;
-      } else {
-        currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");
-      }
-
-      const finalPhaseForExp = stageProgression.nextPhase || currentPhase;
-
-      const updatedState: ConversationOrchestrationState = {
-        version: 1,
-        mode: "experimental",
-        currentPhase: finalPhaseForExp,
-        currentStageId: stageProgression.nextStageId,
-        responsibleSubagentId: stageProgression.responsibleSubagentId,
-        checkpoint: decision.checkpoint,
-        lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
-        lastProcessedAt: new Date().toISOString(),
-        lastProcessingStatus: sentSuccessfully || decision.action === "wait" ? "sent" : "decided",
-        lastCorrelationId: correlationId,
-        lastDecision: decision,
-        lastError: null,
-        durationMs,
-        tokens: totalTokens,
-        updatedAt: new Date().toISOString(),
-        activeCycle: null,
-        recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
-        outbox: outboxMap,
-        messageLedger: ledger,
-        memory: orchState.memory,
-      };
-      (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
-      (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
-
-      // Checagem de preempção antes do commit final no banco:
-      // Se outro ciclo assumiu o lock durante o processamento/despacho, não sobrescreve seu estado!
-      const { data: preCommitData } = await supabase
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .eq("id", conversationId)
-        .maybeSingle();
-
-      const latestCycleToken = preCommitData?.stage_completed_rules?.active_cycle_token;
-      if (latestCycleToken !== correlationId) {
-        console.warn(
-          `[Orchestrator] Ciclo ${correlationId} preemptado antes do commit final (token atual: ${latestCycleToken || "null"}). Ignorando sobrescrita de estado.`
-        );
-        return {
-          mode: orchState.mode,
-          handled: false,
-          sentToMeta: sentSuccessfully,
-          blockLegacyFallback: true,
-          error: `Ciclo preemptado antes do commit por ${latestCycleToken || "lock_expirado"}`,
+        const updatedState: ConversationOrchestrationState = {
+          version: 1,
+          mode: "experimental",
+          currentPhase: finalPhaseForExp,
+          currentStageId: stageProgression.nextStageId,
+          responsibleSubagentId: stageProgression.responsibleSubagentId,
+          checkpoint: decision.checkpoint,
+          lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
+          lastProcessedAt: new Date().toISOString(),
+          lastProcessingStatus: sentSuccessfully || decision.action === "wait" ? "sent" : "decided",
+          lastCorrelationId: correlationId,
+          lastDecision: decision,
+          lastError: null,
+          durationMs,
+          tokens: totalTokens,
+          updatedAt: new Date().toISOString(),
+          activeCycle: null,
+          recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
+          outbox: outboxMap,
+          messageLedger: ledger,
+          memory: orchState.memory,
         };
-      }
+        (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
+        (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
 
-      // PRESERVAÇÃO ESTRITA DE MEMÓRIA:
-      // O MemoryWriter (ou SupabaseMemoryProvider) gravou novos fatos em stage_completed_rules.orchestration.memory.
-      // Mesclamos a memória mais recente do banco (e do provider) para JAMAIS sobrescrever com o snapshot antigo da RAM.
-      const freshRules = preCommitData?.stage_completed_rules || stageRules;
-      const latestMemoryFromDb = freshRules?.orchestration?.memory;
+        // PRESERVAÇÃO ESTRITA DE MEMÓRIA:
+        // Mesclamos a memória mais recente do banco (e do provider) para JAMAIS sobrescrever com o snapshot antigo da RAM.
+        const freshRules = preCommitData?.stage_completed_rules || stageRules;
+        const latestMemoryFromDb = freshRules?.orchestration?.memory;
 
-      let providerMemoryEntities: Record<string, Record<string, MemoryFact>> = {};
-      if (typeof (memoryProvider as any).getOrCreateStore === "function") {
-        const memStore = (memoryProvider as any).getOrCreateStore(conversationId);
-        if (memStore?.entities) {
-          providerMemoryEntities = memStore.entities;
+        let providerMemoryEntities: Record<string, Record<string, MemoryFact>> = {};
+        if (typeof (memoryProvider as any).getOrCreateStore === "function") {
+          const memStore = (memoryProvider as any).getOrCreateStore(conversationId);
+          if (memStore?.entities) {
+            providerMemoryEntities = memStore.entities;
+          }
         }
-      }
 
-      // Se o ciclo foi confirmado com sucesso, mescla também os fatos espontâneos confirmados do turno
-      const confirmedTurnEntities: Record<string, Record<string, MemoryFact>> = {};
-      if (isConfirmedSuccess) {
-        for (const f of cycleMemoryProvider.getPendingFacts()) {
+        const confirmedTurnEntities: Record<string, Record<string, MemoryFact>> = {};
+        for (const f of pendingFacts) {
           const normEnt = (f.entity || "self").toLowerCase().trim();
           const normFld = (f.field || "").toLowerCase().trim();
           if (!confirmedTurnEntities[normEnt]) confirmedTurnEntities[normEnt] = {};
@@ -6975,81 +6953,81 @@ Responda ESTRITAMENTE em JSON puro:
             updatedAt: new Date().toISOString(),
           };
         }
-      }
 
-      const mergedEntities = {
-        ...(orchState.memory?.entities || {}),
-        ...(latestMemoryFromDb?.entities || {}),
-        ...providerMemoryEntities,
-        ...confirmedTurnEntities,
-      };
+        const mergedEntities = {
+          ...(orchState.memory?.entities || {}),
+          ...(latestMemoryFromDb?.entities || {}),
+          ...providerMemoryEntities,
+          ...confirmedTurnEntities,
+        };
 
-      const mergedMemory: ContactMemoryStore = {
-        entities: mergedEntities,
-        snippets: latestMemoryFromDb?.snippets || orchState.memory?.snippets || [],
-      };
+        const mergedMemory: ContactMemoryStore = {
+          entities: mergedEntities,
+          snippets: latestMemoryFromDb?.snippets || orchState.memory?.snippets || [],
+        };
 
-      updatedState.memory = mergedMemory;
-      updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
-      updatedState.preemptRequested = freshRules?.orchestration?.preemptRequested ?? false;
+        updatedState.memory = mergedMemory;
+        updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
+        updatedState.preemptRequested = false;
 
-      await supabase
-        .from("instagram_conversations")
-        .update({
-          stage_completed_rules: {
-            ...freshRules,
-            completed_goals: stageProgression.updatedCompletedGoals,
-            objective_progress: stageProgression.updatedObjectiveProgress,
-            active_cycle_token: null,
-            orchestration: updatedState,
-          },
-        })
-        .eq("id", conversationId);
+        await supabase
+          .from("instagram_conversations")
+          .update({
+            stage_completed_rules: {
+              ...freshRules,
+              completed_goals: stageProgression.updatedCompletedGoals,
+              objective_progress: stageProgression.updatedObjectiveProgress,
+              active_cycle_token: null,
+              orchestration: updatedState,
+            },
+          })
+          .eq("id", conversationId);
 
-      await publishAutoPilotState(supabase, conversationId, {
-        status: "idle",
-        lastThoughts: {
-          atriaThought: decision.reasoning,
-          solThought: decision.suggestedResponse,
-          previewResponses: [decision.suggestedResponse],
-        },
-        activity: activity(
-          "completed",
-          sentSuccessfully ? "Atria respondeu" : "Atria avaliou",
-          decision.suggestedResponse || "Turno concluído.",
-          {
+        await publishAutoPilotState(supabase, conversationId, {
+          status: "idle",
+          lastThoughts: {
             atriaThought: decision.reasoning,
             solThought: decision.suggestedResponse,
-            currentResponsePreview: decision.suggestedResponse,
             previewResponses: [decision.suggestedResponse],
-            mode: "experimental",
-            decision,
-          }
-        ),
-      });
+          },
+          activity: activity(
+            "completed",
+            sentSuccessfully ? "Atria respondeu" : "Atria avaliou",
+            decision.suggestedResponse || "Turno concluído.",
+            {
+              atriaThought: decision.reasoning,
+              solThought: decision.suggestedResponse,
+              currentResponsePreview: decision.suggestedResponse,
+              previewResponses: [decision.suggestedResponse],
+              mode: "experimental",
+              decision,
+            }
+          ),
+        });
 
-      // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
-      // Executa apenas quando a mensagem foi entregue com sucesso (sentSuccessfully === true)
-      if (sentSuccessfully) {
-        try {
-          await executeEpisodeWriter({
-            conversationId,
-            claimedMessages: (claimedMessages || []).map((m: any) => ({
-              id: String(m.id),
-              text: m.text || "",
-              sender: "pretendente",
-              direction: "inbound",
-            })),
-            sentBalloons: balloons || [],
-            sentMessageIds: (balloons || []).map((_, idx) => `out_${correlationId}_${idx}`),
-            audioPayload: audioPayload
-              ? { id: audioPayload.id, theme: audioPayload.title, transcript: audioPayload.transcript }
-              : null,
-            supabase,
-            trace: currentCycle.trace || [],
-          });
-        } catch (epErr: any) {
-          console.warn("[EpisodeWriter] Erro fail-safe ao persistir episódios da conversa:", epErr);
+        // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
+        // Executa UMA ÚNICA VEZ por ciclo normal confirmado, após o commit oficial
+        if (sentSuccessfully) {
+          try {
+            await executeEpisodeWriter({
+              conversationId,
+              claimedMessages: (claimedMessages || []).map((m: any) => ({
+                id: String(m.id),
+                text: m.text || "",
+                sender: "pretendente",
+                direction: "inbound",
+              })),
+              sentBalloons: balloons || [],
+              sentMessageIds: (balloons || []).map((_, idx) => `out_${correlationId}_${idx}`),
+              audioPayload: audioPayload
+                ? { id: audioPayload.id, theme: audioPayload.title, transcript: audioPayload.transcript }
+                : null,
+              supabase,
+              trace: currentCycle.trace || [],
+            });
+          } catch (epErr: any) {
+            console.warn("[EpisodeWriter] Erro fail-safe ao persistir episódios da conversa:", epErr);
+          }
         }
       }
 
