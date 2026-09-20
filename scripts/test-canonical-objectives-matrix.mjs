@@ -91,7 +91,7 @@ class MockMemoryProvider {
 
 async function runTests() {
   console.log("================================================================================");
-  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (52 CENÁRIOS)");
+  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (53 CENÁRIOS)");
   console.log("================================================================================\n");
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
@@ -109,6 +109,9 @@ async function runTests() {
     runExperimentalOrchestration,
     resolveOfficialCompletedGoals,
     resolveOfficialObjectiveProgress,
+    SupabaseMemoryProvider,
+    OverlayMemoryProvider,
+    createOverlayMemoryProvider,
   } = orchestratorModule;
 
   let passed = 0;
@@ -1622,6 +1625,19 @@ async function runTests() {
       Date.parse(savedStageRules.ai_debounce_until) > Date.now() - 1000,
       "ai_debounce_until deve ter timestamp válido"
     );
+
+    // 4. Memória NÃO foi contaminada com fatos espontâneos do ciclo não confirmado
+    const memoryEntities = savedStageRules.orchestration?.memory?.entities;
+    assert.equal(
+      memoryEntities?.self?.city,
+      undefined,
+      "ContactMemory NÃO deve conter self.city após preempção parcial"
+    );
+    assert.equal(
+      memoryEntities?.self?.job,
+      undefined,
+      "ContactMemory NÃO deve conter self.job após preempção parcial"
+    );
   });
 
   // 49. validatePhaseTransition NÃO é autoridade de workflow (função auxiliar pura de validação/debug)
@@ -1891,6 +1907,16 @@ async function runTests() {
       undefined,
       "objective_progress NÃO deve conter goal_job após preempção"
     );
+    assert.equal(
+      savedStageRules.orchestration?.memory?.entities?.self?.city,
+      undefined,
+      "orchestration.memory NÃO deve conter self.city após preempção antes da Outbox"
+    );
+    assert.equal(
+      savedStageRules.orchestration?.memory?.entities?.self?.job,
+      undefined,
+      "orchestration.memory NÃO deve conter self.job após preempção antes da Outbox"
+    );
   });
 
   // 52. Terceiro teste real: Sucesso normal confirmado promove objetivo espontâneo no commit final determinístico
@@ -2040,10 +2066,245 @@ async function runTests() {
       savedStageRules.objective_progress.goal_city,
       "objective_progress oficial DEVE conter goal_city"
     );
+    assert.equal(
+      savedStageRules.orchestration?.memory?.entities?.self?.city?.value?.toLowerCase(),
+      "barbacena",
+      "orchestration.memory DEVE conter self.city='barbacena' após ciclo confirmado"
+    );
+  });
+
+  // 53. TESTE CRÍTICO DE DOIS CICLOS (Persistência adiada com SupabaseMemoryProvider):
+  // Ciclo 1: Pretendente revela cidade espontaneamente ("sou de Barbacena"), ciclo sofre preempção antes do envio.
+  //          Garante ZERO gravação no banco de dados (ContactMemory limpa, completed_goals intacto).
+  // Ciclo 2: Pretendente manda "e vc?". Novo ciclo inicia lendo o banco de dados.
+  //          Garante que goal_city continua pendente e NÃO é ressuscitado via memory_fact_sync.
+  await runTest(53, "Teste Crítico de Dois Ciclos: Preempção no Ciclo 1 não polui ContactMemory nem ressuscita checkpoint no Ciclo 2", async () => {
+    let conversationRow = {
+      id: "conv_two_cycles_test",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+          memory: { entities: {}, snippets: [] },
+        },
+      },
+    };
+
+    const messagesInDb = [
+      { id: "msg_init", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 15000).toISOString() },
+    ];
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: {
+                id: params?.p_outbox_id || "out_c1",
+                status: "sending",
+                claimedBy: params?.p_claim_token,
+                sendingAt: new Date().toISOString(),
+              },
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? messagesInDb : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: (col, val) => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: () => Promise.resolve({ data: null, error: null }),
+      }),
+    };
+
+    const realSupabaseMemoryProvider = new SupabaseMemoryProvider(mockSupabase);
+
+    // ==========================================
+    // CICLO 1: Pretendente diz "sou de Barbacena", mas ciclo é PREEMPTADO antes do envio
+    // ==========================================
+    let c1BalloonsSent = 0;
+    const runtimeC1 = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        // Simula preempção chegando durante o subagente
+        conversationRow.stage_completed_rules.preempt_requested = true;
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Que legal, sou de BH!",
+            checkpoint: "chk_saudacao_feita",
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async () => {
+        c1BalloonsSent++;
+        return { message_id: "m_c1_sent" };
+      },
+    };
+
+    const resC1 = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_two_cycles_test",
+      newMessage: {
+        id: "msg_c1",
+        text: "sou de Barbacena",
+        sender: "pretendente",
+      },
+      runtime: runtimeC1,
+      memoryProvider: realSupabaseMemoryProvider,
+    });
+
+    assert.equal(c1BalloonsSent, 0, "Ciclo 1 não deve enviar nenhum balão (preempção antes da outbox)");
+
+    // ASSERÇÕES CRÍTICAS DO CICLO 1:
+    // 1. completed_goals oficial no banco NÃO contém goal_city
+    assert.deepEqual(
+      conversationRow.stage_completed_rules.completed_goals,
+      ["goal_initial_reciprocity"],
+      "Ciclo 1 preemptado: completed_goals no banco DEVE continuar estritamente ['goal_initial_reciprocity']"
+    );
+    // 2. ContactMemory oficial no banco NÃO contém self.city
+    const dbMemory = conversationRow.stage_completed_rules.orchestration?.memory?.entities;
+    assert.equal(
+      dbMemory?.self?.city,
+      undefined,
+      "Ciclo 1 preemptado: ZERO gravação no banco! self.city DEVE ser undefined na ContactMemory"
+    );
+
+    // ==========================================
+    // CICLO 2: Pretendente manda "e vc?". Novo ciclo inicia lendo o banco de dados.
+    // ==========================================
+    // Limpa flag de preempção para o ciclo 2
+    conversationRow.stage_completed_rules.preempt_requested = false;
+    conversationRow.stage_completed_rules.active_cycle_token = null;
+
+    let c2BalloonsSent = 0;
+
+    // Inspeciona resolução de objetivos no início do Ciclo 2
+    const checklistBeforeC2 = await resolveStageObjectives({
+      supabase: mockSupabase,
+      conversationId: "conv_two_cycles_test",
+      stageNameOrId: "stage_1_conexao",
+      memoryProvider: realSupabaseMemoryProvider,
+      completedGoalIds: conversationRow.stage_completed_rules.completed_goals,
+    });
+
+    const goalCityAtC2Start = checklistBeforeC2.goals.find((g) => g.id === "goal_city");
+    assert(goalCityAtC2Start, "goal_city deve existir na etapa 1");
+    assert.equal(
+      goalCityAtC2Start.status,
+      "pending",
+      "No Ciclo 2, goal_city DEVE continuar com status 'pending' (NÃO pode ser ressuscitado via memory_fact_sync!)"
+    );
+
+    const runtimeC2 = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Conexão inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Eu sou de Belo Horizonte! E vc, mora onde?",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Eu sou de Belo Horizonte! E vc, mora onde?"],
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async () => {
+        c2BalloonsSent++;
+        return { message_id: "m_c2_sent" };
+      },
+    };
+
+    const resC2 = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_two_cycles_test",
+      newMessage: {
+        id: "msg_c2",
+        text: "e vc?",
+        sender: "pretendente",
+      },
+      runtime: runtimeC2,
+      memoryProvider: realSupabaseMemoryProvider,
+    });
+
+    assert.equal(resC2.handled, true, "Ciclo 2 deve concluir com sucesso");
+    assert.equal(c2BalloonsSent, 1, "Ciclo 2 deve enviar 1 balão");
+
+    // ASSERÇÕES CRÍTICAS DO CICLO 2:
+    // Como a mensagem do Ciclo 2 ("e vc?") não continha a cidade e o Ciclo 1 morreu:
+    // goal_city NÃO foi completado!
+    assert(
+      !conversationRow.stage_completed_rules.completed_goals.includes("goal_city"),
+      "No Ciclo 2, completed_goals NÃO pode conter goal_city (o fato do ciclo 1 abortado não vazou)"
+    );
+    assert.equal(
+      conversationRow.stage_completed_rules.orchestration?.memory?.entities?.self?.city,
+      undefined,
+      "No Ciclo 2, a ContactMemory no banco continua limpa sem self.city"
+    );
   });
 
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/52 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/53 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

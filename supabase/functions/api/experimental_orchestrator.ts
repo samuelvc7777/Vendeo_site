@@ -4289,6 +4289,175 @@ export class ObsidianMemoryAdapter implements MemoryProvider {
   }
 }
 
+/**
+ * Entrada de fato detectado durante o turno
+ */
+export interface DetectedFactEntry {
+  entity: string;
+  field: string;
+  value: any;
+  sourceMessageId: string;
+  confidence?: number;
+}
+
+/**
+ * OverlayMemoryProvider: Provedor de memória em camada para ciclos de orquestração.
+ * Intercepta leituras e escritas do turno mantendo fatos recém-detectados em RAM local.
+ * NUNCA propaga mutações para o baseProvider (banco de dados) antes da confirmação atômica do ciclo.
+ */
+export class OverlayMemoryProvider implements MemoryProvider {
+  private baseProvider: MemoryProvider;
+  private overlayStore = new Map<string, ContactMemoryStore>();
+  private pendingDetectedFacts: DetectedFactEntry[] = [];
+
+  constructor(baseProvider: MemoryProvider, initialPendingFacts: DetectedFactEntry[] = []) {
+    this.baseProvider = baseProvider;
+    for (const f of initialPendingFacts) {
+      this.addOverlayFact(f);
+    }
+  }
+
+  private getOrCreateOverlay(contactId: string): ContactMemoryStore {
+    let store = this.overlayStore.get(contactId);
+    if (!store) {
+      store = { entities: {}, snippets: [] };
+      this.overlayStore.set(contactId, store);
+    }
+    return store;
+  }
+
+  addOverlayFact(entry: DetectedFactEntry, contactId: string = "default"): void {
+    this.pendingDetectedFacts.push(entry);
+    const store = this.getOrCreateOverlay(contactId);
+    const normEntity = (entry.entity || "self").toLowerCase().trim();
+    const normField = (entry.field || "").toLowerCase().trim();
+    if (!store.entities[normEntity]) {
+      store.entities[normEntity] = {};
+    }
+    store.entities[normEntity][normField] = {
+      entity: normEntity,
+      field: normField,
+      value: entry.value,
+      confidence: entry.confidence ?? 1.0,
+      sourceMessageId: entry.sourceMessageId,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  getPendingFacts(): DetectedFactEntry[] {
+    return [...this.pendingDetectedFacts];
+  }
+
+  clearPendingFacts(): void {
+    this.pendingDetectedFacts = [];
+  }
+
+  async getFact(contactId: string, entity: string, field: string): Promise<{ found: boolean; fact?: MemoryFact; value?: any }> {
+    const store = this.getOrCreateOverlay(contactId);
+    const normEntity = (entity || "self").toLowerCase().trim();
+    const normField = (field || "").toLowerCase().trim();
+    const overlayFact = store.entities[normEntity]?.[normField];
+    if (overlayFact) {
+      return { found: true, fact: overlayFact, value: overlayFact.value };
+    }
+    return this.baseProvider.getFact(contactId, entity, field);
+  }
+
+  async listEntityFacts(contactId: string, entity: string): Promise<Record<string, MemoryFact>> {
+    const baseFacts = await this.baseProvider.listEntityFacts(contactId, entity);
+    const store = this.getOrCreateOverlay(contactId);
+    const normEntity = (entity || "self").toLowerCase().trim();
+    const overlayFacts = store.entities[normEntity] || {};
+    return {
+      ...(baseFacts || {}),
+      ...overlayFacts,
+    };
+  }
+
+  async searchMemory(contactId: string, query: string, options?: { entity?: string; limit?: number }): Promise<MemorySearchResult[]> {
+    const limit = options?.limit || 3;
+    const baseResults = await this.baseProvider.searchMemory(contactId, query, options);
+    if (baseResults.length >= limit) {
+      return baseResults;
+    }
+
+    const store = this.getOrCreateOverlay(contactId);
+    const normQuery = (query || "").toLowerCase().trim();
+    const targetEntity = options?.entity?.toLowerCase()?.trim();
+    const additional: MemorySearchResult[] = [];
+
+    if (store.entities) {
+      for (const entKey of Object.keys(store.entities)) {
+        if (targetEntity && entKey !== targetEntity) continue;
+        const entObj = store.entities[entKey];
+        for (const fKey of Object.keys(entObj)) {
+          const f = entObj[fKey];
+          const factText = `${entKey}.${fKey}: ${f.value}`;
+          if (normQuery && factText.toLowerCase().includes(normQuery)) {
+            additional.push({
+              snippet: factText,
+              sourceMessageId: f.sourceMessageId,
+              entity: entKey,
+            });
+            if (baseResults.length + additional.length >= limit) break;
+          }
+        }
+        if (baseResults.length + additional.length >= limit) break;
+      }
+    }
+
+    return [...baseResults, ...additional];
+  }
+
+  async writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }> {
+    this.addOverlayFact({
+      entity: fact.entity,
+      field: fact.field,
+      value: fact.value,
+      confidence: fact.confidence,
+      sourceMessageId: fact.sourceMessageId || "",
+    }, contactId);
+    return { success: true };
+  }
+
+  async saveFact(contactId: string, entity: string, field: string, value: any, options?: { confidence?: number; sourceMessageId?: string }): Promise<{ success: boolean; error?: string }> {
+    this.addOverlayFact({
+      entity,
+      field,
+      value,
+      confidence: options?.confidence ?? 1.0,
+      sourceMessageId: options?.sourceMessageId || "",
+    }, contactId);
+    return { success: true };
+  }
+
+  getOrCreateStore(contactId: string): ContactMemoryStore {
+    const overlay = this.getOrCreateOverlay(contactId);
+    if (typeof (this.baseProvider as any).getOrCreateStore === "function") {
+      const baseStore = (this.baseProvider as any).getOrCreateStore(contactId);
+      const mergedEntities: Record<string, Record<string, MemoryFact>> = {};
+      for (const k of Object.keys(baseStore.entities || {})) {
+        mergedEntities[k] = { ...(baseStore.entities[k] || {}) };
+      }
+      for (const k of Object.keys(overlay.entities || {})) {
+        mergedEntities[k] = { ...(mergedEntities[k] || {}), ...(overlay.entities[k] || {}) };
+      }
+      return {
+        entities: mergedEntities,
+        snippets: [...(baseStore.snippets || []), ...(overlay.snippets || [])],
+      };
+    }
+    return overlay;
+  }
+}
+
+export function createOverlayMemoryProvider(
+  baseProvider: MemoryProvider,
+  initialPendingFacts: DetectedFactEntry[] = []
+): OverlayMemoryProvider {
+  return new OverlayMemoryProvider(baseProvider, initialPendingFacts);
+}
+
 // ----------------------------------------------------------------------------
 // 7.6. Extração Determinística de Fatos Objetivos & MemoryWriter
 // ----------------------------------------------------------------------------
@@ -4799,6 +4968,11 @@ export async function runExperimentalOrchestration(
     runtime?.memoryProvider ||
     new SupabaseMemoryProvider(supabase);
 
+  // Overlay local do turno para isolamento estrito de memória:
+  // Fatos detectados no turno são mantidos em RAM e NUNCA gravados no baseProvider antes da confirmação do ciclo.
+  const pendingDetectedFacts: DetectedFactEntry[] = [];
+  const cycleMemoryProvider = createOverlayMemoryProvider(memoryProvider, pendingDetectedFacts);
+
   // 1. Carrega o estado atual da conversa
   const { data: convRow, error: convErr } = await supabase
     .from("instagram_conversations")
@@ -5222,7 +5396,7 @@ export async function runExperimentalOrchestration(
       supabase,
       conversationId,
       stageNameOrId: currentStageId,
-      memoryProvider,
+      memoryProvider: cycleMemoryProvider,
       completedGoalIds,
       historyMessages: claimedMessages,
     });
@@ -5268,36 +5442,37 @@ export async function runExperimentalOrchestration(
           supabase,
           conversationId,
           stageNameOrId: currentStageId,
-          memoryProvider,
+          memoryProvider: cycleMemoryProvider,
           completedGoalIds: workingCompletedGoalIds,
           historyMessages: claimedMessages,
         });
       } else {
-        // MODO REAL/EXPERIMENTAL: Salva fatos na ContactMemory e atualiza apenas workingCompletedGoalIds do turno
-        // orchState.completedGoalIds e stageRules.completed_goals NÃO são mutados aqui (apenas no commit final confirmado)
+        // MODO REAL/EXPERIMENTAL: Salva fatos no overlay em memória do turno e atualiza apenas workingCompletedGoalIds
+        // ZERO escritas no banco ou no memoryProvider base antes da confirmação do ciclo!
         workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, ...newlyCompleted])];
         currentCycle.trace.push(`spontaneous_objectives_completed: ${newlyCompleted.join(",")}`);
 
-        // Salva fatos espontâneos na ContactMemory com entidade canônica "self"
+        // Registra fatos espontâneos no overlay em memória do ciclo com entidade canônica "self"
         for (const m of spontaneousMatches) {
-          try {
-            const entity = m.memoryEntity || "self";
-            const field = m.memoryField || m.field;
-            await memoryProvider.saveFact(conversationId, entity, field, m.value, {
-              confidence: 1.0,
-              sourceMessageId: m.evidenceMessageId || newMessage.id,
-            });
-          } catch (err) {
-            // Fail-safe silencioso
-          }
+          const entity = m.memoryEntity || "self";
+          const field = m.memoryField || m.field;
+          const factEntry: DetectedFactEntry = {
+            entity,
+            field,
+            value: m.value,
+            confidence: 1.0,
+            sourceMessageId: m.evidenceMessageId || newMessage.id,
+          };
+          cycleMemoryProvider.addOverlayFact(factEntry, conversationId);
+          currentCycle.trace.push(`spontaneous_fact_buffered: ${entity}.${field}`);
         }
 
-        // Re-resolve os objetivos com os fatos atualizados para uso LOCAL no ciclo atual
+        // Re-resolve os objetivos com os fatos locais do turno para uso LOCAL no ciclo atual
         stageChecklistForRouter = await resolveStageObjectives({
           supabase,
           conversationId,
           stageNameOrId: currentStageId,
-          memoryProvider,
+          memoryProvider: cycleMemoryProvider,
           completedGoalIds: workingCompletedGoalIds,
           historyMessages: claimedMessages,
         });
@@ -5422,10 +5597,10 @@ export async function runExperimentalOrchestration(
           : CANONICAL_SUBAGENTS.conexao_inicial.mission,
       };
 
-      // Fatos conhecidos do contato na memória estruturada
+      // Fatos conhecidos do contato na memória estruturada (inclui fatos do turno via overlay)
       let knownFactsForSubagent: Record<string, any> = {};
       try {
-        const selfFacts = await memoryProvider.listEntityFacts(conversationId, "self");
+        const selfFacts = await cycleMemoryProvider.listEntityFacts(conversationId, "self");
         if (selfFacts && typeof selfFacts === "object") {
           for (const [k, f] of Object.entries(selfFacts)) {
             if (f && (f as any).value !== undefined && (f as any).value !== null && (f as any).value !== "") {
@@ -5560,7 +5735,7 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
               supabase,
               conversationId, // Backend-bound estrito
               stageNameOrId: requestedStage,
-              memoryProvider,
+              memoryProvider: cycleMemoryProvider,
               completedGoalIds,
             });
 
@@ -5643,7 +5818,7 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
             };
           } else if (toolName === "memory_search") {
             const query = String(toolParams.query || "").trim();
-            const results = await memoryProvider.searchMemory(conversationId, query, {
+            const results = await cycleMemoryProvider.searchMemory(conversationId, query, {
               entity: toolEntity,
               limit: 3,
             });
@@ -5654,7 +5829,7 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
             };
           } else {
             // memory_get_fact (ContactMemory do pretendente)
-            const res = await memoryProvider.getFact(conversationId, toolEntity, toolField);
+            const res = await cycleMemoryProvider.getFact(conversationId, toolEntity, toolField);
             toolResult = {
               tool: "memory_get_fact",
               found: res.found,
@@ -6639,6 +6814,30 @@ Responda ESTRITAMENTE em JSON puro:
       };
 
       if (isConfirmedSuccess) {
+        // Persistência confirmada atômica: grava fatos espontâneos detectados no memoryProvider real SOMENTE após ciclo confirmado
+        const pendingFacts = cycleMemoryProvider.getPendingFacts();
+        for (const f of pendingFacts) {
+          try {
+            if (typeof memoryProvider.saveFact === "function") {
+              await memoryProvider.saveFact(conversationId, f.entity, f.field, f.value, {
+                confidence: f.confidence ?? 1.0,
+                sourceMessageId: f.sourceMessageId,
+              });
+            } else {
+              await memoryProvider.writeFact(conversationId, {
+                entity: f.entity,
+                field: f.field,
+                value: f.value,
+                confidence: f.confidence ?? 1.0,
+                sourceMessageId: f.sourceMessageId,
+              });
+            }
+            currentCycle.trace.push(`confirmed_spontaneous_fact_saved=${f.entity}.${f.field}`);
+          } catch (memErr: any) {
+            currentCycle.trace.push(`spontaneous_fact_save_error: ${memErr.message || String(memErr)}`);
+          }
+        }
+
         try {
           await executeMemoryWriter({
             conversationId,
@@ -6760,10 +6959,29 @@ Responda ESTRITAMENTE em JSON puro:
         }
       }
 
+      // Se o ciclo foi confirmado com sucesso, mescla também os fatos espontâneos confirmados do turno
+      const confirmedTurnEntities: Record<string, Record<string, MemoryFact>> = {};
+      if (isConfirmedSuccess) {
+        for (const f of cycleMemoryProvider.getPendingFacts()) {
+          const normEnt = (f.entity || "self").toLowerCase().trim();
+          const normFld = (f.field || "").toLowerCase().trim();
+          if (!confirmedTurnEntities[normEnt]) confirmedTurnEntities[normEnt] = {};
+          confirmedTurnEntities[normEnt][normFld] = {
+            entity: normEnt,
+            field: normFld,
+            value: f.value,
+            confidence: f.confidence ?? 1.0,
+            sourceMessageId: f.sourceMessageId,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      }
+
       const mergedEntities = {
         ...(orchState.memory?.entities || {}),
         ...(latestMemoryFromDb?.entities || {}),
         ...providerMemoryEntities,
+        ...confirmedTurnEntities,
       };
 
       const mergedMemory: ContactMemoryStore = {
