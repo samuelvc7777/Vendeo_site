@@ -23,14 +23,20 @@ import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
 import {
   LARISSA_CHAT_STYLE_V2,
+  LARISSA_COMPACT_SUBAGENT_PROMPT,
   computeDynamicEmojiBudget,
+  extractRecentStyleState,
+  type RecentStyleState,
   runStyleLint,
   type StyleLintResult,
   type EmojiBudgetResult,
 } from "./LarissaChatStyle.ts";
 export {
   LARISSA_CHAT_STYLE_V2,
+  LARISSA_COMPACT_SUBAGENT_PROMPT,
   computeDynamicEmojiBudget,
+  extractRecentStyleState,
+  type RecentStyleState,
   runStyleLint,
   type StyleLintResult,
   type EmojiBudgetResult,
@@ -285,6 +291,7 @@ export interface MemoryProvider {
   searchMemory(contactId: string, query: string, options?: { entity?: string; limit?: number }): Promise<MemorySearchResult[]>;
   writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }>;
   listEntityFacts(contactId: string, entity: string): Promise<Record<string, MemoryFact>>;
+  saveFact?(contactId: string, entity: string, field: string, value: any, options?: { confidence?: number; sourceMessageId?: string }): Promise<{ success: boolean; error?: string }>;
 }
 
 
@@ -446,6 +453,8 @@ export interface SubagentInput {
   emojiBudgetSnippet?: string;
   mission?: string;
   goalsSnippet?: string;
+  styleStateSnippet?: string;
+  softFocusSnippet?: string;
 }
 
 // Mantido para compatibilidade retroativa
@@ -1648,9 +1657,6 @@ Responda ESTRITAMENTE em JSON puro com as seguintes chaves:
 }`;
 }
 
-// ----------------------------------------------------------------------------
-// 7. Construtores de Prompt dos Subagentes Especializados (Camada 2 - Enxutos)
-// ----------------------------------------------------------------------------
 export function buildConexaoInicialPrompt(input: SubagentInput): string {
   const contextBlock =
     input.contextText ||
@@ -1663,36 +1669,36 @@ export function buildConexaoInicialPrompt(input: SubagentInput): string {
   return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
 SUA MISSÃO: ${missionText}
 
-### DIRETRIZES DA LARISSA (.agents/LARISSA_CONVERSATION_STYLE.md & .agents/LARISSA_CHAT_STYLE_V2.md)
-${LARISSA_CONVERSATION_STYLE}
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
 
 ${LARISSA_CHAT_STYLE_V2}
 ${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
 ${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
 - Jamais chame o pretendente de Larissa.
-- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar a informação suficiente para responder à pergunta/intenção atual, PARE a busca imediatamente e responda. NÃO encadeie ferramentas adicionais se o fato já foi encontrado. Uma segunda ferramenta só é permitida se a primeira retornou 'found: false' ou for manifestamente insuficiente.
-- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia ("nossa deve ser puxado mesmo"), É TERMINANTEMENTE PROIBIDO chamar ferramentas (nem persona_audio_search, nem persona_get_fact, nem persona_search). Responda DIRETO em texto com action: "reply".
-- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é afetuosa, mas NUNCA mente gostos para agradar o homem. Se a memória indicar 'false' ou que ela não curte/não consome (ex: drinks.likes_wine: false, music.likes_tribo_da_periferia: false, movies.shark_movies_preference: false), assuma o fato com sinceridade e bom humor mineiro (ex: "não curto muito não", "não é muito a minha praia"). NUNCA transforme 'false' em "até que curto algumas" ou "acho legal".
-- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar estritamente a partir do antecedente imediatamente anterior da conversa. Se o contexto citou um local, "aí" refere-se a esse local.
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, É TERMINANTEMENTE PROIBIDO chamar ferramentas. Responda DIRETO em texto com action: "reply".
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente gostos para agradar o pretendente. Se a memória indicar 'false' ou desinteresse, assuma o fato com sinceridade e bom humor.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
-Trabalhe primeiro apenas com o contexto recebido.
-Se precisar checar fatos já descobertos, consultar objetivos da sua responsabilidade ou consultar preferências pontuais:
-- stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "conexao_inicial"}}
-- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Priorize SEMPRE persona_get_fact quando a pergunta for sobre um atributo identificável. Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
-- persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
-- memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
-- memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
-- conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
+Trabalhe primeiro apenas com o contexto recebido. Use ferramentas somente se for estritamente necessário:
+- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
+- stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "conexao_inicial"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
+- memory_get_fact: consulta fato sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
+- memory_search: busca aberta sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta se determinado tema, pergunta ou revelação já ocorreu entre os dois (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
 
-Regras de Uso:
-- PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact / persona_search) > contexto da conversa. Exemplos de diálogos externos/seeds servem APENAS para calibrar estilo coloquial, NUNCA para inventar ou sobrescrever fatos pessoais da Larissa.
-- Não consulte memória por curiosidade ou se o contexto atual já for suficiente. Em saudações triviais, NUNCA chame ferramentas.
-- A Larissa NUNCA tem os dados do pretendente e o pretendente NUNCA tem os dados da Larissa.
-- Para acionar ferramenta, responda em JSON compacto: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+Regras de Áudio e Texto:
+- Se houver áudio adequado retornado pelo Cofre, prefira responder com action: "send_audio" e "audioId": "id_do_audio", SEM texto espelho redundante.
+- Se não houver áudio adequado ou for irrelevante, responda em texto com action: "reply".
+- Nem toda resposta precisa terminar em pergunta. Deixe espaço para o outro conduzir.
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_saudacao_feita': Se ainda for troca de cumprimento ou reciprocidade inicial. Próxima fase: 'conexao_inicial'.
@@ -1700,14 +1706,15 @@ Regras de Uso:
 
 Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "chk_saudacao_feita" | "chk_rapport_estabelecido",
   "summary": "resumo de 3 palavras",
   "responses": [
     "balão 1 curto de celular",
     "balão 2 leve (se necessário)"
   ],
-  "suggestedResponse": "texto completo dos balões juntos",
+  "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
   "nextPhase": "conexao_inicial" | "descoberta"
 }`;
 }
@@ -2691,6 +2698,19 @@ export async function searchPersonaAudios(params: {
       .forEach((h) => sentAudioIds.add(h.audioId));
   } catch {}
 
+  try {
+    const { data: convRow } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    const convHist = convRow?.stage_completed_rules?.audio_delivery_history || [];
+    if (Array.isArray(convHist)) {
+      convHist.forEach((h: any) => sentAudioIds.add(h.audioId || h.id));
+    }
+  } catch {}
+
   if ((supabase as any)?.__mockAudioHistory) {
     const mockHist: AudioDeliveryHistory[] = (supabase as any).__mockAudioHistory;
     mockHist
@@ -2698,7 +2718,23 @@ export async function searchPersonaAudios(params: {
       .forEach((h) => sentAudioIds.add(h.audioId));
   }
 
-  const queryTerms = (intent || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const AUDIO_STOPWORDS = new Set([
+    "o", "a", "os", "as", "um", "uma", "uns", "umas",
+    "de", "do", "da", "dos", "das",
+    "em", "no", "na", "nos", "nas",
+    "e", "ou", "que", "com", "por", "pra", "para",
+    "se", "seu", "sua", "seus", "suas",
+    "você", "vc", "como", "qual", "acha", "sobre",
+    "isso", "aqui", "tudo", "bem", "mais"
+  ]);
+
+  const rawTerms = (intent || "")
+    .toLowerCase()
+    .replace(/[.,;!?]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const queryTerms = rawTerms.filter((t) => t.length >= 3 && !AUDIO_STOPWORDS.has(t));
 
   const matched = audios
     .filter((a) => a.enabled !== false)
@@ -2709,7 +2745,7 @@ export async function searchPersonaAudios(params: {
       return true;
     })
     .map((a) => {
-      const searchHaystack = `${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""}`.toLowerCase();
+      const searchHaystack = `${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`.toLowerCase();
       let matchScore = 0;
       for (const term of queryTerms) {
         if (searchHaystack.includes(term)) {
@@ -2777,6 +2813,268 @@ export async function recordAudioDeliveryHistory(params: {
   }
 }
 
+export interface CofreAudioCandidate {
+  audio_id: string;
+  summary: string;
+  when_to_use: string;
+}
+
+/**
+ * Busca pontual e seletiva no Cofre de Áudios da Larissa.
+ * Retorna NO MÁXIMO 3 candidatos mais relevantes no formato compacto para não inflar tokens.
+ */
+export async function searchCofreAudios(params: {
+  supabase: any;
+  conversationId: string;
+  query: string;
+  objective_context?: string;
+  limit?: number;
+}): Promise<CofreAudioCandidate[]> {
+  const { supabase, conversationId, query, objective_context, limit = 3 } = params;
+  const combinedIntent = `${query || ""} ${objective_context || ""}`.trim();
+  const rawMatches = await searchPersonaAudios({
+    supabase,
+    conversationId,
+    intent: combinedIntent,
+  });
+
+  const available = rawMatches.filter((a) => !a.alreadySentInConversation);
+
+  return available.slice(0, Math.min(limit, 3)).map((a) => ({
+    audio_id: a.id,
+    summary: a.transcript ? (a.transcript.length > 120 ? a.transcript.slice(0, 117) + "..." : a.transcript) : a.title,
+    when_to_use: a.usageInstruction || a.title,
+  }));
+}
+
+export interface SpontaneousObjectiveMatch {
+  objectiveId: string;
+  field: string;
+  value: any;
+  evidenceMessageId?: string;
+  summary: string;
+}
+
+/**
+ * Detecta conclusões espontâneas de objetivos a partir do texto do pretendente
+ * (ex: "trabalho com mineração, sou solteiro e não tenho filhos").
+ * Não dispara checklist nem perguntas sobre fatos já revelados.
+ */
+export function detectSpontaneousObjectiveCompletions(
+  messages: Array<{ id: string; text?: string; sender?: string }>,
+  pendingGoalIds: string[]
+): SpontaneousObjectiveMatch[] {
+  const matches: SpontaneousObjectiveMatch[] = [];
+  const joinedText = messages
+    .filter((m) => m.sender === "pretendente" || !m.sender)
+    .map((m) => m.text || "")
+    .join(" ");
+
+  if (!joinedText.trim()) return matches;
+
+  const textLower = joinedText.toLowerCase();
+
+  // Helper para checar se o trecho refere-se a terceira pessoa (irmão, ex, amigo, pai, etc.)
+  const isThirdParty = (fullText: string, matchIndex: number) => {
+    const prefix = fullText.slice(Math.max(0, matchIndex - 35), matchIndex);
+    return /\b(?:meu|minha|um|uma|meus|minhas|dele|dela|esse|essa)\s+(?:irmão|irmã|amigo|amiga|ex|namorada|esposa|marido|pai|mãe|filho|filha|primo|prima|colega|chefe|parente)\b|\b(?:ele|ela)\s+/i.test(prefix);
+  };
+
+  // Helper para checar negação anterior
+  const hasNegationPrefix = (fullText: string, matchIndex: number) => {
+    const prefix = fullText.slice(Math.max(0, matchIndex - 20), matchIndex);
+    return /\b(?:não|nao|nem|nunca|jamais)\s*$/i.test(prefix);
+  };
+
+  // 1. Trabalho / Profissão (com distinção estrita de tempo: passado vs presente, e entidade)
+  const isWorkGoal = (id: string) => /work|profession|profissao|trabalho|emprego|job/i.test(id);
+  const targetWorkGoal = pendingGoalIds.find(isWorkGoal);
+  if (targetWorkGoal) {
+    // Primeiro prioriza declaração clara de presente ("hoje sou motorista", "atualmente trabalho como...", "sou motorista")
+    const presentJobMatch = textLower.match(
+      /(?:(?:hoje|atualmente|agora)\s+)?(?:sou\s+(?:médico|engenheiro|advogado|motorista|autônomo|empresário|enfermeiro|professor|pedreiro|estudante|programador|dev|analista|minerador|técnico|policial|bancário|vendedor)[^,.;!?\n]*|(?:hoje|atualmente|agora)\s+trabalho\s+(?:com|em|na|no|de)\s+([^,.;!?\n]+))/i
+    );
+
+    const generalWorkMatch = textLower.match(
+      /(?:trabalho\s+(?:com|em|na|no|de)\s+([^,.;!?\n]+)|sou\s+(?:médico|engenheiro|advogado|motorista|autônomo|empresário|enfermeiro|professor|pedreiro|estudante|programador|dev|analista|minerador|técnico|policial|bancário|vendedor)[^,.;!?\n]*)/i
+    );
+
+    const pastWorkMatch = textLower.match(
+      /(?:trabalhava\s+(?:com|em|na|no|de)\s+([^,.;!?\n]+)|era\s+(?:médico|engenheiro|advogado|motorista|minerador|bancário)[^,.;!?\n]*)/i
+    );
+
+    let chosenMatch: RegExpMatchArray | null = null;
+
+    if (presentJobMatch) {
+      const idx = textLower.indexOf(presentJobMatch[0]);
+      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
+        chosenMatch = presentJobMatch;
+      }
+    } else if (generalWorkMatch) {
+      const idx = textLower.indexOf(generalWorkMatch[0]);
+      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
+        chosenMatch = generalWorkMatch;
+      }
+    }
+
+    if (chosenMatch) {
+      let val = chosenMatch[0].trim();
+      val = val.replace(/^(?:(?:hoje|atualmente|agora)\s+)?(?:sou|trabalho\s+(?:com|em|na|no|de))\s+/i, "").trim();
+      val = val.replace(/\s+e\s+.*$/i, "").trim();
+      if (val.length >= 3) {
+        matches.push({
+          objectiveId: targetWorkGoal,
+          field: "work",
+          value: val,
+          evidenceMessageId: messages[0]?.id,
+          summary: `trabalho: ${val}`,
+        });
+      }
+    }
+  }
+
+  // 2. Relacionamento / Estado Civil (com verificação estrita de negação e entidade)
+  const isRelGoal = (id: string) => /relationship|status|estado_civil|relacionamento|solteiro/i.test(id);
+  const targetRelGoal = pendingGoalIds.find(isRelGoal);
+  if (targetRelGoal) {
+    const relMatch = textLower.match(
+      /\b(?:tô|sou|estou|fiquei)\s+(?:solteiro|divorciado|separado|viúvo)\b|\b(?:sou|tô)\s+livre\b/i
+    );
+    if (relMatch) {
+      const matchIdx = textLower.indexOf(relMatch[0]);
+      const negated = hasNegationPrefix(textLower, matchIdx);
+      const thirdParty = isThirdParty(textLower, matchIdx);
+
+      if (!thirdParty) {
+        if (negated) {
+          // "não sou solteiro" -> não atribui solteiro
+          matches.push({
+            objectiveId: targetRelGoal,
+            field: "relationship_status",
+            value: "não é solteiro",
+            evidenceMessageId: messages[0]?.id,
+            summary: "estado civil: não é solteiro",
+          });
+        } else {
+          matches.push({
+            objectiveId: targetRelGoal,
+            field: "relationship_status",
+            value: "solteiro",
+            evidenceMessageId: messages[0]?.id,
+            summary: "estado civil: solteiro",
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Filhos (has_children vs wants_children)
+  const isChildGoal = (id: string) => /has_children|children|filhos|filho|kids/i.test(id) && !/wants_children/i.test(id);
+  const isWantsChildGoal = (id: string) => /wants_children|quer_filhos|desejo_filhos/i.test(id);
+  const targetChildGoal = pendingGoalIds.find(isChildGoal);
+  const targetWantsChildGoal = pendingGoalIds.find(isWantsChildGoal);
+
+  // A. Situação atual sobre ter filhos
+  if (targetChildGoal) {
+    const noKidsMatch = textLower.match(
+      /\b(?:não tenho filhos?|sem filhos?|nem filho|zero filhos?|não sou pai)\b/i
+    );
+    const hasKidsMatch = textLower.match(
+      /\b(?:tenho\s+(?:um|\d+)\s+filhos?|sou pai)\b/i
+    );
+
+    if (noKidsMatch) {
+      const idx = textLower.indexOf(noKidsMatch[0]);
+      if (!isThirdParty(textLower, idx)) {
+        matches.push({
+          objectiveId: targetChildGoal,
+          field: "children",
+          value: "sem filhos",
+          evidenceMessageId: messages[0]?.id,
+          summary: "filhos: não tem filhos",
+        });
+      }
+    } else if (hasKidsMatch) {
+      const idx = textLower.indexOf(hasKidsMatch[0]);
+      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
+        matches.push({
+          objectiveId: targetChildGoal,
+          field: "children",
+          value: hasKidsMatch[0].trim(),
+          evidenceMessageId: messages[0]?.id,
+          summary: `filhos: ${hasKidsMatch[0].trim()}`,
+        });
+      }
+    }
+  }
+
+  // B. Desejo futuro de ter filhos
+  if (targetWantsChildGoal) {
+    const wantsKidsMatch = textLower.match(
+      /\b(?:quero\s+(?:ter\s+)?(?:filhos?|\d+|um|uma|dois|duas|três|tres|quatro|alguns)|penso\s+em\s+ter\s+filhos?|pretendo\s+ter\s+filhos?)\b/i
+    );
+    if (wantsKidsMatch) {
+      const idx = textLower.indexOf(wantsKidsMatch[0]);
+      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
+        matches.push({
+          objectiveId: targetWantsChildGoal,
+          field: "wants_children",
+          value: wantsKidsMatch[0].trim(),
+          evidenceMessageId: messages[0]?.id,
+          summary: `desejo de filhos: ${wantsKidsMatch[0].trim()}`,
+        });
+      }
+    }
+  }
+
+  // 4. Cidade / Localização (sem terceiros e sem locais genéricos)
+  const isCityGoal = (id: string) => /city|cidade|local|mora|onde_mora|bairro/i.test(id);
+  const targetCityGoal = pendingGoalIds.find(isCityGoal);
+  if (targetCityGoal) {
+    const cityMatch = textLower.match(
+      /\b(?:moro\s+em|sou\s+de|vivo\s+em|aqui\s+em)\s+([^,.;!?\n]+?)(?:\s+(?:e\s+tenho|e\s+trabalho|e\s+sou|e\s+faço|e\s+vivo|mas|há|desde)|[,.;!?\n]|$)/i
+    );
+    if (cityMatch && !/\b(?:casa|cama|hospital|serviço|trabalho|hotel)\b/i.test(cityMatch[1])) {
+      const idx = textLower.indexOf(cityMatch[0]);
+      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
+        let cityVal = cityMatch[1].trim();
+        cityVal = cityVal.replace(/\s+e\s+.*$/i, "").trim();
+        if (cityVal.length >= 3) {
+          matches.push({
+            objectiveId: targetCityGoal,
+            field: "city",
+            value: cityVal,
+            evidenceMessageId: messages[0]?.id,
+            summary: `cidade: ${cityVal}`,
+          });
+        }
+      }
+    }
+  }
+
+  // 5. Idade (estritamente primeira pessoa no presente, rejeitando passado e terceiros)
+  const isAgeGoal = (id: string) => /age|idade|quantos_anos/i.test(id);
+  const targetAgeGoal = pendingGoalIds.find(isAgeGoal);
+  if (targetAgeGoal) {
+    const isPastAge = /\b(?:tinha|era|quando comecei|na época|antigamente|anos atrás)\b/i.test(textLower);
+    const ageMatch = textLower.match(/\b(?:tenho|faço|tô com|estou com)\s+(\d{2})\s*(?:anos)?\b/i);
+    if (ageMatch && !isPastAge) {
+      const idx = textLower.indexOf(ageMatch[0]);
+      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
+        matches.push({
+          objectiveId: targetAgeGoal,
+          field: "age",
+          value: parseInt(ageMatch[1], 10),
+          evidenceMessageId: messages[0]?.id,
+          summary: `idade: ${ageMatch[1]} anos`,
+        });
+      }
+    }
+  }
+
+  return matches;
+}
+
 export function buildDescobertaPrompt(input: SubagentInput): string {
   const contextBlock =
     input.contextText ||
@@ -2789,52 +3087,38 @@ export function buildDescobertaPrompt(input: SubagentInput): string {
   return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
 SUA MISSÃO: ${missionText}
 
-### DIRETRIZES DA LARISSA (.agents/LARISSA_CONVERSATION_STYLE.md & .agents/LARISSA_CHAT_STYLE_V2.md)
-${LARISSA_CONVERSATION_STYLE}
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
 
 ${LARISSA_CHAT_STYLE_V2}
 ${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
 ${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
 - Aplique a Regra da Reciprocidade: conte algo breve sobre você (estuda enfermagem, mora em São João del Rei, trabalha com vendas em casa).
-- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar a informação suficiente para responder à pergunta/intenção atual, PARE a busca imediatamente e formule a resposta. NÃO encadeie ferramentas adicionais se o fato pedido já foi encontrado. Uma segunda ferramenta só é permitida se a primeira retornou 'found: false' ou for manifestamente insuficiente.
-- PRESERVAÇÃO DE TÓPICO ESPECÍFICO EM PERGUNTAS: Quando o pretendente citar um ITEM, BANDA, MÚSICA, PESSOA, COMIDA, BEBIDA, ATIVIDADE ou FILME específico e perguntar se você gosta, curte, ouve, bebe, assiste ou qual sua opinião (ex: Tribo da Periferia, filme de tubarão, vinho, café puro): consulte a preferência sobre ESSE ITEM ESPECÍFICO (ex: persona_get_fact com chave daquele item ou persona_search com o nome exato citado). NUNCA substitua a busca por uma categoria genérica (ex: 'qual artista favorito').
-- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é afetuosa, mas NUNCA finge afinidade para agradar o homem. Se a memória indicar 'false' ou que ela não curte/não consome (ex: drinks.likes_wine: false, music.likes_tribo_da_periferia: false, movies.shark_movies_preference: false), assuma o fato com sinceridade e bom humor mineiro (ex: "não curto muito não, sou mais do sertanejo", "filme de tubarão não é muito a minha praia"). NUNCA transforme 'false' em "até que curto algumas" ou "acho legal". (Atenção: not_found NÃO é false; para itens não cadastrados responda com cautela sem inventar).
-- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar estritamente a partir do antecedente imediatamente anterior da conversa. Se você acabou de dizer "sou de São João del-Rei" e ele pergunta "oq tem de legal aí?", "aí" refere-se à cidade de São João del-Rei (centro histórico, Maria Fumaça, mirantes, Tiradentes). Se ele disser "tô em Tiradentes" e perguntar "o que tem de legal aí?", "aí" refere-se a Tiradentes. Deixe o antecedente contextual decidir.
-- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia ("nossa deve ser puxado mesmo"), É TERMINANTEMENTE PROIBIDO chamar ferramentas (nem persona_audio_search, nem persona_get_fact, nem persona_search). Responda DIRETO em texto com action: "reply".
-- ESTILO NUNCA SOBRESCREVE FATO: Ser meiga não autoriza transformar desgostos ou matérias difíceis em algo positivo. A matéria mais difícil/que mais sofreu foi Embriologia e a que não gosta é Farmacologia. Responda com sinceridade humana e bom humor, sem dizer que gosta de tudo.
-
-### REGRAS DE OURO DOS OBJETIVOS SEMÂNTICOS (BÚSSOLA DE CONVERSA)
-1. Os objetivos da etapa são uma **BÚSSOLA DE ORIENTAÇÃO** para a conversa, **NUNCA UM INTERROGATÓRIO**.
-2. **Máximo 1 pergunta leve por turno**: Jamais dispare múltiplas perguntas ou perguntas em sequência se ele não respondeu.
-3. Responda e acolha com afeto o que o pretendente acabou de falar ANTES de qualquer pergunta.
-4. Se o pretendente mudou de assunto, fez outra pergunta ou ignorou sua curiosidade anterior, **NÃO INSISTA**; acompanhe o fluxo dele com naturalidade.
-5. Se ele já informou espontaneamente algo (ex: cidade, idade ou trabalho), registre como conhecido e **NÃO PERGUNTE DE NOVO**.
-6. Você decide organicamente qual tópico abordar ou se neste turno deve apenas acolher sem fazer pergunta alguma.
-7. PRIORIDADE DE LOOKUP DIRETO SOBRE VOCÊ:
-   - Atributos pontuais identificáveis (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta) -> chame OBRIGATORIAMENTE persona_get_fact com o campo específico. NUNCA use persona_search quando lookup exato resolve.
-   - "qual período vc tá?" refere-se estritamente ao período acadêmico da faculdade (10º período), NUNCA ao turno ou horário ("noturno").
-   - "mora onde em São João?" refere-se ao bairro (Matosinhos). Não responda genericamente "parte quietinha".
-   - Perguntas abertas ou histórias ("qual perrengue passou?", "o que te motiva?") -> use persona_search.
-   - persona_audio_search só deve ser acionado se o usuário pedir áudio explicitamente ou em momentos gravados no cofre.
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
+- PRESERVAÇÃO DE TÓPICO ESPECÍFICO EM PERGUNTAS: Se perguntarem se você gosta de algo específico (música, filme, bebida, comida), consulte sobre ESSE item específico com persona_get_fact ou persona_search.
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente afinidade. Se a memória indicar 'false' ou que ela não curte, assuma com sinceridade e bom humor mineiro.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
+- Se ele já revelou algo (ex: trabalho, cidade, filhos, estado civil), NUNCA pergunte sobre isso novamente. Aprofunde ou converse com o que ele trouxe.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
-Trabalhe primeiro apenas com o contexto recebido.
-Se precisar checar fatos já descobertos, consultar objetivos ou buscar dados sobre a Larissa:
-- stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
-- persona_get_fact: consulta fato pontual sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
-- persona_search: busca aberta para histórias, perrengues, motivos ou narrativas da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "perrengue faculdade moto chuva"}}
-- memory_get_fact: consulta fatos estruturados sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
-- memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
-- conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
+Trabalhe primeiro com o contexto recebido. Chame ferramentas apenas quando necessário:
+- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
+- stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
+- memory_get_fact: consulta fato sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
+- memory_search: busca aberta sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta se determinado tema, pergunta ou revelação já ocorreu entre os dois (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
 
-Regras de Uso de Ferramentas:
-- PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact / persona_search) > contexto da conversa. Exemplos externos servem APENAS para estilo coloquial, NUNCA para inventar ou sobrescrever fatos pessoais da Larissa.
-- Não consulte ferramentas por curiosidade ou se o contexto atual já for suficiente. Em saudações triviais, NUNCA chame ferramentas.
-- A Larissa NUNCA tem os fatos do pretendente e o pretendente NUNCA tem os fatos da Larissa.
-- Para acionar ferramenta, responda em JSON compacto: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+Regras de Áudio e Decisão:
+- Se houver áudio adequado retornado pelo Cofre, prefira responder com action: "send_audio" e "audioId": "id_do_audio", SEM texto espelho redundante.
+- Se não houver áudio adequado ou for irrelevante, responda em texto com action: "reply".
+- Nem toda resposta precisa terminar em pergunta. Deixe espaço para o outro conduzir.
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
@@ -2842,14 +3126,15 @@ Regras de Uso de Ferramentas:
 
 Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "chk_pergunta_sobre_ele" | "chk_troca_cidade",
   "summary": "resumo de 3 palavras",
   "responses": [
     "balão 1 curto e natural",
     "balão 2 afetuoso (se necessário)"
   ],
-  "suggestedResponse": "texto completo dos balões juntos",
+  "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
   "nextPhase": "descoberta"
 }`;
 }
@@ -2889,44 +3174,36 @@ export function buildSubagentPrompt(
   return `Você é a subagente especialista em ${displayName.toUpperCase()} da Larissa (23 anos, moça meiga de Minas Gerais).
 SUA MISSÃO: ${missionText}
 
-### DIRETRIZES DA LARISSA (.agents/LARISSA_CONVERSATION_STYLE.md & .agents/LARISSA_CHAT_STYLE_V2.md)
-${LARISSA_CONVERSATION_STYLE}
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
 
 ${LARISSA_CHAT_STYLE_V2}
 ${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
 ${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
 - Jamais chame o pretendente de Larissa.
-- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar a informação suficiente para responder à pergunta/intenção atual, PARE a busca imediatamente e responda. NÃO encadeie ferramentas adicionais se o fato já foi encontrado.
-- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia, É TERMINANTEMENTE PROIBIDO chamar ferramentas. Responda DIRETO em texto com action: "reply".
-- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é afetuosa, mas NUNCA finge afinidade ou mente gostos para agradar o homem. Se a memória indicar 'false' ou que ela não curte/não consome, assuma o fato com sinceridade e bom humor mineiro.
-- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar estritamente a partir do antecedente imediatamente anterior da conversa.
-- ESTILO NUNCA SOBRESCREVE FATO: Ser meiga não autoriza transformar desgostos em afinidade. Sinceridade com doçura.
-
-### REGRAS DE OURO DOS OBJETIVOS SEMÂNTICOS (BÚSSOLA DE CONVERSA)
-1. Os objetivos da etapa são uma **BÚSSOLA DE ORIENTAÇÃO** para a conversa, **NUNCA UM INTERROGATÓRIO**.
-2. **Máximo 1 pergunta leve por turno**: Jamais dispare múltiplas perguntas ou perguntas em sequência se ele não respondeu.
-3. Responda e acolha com afeto o que o pretendente acabou de falar ANTES de qualquer pergunta.
-4. Se o pretendente mudou de assunto, fez outra pergunta ou ignorou sua curiosidade anterior, **NÃO INSISTA**; acompanhe o fluxo dele com naturalidade.
-5. Se ele já informou espontaneamente algo, registre como conhecido e **NÃO PERGUNTE DE NOVO**.
-6. Você decide organicamente qual tópico abordar ou se neste turno deve apenas acolher sem fazer pergunta alguma.
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente gostos para agradar o homem. Se a memória indicar 'false' ou desinteresse, assuma com sinceridade e bom humor mineiro.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-Se precisar checar fatos já descobertos, consultar objetivos da sua responsabilidade ou consultar preferências pontuais:
-- stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "${input.currentPhase}"}}
-- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Priorize SEMPRE persona_get_fact quando a pergunta for sobre um atributo identificável. Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre rotina", "objective_context": "rotina"}}
+- stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "${input.currentPhase}"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
 - memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
 - conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
 
-Regras de Uso:
-- PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact / persona_search) > contexto da conversa. Exemplos externos servem APENAS para estilo coloquial, NUNCA para inventar fatos da Larissa.
-- Não consulte memória por curiosidade ou se o contexto atual já for suficiente. Em saudações triviais, NUNCA chame ferramentas.
-- Para acionar ferramenta, responda em JSON compacto: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "..."}}
+Regras de Áudio e Decisão:
+- Se houver áudio adequado retornado pelo Cofre, prefira responder com action: "send_audio" e "audioId": "id_do_audio", SEM texto espelho redundante.
+- Se não houver áudio adequado ou for irrelevante, responda em texto com action: "reply".
+- Nem toda resposta precisa terminar em pergunta. Deixe espaço para o outro conduzir.
 
 ### CHECKPOINTS DESTA FASE
 - 'chk_interacao': Interação regular em andamento. Próxima fase: '${input.currentPhase}'.
@@ -2934,14 +3211,15 @@ Regras de Uso:
 
 Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
 {
-  "action": "reply",
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "chk_interacao" | "chk_concluido",
   "summary": "resumo de 3 palavras",
   "responses": [
     "balão 1 curto de celular",
     "balão 2 leve (se necessário)"
   ],
-  "suggestedResponse": "texto completo dos balões juntos",
+  "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
   "nextPhase": "${input.currentPhase}"
 }`;
 }
@@ -3096,6 +3374,16 @@ export class InMemoryMemoryProvider implements MemoryProvider {
     const normEntity = (entity || "self").toLowerCase().trim();
     return store.entities[normEntity] || {};
   }
+
+  async saveFact(contactId: string, entity: string, field: string, value: any, options?: { confidence?: number; sourceMessageId?: string }): Promise<{ success: boolean; error?: string }> {
+    return this.writeFact(contactId, {
+      entity: entity || "self",
+      field,
+      value,
+      confidence: options?.confidence ?? 1.0,
+      sourceMessageId: options?.sourceMessageId,
+    });
+  }
 }
 
 /**
@@ -3219,6 +3507,16 @@ export class SupabaseMemoryProvider implements MemoryProvider {
     const { store } = await this.getStore(contactId);
     const normEntity = (entity || "self").toLowerCase().trim();
     return store.entities?.[normEntity] || {};
+  }
+
+  async saveFact(contactId: string, entity: string, field: string, value: any, options?: { confidence?: number; sourceMessageId?: string }): Promise<{ success: boolean; error?: string }> {
+    return this.writeFact(contactId, {
+      entity: entity || "self",
+      field,
+      value,
+      confidence: options?.confidence ?? 1.0,
+      sourceMessageId: options?.sourceMessageId,
+    });
   }
 }
 
@@ -4206,6 +4504,10 @@ export async function runExperimentalOrchestration(
     const descobertaContextText = formatContextForDescoberta(baseContextPayload);
 
     let totalTokens = 0;
+    let initialContextTokens = 0;
+    let toolCallsTokens = 0;
+    let toolResultTokens = 0;
+    let finalGenerationTokens = 0;
 
     await publishAutoPilotState(supabase, conversationId, {
       status: "processing",
@@ -4224,14 +4526,52 @@ export async function runExperimentalOrchestration(
     // ------------------------------------------------------------------------
     // RESOLUÇÃO DE OBJETIVOS DA ETAPA (Many-to-Many & Subagent Missions)
     // ------------------------------------------------------------------------
-    const completedGoalIds = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
-    const stageChecklistForRouter = await resolveStageObjectives({
+    let completedGoalIds: string[] = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
+    let stageChecklistForRouter = await resolveStageObjectives({
       supabase,
       conversationId,
       stageNameOrId: currentPhase,
       memoryProvider,
       completedGoalIds,
     });
+
+    // DETECÇÃO ESPONTÂNEA DE OBJETIVOS ANTES DO ROTEAMENTO E SUBAGENTE
+    const pendingGoalIdsBefore = stageChecklistForRouter.goals
+      .filter((g) => g.status === "pending")
+      .map((g) => g.id);
+
+    const spontaneousMatches = detectSpontaneousObjectiveCompletions(
+      [{ id: newMessage.id, text: newMessage.text, sender: "pretendente" }],
+      pendingGoalIdsBefore
+    );
+
+    if (spontaneousMatches.length > 0) {
+      const newlyCompleted = spontaneousMatches.map((m) => m.objectiveId);
+      completedGoalIds = [...new Set([...completedGoalIds, ...newlyCompleted])];
+      (orchState as any).completedGoalIds = completedGoalIds;
+      currentCycle.trace.push(`spontaneous_objectives_detected: ${newlyCompleted.join(",")}`);
+
+      // Salva fatos espontâneos na ContactMemory
+      for (const m of spontaneousMatches) {
+        try {
+          await memoryProvider.saveFact(conversationId, "contact", m.field, m.value, {
+            confidence: 1.0,
+            sourceMessageId: m.evidenceMessageId || newMessage.id,
+          });
+        } catch (err) {
+          // Fail-safe silencioso
+        }
+      }
+
+      // Re-resolve os objetivos com os fatos atualizados
+      stageChecklistForRouter = await resolveStageObjectives({
+        supabase,
+        conversationId,
+        stageNameOrId: currentPhase,
+        memoryProvider,
+        completedGoalIds,
+      });
+    }
 
     const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
     const openGoalsSummary = openGoalsForRouter.length > 0
@@ -4258,6 +4598,7 @@ export async function runExperimentalOrchestration(
 
     const routingRes = await callModelOrOpenAi(routingPrompt, { runtime, supabase, model: params.model });
     totalTokens += routingRes.tokens;
+    initialContextTokens += routingRes.tokens;
     const rawRoutingJson = extractJsonFromText(routingRes.content);
     const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase, activeSubagentIds);
     currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
@@ -4319,7 +4660,10 @@ export async function runExperimentalOrchestration(
         // Fail-safe silencioso
       }
 
-      const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds);
+      const recentStyleState = extractRecentStyleState(recentLarissaOutbounds);
+      const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds, {
+        emojiRecentHistory: recentStyleState.emoji_recent_history,
+      });
       currentCycle.trace.push(`emoji_budget_computed: budget=${emojiBudgetInfo.budget}, recentCount=${emojiBudgetInfo.recentEmojis.length}`);
 
       // Definição e Missão Semântica do Subagente Selecionado (catálogo ou canônico)
@@ -4336,12 +4680,26 @@ export async function runExperimentalOrchestration(
 
       // Filtra os objetivos da etapa autorizados para o subagente
       const filteredGoals = filterGoalsForSubagent(stageChecklistForRouter.goals, targetSubagent);
+      const softFocusGoal = filteredGoals.openGoals[0] || null;
       const goalsSnippet = formatGoalsSnippetForSubagent(
         targetSubagent,
         subagentDef.mission,
         filteredGoals.openGoals,
         filteredGoals.completedGoals
       );
+
+      const styleStateSnippet = `[ESTILO RECENTE & ANTI-REPETIÇÃO]
+- Última forma de resposta: ${recentStyleState.last_response_shape}
+- Reações recentes: ${recentStyleState.recent_reactions.join(", ") || "nenhuma"}
+- Perguntas recentes: ${recentStyleState.recent_questions.join(" | ") || "nenhuma"}
+- Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`;
+
+      const softFocusSnippet = softFocusGoal
+        ? `[FOCO SUAVE DO TURNO (Bússola Orgânica)]
+Se houver gancho natural, explore com leveza "${softFocusGoal.label}". NUNCA force nem faça interrogatório.
+Se ele fez uma pergunta, responda a pergunta dele com acolhimento. Perguntas NÃO são obrigatórias em todo turno.`
+        : `[FOCO SUAVE DO TURNO]
+Todos os objetivos principais desta etapa foram atingidos ou já são conhecidos. Apenas converse com naturalidade, acolhimento e leveza.`;
 
       subagentPrompt = buildSubagentPrompt({
         subagentId: targetSubagent,
@@ -4354,6 +4712,8 @@ export async function runExperimentalOrchestration(
         emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
         mission: subagentDef.mission,
         goalsSnippet,
+        styleStateSnippet,
+        softFocusSnippet,
       });
 
       await publishAutoPilotState(supabase, conversationId, {
@@ -4393,6 +4753,11 @@ export async function runExperimentalOrchestration(
 
         const subRes = await callModelOrOpenAi(currentSubagentPrompt, { runtime, supabase, model: params.model });
         totalTokens += subRes.tokens;
+        if (toolCallsCount === 0) {
+          initialContextTokens += subRes.tokens;
+        } else {
+          toolResultTokens += subRes.tokens;
+        }
         const rawSubJson = extractJsonFromText(subRes.content);
 
         // Verifica se o subagente solicitou ferramenta de memória sob demanda
@@ -4401,6 +4766,7 @@ export async function runExperimentalOrchestration(
           (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)
         ) {
           toolCallsCount++;
+          toolCallsTokens++;
           const toolName = String(rawSubJson.tool || rawSubJson.name || "memory_get_fact").trim();
           const toolParams = rawSubJson.parameters || rawSubJson.params || rawSubJson.arguments || {};
           const toolEntity = String(toolParams.entity || "self").trim();
@@ -4409,8 +4775,8 @@ export async function runExperimentalOrchestration(
           currentCycle.trace.push(
             toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state"
               ? `checklist_tool_requested: ${toolParams.stage || currentPhase}`
-              : toolName === "persona_audio_search"
-              ? `persona_audio_search_requested: ${toolParams.intent || toolParams.query}`
+              : (toolName === "cofre_search" || toolName === "persona_audio_search")
+              ? `cofre_search_requested: ${toolParams.query || toolParams.intent || ""}`
               : toolName === "persona_get_fact"
               ? `persona_fact_requested: ${toolParams.field || toolField}`
               : toolName === "persona_search"
@@ -4452,18 +4818,18 @@ export async function runExperimentalOrchestration(
               openGoals: filteredForSubagent.openGoals,
               completedGoals: filteredForSubagent.completedGoals,
             };
-          } else if (toolName === "persona_audio_search") {
-            const intent = String(toolParams.intent || toolParams.query || "").trim();
-            const stageId = toolParams.stageId || toolParams.stage;
-            const results = await searchPersonaAudios({
+          } else if (toolName === "cofre_search" || toolName === "persona_audio_search") {
+            const query = String(toolParams.query || toolParams.intent || "").trim();
+            const objectiveContext = String(toolParams.objective_context || toolParams.stageId || "").trim();
+            const results = await searchCofreAudios({
               supabase,
               conversationId, // Backend-bound estrito
-              intent,
-              stageId,
+              query,
+              objective_context: objectiveContext,
             });
 
             toolResult = {
-              tool: "persona_audio_search",
+              tool: "cofre_search",
               found: results.length > 0,
               audios: results,
             };
@@ -4539,8 +4905,8 @@ export async function runExperimentalOrchestration(
           currentCycle.trace.push(
             toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state"
               ? `checklist_tool_goals_count: ${toolResult.goals?.length || 0}`
-              : toolName === "persona_audio_search"
-              ? `persona_audio_count: ${toolResult.audios?.length || 0}`
+              : (toolName === "cofre_search" || toolName === "persona_audio_search")
+              ? `cofre_audio_count: ${toolResult.audios?.length || 0}`
               : toolName === "persona_get_fact"
               ? `persona_fact_found: ${toolResult.found}`
               : toolName === "persona_search"
@@ -4557,7 +4923,7 @@ export async function runExperimentalOrchestration(
             break;
           }
 
-          const isFactSufficient = toolResult.found === true || (Array.isArray(toolResult.results) && toolResult.results.length > 0) || (toolResult.goals && toolResult.goals.length > 0);
+          const isFactSufficient = toolResult.found === true || (Array.isArray(toolResult.results) && toolResult.results.length > 0) || (toolResult.goals && toolResult.goals.length > 0) || (Array.isArray(toolResult.audios) && toolResult.audios.length > 0);
 
           currentSubagentPrompt = `${subagentPrompt}
 
@@ -4565,11 +4931,14 @@ export async function runExperimentalOrchestration(
 \`\`\`json
 ${JSON.stringify(toolResult, null, 2)}
 \`\`\`
-${isFactSufficient ? `\n[FATO SUFICIENTE ENCONTRADO — REGRA ONE-TOOL-AND-REPLY]
+${isFactSufficient ? `\n[INSTRUÇÃO APÓS CONSULTA DE FERRAMENTA]
 A informação necessária foi obtida com sucesso.
-NÃO solicite novas ferramentas. Formule agora sua resposta final carinhosa e natural da Larissa em JSON com action: "reply".
+NÃO solicite novas ferramentas. Formule agora sua resposta final carinhosa e natural da Larissa em JSON com action: "reply" ou action: "send_audio".
 Lembre-se:
-- Se o fato tiver valor 'false', significa que você NÃO gosta, NÃO consome ou NÃO faz; responda com sinceridade e meiguice, sem inventar afeto.
+- Se consultou o cofre e encontrou áudio com alta aderência ao que o pretendente perguntou ou ao momento, responda em JSON com action: "send_audio" e "audioId": "<audio_id>".
+- IMPORTANTE: ao enviar áudio, NÃO crie texto espelho repetindo o que o áudio diz. Apenas envie o áudio!
+- Se nenhum áudio tiver alta aderência ou for irrelevante, responda em texto com action: "reply".
+- Se o fato consultado tiver valor 'false', significa que você NÃO gosta, NÃO consome ou NÃO faz; responda com sinceridade e meiguice, sem inventar afeto.
 - Risadas ('kkk'): Use com moderação e espontaneidade apenas se houver motivo real de humor; NÃO carimbe 'kkk' em respostas factuais simples.
 - Fechamento natural: Encerre apenas afirmando ou comentando, sem devolver perguntas por obrigação ("e você?").
 - Sem ponto final e sem exclamação.\n` : `\nAgora prossiga e gere sua resposta final em JSON:\n`}
@@ -4578,7 +4947,7 @@ Lembre-se:
   "audioId": "id_do_audio_se_send_audio",
   "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou observação do áudio)",
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou vazio/observação interna se for send_audio)",
   "nextPhase": "${targetSubagent}",
   "reasoning": "análise analítica da resposta"
 }`;
@@ -4586,6 +4955,7 @@ Lembre-se:
         }
 
         // Subagente retornou resposta final
+        finalGenerationTokens += subRes.tokens;
         finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
         currentCycle.trace.push(`subagent_executed: ${targetSubagent}`);
         break;
@@ -4632,6 +5002,7 @@ Gere sua resposta final estritamente no formato JSON abaixo:
         try {
           const finalRes = await callModelOrOpenAi(finalCallPrompt, { runtime, supabase, model: params.model });
           totalTokens += finalRes.tokens;
+          finalGenerationTokens += finalRes.tokens;
           const rawFinalJson = extractJsonFromText(finalRes.content);
           if (
             rawFinalJson &&
@@ -4683,6 +5054,8 @@ Gere sua resposta final estritamente no formato JSON abaixo:
         let lintResult = runStyleLint(candidateBalloons, {
           emojiBudget: emojiBudgetInfo.budget,
           recentEmojis: emojiBudgetInfo.recentEmojis,
+          recentReactions: recentStyleState.recent_reactions,
+          lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
           isRetry: false,
         });
 
@@ -4712,6 +5085,7 @@ Responda ESTRITAMENTE em JSON puro:
           try {
             const retryRes = await callModelOrOpenAi(retryPrompt, { runtime, supabase, model: params.model });
             totalTokens += retryRes.tokens;
+            finalGenerationTokens += retryRes.tokens;
             const retryJson = extractJsonFromText(retryRes.content);
             if (retryJson) {
               const validatedRetry = validateSubagentDecision(retryJson, currentPhase);
@@ -4723,6 +5097,8 @@ Responda ESTRITAMENTE em JSON puro:
               lintResult = runStyleLint(candidateBalloons, {
                 emojiBudget: emojiBudgetInfo.budget,
                 recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
                 isRetry: true,
               });
 
@@ -4733,6 +5109,8 @@ Responda ESTRITAMENTE em JSON puro:
               lintResult = runStyleLint(candidateBalloons, {
                 emojiBudget: emojiBudgetInfo.budget,
                 recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
                 isRetry: true,
               });
               finalSubDecision.responses = lintResult.cleanedBalloons;
@@ -4743,6 +5121,8 @@ Responda ESTRITAMENTE em JSON puro:
             lintResult = runStyleLint(candidateBalloons, {
               emojiBudget: emojiBudgetInfo.budget,
               recentEmojis: emojiBudgetInfo.recentEmojis,
+              recentReactions: recentStyleState.recent_reactions,
+              lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
               isRetry: true,
             });
             finalSubDecision.responses = lintResult.cleanedBalloons;
@@ -4929,7 +5309,13 @@ Responda ESTRITAMENTE em JSON puro:
       currentCycle.completedAt = new Date().toISOString();
       currentCycle.metrics = {
         durationMs,
-        tokens: { total: totalTokens },
+        tokens: {
+          initial_context_tokens: initialContextTokens,
+          tool_calls: toolCallsCount,
+          tool_result_tokens: toolResultTokens,
+          final_generation_tokens: finalGenerationTokens,
+          total: totalTokens,
+        },
       };
       currentCycle.trace.push("cycle_completed");
 
@@ -4952,12 +5338,14 @@ Responda ESTRITAMENTE em JSON puro:
         outbox: outboxMap,
         messageLedger: ledger,
       };
+      (updatedState as any).completedGoalIds = completedGoalIds;
 
       await supabase
         .from("instagram_conversations")
         .update({
           stage_completed_rules: {
             ...stageRules,
+            completed_goals: completedGoalIds,
             active_cycle_token: null,
             orchestration: updatedState,
           },
@@ -5094,7 +5482,13 @@ Responda ESTRITAMENTE em JSON puro:
               currentCycle.completedAt = new Date().toISOString();
               currentCycle.metrics = {
                 durationMs,
-                tokens: { total: totalTokens },
+                tokens: {
+                  initial_context_tokens: initialContextTokens,
+                  tool_calls: toolCallsCount,
+                  tool_result_tokens: toolResultTokens,
+                  final_generation_tokens: finalGenerationTokens,
+                  total: totalTokens,
+                },
               };
 
               const updatedState: ConversationOrchestrationState = {
@@ -5400,7 +5794,13 @@ Responda ESTRITAMENTE em JSON puro:
       currentCycle.completedAt = new Date().toISOString();
       currentCycle.metrics = {
         durationMs,
-        tokens: { total: totalTokens },
+        tokens: {
+          initial_context_tokens: initialContextTokens,
+          tool_calls: toolCallsCount,
+          tool_result_tokens: toolResultTokens,
+          final_generation_tokens: finalGenerationTokens,
+          total: totalTokens,
+        },
       };
       currentCycle.trace.push("cycle_completed");
 
@@ -5509,6 +5909,7 @@ Responda ESTRITAMENTE em JSON puro:
         messageLedger: ledger,
         memory: orchState.memory,
       };
+      (updatedState as any).completedGoalIds = completedGoalIds;
 
       // Checagem de preempção antes do commit final no banco:
       // Se outro ciclo assumiu o lock durante o processamento/despacho, não sobrescreve seu estado!
@@ -5566,6 +5967,7 @@ Responda ESTRITAMENTE em JSON puro:
         .update({
           stage_completed_rules: {
             ...freshRules,
+            completed_goals: completedGoalIds,
             active_cycle_token: null,
             orchestration: updatedState,
           },

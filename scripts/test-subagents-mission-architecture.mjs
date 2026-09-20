@@ -75,7 +75,9 @@ function loadModule(filePath, customEnv = {}) {
 const orchestrator = loadModule("supabase/functions/api/experimental_orchestrator.ts");
 const {
   CANONICAL_SUBAGENTS,
+  DEFAULT_CONEXAO_GOALS,
   DEFAULT_DESCOBERTA_GOALS,
+  DEFAULT_COMPATIBILIDADE_GOALS,
   filterGoalsForSubagent,
   formatGoalsSnippetForSubagent,
   buildConversationAgentPrompt,
@@ -130,11 +132,12 @@ console.log("🧪 Iniciando suíte de testes: Subagentes com Missão Clara + Obj
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // TESTE 3: Objetivo permitido para 2 subagentes aparece em ambos
 // ----------------------------------------------------------------------------
 {
-  const cityGoal = DEFAULT_DESCOBERTA_GOALS.find((g) => g.id === "goal_city");
-  assert(cityGoal, "goal_city deve existir nos objetivos padrão");
+  const cityGoal = DEFAULT_CONEXAO_GOALS.find((g) => g.id === "goal_city");
+  assert(cityGoal, "goal_city deve existir nos objetivos padrão de conexao");
   assert(cityGoal.allowedSubagents.includes("conexao_inicial"), "goal_city deve permitir conexao_inicial");
   assert(cityGoal.allowedSubagents.includes("descoberta"), "goal_city deve permitir descoberta");
 
@@ -152,20 +155,20 @@ console.log("🧪 Iniciando suíte de testes: Subagentes com Missão Clara + Obj
 // TESTE 4: Objetivo exclusivo de descoberta NÃO aparece para conexao_inicial
 // ----------------------------------------------------------------------------
 {
-  const relGoal = DEFAULT_DESCOBERTA_GOALS.find((g) => g.id === "goal_relationship");
-  assert(relGoal, "goal_relationship deve existir nos objetivos padrão");
+  const ageGoal = DEFAULT_DESCOBERTA_GOALS.find((g) => g.id === "goal_age");
+  assert(ageGoal, "goal_age deve existir nos objetivos padrão");
   assert.equal(
-    JSON.stringify(relGoal.allowedSubagents),
+    JSON.stringify(ageGoal.allowedSubagents),
     JSON.stringify(["descoberta"]),
-    "goal_relationship deve ser exclusivo de descoberta"
+    "goal_age deve ser exclusivo de descoberta"
   );
 
   const resolved = [
-    { id: relGoal.id, label: relGoal.label, status: "pending", value: null, allowedSubagents: relGoal.allowedSubagents },
+    { id: ageGoal.id, label: ageGoal.label, status: "pending", value: null, allowedSubagents: ageGoal.allowedSubagents },
   ];
   const inConexao = filterGoalsForSubagent(resolved, "conexao_inicial");
-  assert.equal(inConexao.openGoals.length, 0, "conexao_inicial não deve receber goal_relationship");
-  console.log("✔ Teste 4: Objetivo exclusivo de descoberta (goal_relationship) NÃO aparece para conexao_inicial");
+  assert.equal(inConexao.openGoals.length, 0, "conexao_inicial não deve receber goal_age");
+  console.log("✔ Teste 4: Objetivo exclusivo de descoberta (goal_age) NÃO aparece para conexao_inicial");
 }
 
 // ----------------------------------------------------------------------------
@@ -199,13 +202,13 @@ console.log("🧪 Iniciando suíte de testes: Subagentes com Missão Clara + Obj
 // TESTE 6: Flag required: true é preservada e monitorada
 // ----------------------------------------------------------------------------
 {
-  const ageGoal = DEFAULT_DESCOBERTA_GOALS.find((g) => g.id === "goal_age");
-  assert.equal(ageGoal.required, true, "goal_age deve ser required: true");
+  const reqGoal = DEFAULT_CONEXAO_GOALS.find((g) => g.id === "goal_initial_reciprocity");
+  assert.equal(reqGoal.required, true, "goal_initial_reciprocity deve ser required: true");
 
   const snippet = formatGoalsSnippetForSubagent(
-    "descoberta",
+    "conexao_inicial",
     "Missão teste",
-    [{ id: ageGoal.id, label: ageGoal.label, status: "pending", value: null, required: true }],
+    [{ id: reqGoal.id, label: reqGoal.label, status: "pending", value: null, required: true }],
     []
   );
   assert(snippet.includes("[obrigatório da etapa]"), "Snippet deve indicar [obrigatório da etapa]");
@@ -216,11 +219,11 @@ console.log("🧪 Iniciando suíte de testes: Subagentes com Missão Clara + Obj
 // TESTE 7: Flag required: false (opcional) não bloqueia progressão
 // ----------------------------------------------------------------------------
 {
-  const jobGoal = DEFAULT_DESCOBERTA_GOALS.find((g) => g.id === "goal_job");
+  const jobGoal = DEFAULT_CONEXAO_GOALS.find((g) => g.id === "goal_job");
   assert.equal(jobGoal.required, false, "goal_job deve ser opcional (required: false)");
 
   const snippet = formatGoalsSnippetForSubagent(
-    "descoberta",
+    "conexao_inicial",
     "Missão teste",
     [{ id: jobGoal.id, label: jobGoal.label, status: "pending", value: null, required: false }],
     []
@@ -267,7 +270,6 @@ console.log("🧪 Iniciando suíte de testes: Subagentes com Missão Clara + Obj
 // ----------------------------------------------------------------------------
 {
   const memory = new InMemoryMemoryProvider();
-  await memory.writeFact("conv_multi_goals", { entity: "self", field: "age", value: 34 });
   await memory.writeFact("conv_multi_goals", { entity: "self", field: "city", value: "Belo Horizonte" });
   await memory.writeFact("conv_multi_goals", { entity: "self", field: "job", value: "Arquiteto" });
 
@@ -284,16 +286,15 @@ console.log("🧪 Iniciando suíte de testes: Subagentes com Missão Clara + Obj
   const checklist = await resolveStageChecklistGoals({
     supabase: mockSupabase,
     conversationId: "conv_multi_goals",
-    stageNameOrId: "descoberta",
+    stageNameOrId: "conexao_inicial",
     memoryProvider: memory,
   });
 
   const completed = checklist.goals.filter((g) => g.status === "completed");
   const completedIds = completed.map((g) => g.id);
-  assert(completedIds.includes("goal_age"), "goal_age deve ser concluído automaticamente");
   assert(completedIds.includes("goal_city"), "goal_city deve ser concluído automaticamente");
   assert(completedIds.includes("goal_job"), "goal_job deve ser concluído automaticamente");
-  assert.equal(completed.length, 3, "3 objetivos devem estar concluídos simultaneamente pela revelação");
+  assert.equal(completed.length, 2, "2 objetivos devem estar concluídos simultaneamente pela revelação");
   console.log("✔ Teste 10: Revelação espontânea completa múltiplos objetivos via ContactMemory simultaneamente");
 }
 

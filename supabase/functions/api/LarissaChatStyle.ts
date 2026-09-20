@@ -15,17 +15,178 @@ export const LARISSA_CHAT_STYLE_V2 = `=== FORMA DE DIGITAR & LINGUAGEM DE CELULA
    - Densidade: 3 a 18 palavras por balão. Evite textão em bloco único.
 6. ZERO SUJEIRA: Proibido markdown (negrito, itálico), prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
 
+export const LARISSA_COMPACT_SUBAGENT_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
+Você conduz uma conversa natural como Larissa (23 anos, moça meiga de Minas Gerais).
+1. ESCUTA & EMPATIA: Acolha o que ele disse antes de qualquer objetivo. Reaja com personalidade e carinho.
+2. BÚSSOLA, NÃO INTERROGATÓRIO: Objetivos são bússola orgânica, não questionário. Se ele revelou algo espontaneamente, considere concluído sem perguntar de novo.
+3. SEM PERGUNTA OBRIGATÓRIA: Nem todo turno precisa de pergunta. Comente, reaja, brinque com meiguice ou conte algo breve sobre você.
+4. ESPAÇO: Deixe ele perguntar e conduzir também. Não faça interrogatórios mecânicos.
+5. ÁUDIO PRIORITÁRIO: Se houver áudio adequado no Cofre (cofre_search), prefira send_audio SEM texto espelho.
+6. ANTI-REPETIÇÃO: Nunca repita perguntas, histórias ou reações consecutivas ("que bom", "legal demais").
+7. FERRAMENTAS SOB DEMANDA: Use ferramentas só quando precisar de fatos ausentes. Em saudações e empatia, responda direto.`;
+
 export function getLarissaChatStyleBlock(): string {
   return LARISSA_CHAT_STYLE_V2;
+}
+
+export function getLarissaCompactPrompt(): string {
+  return LARISSA_COMPACT_SUBAGENT_PROMPT;
 }
 
 // Regex aprimorada e abrangente para captura de emojis Unicode (incluindo variações e modificadores de tom de pele)
 export const EMOJI_REGEX = /(?:\p{Extended_Pictographic}|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDE4F]|\uD83D[\uDE80-\uDEFF]|\uD83E[\uDD00-\uDDFF])/gu;
 
+export interface RecentStyleState {
+  recent_reactions: string[];
+  recent_emojis: string[];
+  recent_questions: string[];
+  last_response_shape: string;
+  emoji_recent_history: Array<string | null>;
+}
+
 export interface EmojiBudgetResult {
   budget: number; // 0 ou 1
+  allowEmoji: boolean;
+  blockedEmojis: string[];
   recentEmojis: string[];
+  emojiRecentHistory: Array<string | null>;
   promptSnippet: string;
+}
+
+export const COMMON_REACTION_PATTERNS: Array<{ name: string; regex: RegExp }> = [
+  { name: "que_bom", regex: /^(?:que bom+[^\w\s]*|bomm+[^\w\s]*)/i },
+  { name: "nossa", regex: /^(?:nossa+[^\w\s]*|nossa senhora[^\w\s]*)/i },
+  { name: "tadinho", regex: /^(?:tadinho(?: meu bem)?[^\w\s]*|que d[oó][^\w\s]*|coitado[^\w\s]*)/i },
+  { name: "credo", regex: /^(?:credo[^\w\s]*)/i },
+  { name: "uai", regex: /^(?:uai[^\w\s]*)/i },
+  { name: "sim", regex: /^(?:sim+[^\w\s]*)/i },
+  { name: "olha_so", regex: /^(?:olha s[oó][^\w\s]*|olha pra vc ver[^\w\s]*)/i },
+  { name: "legal_demais", regex: /^(?:legal demais[^\w\s]*|que legal[^\w\s]*|bacana[^\w\s]*)/i },
+  { name: "eita", regex: /^(?:eita[^\w\s]*|aff+[^\w\s]*)/i },
+  { name: "misericordia", regex: /^(?:mds[^\w\s]*|miseric[oó]rdia[^\w\s]*)/i },
+  { name: "risada", regex: /^(?:kkk+[^\w\s]*)/i },
+  { name: "eu_em", regex: /^(?:eu em[^\w\s]*)/i },
+  { name: "blz", regex: /^(?:blz[^\w\s]*|ata[^\w\s]*|entendi[^\w\s]*)/i },
+  { name: "adorei", regex: /^(?:adorei+[^\w\s]*|amei+[^\w\s]*)/i },
+  { name: "saudacao", regex: /^(?:boa noite|bom dia|boa tarde|oie?|oi)[^\w\s]*/i },
+];
+
+/**
+ * Identifica a reação de abertura em um texto da Larissa.
+ */
+export function extractOpeningReaction(text: string): string | null {
+  if (!text || typeof text !== "string") return null;
+  const clean = text.trim();
+  for (const { name, regex } of COMMON_REACTION_PATTERNS) {
+    if (regex.test(clean)) {
+      const match = clean.match(regex);
+      if (match) {
+        return match[0].replace(/[.,;:!?\s]+$/g, "").trim().toLowerCase();
+      }
+      return name;
+    }
+  }
+  return null;
+}
+
+/**
+ * Infere a estrutura/shape da resposta da Larissa.
+ */
+export function inferResponseShape(text: string): string {
+  if (!text || typeof text !== "string") return "short acknowledgement";
+  const clean = text.trim();
+  const hasQuestion = clean.includes("?");
+  const hasReaction = Boolean(extractOpeningReaction(clean));
+  const words = clean.split(/\s+/).filter(Boolean).length;
+
+  if (clean.startsWith("[audio:") || clean.includes("send_audio")) {
+    return "audio";
+  }
+  if (hasReaction && hasQuestion) {
+    return "reaction + question";
+  }
+  if (hasReaction && words > 8) {
+    return "reaction + disclosure";
+  }
+  if (hasReaction) {
+    return "reaction";
+  }
+  if (hasQuestion && words > 8) {
+    return "disclosure + question";
+  }
+  if (hasQuestion) {
+    return "question";
+  }
+  if (/\bkkk+\b/i.test(clean) && words <= 6) {
+    return "humor";
+  }
+  if (words <= 4) {
+    return "short acknowledgement";
+  }
+  return "disclosure";
+}
+
+/**
+ * Extrai o recent_style_state compacto a partir dos outbounds recentes da Larissa.
+ */
+export function extractRecentStyleState(
+  recentOutbounds: Array<{ text?: string; content?: string; message?: string } | string>
+): RecentStyleState {
+  const normalizedOutbounds: string[] = [];
+
+  for (const item of recentOutbounds || []) {
+    if (typeof item === "string") {
+      if (item.trim()) normalizedOutbounds.push(item.trim());
+    } else if (item && typeof item === "object") {
+      const text = item.text || item.content || item.message || "";
+      if (typeof text === "string" && text.trim()) {
+        normalizedOutbounds.push(text.trim());
+      }
+    }
+  }
+
+  const recentReactions: string[] = [];
+  const recentEmojisSet = new Set<string>();
+  const recentQuestions: string[] = [];
+  const emojiRecentHistory: Array<string | null> = [];
+
+  for (let i = 0; i < normalizedOutbounds.length && i < 5; i++) {
+    const text = normalizedOutbounds[i];
+    const rx = extractOpeningReaction(text);
+    if (rx && !recentReactions.includes(rx)) {
+      recentReactions.push(rx);
+    }
+
+    const matches = text.match(EMOJI_REGEX);
+    if (matches && matches.length > 0) {
+      emojiRecentHistory.push(matches[0]);
+      for (const em of matches) {
+        recentEmojisSet.add(em);
+      }
+    } else {
+      emojiRecentHistory.push(null);
+    }
+
+    if (text.includes("?")) {
+      const sentences = text.split(/[.!;\n]+/).map((s) => s.trim()).filter((s) => s.includes("?"));
+      for (const q of sentences) {
+        if (!recentQuestions.includes(q)) {
+          recentQuestions.push(q);
+        }
+      }
+    }
+  }
+
+  const lastText = normalizedOutbounds.length > 0 ? normalizedOutbounds[0] : "";
+  const lastResponseShape = inferResponseShape(lastText);
+
+  return {
+    recent_reactions: recentReactions.slice(0, 3),
+    recent_emojis: Array.from(recentEmojisSet).slice(0, 3),
+    recent_questions: recentQuestions.slice(0, 2),
+    last_response_shape: lastResponseShape,
+    emoji_recent_history: emojiRecentHistory.slice(0, 3),
+  };
 }
 
 /**
@@ -40,46 +201,23 @@ export interface EmojiBudgetResult {
 export function computeDynamicEmojiBudget(
   recentOutbounds: Array<{ text?: string; content?: string; message?: string } | string>
 ): EmojiBudgetResult {
-  const normalizedOutbounds: string[] = [];
+  const styleState = extractRecentStyleState(recentOutbounds);
+  const latestHadEmoji = styleState.emoji_recent_history.length > 0 && styleState.emoji_recent_history[0] !== null;
 
-  for (const item of recentOutbounds || []) {
-    if (typeof item === "string") {
-      if (item.trim()) normalizedOutbounds.push(item.trim());
-    } else if (item && typeof item === "object") {
-      const text = item.text || item.content || item.message || "";
-      if (typeof text === "string" && text.trim()) {
-        normalizedOutbounds.push(text.trim());
-      }
-    }
-  }
-
-  const recentEmojisSet = new Set<string>();
-  for (const text of normalizedOutbounds) {
-    const matches = text.match(EMOJI_REGEX);
-    if (matches) {
-      for (const em of matches) {
-        recentEmojisSet.add(em);
-      }
-    }
-  }
-
-  const recentEmojis = Array.from(recentEmojisSet);
-
-  // Considera o primeiro elemento como o mais recente (se array ordenado desc), ou o último se asc.
-  // Convenção: se recentOutbounds for passado, assume que [0] é o mais recente.
-  const latestOutbound = normalizedOutbounds.length > 0 ? normalizedOutbounds[0] : "";
-  const latestHasEmoji = Boolean(latestOutbound && EMOJI_REGEX.test(latestOutbound));
-
-  const budget = latestHasEmoji ? 0 : 1;
+  const budget = latestHadEmoji ? 0 : 1;
 
   let promptSnippet = `EMOJI_BUDGET=${budget}`;
-  if (budget === 1 && recentEmojis.length > 0) {
-    promptSnippet += `\nRECENT_EMOJIS=[${recentEmojis.join(", ")}]`;
+  if (styleState.recent_emojis.length > 0) {
+    promptSnippet += `\nRECENT_EMOJIS=[${styleState.recent_emojis.join(", ")}]`;
   }
+  promptSnippet += `\nEMOJI_RECENT_HISTORY=${JSON.stringify(styleState.emoji_recent_history)}`;
 
   return {
     budget,
-    recentEmojis,
+    allowEmoji: budget > 0,
+    blockedEmojis: styleState.recent_emojis,
+    recentEmojis: styleState.recent_emojis,
+    emojiRecentHistory: styleState.emoji_recent_history,
     promptSnippet,
   };
 }
@@ -101,6 +239,8 @@ export interface StyleLintResult {
 export interface StyleLintOptions {
   emojiBudget?: number;
   recentEmojis?: string[];
+  recentReactions?: string[];
+  lastOutboundReaction?: string;
   isSeriousContext?: boolean;
   isRetry?: boolean;
 }
@@ -118,6 +258,8 @@ export function runStyleLint(
   const {
     emojiBudget = 1,
     recentEmojis = [],
+    recentReactions = [],
+    lastOutboundReaction,
     isSeriousContext = false,
     isRetry = false,
   } = options;
@@ -185,7 +327,6 @@ export function runStyleLint(
     }
 
     // Ponto final SOMENTE no final do balão (preservando ?, !, ...)
-    // Exemplo: "oi." -> "oi", mas "oi?." -> "oi?", "oi!" -> "oi!"
     if (/\.$/.test(text) && !/\.\.\.$/.test(text)) {
       text = text.replace(/\.+$/, "");
       issues.push({
@@ -247,6 +388,30 @@ export function runStyleLint(
         break;
       }
     }
+  }
+
+  // Regra 3.1: Reação textual imediatamente repetida (remoção limpa sem substituição semântica cega)
+  const currentReaction = cleaned.length > 0 ? extractOpeningReaction(cleaned[0]) : null;
+  if (currentReaction && lastOutboundReaction && currentReaction === lastOutboundReaction) {
+    let firstBalloon = cleaned[0];
+    const reactionPrefixRegex = new RegExp(`^${currentReaction}(?:\\s+que|,\\s*que|,|\\s+)*`, "i");
+    firstBalloon = firstBalloon.replace(reactionPrefixRegex, "").trim();
+
+    if (/^que\s+/i.test(firstBalloon)) {
+      firstBalloon = firstBalloon.replace(/^que\s+/i, "").trim();
+    }
+
+    if (firstBalloon.length > 0) {
+      cleaned[0] = firstBalloon.charAt(0).toLowerCase() + firstBalloon.slice(1);
+    } else if (cleaned.length > 1) {
+      cleaned.shift();
+    }
+
+    issues.push({
+      type: "mechanical",
+      rule: "REACAO_CONSECUTIVA_REMOVIDA",
+      message: `Reação repetida "${currentReaction}" removida de forma limpa sem substituição semântica cega.`,
+    });
   }
 
   // Regra 4: Uai excessivo (> 1 em todo o turno)
@@ -322,9 +487,22 @@ export function runStyleLint(
            .replace(/\btrampo\b/gi, "trabalho")
            .replace(/\btrampar\b/gi, "trabalhar");
 
-      // Remove emojis se budget = 0 ou excessivos
+      // Remove emojis se budget = 0, se for repetido ou se for excessivo
       if (emojiBudget === 0 || i > 0) {
         b = b.replace(EMOJI_REGEX, "").trim();
+      } else if (recentEmojis.length > 0) {
+        for (const em of recentEmojis) {
+          b = b.split(em).join("").trim();
+        }
+      }
+
+      // Saneamento de reação consecutiva repetida
+      if (i === 0 && currentReaction && lastOutboundReaction && currentReaction === lastOutboundReaction) {
+        if (/^que bom+[^\w\s]*/i.test(b)) {
+          b = b.replace(/^que bom+[^\w\s]*/i, "simm").trim();
+        } else if (/^legal demais[^\w\s]*/i.test(b)) {
+          b = b.replace(/^legal demais[^\w\s]*/i, "bacana").trim();
+        }
       }
 
       // Se contexto sério, remove kkk
