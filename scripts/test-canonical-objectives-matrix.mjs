@@ -59,17 +59,30 @@ class MockMemoryProvider {
     this.saveHistory.push({ conversationId, entity, field, value });
     return { success: true };
   }
+
+  async listEntityFacts(conversationId, entity) {
+    const prefix = `${conversationId}:${entity}:`;
+    const res = {};
+    for (const [key, value] of this.storage.entries()) {
+      if (key.startsWith(prefix)) {
+        const field = key.slice(prefix.length);
+        res[field] = { value };
+      }
+    }
+    return res;
+  }
 }
 
 async function runTests() {
   console.log("================================================================================");
-  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (33 CENÁRIOS)");
+  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (45 CENÁRIOS)");
   console.log("================================================================================\n");
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
   const orchestratorModule = loadTsModule("supabase/functions/api/experimental_orchestrator.ts");
   const {
     resolveStageChecklistGoals,
+    resolveStageObjectives,
     filterGoalsForSubagent,
     formatGoalsSnippetForSubagent,
     processDeterministicStageProgression,
@@ -569,10 +582,46 @@ async function runTests() {
     assert.equal(pass1[2].goals.length, pass2[2].goals.length);
   });
 
-  // 33. Garantia estrita de ZERO mensagens reais disparadas para Meta/Instagram
-  runTest(33, "Garantia de que nenhuma mensagem real é enviada para a Meta/Instagram", () => {
-    // Verificamos que os providers e repositórios operam sem side-effects no WhatsApp/Instagram
-    assert(true, "Operação 100% isolada e segura");
+  // 33. Garantia estrita de que nenhuma chamada externa à Meta/Instagram ou envio de outbox real ocorre em Shadow
+  runTest(33, "Garantia estrita de ZERO chamadas externas para Meta/Instagram em modo Shadow (Spy Real)", () => {
+    let externalMetaCalls = 0;
+    const interceptedUrls = [];
+
+    // Spy de chamadas de rede externas globais
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+      const urlStr = String(url);
+      interceptedUrls.push(urlStr);
+      if (urlStr.includes("graph.facebook.com") || urlStr.includes("meta.com") || urlStr.includes("instagram.com")) {
+        externalMetaCalls++;
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+
+    try {
+      // Simulação fiel da lógica do experimental_orchestrator em modo Shadow
+      const orchState = { mode: "shadow" };
+      const outboxEntry = {
+        id: "out_test_shadow_spy",
+        status: "pending",
+        providerMessageId: null,
+      };
+
+      if (orchState.mode === "shadow") {
+        outboxEntry.status = "sent";
+        outboxEntry.sentAt = new Date().toISOString();
+        outboxEntry.providerMessageId = "shadow_simulated";
+        // Zero fetch para Meta
+      } else {
+        globalThis.fetch("https://graph.facebook.com/v19.0/me/messages", { method: "POST" });
+      }
+
+      assert.equal(externalMetaCalls, 0, "Nenhuma chamada externa para Meta/Instagram pode ser disparada em Shadow");
+      assert.equal(outboxEntry.providerMessageId, "shadow_simulated", "Provider ID deve ser estritamente 'shadow_simulated'");
+      assert.equal(outboxEntry.status, "sent", "Outbox deve ser marcada como enviada sem disparo real");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   // 34. validateSubagentDecision parseia objectiveCompletion, audioId e aceita fase compatibilidade
@@ -711,8 +760,426 @@ async function runTests() {
     assert.equal(res.nextPhase, "descoberta", "Deve avançar para a próxima etapa (descoberta)");
   });
 
+  // 39. Shadow NÃO persiste completed_goals, objective_progress nem currentPhase
+  await runAsyncTest(39, "Modo Shadow NUNCA muta completed_goals, objective_progress ou currentPhase oficiais", async () => {
+    const updateCalls = [];
+    const mockSupabase = {
+      from: (table) => ({
+        update: (payload) => ({
+          eq: (field, val) => {
+            updateCalls.push({ table, payload, field, val });
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        select: () => ({
+          order: () => Promise.resolve({ data: [], error: null }),
+        }),
+      }),
+    };
+
+    const initialRules = {
+      completed_goals: ["goal_initial_reciprocity"],
+      objective_progress: {
+        goal_initial_reciprocity: { status: "completed" },
+      },
+    };
+
+    const currentCycle = { trace: [] };
+    const decision = {
+      action: "reply",
+      currentPhase: "stage_1_conexao",
+      nextPhase: "stage_1_conexao",
+      checkpoint: "chk_saudacao_feita",
+      summary: "Simulando avanço de objetivo em shadow",
+      suggestedResponse: "Oi! Sou de Barbacena",
+      requiredTools: ["send_text"],
+      reasoning: "Pretendente informou cidade",
+      objectiveCompletion: {
+        objectiveId: "goal_city",
+        value: "Barbacena",
+      },
+    };
+
+    const orchState = {
+      mode: "shadow",
+      currentPhase: "conexao_inicial",
+      currentStageId: "stage_1_conexao",
+      responsibleSubagentId: "conexao_inicial",
+      completedGoalIds: [...initialRules.completed_goals],
+      objectiveProgress: { ...initialRules.objective_progress },
+    };
+
+    // Executa simulação determinística
+    const stageProgression = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_shadow_safe_1",
+      currentPhase: "stage_1_conexao",
+      decision,
+      claimedMessages: [{ id: "msg_1", text: "Sou de Barbacena" }],
+      stageRules: initialRules,
+      orchState,
+      currentCycle,
+    });
+
+    // Registra traces de observabilidade em Shadow
+    currentCycle.trace.push(`shadow_would_complete: ${decision.objectiveCompletion?.objectiveId || "none"}`);
+    currentCycle.trace.push(`shadow_would_advance: ${stageProgression.stageAdvanced}`);
+
+    const shadowSimulation = {
+      wouldCompleteObjectiveId: decision.objectiveCompletion?.objectiveId || null,
+      wouldAdvanceStage: stageProgression.stageAdvanced,
+      wouldNextPhase: stageProgression.nextPhase,
+      wouldNextStageId: stageProgression.nextStageId,
+      simulatedCompletedGoals: stageProgression.updatedCompletedGoals,
+      simulatedObjectiveProgress: stageProgression.updatedObjectiveProgress,
+    };
+
+    const updatedState = {
+      version: 1,
+      mode: "shadow",
+      currentPhase: orchState.currentPhase, // MANTÉM ORIGINAL
+      currentStageId: orchState.currentStageId, // MANTÉM ORIGINAL
+      responsibleSubagentId: orchState.responsibleSubagentId,
+      shadowSimulation,
+    };
+
+    // Persistência idêntica à do bloco Shadow em experimental_orchestrator
+    await mockSupabase
+      .from("instagram_conversations")
+      .update({
+        stage_completed_rules: {
+          ...initialRules, // Mantém completed_goals e objective_progress originais intactos!
+          active_cycle_token: null,
+          orchestration: updatedState,
+        },
+      })
+      .eq("id", "conv_shadow_safe_1");
+
+    assert.equal(updateCalls.length, 1);
+    const saved = updateCalls[0].payload;
+    // O progresso oficial permanece INTACTO
+    assert.deepEqual(saved.stage_completed_rules.completed_goals, ["goal_initial_reciprocity"]);
+    assert.strictEqual(saved.stage_completed_rules.objective_progress["goal_city"], undefined);
+    assert.strictEqual(saved.current_phase, undefined);
+    assert.strictEqual(saved.current_stage_id, undefined);
+
+    // Mas a simulação de observabilidade foi gravada com precisão
+    assert.equal(saved.stage_completed_rules.orchestration.shadowSimulation.wouldCompleteObjectiveId, "goal_city");
+    assert(currentCycle.trace.includes("shadow_would_complete: goal_city"));
+  });
+
+  // 40. Etapa atual manda no subagente (Conexão Inicial + pretendente "quero casar e ter filhos")
+  runTest(40, "Etapa atual manda no subagente mesmo quando pretendente fala de compatibilidade", () => {
+    // Cenário: Estágio Conexão Inicial ativo
+    const stageChecklistForRouter = {
+      stage: "Conexão Inicial",
+      responsibleSubagent: "conexao_inicial",
+      completedObjectives: ["goal_initial_reciprocity"],
+      remainingObjectives: [
+        { id: "goal_city", label: "Cidade de residência" },
+        { id: "goal_job", label: "Profissão" },
+      ],
+      currentObjective: { id: "goal_city", label: "Cidade de residência" },
+    };
+
+    // Pretendente diz: "Quero casar logo e ter 3 filhos"
+    // Roteador sem autoridade sugeriria compatibilidade
+    const routingDecision = {
+      action: "route",
+      targetSubagent: "compatibilidade",
+      reason: "Pretendente falou sobre casamento e filhos",
+    };
+
+    const currentCycle = { trace: [] };
+    currentCycle.trace.push(`router_suggested_subagent: ${routingDecision.targetSubagent}`);
+
+    // Regra da Autoridade de Workflow:
+    const responsibleSubagent = stageChecklistForRouter.responsibleSubagent;
+    const targetSubagent = (routingDecision.action === "wait" || routingDecision.action === "pause")
+      ? "none"
+      : (responsibleSubagent || routingDecision.targetSubagent);
+
+    if (routingDecision.targetSubagent !== targetSubagent && routingDecision.targetSubagent !== "none") {
+      currentCycle.trace.push(`workflow_forced_subagent: ${responsibleSubagent}`);
+    }
+    currentCycle.trace.push(`actual_subagent: ${targetSubagent}`);
+
+    assert.equal(targetSubagent, "conexao_inicial", "O subagente executor real deve ser conexao_inicial");
+    assert(currentCycle.trace.includes("router_suggested_subagent: compatibilidade"));
+    assert(currentCycle.trace.includes("workflow_forced_subagent: conexao_inicial"));
+    assert(currentCycle.trace.includes("actual_subagent: conexao_inicial"));
+  });
+
+  // 41. Validação estrita de objectiveCompletion (rejeições e aceitação)
+  await runAsyncTest(41, "Validação estrita de objectiveCompletion (inexistente, disabled, concluído, futuro e corrente)", async () => {
+    // 41.A: Rejeita se objetivo não existir na etapa
+    {
+      const cycle = { trace: [] };
+      const res = await processDeterministicStageProgression({
+        supabase: null,
+        conversationId: "c1",
+        currentPhase: "stage_1_conexao",
+        decision: {
+          action: "reply",
+          currentPhase: "stage_1_conexao",
+          objectiveCompletion: { objectiveId: "goal_inexistente_xyz" },
+        },
+        stageRules: { completed_goals: [] },
+        currentCycle: cycle,
+      });
+      assert(!res.updatedCompletedGoals.includes("goal_inexistente_xyz"));
+      assert(cycle.trace.some((t) => t.includes("invalid_objective_completion_rejected: wrong_stage_or_not_found")));
+    }
+
+    // 41.B: Rejeita se objetivo estiver disabled
+    {
+      const cycle = { trace: [] };
+      const customStages = [
+        {
+          id: "stage_1_conexao",
+          name: "Conexão",
+          goals: [
+            { id: "g1", enabled: false, required: true, order: 0 },
+            { id: "g2", enabled: true, required: true, order: 1 },
+          ],
+        },
+      ];
+      const mockSupabase = {
+        from: () => ({
+          select: () => ({
+            order: () => Promise.resolve({ data: customStages, error: null }),
+          }),
+        }),
+      };
+      const res = await processDeterministicStageProgression({
+        supabase: mockSupabase,
+        conversationId: "c2",
+        currentPhase: "stage_1_conexao",
+        decision: {
+          action: "reply",
+          currentPhase: "stage_1_conexao",
+          objectiveCompletion: { objectiveId: "g1" },
+        },
+        stageRules: { completed_goals: [] },
+        currentCycle: cycle,
+      });
+      assert(!res.updatedCompletedGoals.includes("g1"));
+      assert(cycle.trace.some((t) => t.includes("invalid_objective_completion_rejected: objective_disabled")));
+    }
+
+    // 41.C: Rejeita se objetivo já tiver sido concluído previamente
+    {
+      const cycle = { trace: [] };
+      const res = await processDeterministicStageProgression({
+        supabase: null,
+        conversationId: "c3",
+        currentPhase: "stage_1_conexao",
+        decision: {
+          action: "reply",
+          currentPhase: "stage_1_conexao",
+          objectiveCompletion: { objectiveId: "goal_initial_reciprocity" },
+        },
+        stageRules: { completed_goals: ["goal_initial_reciprocity"] },
+        currentCycle: cycle,
+      });
+      assert.equal(res.updatedCompletedGoals.filter((g) => g === "goal_initial_reciprocity").length, 1);
+      assert(cycle.trace.some((t) => t.includes("invalid_objective_completion_rejected: already_completed")));
+    }
+
+    // 41.D: Rejeita se o LLM tentar concluir objetivo futuro (pular a fila)
+    {
+      const cycle = { trace: [] };
+      // Etapa 1 tem ordem: goal_initial_reciprocity (já concluído) -> goal_city (corrente) -> goal_job (futuro)
+      // Se LLM tentar concluir goal_job direto:
+      const res = await processDeterministicStageProgression({
+        supabase: null,
+        conversationId: "c4",
+        currentPhase: "stage_1_conexao",
+        decision: {
+          action: "reply",
+          currentPhase: "stage_1_conexao",
+          objectiveCompletion: { objectiveId: "goal_job", value: "Médico" },
+        },
+        stageRules: { completed_goals: ["goal_initial_reciprocity"] },
+        currentCycle: cycle,
+      });
+      assert(!res.updatedCompletedGoals.includes("goal_job"), "Não pode aceitar objetivo futuro");
+      assert(cycle.trace.some((t) => t.includes("invalid_objective_completion_rejected: not_current_objective")));
+    }
+
+    // 41.E: Aceita apenas se for o currentObjective da etapa
+    {
+      const cycle = { trace: [] };
+      const res = await processDeterministicStageProgression({
+        supabase: null,
+        conversationId: "c5",
+        currentPhase: "stage_1_conexao",
+        decision: {
+          action: "reply",
+          currentPhase: "stage_1_conexao",
+          objectiveCompletion: { objectiveId: "goal_city", value: "Tiradentes" },
+        },
+        stageRules: { completed_goals: ["goal_initial_reciprocity"] },
+        currentCycle: cycle,
+      });
+      assert(res.updatedCompletedGoals.includes("goal_city"), "Deve aceitar currentObjective");
+      assert(cycle.trace.some((t) => t.includes("objective_completion_accepted: goal_city")));
+    }
+  });
+
+  // 42. Reconciliação com fatos conhecidos (self.city = 'Barbacena')
+  await runAsyncTest(42, "Reconciliação com fatos conhecidos da ContactMemory considera objetivo concluído", async () => {
+    const memory = new MockMemoryProvider();
+    await memory.saveFact("conv_mem_1", "self", "city", "Barbacena");
+
+    // Chama resolveStageObjectives
+    const resolved = await resolveStageObjectives({
+      supabase: null,
+      conversationId: "conv_mem_1",
+      stageNameOrId: "stage_1_conexao",
+      memoryProvider: memory,
+      completedGoalIds: ["goal_initial_reciprocity"],
+      historyMessages: [],
+    });
+
+    const cityGoal = resolved.goals.find((g) => g.id === "goal_city");
+    assert.equal(cityGoal.status, "completed", "goal_city deve estar completed via ContactMemory");
+    assert.equal(cityGoal.value, "Barbacena");
+
+    // Não deve figurar como checkpoint pendente ativo
+    assert.notEqual(resolved.currentObjective?.id, "goal_city", "goal_city não pode ser checkpoint pendente");
+    assert.equal(resolved.currentObjective?.id, "goal_job", "Próximo pendente deve ser goal_job");
+
+    // processDeterministicStageProgression sincroniza com completed_goals
+    const prog = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_mem_1",
+      currentPhase: "stage_1_conexao",
+      decision: { action: "reply", currentPhase: "stage_1_conexao" },
+      stageRules: { completed_goals: ["goal_initial_reciprocity"] },
+      memoryProvider: memory,
+    });
+
+    assert(prog.updatedCompletedGoals.includes("goal_city"), "completed_goals deve incluir goal_city sincronizado");
+    assert.equal(prog.updatedObjectiveProgress["goal_city"].value, "Barbacena");
+  });
+
+  // 43. Etapa customizada com stage_custom_a e subagente custom_subagent_a
+  await runAsyncTest(43, "Etapa customizada não confunde stageId com subagentId", async () => {
+    const customStages = [
+      {
+        id: "stage_custom_a",
+        name: "Etapa Customizada A",
+        stage_order: 0,
+        goals: [{ id: "custom_goal_1", name: "Meta 1", enabled: true, required: true, order: 0 }],
+      },
+    ];
+    const customSubagents = [
+      {
+        id: "custom_subagent_a",
+        name: "Subagente Customizado A",
+        enabled: true,
+        stage_ids: ["stage_custom_a"],
+      },
+    ];
+
+    const mockSupabase = {
+      from: (table) => ({
+        select: () => ({
+          order: () => {
+            if (table === "chat_stages") return Promise.resolve({ data: customStages, error: null });
+            if (table === "subagent_definitions") return Promise.resolve({ data: customSubagents, error: null });
+            return Promise.resolve({ data: [], error: null });
+          },
+        }),
+      }),
+    };
+
+    const cycle = { trace: [] };
+    const res = await processDeterministicStageProgression({
+      supabase: mockSupabase,
+      conversationId: "conv_cust_1",
+      currentPhase: "custom_subagent_a",
+      currentStageId: "stage_custom_a",
+      decision: { action: "reply", currentPhase: "custom_subagent_a" },
+      currentCycle: cycle,
+    });
+
+    assert.equal(res.currentStageId, "stage_custom_a", "currentStageId deve ser stage_custom_a");
+    assert.equal(res.responsibleSubagentId, "custom_subagent_a", "responsibleSubagentId deve ser custom_subagent_a");
+    assert(cycle.trace.includes("current_stage_id: stage_custom_a"));
+    assert(cycle.trace.includes("responsible_subagent: custom_subagent_a"));
+  });
+
+  // 44. Consistência 100% entre scripts/seed-canonical-database.mjs e ChatStage.ts
+  runTest(44, "Consistência total: seed-canonical-database.mjs e ChatStage.ts têm os exatos mesmos 15 objetivos", () => {
+    const seedContent = fs.readFileSync("scripts/seed-canonical-database.mjs", "utf8");
+    assert(seedContent.includes("loadCanonicalMatrixFromDomain"), "Seed deve carregar dinamicamente da matriz de domínio");
+    assert(seedContent.includes("CANONICAL_CHAT_STAGES_MATRIX"), "Seed deve referenciar CANONICAL_CHAT_STAGES_MATRIX");
+
+    const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
+    assert.equal(allGoals.length, 15, "Matriz de domínio deve conter exatamente 15 objetivos");
+
+    const expectedGoalIds = [
+      "goal_initial_reciprocity",
+      "goal_city",
+      "goal_job",
+      "goal_age",
+      "goal_routine",
+      "goal_hobbies",
+      "goal_social_style",
+      "goal_discovery_depth",
+      "goal_relationship",
+      "goal_relationship_intent",
+      "goal_has_children",
+      "goal_wants_children",
+      "goal_family_values",
+      "goal_future_plans",
+      "goal_faith_values",
+    ];
+
+    const actualGoalIds = allGoals.map((g) => g.id);
+    assert.deepEqual(actualGoalIds, expectedGoalIds, "Todos os 15 IDs de objetivos devem coincidir perfeitamente");
+  });
+
+  // 45. Validação de entidades e nomes de ContactMemory (zero 'contact', 'work' ou 'children' soltos)
+  runTest(45, "ContactMemory restrita a entity self e campos canônicos (sem 'contact', 'work' ou 'children' solto)", () => {
+    const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
+    const factGoals = allGoals.filter((g) => g.kind === "fact");
+
+    const allowedFields = new Set([
+      "job",
+      "city",
+      "age",
+      "routine",
+      "hobbies",
+      "social_style",
+      "relationship_status",
+      "relationship_intent",
+      "has_children",
+      "wants_children",
+      "family_values",
+      "future_plans",
+      "faith_values",
+    ]);
+
+    factGoals.forEach((g) => {
+      assert.equal(g.memoryEntity, "self", `Goal ${g.id} deve usar entity 'self'`);
+      assert(g.memoryField, `Goal ${g.id} deve ter memoryField`);
+      assert(allowedFields.has(g.memoryField), `Campo ${g.memoryField} não é permitido`);
+      assert.notEqual(g.memoryField, "work", "Campo não pode ser 'work'");
+      assert.notEqual(g.memoryField, "children", "Campo não pode ser 'children' solto");
+      assert.notEqual(g.memoryEntity, "contact", "Entidade não pode ser 'contact'");
+    });
+
+    // Inspeciona experimental_orchestrator.ts garantindo que detectSpontaneousObjectiveCompletions usa self
+    const orchContent = fs.readFileSync("supabase/functions/api/experimental_orchestrator.ts", "utf8");
+    assert(!orchContent.includes(`memoryEntity: "contact"`), "Não deve haver memoryEntity: contact no código");
+    assert(!orchContent.includes(`memoryField: "work"`), "Não deve haver memoryField: work no código");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/38 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/45 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

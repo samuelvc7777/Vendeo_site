@@ -250,9 +250,9 @@ console.log("\n=== BLOCO 4: DETECÇÃO ESPONTÂNEA DE OBJETIVOS ===");
 
   assert.equal(matches.length, 3, "Deve detectar exatamente os 3 fatos revelados");
 
-  const work = matches.find((m) => m.field === "work");
+  const work = matches.find((m) => m.field === "job" || m.field === "work");
   const rel = matches.find((m) => m.field === "relationship_status");
-  const kids = matches.find((m) => m.field === "children");
+  const kids = matches.find((m) => m.field === "has_children" || m.field === "children");
 
   assert.ok(work, "Deve encontrar trabalho");
   assert.ok(work.value.includes("mineração"), "Trabalho deve ser mineração");
@@ -287,6 +287,7 @@ console.log("\n=== BLOCO 5: ÁUDIO PRIORITÁRIO (COFRE DE ÁUDIOS) ===");
 // Mock de Supabase para busca no Cofre
 function createMockSupabaseWithAudios(audiosList = []) {
   return {
+    __mockPersonaAudios: audiosList,
     from: (table) => ({
       select: (cols) => ({
         eq: (col, val) => ({
@@ -300,9 +301,14 @@ function createMockSupabaseWithAudios(audiosList = []) {
             limit: () => ({ data: [] }),
           }),
         }),
-        order: () => ({
-          limit: () => ({ data: [] }),
-        }),
+        order: () => {
+          if (table === "persona_audios") {
+            return Promise.resolve({ data: audiosList, error: null });
+          }
+          return {
+            limit: () => ({ data: [] }),
+          };
+        },
       }),
     }),
   };
@@ -363,6 +369,7 @@ const mockCofreAudios = [
 // Teste Áudio C: Áudio já enviado anteriormente na conversa é filtrado (não repete o mesmo áudio)
 {
   const mockSupabaseWithHistory = {
+    __mockPersonaAudios: mockCofreAudios,
     from: (table) => ({
       select: (cols) => ({
         eq: (col, val) => ({
@@ -387,9 +394,14 @@ const mockCofreAudios = [
             limit: () => ({ data: [] }),
           }),
         }),
-        order: () => ({
-          limit: () => ({ data: [] }),
-        }),
+        order: () => {
+          if (table === "persona_audios") {
+            return Promise.resolve({ data: mockCofreAudios, error: null });
+          }
+          return {
+            limit: () => ({ data: [] }),
+          };
+        },
       }),
     }),
   };
@@ -414,9 +426,9 @@ console.log("\n=== BLOCO 6: APROFUNDAMENTO ORGÂNICO VS PERGUNTA PRIMITIVA ===")
 
 {
   const memoryProvider = new InMemoryMemoryProvider();
-  await memoryProvider.saveFact("conv_test_depth", "contact", "work", "engenheiro de minas");
+  await memoryProvider.saveFact("conv_test_depth", "self", "job", "engenheiro de minas");
 
-  const fact = await memoryProvider.getFact("conv_test_depth", "contact", "work");
+  const fact = await memoryProvider.getFact("conv_test_depth", "self", "job");
   assert.equal(fact.found, true);
   assert.equal(fact.fact.value, "engenheiro de minas");
 

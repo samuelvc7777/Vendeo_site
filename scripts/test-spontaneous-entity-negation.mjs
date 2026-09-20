@@ -88,7 +88,7 @@ console.log("🧪 Iniciando auditoria dos 6 casos de Entidade, Negação e Tempo
     [{ id: "m4", text: "minha ex trabalha com mineração", sender: "pretendente" }],
     ["goal_job"]
   );
-  const workMatch = matches.find((m) => m.field === "work");
+  const workMatch = matches.find((m) => m.field === "job" || m.field === "work");
   assert.equal(workMatch, undefined, "Caso 4: 'minha ex trabalha com mineração' NÃO deve atribuir profissão ao pretendente (entidade terceiro)");
   console.log("✔ Caso 4: 'minha ex trabalha com mineração' -> Ignorado com sucesso (entidade: ex)");
 }
@@ -99,7 +99,7 @@ console.log("🧪 Iniciando auditoria dos 6 casos de Entidade, Negação e Tempo
     [{ id: "m5", text: "trabalhava com mineração, hoje sou motorista", sender: "pretendente" }],
     ["goal_job"]
   );
-  const workMatch = matches.find((m) => m.field === "work");
+  const workMatch = matches.find((m) => m.field === "job" || m.field === "work");
   assert(workMatch, "Caso 5: Deve detectar profissão");
   assert.equal(workMatch.value, "motorista", "Caso 5: Trabalho atual deve ser 'motorista', vencendo o passado 'mineração'");
   console.log("✔ Caso 5: 'trabalhava com mineração, hoje sou motorista' -> Priorizou presente com sucesso (value: 'motorista')");

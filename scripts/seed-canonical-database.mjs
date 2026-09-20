@@ -47,210 +47,33 @@ const CANONICAL_SUBAGENTS = [
   },
 ];
 
-const CANONICAL_STAGES = [
-  {
-    id: "stage_1_conexao",
-    name: "Conexão Inicial",
-    stage_order: 0,
-    color: "#3b82f6",
-    icon: "message-circle",
-    description: "Criar conforto, reciprocidade e um começo natural de conversa sem entrevista.",
-    goals: [
-      {
-        id: "goal_initial_reciprocity",
-        stageId: "stage_1_conexao",
-        title: "Reciprocidade inicial",
-        label: "Reciprocidade inicial",
-        description: "Reconhecer que a conversa deixou de ser apenas uma saudação e houve pelo menos uma troca minimamente recíproca entre os dois.",
-        kind: "conversation_state",
-        required: true,
-        enabled: true,
-        order: 1,
-        allowedSubagents: ["conexao_inicial"],
-        primarySubagent: "conexao_inicial",
-      },
-      {
-        id: "goal_city",
-        stageId: "stage_1_conexao",
-        title: "Cidade",
-        label: "Cidade",
-        description: "Descobrir ou confirmar a cidade/região onde o pretendente mora ou está no momento.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 2,
-        memoryEntity: "self",
-        memoryField: "city",
-        allowedSubagents: ["conexao_inicial", "descoberta"],
-        primarySubagent: "conexao_inicial",
-      },
-      {
-        id: "goal_audio_exchange",
-        stageId: "stage_1_conexao",
-        title: "Troca de áudios",
-        label: "Troca de áudios",
-        description: "Estimular o envio ou troca espontânea de mensagens de voz/áudio para humanizar a relação.",
-        kind: "conversation_state",
-        required: false,
-        enabled: true,
-        order: 3,
-        allowedSubagents: ["conexao_inicial"],
-        primarySubagent: "conexao_inicial",
-      },
-    ],
-  },
-  {
-    id: "stage_2_descoberta",
-    name: "Descoberta",
-    stage_order: 1,
-    color: "#10b981",
-    icon: "compass",
-    description: "Aprofundar interesses mútuos, rotina, trabalho e estilo de vida com trocas ricas.",
-    goals: [
-      {
-        id: "goal_discovery_depth",
-        stageId: "stage_2_descoberta",
-        title: "Profundidade de descoberta",
-        label: "Profundidade de descoberta",
-        description: "Validar que a conversa desenvolveu pelo menos um assunto substantivo sobre rotina, gostos, trabalho ou histórias pessoais.",
-        kind: "conversation_state",
-        required: true,
-        enabled: true,
-        order: 1,
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
-      },
-      {
-        id: "goal_age",
-        stageId: "stage_2_descoberta",
-        title: "Idade",
-        label: "Idade",
-        description: "Descobrir a idade aproximada ou exata do pretendente.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 2,
-        memoryEntity: "self",
-        memoryField: "age",
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
-      },
-      {
-        id: "goal_work",
-        stageId: "stage_2_descoberta",
-        title: "Trabalho / Profissão",
-        label: "Trabalho / Profissão",
-        description: "Compreender no que ele trabalha ou a que se dedica no dia a dia.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 3,
-        memoryEntity: "self",
-        memoryField: "occupation",
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
-      },
-      {
-        id: "goal_hobbies",
-        stageId: "stage_2_descoberta",
-        title: "Gostos e Hobbies",
-        label: "Gostos e Hobbies",
-        description: "Mapear o que ele curte fazer nas horas vagas (música, esportes, passeios, etc.).",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 4,
-        memoryEntity: "self",
-        memoryField: "hobbies",
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
-      },
-      {
-        id: "goal_humor",
-        stageId: "stage_2_descoberta",
-        title: "Sintonia de humor",
-        label: "Sintonia de humor",
-        description: "Constatar brincadeiras, risadas leves e quebra de rigidez formal.",
-        kind: "conversation_state",
-        required: false,
-        enabled: true,
-        order: 5,
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
-      },
-    ],
-  },
-  {
-    id: "stage_3_compatibilidade",
-    name: "Compatibilidade",
-    stage_order: 2,
-    color: "#f59e0b",
-    icon: "heart",
-    description: "Alinhamento de valores, visão de futuro, planos e intenções com maturidade.",
-    goals: [
-      {
-        id: "goal_relationship",
-        stageId: "stage_3_compatibilidade",
-        title: "Status de Relacionamento",
-        label: "Status de Relacionamento",
-        description: "Conhecer exclusivamente se ele é solteiro, divorciado ou o momento de vida amorosa.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 1,
-        memoryEntity: "self",
-        memoryField: "relationship_status",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
-      },
-      {
-        id: "goal_children",
-        stageId: "stage_3_compatibilidade",
-        title: "Filhos (Tem ou quer ter)",
-        label: "Filhos (Tem ou quer ter)",
-        description: "Saber se tem filhos ou se tem vontade de ter filhos no futuro.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 2,
-        memoryEntity: "self",
-        memoryField: "children",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
-      },
-      {
-        id: "goal_values",
-        stageId: "stage_3_compatibilidade",
-        title: "Valores e Família",
-        label: "Valores e Família",
-        description: "Compartilhar visão sobre fé, Deus, família e princípios de vida.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 3,
-        memoryEntity: "self",
-        memoryField: "values",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
-      },
-      {
-        id: "goal_future_plans",
-        stageId: "stage_3_compatibilidade",
-        title: "Planos de futuro",
-        label: "Planos de futuro",
-        description: "Descobrir o que ele busca a médio/longo prazo e se há compatibilidade de caminhos.",
-        kind: "fact",
-        required: false,
-        enabled: true,
-        order: 4,
-        memoryEntity: "self",
-        memoryField: "future_plans",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
-      },
-    ],
-  },
-];
+import ts from "typescript";
+import path from "node:path";
+
+// Carrega a matriz canônica oficial diretamente de src/domain/entities/ChatStage.ts (fonte única da verdade)
+function loadCanonicalMatrixFromDomain() {
+  const fullPath = path.resolve("src/domain/entities/ChatStage.ts");
+  const tsCode = fs.readFileSync(fullPath, "utf8");
+  const jsCode = ts.transpileModule(tsCode, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const moduleObj = { exports: {} };
+  const fn = new Function("module", "exports", "require", jsCode);
+  fn(moduleObj, moduleObj.exports, () => ({}));
+  return moduleObj.exports.CANONICAL_CHAT_STAGES_MATRIX;
+}
+
+const canonicalMatrix = loadCanonicalMatrixFromDomain();
+
+const CANONICAL_STAGES = canonicalMatrix.map((s) => ({
+  id: s.id,
+  name: s.name,
+  stage_order: s.order,
+  color: s.color,
+  icon: s.id === "stage_1_conexao" ? "message-circle" : s.id === "stage_2_descoberta" ? "compass" : "heart",
+  description: s.description,
+  goals: s.goals,
+}));
 
 const CANONICAL_VAULT_FOLDERS = [
   { id: "folder_apresentacao", name: "Apresentação e Conexão", color: "#3b82f6", icon: "user" },
@@ -308,7 +131,7 @@ async function seed() {
     // 2. Etapas
     const { error: stgErr } = await client.from("chat_stages").upsert(CANONICAL_STAGES);
     if (stgErr) console.error(`[${name}] Erro ao salvar etapas:`, stgErr.message);
-    else console.log(`[${name}] ✔ 3 Etapas canônicas com 12 objetivos salvas com sucesso.`);
+    else console.log(`[${name}] ✔ 3 Etapas canônicas com 15 objetivos salvas com sucesso.`);
 
     // 3. Pastas do Cofre
     const { error: fldErr } = await client.from("vault_folders").upsert(CANONICAL_VAULT_FOLDERS);
