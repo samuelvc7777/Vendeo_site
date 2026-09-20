@@ -1767,6 +1767,345 @@ export async function requestExperimentalCyclePreemptionAtomic(
   };
 }
 
+export interface ClaimExperimentalCycleParams {
+  supabase: any;
+  conversationId: string;
+  cycleToken: string;
+  staleSeconds?: number;
+}
+
+export interface ClaimExperimentalCycleResult {
+  success: boolean;
+  reason: "claimed" | "active_lock" | "conversation_not_found" | "infra_failure";
+  activeCycleToken?: string | null;
+}
+
+/**
+ * Adquire o lock inicial do ciclo de forma estritamente atômica no PostgreSQL.
+ * Impede que múltiplos workers concorrentes assumam a mesma conversa simultaneamente.
+ */
+export async function claimExperimentalCycleAtomic(
+  params: ClaimExperimentalCycleParams
+): Promise<ClaimExperimentalCycleResult> {
+  const { supabase, conversationId, cycleToken, staleSeconds = 25 } = params;
+
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("claim_experimental_cycle", {
+        p_conversation_id: conversationId,
+        p_cycle_token: cycleToken,
+        p_stale_seconds: staleSeconds,
+      });
+
+      if (!error && data && typeof data === "object") {
+        if (data.success === true) {
+          return { success: true, reason: "claimed", activeCycleToken: cycleToken };
+        }
+        return {
+          success: false,
+          reason: data.reason || "active_lock",
+          activeCycleToken: data.activeCycleToken ?? null,
+        };
+      }
+
+      if (error) {
+        console.warn(
+          `[claimExperimentalCycleAtomic] Erro na RPC claim_experimental_cycle para conv=${conversationId}:`,
+          error.message || error
+        );
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[claimExperimentalCycleAtomic] Exceção na RPC claim_experimental_cycle para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
+    }
+  }
+
+  // Fallback condicional para testes/ambientes onde a RPC não está provisionada
+  try {
+    const { data: row } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    if (!row) {
+      return { success: false, reason: "conversation_not_found" };
+    }
+
+    const currentRules = row.stage_completed_rules || {};
+    const activeToken = currentRules.active_cycle_token;
+    const activeAtStr = currentRules.active_cycle_at;
+    const nowMs = Date.now();
+
+    let isStale = false;
+    if (activeToken && activeAtStr) {
+      const activeAtMs = new Date(activeAtStr).getTime();
+      if (!isNaN(activeAtMs) && (nowMs - activeAtMs) > staleSeconds * 1000) {
+        isStale = true;
+      }
+    }
+
+    if (activeToken && !isStale && activeToken !== cycleToken) {
+      return { success: false, reason: "active_lock", activeCycleToken: activeToken };
+    }
+
+    const updatedRules = {
+      ...currentRules,
+      active_cycle_token: cycleToken,
+      active_cycle_at: new Date().toISOString(),
+      preempt_requested: false,
+    };
+
+    await supabase
+      .from("instagram_conversations")
+      .update({ stage_completed_rules: updatedRules })
+      .eq("id", conversationId);
+
+    return { success: true, reason: "claimed", activeCycleToken: cycleToken };
+  } catch (_casErr) {}
+
+  return { success: false, reason: "infra_failure" };
+}
+
+export interface PrepareExperimentalOutboxParams {
+  supabase: any;
+  conversationId: string;
+  cycleToken: string;
+  outboxEntry: OutboxEntry;
+}
+
+export interface PrepareExperimentalOutboxResult {
+  success: boolean;
+  reason?: string;
+  outboxKey?: string;
+}
+
+/**
+ * Registra ou atualiza pontualmente a entrada da outbox no JSON atual do PostgreSQL
+ * sob lock exclusivo (FOR UPDATE), garantindo que o ciclo continue dono e não preemptado.
+ */
+export async function prepareExperimentalOutboxEntryAtomic(
+  params: PrepareExperimentalOutboxParams
+): Promise<PrepareExperimentalOutboxResult> {
+  const { supabase, conversationId, cycleToken, outboxEntry } = params;
+
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("prepare_experimental_outbox_entry", {
+        p_conversation_id: conversationId,
+        p_cycle_token: cycleToken,
+        p_outbox_entry: outboxEntry,
+      });
+
+      if (!error && data && typeof data === "object") {
+        if (data.success === true) {
+          return { success: true, reason: "prepared", outboxKey: data.outboxKey };
+        }
+        return { success: false, reason: data.reason || "prepare_failed" };
+      }
+
+      if (error) {
+        console.warn(
+          `[prepareExperimentalOutboxEntryAtomic] Erro na RPC prepare_experimental_outbox_entry para conv=${conversationId}:`,
+          error.message || error
+        );
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[prepareExperimentalOutboxEntryAtomic] Exceção na RPC prepare_experimental_outbox_entry para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
+    }
+  }
+
+  // Fallback defensivo se a RPC não existir
+  try {
+    const { data: row } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    const rules = row?.stage_completed_rules || {};
+    if (rules.active_cycle_token && rules.active_cycle_token !== cycleToken) {
+      return { success: false, reason: "lost_lock" };
+    }
+    if (rules.preempt_requested === true) {
+      return { success: false, reason: "preempt_requested" };
+    }
+
+    const orch = rules.orchestration || {};
+    const outbox = { ...(orch.outbox || {}) };
+    const key = outboxEntry.id || `entry_${Date.now()}`;
+    outbox[key] = outboxEntry;
+
+    await supabase
+      .from("instagram_conversations")
+      .update({
+        stage_completed_rules: {
+          ...rules,
+          orchestration: {
+            ...orch,
+            outbox,
+          },
+        },
+      })
+      .eq("id", conversationId);
+
+    return { success: true, reason: "prepared", outboxKey: key };
+  } catch (_fbErr) {
+    return { success: false, reason: "infra_failure" };
+  }
+}
+
+export interface ReleaseExperimentalCycleParams {
+  supabase: any;
+  conversationId: string;
+  cycleToken: string;
+  processingStatus?: string;
+  debounceUntil?: string | null;
+  revertMessageIds?: string[] | null;
+  markProcessedIds?: string[] | null;
+  lastError?: string | null;
+  cycleRecord?: any;
+  outboxMap?: any;
+}
+
+export interface ReleaseExperimentalCycleResult {
+  released: boolean;
+  reason?: string;
+  activeToken?: string | null;
+}
+
+/**
+ * Libera de forma atômica e segura a custódia do ciclo experimental (active_cycle_token = null).
+ * Garante que se o lock já pertence a outro ciclo, nenhuma alteração é feita.
+ * Aplica patch pontual nas mensagens informadas sem jamais sobrescrever todo o estado.
+ */
+export async function releaseExperimentalCycleAtomic(
+  params: ReleaseExperimentalCycleParams
+): Promise<ReleaseExperimentalCycleResult> {
+  const {
+    supabase,
+    conversationId,
+    cycleToken,
+    processingStatus = "idle",
+    debounceUntil,
+    revertMessageIds = null,
+    markProcessedIds = null,
+    lastError,
+    cycleRecord = null,
+    outboxMap = null,
+  } = params;
+
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("release_experimental_cycle_if_owned", {
+        p_conversation_id: conversationId,
+        p_cycle_token: cycleToken,
+        p_processing_status: processingStatus,
+        p_debounce_until: debounceUntil || null,
+        p_revert_message_ids: revertMessageIds && revertMessageIds.length > 0 ? revertMessageIds : null,
+        p_mark_processed_ids: markProcessedIds && markProcessedIds.length > 0 ? markProcessedIds : null,
+        p_last_error: lastError !== undefined ? lastError : null,
+        p_cycle_record: cycleRecord || null,
+        p_outbox_map: outboxMap || null,
+      });
+
+      if (!error && data && typeof data === "object") {
+        if (data.released === true) {
+          return { released: true, reason: "released" };
+        }
+        return {
+          released: false,
+          reason: data.reason || "token_mismatch",
+          activeToken: data.activeToken ?? null,
+        };
+      }
+
+      if (error) {
+        console.warn(
+          `[releaseExperimentalCycleAtomic] Erro na RPC release_experimental_cycle_if_owned para conv=${conversationId}:`,
+          error.message || error
+        );
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[releaseExperimentalCycleAtomic] Exceção na RPC release_experimental_cycle_if_owned para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
+    }
+  }
+
+  // Fallback condicional defensivo
+  try {
+    const { data: row } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    const rules = row?.stage_completed_rules || {};
+    if (!rules.active_cycle_token || rules.active_cycle_token !== cycleToken) {
+      return { released: false, reason: "token_mismatch", activeToken: rules.active_cycle_token ?? null };
+    }
+
+    const orch = rules.orchestration || {};
+    const ledger = { ...(orch.messageLedger || {}) };
+
+    if (revertMessageIds && revertMessageIds.length > 0) {
+      for (const id of revertMessageIds) {
+        ledger[id] = "pending";
+      }
+    }
+    if (markProcessedIds && markProcessedIds.length > 0) {
+      for (const id of markProcessedIds) {
+        ledger[id] = "sent";
+      }
+    }
+
+    const recentCycles = cycleRecord
+      ? [cycleRecord, ...(orch.recentCycles || [])].slice(0, 5)
+      : orch.recentCycles;
+    const finalOutbox = outboxMap ? { ...(orch.outbox || {}), ...outboxMap } : orch.outbox;
+
+    const rulesToSave: any = {
+      ...rules,
+      active_cycle_token: null,
+      orchestration: {
+        ...orch,
+        messageLedger: ledger,
+        lastProcessingStatus: processingStatus,
+        lastError: lastError !== undefined ? lastError : (processingStatus === "sent" ? null : orch.lastError),
+        recentCycles: recentCycles || [],
+        outbox: finalOutbox || {},
+      },
+    };
+
+    const updatePayload: any = {
+      stage_completed_rules: rulesToSave,
+    };
+
+    if (debounceUntil) {
+      rulesToSave.ai_auto_respond = true;
+      rulesToSave.ai_debounce_until = debounceUntil;
+      updatePayload.ai_auto_respond = true;
+      updatePayload.ai_debounce_until = debounceUntil;
+    }
+
+    await supabase
+      .from("instagram_conversations")
+      .update(updatePayload)
+      .eq("id", conversationId);
+
+    return { released: true, reason: "released" };
+  } catch (_casErr) {}
+
+  return { released: false, reason: "infra_failure" };
+}
+
 export interface DispatchOutboxParams {
   supabase: any;
   outboxEntry: OutboxEntry;
@@ -2318,30 +2657,58 @@ export async function resolveStageChecklistGoals(params: {
   let stagesList: any[] = [];
   let subagentsList: any[] = [];
   try {
-    if (supabase) {
-      const [stagesRes, subagentsRes] = await Promise.all([
-        supabase
-          .from("chat_stages")
-          .select("*")
-          .order("stage_order", { ascending: true }),
-        supabase
+    if (supabase && typeof supabase.from === "function") {
+      let stagesRaw: any = null;
+      try {
+        const q = supabase.from("chat_stages").select("*");
+        if (typeof q?.order === "function") {
+          const res = await q.order("stage_order", { ascending: true });
+          stagesRaw = res?.data;
+        } else if (typeof q?.eq === "function" && typeof q?.eq()?.maybeSingle === "function") {
+          const res = await q.eq("id", conversationId || targetStageQuery).maybeSingle();
+          stagesRaw = res?.data;
+        } else {
+          const res = await q;
+          stagesRaw = res?.data;
+        }
+      } catch (_sErr) {}
+
+      // Se não achou em chat_stages, tenta buscar estágios customizados da conversa em instagram_conversations
+      if (!stagesRaw || (Array.isArray(stagesRaw) && stagesRaw.length === 0)) {
+        try {
+          const res = await supabase
+            .from("instagram_conversations")
+            .select("stage_completed_rules")
+            .eq("id", conversationId || targetStageQuery)
+            .maybeSingle();
+          stagesRaw = res?.data;
+        } catch (_cErr) {}
+      }
+
+      if (stagesRaw) {
+        const rawList = Array.isArray(stagesRaw)
+          ? stagesRaw
+          : stagesRaw?.stage_completed_rules?.stages || stagesRaw?.stages || [];
+
+        if (Array.isArray(rawList) && rawList.length > 0) {
+          stagesList = rawList.map((s: any) => ({
+            ...s,
+            order: s.stage_order || s.order,
+            objectives: s.goals || s.objectives,
+            goals: s.goals || s.objectives,
+          }));
+        }
+      }
+
+      try {
+        const subagentsRes = await supabase
           .from("subagent_definitions")
           .select("*")
-          .order("is_system", { ascending: false }),
-      ]);
-
-      if (stagesRes.data && Array.isArray(stagesRes.data) && stagesRes.data.length > 0) {
-        stagesList = stagesRes.data.map((s: any) => ({
-          ...s,
-          order: s.stage_order,
-          objectives: s.goals,
-          goals: s.goals,
-        }));
-      }
-
-      if (subagentsRes.data && Array.isArray(subagentsRes.data)) {
-        subagentsList = subagentsRes.data;
-      }
+          .order("is_system", { ascending: false });
+        if (subagentsRes?.data && Array.isArray(subagentsRes.data)) {
+          subagentsList = subagentsRes.data;
+        }
+      } catch (_subErr) {}
     }
   } catch (err) {
     // Fail-safe silencioso
@@ -3620,33 +3987,6 @@ export async function recordAudioDeliveryHistory(params: {
       provider_message_id: providerMessageId || null,
     });
 
-    // 2. Espelha no histórico da própria conversa para conveniência rápida
-    const { data: convRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-
-    const convRules = convRow?.stage_completed_rules || {};
-    const convHist = Array.isArray(convRules.audio_delivery_history) ? convRules.audio_delivery_history : [];
-    convHist.push({
-      id: newEntryId,
-      conversationId,
-      audioId,
-      sentAt: now,
-      providerMessageId,
-    });
-
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: {
-          ...convRules,
-          audio_delivery_history: convHist,
-        },
-      })
-      .eq("id", conversationId);
-
     if ((supabase as any)?.__mockAudioHistory) {
       (supabase as any).__mockAudioHistory.push({
         id: newEntryId,
@@ -3967,6 +4307,7 @@ ${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocus
 - RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
 - PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
 - Se ele já revelou algo (ex: trabalho, cidade, filhos, estado civil), NUNCA pergunte sobre isso novamente. Aprofunde ou converse com o que ele trouxe.
+- BÚSSOLA DE ORIENTAÇÃO: NUNCA UM INTERROGATÓRIO. NÃO INSISTA. Máximo 1 pergunta leve por turno. Se o pretendente mudou de assunto, acompanhe o fluxo dele com afeto e escuta atenta.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
@@ -3975,6 +4316,7 @@ ${contextBlock}
 Trabalhe primeiro com o contexto recebido. Chame ferramentas apenas quando necessário:
 - cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
+- checklist_get_stage_state: consulta o checklist e estado dos objetivos da fase (alias). Ex: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
 - memory_get_fact: consulta fato sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
@@ -5213,32 +5555,34 @@ export async function runExperimentalOrchestration(
     return { mode: orchState.mode, handled: true, skippedDuplicate: true, blockLegacyFallback: true };
   }
 
-  // 3. BACKEND DETERMINÍSTICO: Lock Atômico concorrente
-  const activeLock = stageRules.active_cycle_token;
-  const activeLockAt = stageRules.active_cycle_at ? Date.parse(stageRules.active_cycle_at) : 0;
-  if (activeLock && Date.now() - activeLockAt < 25000 && activeLock !== correlationId) {
-    console.log(
-      `[Orchestrator] Lock ativo detectado (${activeLock}) para ${conversationId}. Abortando execução concorrente.`
-    );
-    return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Lock ativo concorrente" };
-  }
+  // 3. BACKEND DETERMINÍSTICO: Lock Atômico via PostgreSQL com SELECT ... FOR UPDATE
+  const claimLockRes = await claimExperimentalCycleAtomic({
+    supabase,
+    conversationId,
+    cycleToken: correlationId,
+    staleSeconds: 25,
+  });
 
-  // Adquire o lock
-  await supabase
-    .from("instagram_conversations")
-    .update({
-      stage_completed_rules: {
-        ...stageRules,
-        active_cycle_token: correlationId,
-        active_cycle_at: new Date().toISOString(),
-      },
-    })
-    .eq("id", conversationId);
+  if (!claimLockRes.success) {
+    console.log(
+      `[Orchestrator] Lock ativo detectado (${claimLockRes.activeCycleToken || "outro ciclo"}) para ${conversationId}. Abortando execução concorrente.`
+    );
+    return {
+      mode: orchState.mode,
+      handled: false,
+      sentToMeta: false,
+      blockLegacyFallback: true,
+      error: "Lock ativo concorrente",
+    };
+  }
 
   let claimedMessageIds: string[] = [];
   let sentSuccessfully = false;
+  let currentCycle: ProcessingCycle | null = null;
   const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
   const outboxMap: Record<string, OutboxEntry> = { ...(orchState.outbox || {}) };
+  const activeLock = stageRules.active_cycle_token;
+  const activeLockAt = stageRules.active_cycle_at ? Date.parse(stageRules.active_cycle_at) : 0;
 
   try {
     // 4. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
@@ -5392,7 +5736,7 @@ export async function runExperimentalOrchestration(
     const initialInboundRevision =
       typeof orchState.inboundRevision === "number" ? orchState.inboundRevision : 0;
 
-    const currentCycle: ProcessingCycle = {
+    currentCycle = {
       cycleId: correlationId,
       conversationId,
       claimedMessageIds,
@@ -5429,54 +5773,30 @@ export async function runExperimentalOrchestration(
         ledger[id] = "pending";
       }
 
-      // Checa atomicamente se o lock ainda pertence a este ciclo antes de qualquer mutação
-      const { data: convCheck } = await supabase
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .eq("id", conversationId)
-        .maybeSingle();
+      // Liberação atômica segura via PostgreSQL com SELECT ... FOR UPDATE
+      const releaseRes = await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        debounceUntil: new Date(Date.now() + 2500).toISOString(),
+        revertMessageIds: claimedMessageIds,
+        cycleRecord: currentCycle,
+        outboxMap: outboxMap,
+      });
 
-      const latestRules = convCheck?.stage_completed_rules || stageRules;
-      const latestToken = latestRules.active_cycle_token;
-
-      // Se outro ciclo já assumiu o lock (ex: stale lock roubado por worker B), aborta sem sobrescrever o banco
-      if (latestToken && latestToken !== correlationId) {
+      if (!releaseRes.released) {
         console.warn(
-          `[Orchestrator] Ciclo ${correlationId} perdeu o lock para ${latestToken}. Abortando preempção sem sobrescrever estado.`
+          `[Orchestrator] Ciclo ${correlationId} perdeu o lock para ${releaseRes.activeToken || "outro ciclo"}. Abortando preempção sem sobrescrever estado.`
         );
         return {
           mode: orchState.mode,
           handled: false,
           sentToMeta: false,
           blockLegacyFallback: true,
-          error: `Ciclo preemptado por perda de lock para ciclo concorrente (${latestToken})`,
+          error: `Ciclo preemptado por perda de lock para ciclo concorrente (${releaseRes.activeToken || "desconhecido"})`,
         };
       }
-
-      const latestOrch = latestRules.orchestration || orchState;
-      const mergedLedger = { ...(latestOrch.messageLedger || {}), ...ledger };
-
-      await supabase
-        .from("instagram_conversations")
-        .update({
-          stage_completed_rules: {
-            ...latestRules,
-            completed_goals: officialCompletedGoalIdsAtCycleStart,
-            objective_progress: officialObjectiveProgressAtCycleStart,
-            active_cycle_token: null,
-            ai_auto_respond: true,
-            ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
-            orchestration: {
-              ...latestOrch,
-              completedGoalIds: officialCompletedGoalIdsAtCycleStart,
-              objectiveProgress: officialObjectiveProgressAtCycleStart,
-              messageLedger: mergedLedger,
-              lastProcessingStatus: "idle",
-              recentCycles: [currentCycle, ...(latestOrch.recentCycles || [])].slice(0, 5),
-            },
-          },
-        })
-        .eq("id", conversationId);
 
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
@@ -6409,27 +6729,13 @@ Responda ESTRITAMENTE em JSON puro:
     currentCycle.outboxEntryId = outboxEntry.id;
     currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
-    // Persiste imediatamente a Outbox com status 'pending' no banco antes de qualquer claim ou despacho
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: {
-          ...stageRules,
-          completed_goals: officialCompletedGoalIdsAtCycleStart,
-          objective_progress: officialObjectiveProgressAtCycleStart,
-          active_cycle_token: correlationId,
-          active_cycle_at: new Date().toISOString(),
-          orchestration: {
-            ...orchState,
-            completedGoalIds: officialCompletedGoalIdsAtCycleStart,
-            objectiveProgress: officialObjectiveProgressAtCycleStart,
-            outbox: outboxMap,
-            messageLedger: ledger,
-            lastDecision: decision,
-          },
-        },
-      })
-      .eq("id", conversationId);
+    // Persiste imediatamente a Outbox com status 'pending' no banco via patch atômico no PostgreSQL
+    await prepareExperimentalOutboxEntryAtomic({
+      supabase,
+      conversationId,
+      cycleToken: correlationId,
+      outboxEntry,
+    });
 
     // ------------------------------------------------------------------------
     // MODO SHADOW: Registra tudo sem envio externo à Meta
@@ -6693,20 +6999,16 @@ Responda ESTRITAMENTE em JSON puro:
               (updatedState as any).completedGoalIds = officialCompletedGoalIdsAtCycleStart;
               (updatedState as any).objectiveProgress = officialObjectiveProgressAtCycleStart;
 
-              await supabase
-                .from("instagram_conversations")
-                .update({
-                  stage_completed_rules: {
-                    ...stageRules,
-                    completed_goals: officialCompletedGoalIdsAtCycleStart,
-                    objective_progress: officialObjectiveProgressAtCycleStart,
-                    active_cycle_token: null,
-                    ai_auto_respond: true,
-                    ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
-                    orchestration: updatedState,
-                  },
-                })
-                .eq("id", conversationId);
+              await releaseExperimentalCycleAtomic({
+                supabase,
+                conversationId,
+                cycleToken: correlationId,
+                processingStatus: "sent",
+                debounceUntil: new Date(Date.now() + 2500).toISOString(),
+                markProcessedIds: claimedMessageIds,
+                cycleRecord: currentCycle,
+                outboxMap: outboxMap,
+              });
 
               await publishAutoPilotState(supabase, conversationId, {
                 status: "idle",
@@ -6771,19 +7073,12 @@ Responda ESTRITAMENTE em JSON puro:
             outboxMap[balloonKey] = balloonOutbox;
           }
 
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              stage_completed_rules: {
-                ...stageRules,
-                active_cycle_token: correlationId,
-                orchestration: {
-                  ...orchState,
-                  outbox: outboxMap,
-                },
-              },
-            })
-            .eq("id", conversationId);
+          await prepareExperimentalOutboxEntryAtomic({
+            supabase,
+            conversationId,
+            cycleToken: correlationId,
+            outboxEntry: balloonOutbox,
+          });
 
           await publishAutoPilotState(supabase, conversationId, {
             status: "processing",
@@ -6835,36 +7130,13 @@ Responda ESTRITAMENTE em JSON puro:
               sentSuccessfully = false;
               currentCycle.status = "failed";
               currentCycle.trace.push(`outbox_claim_infra_failure: ${claimRes.reason}`);
-              if (sentBalloonsCount === 0) {
-                for (const id of claimedMessageIds) {
-                  ledger[id] = "pending";
-                }
-              }
-
-              const { data: latestRow } = await supabase
-                .from("instagram_conversations")
-                .select("stage_completed_rules")
-                .eq("id", conversationId)
-                .maybeSingle();
-              const latestRules = latestRow?.stage_completed_rules || stageRules;
-              const latestOrch = latestRules.orchestration || orchState;
-              const mergedLedger = { ...(latestOrch.messageLedger || {}), ...ledger };
-
-              await supabase
-                .from("instagram_conversations")
-                .update({
-                  stage_completed_rules: {
-                    ...latestRules,
-                    active_cycle_token: null,
-                    orchestration: {
-                      ...latestOrch,
-                      messageLedger: mergedLedger,
-                      lastProcessingStatus: "failed",
-                      recentCycles: [currentCycle, ...(latestOrch.recentCycles || [])].slice(0, 5),
-                    },
-                  },
-                })
-                .eq("id", conversationId);
+              await releaseExperimentalCycleAtomic({
+                supabase,
+                conversationId,
+                cycleToken: correlationId,
+                processingStatus: "failed",
+                revertMessageIds: sentBalloonsCount === 0 ? claimedMessageIds : null,
+              });
 
               return {
                 mode: orchState.mode,
@@ -6950,6 +7222,15 @@ Responda ESTRITAMENTE em JSON puro:
           } else {
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
+            balloonOutbox.status = "failed";
+            balloonOutbox.lastError = dispatchRes.error || "Falha no envio";
+            outboxMap[balloonKey] = balloonOutbox;
+            await prepareExperimentalOutboxEntryAtomic({
+              supabase,
+              conversationId,
+              cycleToken: correlationId,
+              outboxEntry: balloonOutbox,
+            });
             if (sentBalloonsCount === 0) {
               for (const id of claimedMessageIds) {
                 ledger[id] = "pending";
@@ -7009,6 +7290,15 @@ Responda ESTRITAMENTE em JSON puro:
 
       if (!isConfirmedSuccess) {
         currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");
+        await releaseExperimentalCycleAtomic({
+          supabase,
+          conversationId,
+          cycleToken: correlationId,
+          processingStatus: "failed",
+          cycleRecord: currentCycle,
+          outboxMap,
+          markProcessedIds: claimedMessageIds,
+        });
       } else {
         // 1. Calcula progressão determinística usando ESTADO LOCAL/OVERLAY (cycleMemoryProvider)
         // O overlay permite que a progressão enxergue os fatos do turno sem NENHUMA escrita no banco!
@@ -7080,12 +7370,29 @@ Responda ESTRITAMENTE em JSON puro:
           };
         }
 
-        const mergedEntities = {
-          ...(orchState.memory?.entities || {}),
-          ...(latestMemoryFromDb?.entities || {}),
-          ...providerMemoryEntities,
-          ...confirmedTurnEntities,
-        };
+        const mergedEntities: Record<string, Record<string, MemoryFact>> = {};
+
+        const allEntitySources = [
+          orchState.memory?.entities || {},
+          latestMemoryFromDb?.entities || {},
+          providerMemoryEntities,
+          confirmedTurnEntities,
+        ];
+
+        for (const source of allEntitySources) {
+          for (const [entName, fields] of Object.entries(source)) {
+            const normEnt = entName.toLowerCase().trim();
+            if (!mergedEntities[normEnt]) {
+              mergedEntities[normEnt] = {};
+            }
+            if (fields && typeof fields === "object") {
+              for (const [fldName, fact] of Object.entries(fields)) {
+                const normFld = fldName.toLowerCase().trim();
+                mergedEntities[normEnt][normFld] = fact as MemoryFact;
+              }
+            }
+          }
+        }
 
         const mergedMemory: ContactMemoryStore = {
           entities: mergedEntities,
@@ -7152,6 +7459,20 @@ Responda ESTRITAMENTE em JSON puro:
             blockLegacyFallback: true,
             error: "lost_lock_before_atomic_commit",
           };
+        }
+
+        // Promove os fatos de memória gerados no overlay para o provider persistente oficial
+        for (const fact of pendingFacts) {
+          try {
+            if (typeof (memoryProvider as any).writeFact === "function") {
+              await (memoryProvider as any).writeFact(conversationId, fact);
+            } else if (typeof (memoryProvider as any).saveFact === "function") {
+              await (memoryProvider as any).saveFact(conversationId, fact);
+            }
+          } catch (memPromoteErr: any) {
+            currentCycle.trace.push(`memory_writer_error: ${memPromoteErr.message || String(memPromoteErr)}`);
+            console.warn(`[Orchestrator] Erro fail-safe ao persistir fato de memória pós-CAS:`, memPromoteErr.message);
+          }
         }
 
         await publishAutoPilotState(supabase, conversationId, {
@@ -7261,16 +7582,20 @@ Responda ESTRITAMENTE em JSON puro:
       outbox: outboxMap,
     };
 
-    // Se o ciclo já foi preemptado por outro ciclo mais recente, não sobrescreve o banco nem o active_cycle_token
-    const { data: errRecheck } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase,
+      conversationId,
+      cycleToken: correlationId,
+      processingStatus: "failed",
+      lastError: err.message || "Erro desconhecido",
+      cycleRecord: currentCycle,
+      outboxMap: fallbackState.outbox || outboxMap,
+      revertMessageIds: sentSuccessfully ? null : claimedMessageIds,
+    });
 
-    if (errRecheck?.stage_completed_rules?.active_cycle_token !== correlationId) {
+    if (!releaseRes.released) {
       console.warn(
-        `[Orchestrator] Falha capturada no ciclo ${correlationId}, mas ciclo já perdeu o lock (atual: ${errRecheck?.stage_completed_rules?.active_cycle_token || "null"}). Abortando sobrescrita de fallback.`
+        `[Orchestrator] Falha capturada no ciclo ${correlationId}, mas ciclo já perdeu o lock (atual: ${releaseRes.activeToken || "null"}). Abortando sobrescrita de fallback.`
       );
       return {
         mode: orchState.mode,
@@ -7280,17 +7605,6 @@ Responda ESTRITAMENTE em JSON puro:
         error: err.message || "Ciclo preemptado",
       };
     }
-
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: {
-          ...stageRules,
-          active_cycle_token: null,
-          orchestration: fallbackState,
-        },
-      })
-      .eq("id", conversationId);
 
     await publishAutoPilotState(supabase, conversationId, {
       status: "failed",
@@ -7311,22 +7625,11 @@ Responda ESTRITAMENTE em JSON puro:
     };
   } finally {
     try {
-      const { data: finalCheck } = await supabase
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .eq("id", conversationId)
-        .maybeSingle();
-      if (finalCheck?.stage_completed_rules?.active_cycle_token === correlationId) {
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            stage_completed_rules: {
-              ...finalCheck.stage_completed_rules,
-              active_cycle_token: null,
-            },
-          })
-          .eq("id", conversationId);
-      }
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+      });
     } catch (_fErr) {}
   }
 }

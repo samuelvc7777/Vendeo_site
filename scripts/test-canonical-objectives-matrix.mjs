@@ -114,6 +114,10 @@ async function runTests() {
     createOverlayMemoryProvider,
     commitExperimentalCycleAtomic,
     requestExperimentalCyclePreemptionAtomic,
+    claimExperimentalCycleAtomic,
+    claimOutboxEntryAtomic,
+    prepareExperimentalOutboxEntryAtomic,
+    releaseExperimentalCycleAtomic,
   } = orchestratorModule;
 
   let passed = 0;
@@ -1493,6 +1497,28 @@ async function runTests() {
             },
             error: null,
           });
+        }
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          conversationRow.stage_completed_rules.active_cycle_at = new Date().toISOString();
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
+        if (fn === "prepare_experimental_outbox_entry") {
+          const orch = conversationRow.stage_completed_rules.orchestration || {};
+          orch.outbox = orch.outbox || {};
+          if (params?.p_outbox_entry?.id) {
+            orch.outbox[params.p_outbox_entry.id] = params.p_outbox_entry;
+          }
+          return Promise.resolve({ data: { success: true, outboxKey: params?.p_outbox_entry?.id }, error: null });
+        }
+        if (fn === "release_experimental_cycle_if_owned") {
+          conversationRow.stage_completed_rules.active_cycle_token = null;
+          if (params?.p_debounce_until) {
+            conversationRow.stage_completed_rules.ai_debounce_until = params.p_debounce_until;
+            conversationRow.stage_completed_rules.ai_auto_respond = true;
+          }
+          savedStageRules = conversationRow.stage_completed_rules;
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
         }
         return Promise.resolve({ data: { success: true }, error: null });
       },
@@ -3429,8 +3455,399 @@ async function runTests() {
     assert.equal(orch.messageLedger.msg_incoming, "pending", "nova mensagem adicionada como pending");
   });
 
+  // 61. Concorrência Atômica na Outbox: Preempção no meio do ciclo bloqueia o claim do balão
+  await runTest(61, "Concorrência Atômica na Outbox: Preempção ativa bloqueia claim com cycle_preempted", async () => {
+    let convRow = {
+      id: "conv_outbox_preempt_61",
+      stage_completed_rules: {
+        active_cycle_token: "token_cycle_61",
+        preempt_requested: true,
+        orchestration: {
+          outbox: {
+            "out_key_1": {
+              id: "out_key_1",
+              status: "pending",
+              attempts: 0,
+            },
+          },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: convRow, error: null }),
+          }),
+        }),
+        update: (data) => ({
+          eq: () => {
+            Object.assign(convRow, data);
+            return Promise.resolve({ data: [convRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          const rules = convRow.stage_completed_rules || {};
+          if (rules.preempt_requested === true) {
+            return Promise.resolve({ data: { success: false, reason: "cycle_preempted" }, error: null });
+          }
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    const claimRes = await claimOutboxEntryAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_outbox_preempt_61",
+      outboxKey: "out_key_1",
+      claimToken: "token_cycle_61",
+    });
+
+    assert.equal(claimRes.success, false);
+    assert.equal(claimRes.reason, "cycle_preempted");
+  });
+
+  // 62. Concorrência Atômica na Outbox: Lock roubado por ciclo mais recente bloqueia claim com lost_ownership
+  await runTest(62, "Concorrência Atômica na Outbox: Perda de lock bloqueia claim com lost_ownership", async () => {
+    let convRow = {
+      id: "conv_outbox_lost_62",
+      stage_completed_rules: {
+        active_cycle_token: "token_newer_cycle",
+        preempt_requested: false,
+        orchestration: {
+          outbox: {
+            "out_key_2": { id: "out_key_2", status: "pending" },
+          },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: convRow, error: null }),
+          }),
+        }),
+        update: (data) => ({
+          eq: () => {
+            Object.assign(convRow, data);
+            return Promise.resolve({ data: [convRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          const rules = convRow.stage_completed_rules || {};
+          if (rules.active_cycle_token && rules.active_cycle_token !== params.p_claim_token) {
+            return Promise.resolve({ data: { success: false, reason: "lost_ownership" }, error: null });
+          }
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    const claimRes = await claimOutboxEntryAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_outbox_lost_62",
+      outboxKey: "out_key_2",
+      claimToken: "token_old_cycle_62",
+    });
+
+    assert.equal(claimRes.success, false);
+    assert.equal(claimRes.reason, "lost_ownership");
+  });
+
+  // 63. Aquisição atômica de ciclo: claim_experimental_cycle previne aquisição concorrente dupla
+  await runTest(63, "Aquisição Atômica de Ciclo: Lock ativo não-stale rejeita claim concorrente", async () => {
+    let convRow = {
+      id: "conv_claim_63",
+      stage_completed_rules: {
+        active_cycle_token: "token_incumbent",
+        active_cycle_at: new Date().toISOString(),
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: convRow, error: null }),
+          }),
+        }),
+        update: (data) => ({
+          eq: () => {
+            Object.assign(convRow, data);
+            return Promise.resolve({ data: [convRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          const rules = convRow.stage_completed_rules || {};
+          if (rules.active_cycle_token && rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({
+              data: { success: false, reason: "lock_active", activeCycleToken: rules.active_cycle_token },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: { success: true, reason: "acquired" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    const claimRes = await claimExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_claim_63",
+      cycleToken: "token_challenger",
+      staleSeconds: 25,
+    });
+
+    assert.equal(claimRes.success, false);
+    assert.equal(claimRes.reason, "lock_active");
+    assert.equal(claimRes.activeCycleToken, "token_incumbent");
+  });
+
+  // 64. Preempção atômica e rollback de mensagens claimed para pending via release_experimental_cycle_if_owned
+  await runTest(64, "Preempção Atômica: Reverte mensagens claimed para pending e preserva recentCycles com status superseded", async () => {
+    let convRow = {
+      id: "conv_release_64",
+      stage_completed_rules: {
+        active_cycle_token: "token_cycle_64",
+        orchestration: {
+          messageLedger: {
+            "m_claimed_1": "claimed",
+            "m_claimed_2": "claimed",
+            "m_new_inbound": "pending",
+          },
+          recentCycles: [],
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: convRow, error: null }),
+          }),
+        }),
+        update: (data) => ({
+          eq: () => {
+            Object.assign(convRow, data);
+            return Promise.resolve({ data: [convRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "release_experimental_cycle_if_owned") {
+          const rules = convRow.stage_completed_rules || {};
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { released: false, reason: "token_mismatch" }, error: null });
+          }
+          const orch = rules.orchestration || {};
+          const ledger = { ...(orch.messageLedger || {}) };
+          if (params.p_revert_message_ids) {
+            for (const id of params.p_revert_message_ids) ledger[id] = "pending";
+          }
+          const recentCycles = params.p_cycle_record
+            ? [params.p_cycle_record, ...(orch.recentCycles || [])].slice(0, 5)
+            : orch.recentCycles;
+          convRow.stage_completed_rules = {
+            ...rules,
+            active_cycle_token: null,
+            orchestration: {
+              ...orch,
+              messageLedger: ledger,
+              lastProcessingStatus: params.p_processing_status || "idle",
+              recentCycles: recentCycles || [],
+            },
+          };
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    const supersededCycle = {
+      cycleId: "token_cycle_64",
+      status: "superseded",
+      trace: ["cycle_preempted_new_input"],
+    };
+
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_release_64",
+      cycleToken: "token_cycle_64",
+      processingStatus: "failed",
+      revertMessageIds: ["m_claimed_1", "m_claimed_2"],
+      cycleRecord: supersededCycle,
+    });
+
+    assert.equal(releaseRes.released, true);
+    const orch = convRow.stage_completed_rules.orchestration;
+    assert.equal(convRow.stage_completed_rules.active_cycle_token, null);
+    assert.equal(orch.messageLedger.m_claimed_1, "pending");
+    assert.equal(orch.messageLedger.m_claimed_2, "pending");
+    assert.equal(orch.messageLedger.m_new_inbound, "pending");
+    assert.equal(orch.recentCycles[0].status, "superseded");
+  });
+
+  // 65. Idempotência e proteção do finally: ciclo já comitado (active_cycle_token=null) não é alterado pelo release
+  await runTest(65, "Proteção do Finally: Ciclo já comitado não tem seu status sent sobrescrito por idle", async () => {
+    let convRow = {
+      id: "conv_finally_65",
+      stage_completed_rules: {
+        active_cycle_token: null, // Já liberado no commit atômico (CAS)
+        orchestration: {
+          lastProcessingStatus: "sent",
+          messageLedger: { "m_final": "processed" },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: convRow, error: null }),
+          }),
+        }),
+        update: (data) => ({
+          eq: () => {
+            Object.assign(convRow, data);
+            return Promise.resolve({ data: [convRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "release_experimental_cycle_if_owned") {
+          const rules = convRow.stage_completed_rules || {};
+          if (!rules.active_cycle_token || rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({
+              data: { released: false, reason: "token_mismatch", activeToken: rules.active_cycle_token ?? null },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: { released: true }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // Bloco finally chama release com o token do ciclo que já fez commit
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_finally_65",
+      cycleToken: "cycle_already_committed",
+      processingStatus: "idle",
+    });
+
+    assert.equal(releaseRes.released, false);
+    assert.equal(releaseRes.reason, "token_mismatch");
+    assert.equal(convRow.stage_completed_rules.orchestration.lastProcessingStatus, "sent");
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.m_final, "processed");
+  });
+
+  // 66. Fronteira Irreversível (Caso B): Envio parcial com nova inbound preserva mensagens entregues
+  await runTest(66, "Fronteira Irreversível (Caso B): Envio parcial preserva balão entregue e agenda debounce", async () => {
+    let convRow = {
+      id: "conv_partial_66",
+      stage_completed_rules: {
+        active_cycle_token: "cycle_case_b_66",
+        orchestration: {
+          messageLedger: { "m_input_1": "claimed" },
+          outbox: {
+            "out_b1": { id: "out_b1", status: "sent" },
+            "out_b2": { id: "out_b2", status: "pending" },
+          },
+          recentCycles: [],
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: convRow, error: null }),
+          }),
+        }),
+        update: (data) => ({
+          eq: () => {
+            Object.assign(convRow, data);
+            return Promise.resolve({ data: [convRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "release_experimental_cycle_if_owned") {
+          const rules = convRow.stage_completed_rules || {};
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { released: false, reason: "token_mismatch" }, error: null });
+          }
+          const orch = rules.orchestration || {};
+          const ledger = { ...(orch.messageLedger || {}) };
+          if (params.p_mark_processed_ids) {
+            for (const id of params.p_mark_processed_ids) ledger[id] = "processed";
+          }
+          const recentCycles = params.p_cycle_record
+            ? [params.p_cycle_record, ...(orch.recentCycles || [])].slice(0, 5)
+            : orch.recentCycles;
+          convRow.stage_completed_rules = {
+            ...rules,
+            active_cycle_token: null,
+            orchestration: {
+              ...orch,
+              messageLedger: ledger,
+              lastProcessingStatus: params.p_processing_status || "idle",
+              recentCycles: recentCycles || [],
+            },
+          };
+          if (params.p_debounce_until) {
+            convRow.stage_completed_rules.ai_debounce_until = params.p_debounce_until;
+            convRow.stage_completed_rules.ai_auto_respond = true;
+          }
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    const partialCycle = {
+      cycleId: "cycle_case_b_66",
+      status: "completed",
+      trace: ["balloon_1_sent", "remaining_bubbles_superseded: new_message_during_dispatch"],
+    };
+
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_partial_66",
+      cycleToken: "cycle_case_b_66",
+      processingStatus: "sent",
+      debounceUntil: new Date(Date.now() + 2500).toISOString(),
+      markProcessedIds: ["m_input_1"],
+      cycleRecord: partialCycle,
+    });
+
+    assert.equal(releaseRes.released, true);
+    const orch = convRow.stage_completed_rules.orchestration;
+    assert.equal(convRow.stage_completed_rules.active_cycle_token, null);
+    assert.equal(orch.messageLedger.m_input_1, "processed", "m_input_1 foi respondida pelo balão 1");
+    assert.equal(orch.lastProcessingStatus, "sent");
+    assert.ok(convRow.stage_completed_rules.ai_debounce_until);
+    assert.equal(convRow.stage_completed_rules.ai_auto_respond, true);
+    assert.ok(orch.recentCycles[0].trace.includes("remaining_bubbles_superseded: new_message_during_dispatch"));
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/60 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/66 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 
