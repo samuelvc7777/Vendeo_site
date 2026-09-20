@@ -256,6 +256,42 @@ export interface ConversationOrchestrationState {
   memory?: ContactMemoryStore;
 }
 
+/**
+ * AUTORIDADE DE PROGRESSO DETERMINÍSTICO:
+ * Resolve a lista oficial de completed_goals onde stageRules.completed_goals é a
+ * autoridade primária persistida e orchState.completedGoalIds é o espelho/fallback.
+ */
+export function resolveOfficialCompletedGoals(
+  stageRules?: { completed_goals?: string[] } | null,
+  orchState?: { completedGoalIds?: string[] } | null
+): string[] {
+  if (Array.isArray(stageRules?.completed_goals)) {
+    return [...stageRules.completed_goals];
+  }
+  if (Array.isArray(orchState?.completedGoalIds)) {
+    return [...orchState.completedGoalIds];
+  }
+  return [];
+}
+
+/**
+ * AUTORIDADE DE PROGRESSO DETERMINÍSTICO:
+ * Resolve o mapa oficial de objective_progress onde stageRules.objective_progress é a
+ * autoridade primária persistida e orchState.objectiveProgress é o espelho/fallback.
+ */
+export function resolveOfficialObjectiveProgress(
+  stageRules?: { objective_progress?: Record<string, any> } | null,
+  orchState?: { objectiveProgress?: Record<string, any> } | null
+): Record<string, any> {
+  if (stageRules?.objective_progress && typeof stageRules.objective_progress === "object" && !Array.isArray(stageRules.objective_progress)) {
+    return { ...stageRules.objective_progress };
+  }
+  if (orchState?.objectiveProgress && typeof orchState.objectiveProgress === "object" && !Array.isArray(orchState.objectiveProgress)) {
+    return { ...orchState.objectiveProgress };
+  }
+  return {};
+}
+
 export interface StructuredConversationMessage {
   id: string;
   sender: "pretendente" | "larissa";
@@ -2494,10 +2530,10 @@ export async function processDeterministicStageProgression(params: {
   } = params;
 
   const updatedCompletedGoals: string[] = [
-    ...(orchState.completedGoalIds || stageRules.completed_goals || []),
+    ...resolveOfficialCompletedGoals(stageRules, orchState),
   ];
   const updatedObjectiveProgress: Record<string, any> = {
-    ...(orchState.objectiveProgress || stageRules.objective_progress || {}),
+    ...resolveOfficialObjectiveProgress(stageRules, orchState),
   };
 
   // 1. Busca lista ordenada de etapas (chat_stages) e subagentes (subagent_definitions)
@@ -4790,6 +4826,12 @@ export async function runExperimentalOrchestration(
     updatedAt: new Date().toISOString(),
   };
 
+  // SNAPSHOT IMUTÁVEL NO INÍCIO DO CICLO:
+  // A autoridade de progresso oficial pertence ao stage_completed_rules.
+  // orchState.completedGoalIds e orchState.objectiveProgress servem como espelho/fallback.
+  const officialCompletedGoalIdsAtCycleStart = resolveOfficialCompletedGoals(stageRules, orchState);
+  const officialObjectiveProgressAtCycleStart = resolveOfficialObjectiveProgress(stageRules, orchState);
+
   // 2. ISOLAMENTO TOTAL: Conversas no modo 'legacy' retornam imediatamente
   if (orchState.mode === "legacy") {
     return { mode: "legacy", handled: false };
@@ -5051,11 +5093,15 @@ export async function runExperimentalOrchestration(
         .update({
           stage_completed_rules: {
             ...latestRules,
+            completed_goals: officialCompletedGoalIdsAtCycleStart,
+            objective_progress: officialObjectiveProgressAtCycleStart,
             active_cycle_token: null,
             ai_auto_respond: true,
             ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
             orchestration: {
               ...latestOrch,
+              completedGoalIds: officialCompletedGoalIdsAtCycleStart,
+              objectiveProgress: officialObjectiveProgressAtCycleStart,
               messageLedger: mergedLedger,
               lastProcessingStatus: "idle",
               recentCycles: [currentCycle, ...(latestOrch.recentCycles || [])].slice(0, 5),
@@ -5171,7 +5217,7 @@ export async function runExperimentalOrchestration(
       currentPhase
     )).trim().toLowerCase();
 
-    let completedGoalIds: string[] = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
+    let completedGoalIds: string[] = [...officialCompletedGoalIdsAtCycleStart];
     let stageChecklistForRouter = await resolveStageObjectives({
       supabase,
       conversationId,
@@ -5227,10 +5273,9 @@ export async function runExperimentalOrchestration(
           historyMessages: claimedMessages,
         });
       } else {
-        // MODO REAL/EXPERIMENTAL: Salva fatos e atualiza estado oficial
+        // MODO REAL/EXPERIMENTAL: Salva fatos na ContactMemory e atualiza apenas workingCompletedGoalIds do turno
+        // orchState.completedGoalIds e stageRules.completed_goals NÃO são mutados aqui (apenas no commit final confirmado)
         workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, ...newlyCompleted])];
-        completedGoalIds = workingCompletedGoalIds;
-        (orchState as any).completedGoalIds = completedGoalIds;
         currentCycle.trace.push(`spontaneous_objectives_completed: ${newlyCompleted.join(",")}`);
 
         // Salva fatos espontâneos na ContactMemory com entidade canônica "self"
@@ -5247,13 +5292,13 @@ export async function runExperimentalOrchestration(
           }
         }
 
-        // Re-resolve os objetivos com os fatos atualizados
+        // Re-resolve os objetivos com os fatos atualizados para uso LOCAL no ciclo atual
         stageChecklistForRouter = await resolveStageObjectives({
           supabase,
           conversationId,
           stageNameOrId: currentStageId,
           memoryProvider,
-          completedGoalIds,
+          completedGoalIds: workingCompletedGoalIds,
           historyMessages: claimedMessages,
         });
       }
@@ -5510,7 +5555,7 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
           if (toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state") {
             const requestedStage = String(toolParams.stage || currentPhase).trim();
             // BACKEND-BOUND SECURITY: O conversationId é injetado pelo runtime, ignorando qualquer valor externo
-            const completedGoalIds = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
+            const completedGoalIds = workingCompletedGoalIds;
             const stageChecklist = await resolveStageObjectives({
               supabase,
               conversationId, // Backend-bound estrito
@@ -6001,10 +6046,14 @@ Responda ESTRITAMENTE em JSON puro:
       .update({
         stage_completed_rules: {
           ...stageRules,
+          completed_goals: officialCompletedGoalIdsAtCycleStart,
+          objective_progress: officialObjectiveProgressAtCycleStart,
           active_cycle_token: correlationId,
           active_cycle_at: new Date().toISOString(),
           orchestration: {
             ...orchState,
+            completedGoalIds: officialCompletedGoalIdsAtCycleStart,
+            objectiveProgress: officialObjectiveProgressAtCycleStart,
             outbox: outboxMap,
             messageLedger: ledger,
             lastDecision: decision,
@@ -6096,14 +6145,16 @@ Responda ESTRITAMENTE em JSON puro:
         messageLedger: ledger,
         shadowSimulation,
       };
-      (updatedState as any).completedGoalIds = orchState.completedGoalIds || stageRules.completed_goals || [];
-      (updatedState as any).objectiveProgress = orchState.objectiveProgress || stageRules.objective_progress || {};
+      (updatedState as any).completedGoalIds = officialCompletedGoalIdsAtCycleStart;
+      (updatedState as any).objectiveProgress = officialObjectiveProgressAtCycleStart;
 
       await supabase
         .from("instagram_conversations")
         .update({
           stage_completed_rules: {
-            ...stageRules, // Mantém completed_goals e objective_progress originais intactos!
+            ...stageRules,
+            completed_goals: officialCompletedGoalIdsAtCycleStart,
+            objective_progress: officialObjectiveProgressAtCycleStart,
             active_cycle_token: null,
             orchestration: updatedState,
           },
@@ -6270,14 +6321,16 @@ Responda ESTRITAMENTE em JSON puro:
                 outbox: outboxMap,
                 messageLedger: ledger,
               };
-              (updatedState as any).completedGoalIds = orchState.completedGoalIds || stageRules.completed_goals || [];
-              (updatedState as any).objectiveProgress = orchState.objectiveProgress || stageRules.objective_progress || {};
+              (updatedState as any).completedGoalIds = officialCompletedGoalIdsAtCycleStart;
+              (updatedState as any).objectiveProgress = officialObjectiveProgressAtCycleStart;
 
               await supabase
                 .from("instagram_conversations")
                 .update({
                   stage_completed_rules: {
                     ...stageRules,
+                    completed_goals: officialCompletedGoalIdsAtCycleStart,
+                    objective_progress: officialObjectiveProgressAtCycleStart,
                     active_cycle_token: null,
                     ai_auto_respond: true,
                     ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
@@ -6575,10 +6628,10 @@ Responda ESTRITAMENTE em JSON puro:
 
       let stageProgression = {
         updatedCompletedGoals: [
-          ...((orchState as any).completedGoalIds || stageRules.completed_goals || []),
+          ...officialCompletedGoalIdsAtCycleStart,
         ],
         updatedObjectiveProgress: {
-          ...((orchState as any).objectiveProgress || stageRules.objective_progress || {}),
+          ...officialObjectiveProgressAtCycleStart,
         },
         nextPhase: validatedNextPhase,
         stageAdvanced: false,

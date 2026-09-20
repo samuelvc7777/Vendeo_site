@@ -42,6 +42,9 @@ function loadTsModule(filePath) {
       if (dep.includes("LarissaChatStyle")) {
         return loadTsModule("supabase/functions/api/LarissaChatStyle.ts");
       }
+      if (dep.includes("conversation_episodic_memory")) {
+        return loadTsModule("supabase/functions/api/conversation_episodic_memory.ts");
+      }
       return {};
     },
   };
@@ -88,7 +91,7 @@ class MockMemoryProvider {
 
 async function runTests() {
   console.log("================================================================================");
-  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (50 CENÁRIOS)");
+  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (52 CENÁRIOS)");
   console.log("================================================================================\n");
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
@@ -104,6 +107,8 @@ async function runTests() {
     validatePhaseTransition,
     detectSpontaneousObjectiveCompletions,
     runExperimentalOrchestration,
+    resolveOfficialCompletedGoals,
+    resolveOfficialObjectiveProgress,
   } = orchestratorModule;
 
   let passed = 0;
@@ -1432,29 +1437,190 @@ async function runTests() {
     assert(resValid.updatedCompletedGoals.includes("goal_initial_reciprocity"), "Deve aceitar conclusão com evidência legítima");
   });
 
-  // 48. Preempção parcial (remaining_bubbles_superseded): Preserva fase, etapa e subagente sem avançar etapa
-  await runTest(48, "Preempção parcial (remaining_bubbles_superseded): Preserva fase, etapa e subagente sem avançar etapa", async () => {
-    // Inspeciona experimental_orchestrator.ts garantindo que o branch de remaining_bubbles_superseded preserva estado oficial
-    const orchContent = fs.readFileSync("supabase/functions/api/experimental_orchestrator.ts", "utf8");
-    const startIdx = orchContent.indexOf("remaining_bubbles_superseded: sent=");
-    assert(startIdx > -1, "Deve existir branch de remaining_bubbles_superseded");
-    const preemptionBlock = orchContent.slice(startIdx, startIdx + 3000);
+  // 48. Preempção parcial real entre balões (remaining_bubbles_superseded): Preserva completed_goals e etapa sem contaminação
+  await runTest(48, "Preempção parcial real entre balões (remaining_bubbles_superseded): Preserva completed_goals e etapa sem contaminação", async () => {
+    const memoryProvider = new MockMemoryProvider();
+    let savedStageRules = null;
+    let sentBalloons = [];
+    let balloonCount = 0;
 
+    const conversationRow = {
+      id: "conv_test_48",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+        },
+      },
+    };
+
+    const messagesInDb = [
+      { id: "msg_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 10000).toISOString() },
+    ];
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: {
+                id: params?.p_outbox_id || "out_test_48",
+                status: "sending",
+                claimedBy: params?.p_claim_token,
+                sendingAt: new Date().toISOString(),
+              },
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? messagesInDb : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }, { id: "descoberta", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: (col, val) => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              savedStageRules = conversationRow.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: (payload) => Promise.resolve({ data: null, error: null }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Conexao inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Que legal que você é de Barbacena!\nE como é trabalhar como engenheiro por aí?",
+            checkpoint: "chk_saudacao_feita",
+            responses: [
+              "Que legal que você é de Barbacena!",
+              "E como é trabalhar como engenheiro por aí?",
+            ],
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async (supabase, convId, text) => {
+        balloonCount++;
+        sentBalloons.push(text);
+        // Após o primeiro balão ser entregue, chega nova mensagem e o freshness gate dispara antes do 2º balão
+        if (balloonCount === 1) {
+          conversationRow.stage_completed_rules.preempt_requested = true;
+        }
+        return { message_id: `msg_sent_${balloonCount}` };
+      },
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_48",
+      newMessage: {
+        id: "msg_in_48",
+        text: "sou de Barbacena e trabalho de engenheiro",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(res.handled, true, "Ciclo com balão parcial enviado deve ser handled");
+    assert.equal(balloonCount, 1, "Apenas o PRIMEIRO balão deve ser enviado");
+    assert.equal(sentBalloons.length, 1, "Segundo balão NÃO pode ser enviado");
+    assert(savedStageRules, "Deve persistir stage_completed_rules após preempção parcial");
+
+    // ASSERÇÕES CRÍTICAS SOLICITADAS:
+    // 1. completed_goals oficial deve permanecer intacto [goal_initial_reciprocity]
+    assert.deepEqual(
+      savedStageRules.completed_goals,
+      ["goal_initial_reciprocity"],
+      "completed_goals oficial DEVE continuar [goal_initial_reciprocity] e NÃO ganhar goal_city/goal_job"
+    );
+    assert.deepEqual(
+      savedStageRules.orchestration.completedGoalIds,
+      ["goal_initial_reciprocity"],
+      "orchestration.completedGoalIds DEVE continuar [goal_initial_reciprocity]"
+    );
+
+    // 2. Etapa, fase e subagente NÃO mudam
+    assert.equal(
+      savedStageRules.orchestration.currentStageId,
+      "stage_1_conexao",
+      "currentStageId não pode mudar em preempção parcial"
+    );
+    assert.equal(
+      savedStageRules.orchestration.currentPhase,
+      "conexao_inicial",
+      "currentPhase não pode mudar em preempção parcial"
+    );
+    assert.equal(
+      savedStageRules.orchestration.responsibleSubagentId,
+      "conexao_inicial",
+      "responsibleSubagentId não pode mudar em preempção parcial"
+    );
+
+    // 3. Debounce agendado
     assert(
-      preemptionBlock.includes("currentPhase: orchState.currentPhase || currentPhase"),
-      "remaining_bubbles_superseded DEVE preservar orchState.currentPhase sem avançar para validatedNextPhase"
+      savedStageRules.ai_debounce_until,
+      "Debounce deve ser agendado após interrupção entre balões"
     );
     assert(
-      preemptionBlock.includes("currentStageId: orchState.currentStageId || currentStageId"),
-      "remaining_bubbles_superseded DEVE preservar orchState.currentStageId"
-    );
-    assert(
-      preemptionBlock.includes("responsibleSubagentId: orchState.responsibleSubagentId || responsibleSubagent"),
-      "remaining_bubbles_superseded DEVE preservar orchState.responsibleSubagentId"
-    );
-    assert(
-      preemptionBlock.includes("(updatedState as any).completedGoalIds = orchState.completedGoalIds"),
-      "remaining_bubbles_superseded DEVE preservar completedGoalIds intactos"
+      Date.parse(savedStageRules.ai_debounce_until) > Date.now() - 1000,
+      "ai_debounce_until deve ter timestamp válido"
     );
   });
 
@@ -1590,8 +1756,294 @@ async function runTests() {
     assert.equal(savedStageRules.orchestration.recentCycles[0].status, "completed");
   });
 
+  // 51. Segundo teste real: Detecção espontânea com preempção ANTES da Outbox: Zero mutação oficial
+  await runTest(51, "Segundo teste real: Detecção espontânea com preempção ANTES da Outbox: Zero mutação oficial", async () => {
+    const memoryProvider = new MockMemoryProvider();
+    let savedStageRules = null;
+    let balloonCount = 0;
+
+    const conversationRow = {
+      id: "conv_test_51",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_in_51_prev", text: "oi", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
+                ] : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: (col, val) => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              savedStageRules = conversationRow.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Conexao inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        // Quando o modelo do subagente termina de gerar, simulamos que uma nova mensagem chegou antes da Outbox
+        conversationRow.stage_completed_rules.preempt_requested = true;
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Que bom que você é de Belo Horizonte!",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Que bom que você é de Belo Horizonte!"],
+          }),
+          tokens: 50,
+        };
+      },
+      sendMessage: async () => {
+        balloonCount++;
+        return { success: true };
+      },
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_51",
+      newMessage: {
+        id: "msg_in_51",
+        text: "moro em Belo Horizonte e sou arquiteto",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(balloonCount, 0, "Nenhum balão deve ser enviado se preempção ocorreu antes da Outbox");
+    assert(savedStageRules, "Deve persistir stage_completed_rules na preempção");
+    assert.deepEqual(
+      savedStageRules.completed_goals,
+      ["goal_initial_reciprocity"],
+      "stageRules.completed_goals DEVE permanecer estritamente igual ao início"
+    );
+    assert.deepEqual(
+      savedStageRules.orchestration.completedGoalIds,
+      ["goal_initial_reciprocity"],
+      "orchestration.completedGoalIds DEVE permanecer estritamente igual ao início"
+    );
+    assert.equal(
+      savedStageRules.objective_progress.goal_city,
+      undefined,
+      "objective_progress NÃO deve conter goal_city após preempção"
+    );
+    assert.equal(
+      savedStageRules.objective_progress.goal_job,
+      undefined,
+      "objective_progress NÃO deve conter goal_job após preempção"
+    );
+  });
+
+  // 52. Terceiro teste real: Sucesso normal confirmado promove objetivo espontâneo no commit final determinístico
+  await runTest(52, "Terceiro teste real: Sucesso normal confirmado promove objetivo espontâneo no commit final determinístico", async () => {
+    const memoryProvider = new MockMemoryProvider();
+    let savedStageRules = null;
+    let balloonCount = 0;
+
+    const conversationRow = {
+      id: "conv_test_52",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: {
+                id: params?.p_outbox_id || "out_test_52",
+                status: "sending",
+                claimedBy: params?.p_claim_token,
+                sendingAt: new Date().toISOString(),
+              },
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_in_52_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
+                ] : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: (col, val) => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              savedStageRules = conversationRow.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: () => Promise.resolve({ data: null, error: null }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Conexao inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Que maravilha, adoro Barbacena!",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Que maravilha, adoro Barbacena!"],
+          }),
+          tokens: 50,
+        };
+      },
+      sendMetaTextMessage: async (supabase, convId, text) => {
+        balloonCount++;
+        return { message_id: "mid_52" };
+      },
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_52",
+      newMessage: {
+        id: "msg_in_52",
+        text: "sou de Barbacena",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(res.handled, true, "Ciclo deve ser processado com sucesso");
+    assert.equal(balloonCount, 1, "1 balão deve ser enviado com sucesso");
+    assert(savedStageRules, "Deve persistir stage_completed_rules após confirmação");
+
+    // Em ciclo confirmado com sucesso, goal_city DEVE ter sido promovido a oficial
+    assert(
+      savedStageRules.completed_goals.includes("goal_city"),
+      "completed_goals oficial DEVE conter goal_city após ciclo confirmado"
+    );
+    assert(
+      savedStageRules.orchestration.completedGoalIds.includes("goal_city"),
+      "orchestration.completedGoalIds DEVE conter goal_city após ciclo confirmado"
+    );
+    assert(
+      savedStageRules.objective_progress.goal_city,
+      "objective_progress oficial DEVE conter goal_city"
+    );
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/50 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/52 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 
