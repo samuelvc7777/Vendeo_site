@@ -116,15 +116,15 @@ export interface ChatStageWithStats extends ChatStage {
 }
 
 /**
- * MATRIZ OFICIAL DE ETAPAS E OBJETIVOS CANÔNICOS (3 Subagentes).
+ * MATRIZ OFICIAL DE ETAPAS E OBJETIVOS CANÔNICOS (Etapa = Subagente Responsável, Objetivos = Checkpoints Obrigatórios Sequenciais).
  * 
  * Regras Estritas de Negócio:
- * - Somente 2 objetivos são required em todo o sistema:
- *   1. goal_initial_reciprocity (na Conexão Inicial)
- *   2. goal_discovery_depth (na Descoberta)
- * - Fatos pessoais (fact) NUNCA bloqueiam progressão de etapa.
- * - goal_relationship é restrito exclusivamente ao status de relacionamento (solteiro, separado, etc.).
- * - Sem roteiros fixos ou ordem obrigatória entre objetivos.
+ * - Cada etapa possui um subagente responsável primário (1:1 no fluxo principal).
+ * - Todos os objetivos ativos (enabled: true) são checkpoints obrigatórios sequenciais resolvidos por order ASC.
+ * - A etapa só avança quando TODOS os objetivos ativos forem concluídos.
+ * - O sistema sempre sabe qual é o currentObjective (primeiro objetivo ativo pendente da etapa).
+ * - Checkpoint concluído morre e nunca mais é revisitado ou perguntado pela persona.
+ * - Destino fixo, conversa humana: a ordem é estrita, mas o diálogo flui com afeto, empatia e sem interrogatório.
  */
 export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
   {
@@ -156,7 +156,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Cidade",
         description: "Descobrir onde ele mora ou contexto geográfico",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 2,
         memoryEntity: "self",
@@ -171,7 +171,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Profissão / trabalho",
         description: "Descobrir profissão, ocupação ou trabalho atual",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 3,
         memoryEntity: "self",
@@ -197,7 +197,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Idade",
         description: "Descobrir a idade ou faixa etária",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 1,
         memoryEntity: "self",
@@ -212,7 +212,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Rotina",
         description: "Conhecer alguma informação útil sobre como é o cotidiano dele (horário de trabalho, dia/noite, rotina corrida/tranquila, estudos, academia)",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 2,
         memoryEntity: "self",
@@ -227,7 +227,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Hobbies e interesses",
         description: "Conhecer pelo menos um gosto, hobby ou atividade que ele realmente curta",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 3,
         memoryEntity: "self",
@@ -242,7 +242,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Estilo de lazer / rolê",
         description: "Entender de forma natural que tipo de programa costuma gostar (caseiro, restaurante, bar, festa, viagem, natureza, passeios)",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 4,
         memoryEntity: "self",
@@ -281,7 +281,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Status de relacionamento",
         description: "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 1,
         memoryEntity: "self",
@@ -296,7 +296,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "O que procura atualmente",
         description: "Entender a intenção atual dele em relação a conhecer alguém (algo sério, conhecer sem pressa, relacionamento, não sabe ainda)",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 2,
         memoryEntity: "self",
@@ -311,7 +311,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Tem filhos",
         description: "Registrar se ele possui ou não filhos (fato presente). Não misturar com desejo futuro de filhos.",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 3,
         memoryEntity: "self",
@@ -326,7 +326,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Quer ter filhos",
         description: "Registrar a visão dele sobre ter filhos no futuro. Só concluir com evidência clara. Não inferir de ter filhos.",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 4,
         memoryEntity: "self",
@@ -341,7 +341,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Família e valores",
         description: "Conhecer algum aspecto relevante sobre como ele enxerga família, vínculo, respeito, estabilidade ou relações pessoais",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 5,
         memoryEntity: "self",
@@ -356,7 +356,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Planos futuros",
         description: "Conhecer algum plano relevante de médio/longo prazo (carreira, moradia, viagens, família, projetos pessoais)",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 6,
         memoryEntity: "self",
@@ -371,7 +371,7 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         label: "Fé / espiritualidade",
         description: "Conhecer esse aspecto SOMENTE quando surgir naturalmente. Nunca forçar pergunta religiosa.",
         kind: "fact",
-        required: false,
+        required: true,
         enabled: true,
         order: 7,
         memoryEntity: "self",

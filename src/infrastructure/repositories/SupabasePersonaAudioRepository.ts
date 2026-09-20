@@ -1,181 +1,93 @@
+/**
+ * src/infrastructure/repositories/SupabasePersonaAudioRepository.ts
+ * Repositório Oficial de Áudios da Persona Larissa e Histórico de Envios.
+ * 
+ * Regra Arquitetural Absoluta:
+ * - As tabelas 'public.persona_audios' e 'public.audio_delivery_history' são as ÚNICAS fontes de verdade.
+ * - Zero localStorage.
+ * - Zero pseudo-registros globais (__persona_audios__, __audio_history__).
+ * - Sincronização em tempo real via canais do Supabase Realtime.
+ */
+
 import { IPersonaAudioRepository } from "@/domain/repositories/IPersonaAudioRepository";
 import { PersonaAudioAsset, AudioDeliveryHistory } from "@/domain/entities/ChatStage";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 
-const LOCAL_STORAGE_AUDIOS_KEY = "vendeo_persona_audios_v1";
-const LOCAL_STORAGE_AUDIO_HISTORY_KEY = "vendeo_audio_history_v1";
-
-interface StoredAudiosPayload {
-  audios: PersonaAudioAsset[];
-  updated_at: string;
-}
-
-interface StoredAudioHistoryPayload {
-  history: Record<string, AudioDeliveryHistory[]>;
-  updated_at: string;
-}
-
 export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
+  private customClient?: any;
   private cachedAudios: PersonaAudioAsset[] | null = null;
-  private cachedHistory: Record<string, AudioDeliveryHistory[]> | null = null;
   private lastFetchAudiosTime = 0;
-  private lastFetchHistoryTime = 0;
   private cacheDurationMs = 2500;
   private realtimeSubscribed = false;
 
+  constructor(client?: any) {
+    if (client) {
+      this.customClient = client;
+    }
+  }
+
   private getClient() {
+    if (this.customClient) {
+      return this.customClient;
+    }
     if (typeof window !== "undefined") {
       return getSupabaseBrowserClient();
     }
     return getSupabaseServerClient();
   }
 
-  private getLocalAudios(): PersonaAudioAsset[] {
-    if (typeof window === "undefined") return [];
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_AUDIOS_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      }
-    } catch (e) {
-      console.warn("Erro ao ler áudios locais:", e);
-    }
-    return [];
+  private mapRowToAudio(row: any): PersonaAudioAsset {
+    return {
+      id: row.id,
+      stageId: row.stage_id || undefined,
+      title: row.title,
+      audioUrl: row.audio_url,
+      duration: row.duration != null ? Number(row.duration) : undefined,
+      transcript: row.transcript || "",
+      usageInstruction: row.usage_instruction || "",
+      enabled: row.enabled ?? true,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
-  private saveLocalAudios(audios: PersonaAudioAsset[]) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_AUDIOS_KEY, JSON.stringify(audios));
-    } catch (e) {
-      console.warn("Erro ao salvar áudios locais:", e);
-    }
-  }
-
-  private getLocalHistory(): Record<string, AudioDeliveryHistory[]> {
-    if (typeof window === "undefined") return {};
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_AUDIO_HISTORY_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return typeof parsed === "object" && parsed !== null ? parsed : {};
-      }
-    } catch (e) {
-      console.warn("Erro ao ler histórico de áudios local:", e);
-    }
-    return {};
-  }
-
-  private saveLocalHistory(history: Record<string, AudioDeliveryHistory[]>) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_AUDIO_HISTORY_KEY, JSON.stringify(history));
-    } catch (e) {
-      console.warn("Erro ao salvar histórico de áudios local:", e);
-    }
+  private mapRowToHistory(row: any): AudioDeliveryHistory {
+    return {
+      id: row.id,
+      conversationId: row.conversation_id,
+      audioId: row.audio_id,
+      sentAt: row.sent_at,
+      providerMessageId: row.provider_message_id || undefined,
+    };
   }
 
   private initRealtimeSubscription() {
-    if (this.realtimeSubscribed || typeof window === "undefined") return;
+    if (this.realtimeSubscribed || (typeof window === "undefined" && !this.customClient)) return;
     const client = this.getClient();
     if (!client) return;
 
     try {
       this.realtimeSubscribed = true;
       client
-        .channel("persona-audios-sync")
+        .channel("persona-audios-db-sync")
         .on(
           "postgres_changes",
           {
             event: "*",
             schema: "public",
-            table: "instagram_conversations",
-            filter: "id=in.(__persona_audios__,__audio_history__)",
+            table: "persona_audios",
           },
-          (payload: any) => {
-            const id = payload?.new?.id;
-            const rules = payload?.new?.stage_completed_rules;
-            if (id === "__persona_audios__" && rules?.audios) {
-              this.cachedAudios = rules.audios;
-              this.saveLocalAudios(rules.audios);
-              this.lastFetchAudiosTime = Date.now();
-            } else if (id === "__audio_history__" && rules?.history) {
-              this.cachedHistory = rules.history;
-              this.saveLocalHistory(rules.history);
-              this.lastFetchHistoryTime = Date.now();
-            }
+          () => {
+            this.cachedAudios = null;
+            this.lastFetchAudiosTime = 0;
           }
         )
         .subscribe();
     } catch {
-      // Realtime fail-safe
+      // Fail-safe silencioso
     }
   }
-
-  private async persistAudiosToCloud(audios: PersonaAudioAsset[]): Promise<void> {
-    this.cachedAudios = audios;
-    this.saveLocalAudios(audios);
-    this.lastFetchAudiosTime = Date.now();
-
-    const client = this.getClient();
-    if (!client) return;
-
-    try {
-      const payload: StoredAudiosPayload = {
-        audios,
-        updated_at: new Date().toISOString(),
-      };
-
-      await client.from("instagram_conversations").upsert({
-        id: "__persona_audios__",
-        username: "system_persona_audios",
-        full_name: "Biblioteca de Voz da Larissa",
-        status: "system",
-        unread: false,
-        last_message: `Áudios cadastrados: ${audios.length}`,
-        last_message_at: new Date().toISOString(),
-        is_restricted: false,
-        stage_completed_rules: payload as any,
-        updated_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn("Aviso ao persistir áudios no Supabase:", err);
-    }
-  }
-
-  private async persistHistoryToCloud(history: Record<string, AudioDeliveryHistory[]>): Promise<void> {
-    this.cachedHistory = history;
-    this.saveLocalHistory(history);
-    this.lastFetchHistoryTime = Date.now();
-
-    const client = this.getClient();
-    if (!client) return;
-
-    try {
-      const payload: StoredAudioHistoryPayload = {
-        history,
-        updated_at: new Date().toISOString(),
-      };
-
-      await client.from("instagram_conversations").upsert({
-        id: "__audio_history__",
-        username: "system_audio_history",
-        full_name: "Histórico de Envios de Áudio",
-        status: "system",
-        unread: false,
-        last_message: `Conversas com histórico: ${Object.keys(history).length}`,
-        last_message_at: new Date().toISOString(),
-        is_restricted: false,
-        stage_completed_rules: payload as any,
-        updated_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn("Aviso ao persistir histórico de áudios no Supabase:", err);
-    }
-  }
-
 
   async getAudios(filters?: { stageId?: string; enabledOnly?: boolean }): Promise<PersonaAudioAsset[]> {
     this.initRealtimeSubscription();
@@ -186,35 +98,23 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
       allAudios = this.cachedAudios;
     } else {
       const client = this.getClient();
-      let loadedFromCloud = false;
-
       if (client) {
         try {
           const { data, error } = await client
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", "__persona_audios__")
-            .maybeSingle();
+            .from("persona_audios")
+            .select("*")
+            .order("title", { ascending: true });
 
-          if (!error && data?.stage_completed_rules) {
-            const rules = data.stage_completed_rules as StoredAudiosPayload;
-            if (Array.isArray(rules.audios)) {
-              allAudios = rules.audios;
-              loadedFromCloud = true;
-              this.cachedAudios = allAudios;
-              this.saveLocalAudios(allAudios);
-              this.lastFetchAudiosTime = now;
-            }
+          if (!error && data && Array.isArray(data)) {
+            allAudios = data.map((r) => this.mapRowToAudio(r));
+            this.cachedAudios = allAudios;
+            this.lastFetchAudiosTime = now;
+          } else if (error) {
+            console.error("[SupabasePersonaAudioRepository] Erro ao buscar áudios:", error);
           }
         } catch (err) {
-          console.warn("Aviso ao carregar áudios do Supabase:", err);
+          console.error("[SupabasePersonaAudioRepository] Exceção ao consultar persona_audios:", err);
         }
-      }
-
-      if (!loadedFromCloud) {
-        allAudios = this.getLocalAudios();
-        this.cachedAudios = allAudios;
-        this.lastFetchAudiosTime = now;
       }
     }
 
@@ -226,46 +126,106 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
   }
 
   async getAudioById(id: string): Promise<PersonaAudioAsset | null> {
-    const audios = await this.getAudios();
-    return audios.find((a) => a.id === id) || null;
+    const client = this.getClient();
+    if (!client) return null;
+
+    try {
+      const { data, error } = await client
+        .from("persona_audios")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error || !data) return null;
+      return this.mapRowToAudio(data);
+    } catch (err) {
+      console.warn(`[SupabasePersonaAudioRepository] Erro ao buscar áudio ${id}:`, err);
+      return null;
+    }
   }
 
   async saveAudio(data: Omit<PersonaAudioAsset, "id" | "createdAt" | "updatedAt">): Promise<PersonaAudioAsset> {
-    const current = await this.getAudios();
-    const newAudio: PersonaAudioAsset = {
-      ...data,
-      id: "audio_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const newId = "audio_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = new Date().toISOString();
+
+    const rowPayload = {
+      id: newId,
+      stage_id: data.stageId || null,
+      title: data.title.trim(),
+      audio_url: data.audioUrl,
+      duration: data.duration != null ? Math.round(data.duration) : null,
+      transcript: data.transcript || "",
+      usage_instruction: data.usageInstruction || "",
+      enabled: data.enabled ?? true,
+      created_at: now,
+      updated_at: now,
     };
 
-    const updated = [newAudio, ...current];
-    await this.persistAudiosToCloud(updated);
-    return newAudio;
+    const { data: inserted, error } = await client
+      .from("persona_audios")
+      .insert(rowPayload)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[SupabasePersonaAudioRepository] Erro ao salvar áudio no Supabase:", error);
+      throw new Error(error.message || "Falha ao gravar áudio no banco");
+    }
+
+    this.cachedAudios = null;
+    this.lastFetchAudiosTime = 0;
+    return this.mapRowToAudio(inserted);
   }
 
   async updateAudio(id: string, updates: Partial<PersonaAudioAsset>): Promise<PersonaAudioAsset> {
-    const current = await this.getAudios();
-    const index = current.findIndex((a) => a.id === id);
-    if (index === -1) {
-      throw new Error(`Áudio com ID ${id} não encontrado.`);
-    }
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
 
-    const updatedAudio: PersonaAudioAsset = {
-      ...current[index],
-      ...updates,
-      updatedAt: new Date().toISOString(),
+    const now = new Date().toISOString();
+    const updatePayload: Record<string, any> = {
+      updated_at: now,
     };
 
-    current[index] = updatedAudio;
-    await this.persistAudiosToCloud(current);
-    return updatedAudio;
+    if (updates.stageId !== undefined) updatePayload.stage_id = updates.stageId || null;
+    if (updates.title !== undefined) updatePayload.title = updates.title.trim();
+    if (updates.audioUrl !== undefined) updatePayload.audio_url = updates.audioUrl;
+    if (updates.duration !== undefined) updatePayload.duration = updates.duration != null ? Math.round(updates.duration) : null;
+    if (updates.transcript !== undefined) updatePayload.transcript = updates.transcript;
+    if (updates.usageInstruction !== undefined) updatePayload.usage_instruction = updates.usageInstruction;
+    if (updates.enabled !== undefined) updatePayload.enabled = Boolean(updates.enabled);
+
+    const { data: updated, error } = await client
+      .from("persona_audios")
+      .update(updatePayload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error(`[SupabasePersonaAudioRepository] Erro ao atualizar áudio ${id}:`, error);
+      throw new Error(error.message || "Falha ao atualizar áudio no banco");
+    }
+
+    this.cachedAudios = null;
+    this.lastFetchAudiosTime = 0;
+    return this.mapRowToAudio(updated);
   }
 
   async deleteAudio(id: string): Promise<void> {
-    const current = await this.getAudios();
-    const filtered = current.filter((a) => a.id !== id);
-    await this.persistAudiosToCloud(filtered);
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const { error } = await client.from("persona_audios").delete().eq("id", id);
+    if (error) {
+      console.error(`[SupabasePersonaAudioRepository] Erro ao excluir áudio ${id}:`, error);
+      throw new Error(error.message || "Falha ao excluir áudio do banco");
+    }
+
+    this.cachedAudios = null;
+    this.lastFetchAudiosTime = 0;
   }
 
   async searchAudios(query: string, stageId?: string): Promise<PersonaAudioAsset[]> {
@@ -286,44 +246,22 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
   }
 
   async getDeliveryHistory(conversationId: string): Promise<AudioDeliveryHistory[]> {
-    this.initRealtimeSubscription();
-    const now = Date.now();
-    let historyMap: Record<string, AudioDeliveryHistory[]> = {};
+    const client = this.getClient();
+    if (!client) return [];
 
-    if (this.cachedHistory && now - this.lastFetchHistoryTime < this.cacheDurationMs) {
-      historyMap = this.cachedHistory;
-    } else {
-      const client = this.getClient();
-      if (client) {
-        try {
-          const { data, error } = await client
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", "__audio_history__")
-            .maybeSingle();
+    try {
+      const { data, error } = await client
+        .from("audio_delivery_history")
+        .select("*")
+        .eq("conversation_id", conversationId)
+        .order("sent_at", { ascending: true });
 
-          if (!error && data?.stage_completed_rules) {
-            const rules = data.stage_completed_rules as StoredAudioHistoryPayload;
-            if (rules.history) {
-              historyMap = rules.history;
-              this.cachedHistory = historyMap;
-              this.saveLocalHistory(historyMap);
-              this.lastFetchHistoryTime = now;
-            }
-          }
-        } catch (err) {
-          console.warn("Aviso ao buscar histórico de áudio no Supabase:", err);
-        }
-      }
-
-      if (Object.keys(historyMap).length === 0) {
-        historyMap = this.getLocalHistory();
-        this.cachedHistory = historyMap;
-        this.lastFetchHistoryTime = now;
-      }
+      if (error || !data) return [];
+      return data.map((r: any) => this.mapRowToHistory(r));
+    } catch (err) {
+      console.warn(`[SupabasePersonaAudioRepository] Erro ao buscar histórico de entrega de áudio:`, err);
+      return [];
     }
-
-    return historyMap[conversationId] || [];
   }
 
   async recordDelivery(
@@ -331,20 +269,31 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
     audioId: string,
     providerMessageId?: string
   ): Promise<AudioDeliveryHistory> {
-    const currentHist = await this.getDeliveryHistory(conversationId);
-    const newEntry: AudioDeliveryHistory = {
-      id: "deliv_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
-      conversationId,
-      audioId,
-      sentAt: new Date().toISOString(),
-      providerMessageId,
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const newId = "deliv_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = new Date().toISOString();
+
+    const rowPayload = {
+      id: newId,
+      conversation_id: conversationId,
+      audio_id: audioId,
+      sent_at: now,
+      provider_message_id: providerMessageId || null,
     };
 
-    const allHistory = this.cachedHistory || this.getLocalHistory();
-    const updatedConvHistory = [...currentHist, newEntry];
-    allHistory[conversationId] = updatedConvHistory;
+    const { data, error } = await client
+      .from("audio_delivery_history")
+      .insert(rowPayload)
+      .select()
+      .single();
 
-    await this.persistHistoryToCloud(allHistory);
-    return newEntry;
+    if (error) {
+      console.error("[SupabasePersonaAudioRepository] Erro ao registrar entrega de áudio:", error);
+      throw new Error(error.message || "Falha ao registrar entrega no banco");
+    }
+
+    return this.mapRowToHistory(data);
   }
 }

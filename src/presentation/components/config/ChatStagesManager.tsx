@@ -113,7 +113,7 @@ export function ChatStagesManager({
   const [expandedStageGoals, setExpandedStageGoals] = useState<Record<string, boolean>>({});
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
   const [activeGoalStageId, setActiveGoalStageId] = useState<string | null>(null);
-  const { subagents } = useSubagents();
+  const { subagents, updateSubagent } = useSubagents();
   const [editingGoal, setEditingGoal] = useState<ConversationGoal | null>(null);
 
   const [goalLabel, setGoalLabel] = useState("");
@@ -121,7 +121,7 @@ export function ChatStagesManager({
   const [goalMemoryEntity, setGoalMemoryEntity] = useState("self");
   const [goalMemoryField, setGoalMemoryField] = useState("");
   const [goalDescription, setGoalDescription] = useState("");
-  const [goalRequired, setGoalRequired] = useState(false);
+  const [goalRequired, setGoalRequired] = useState(true);
   const [goalEnabled, setGoalEnabled] = useState(true);
   const [goalAllowedSubagents, setGoalAllowedSubagents] = useState<string[]>([]);
   const [goalPrimarySubagent, setGoalPrimarySubagent] = useState<string>("");
@@ -130,6 +130,39 @@ export function ChatStagesManager({
   useEffect(() => {
     refreshFolders();
   }, [refreshFolders]);
+
+  const getResponsibleSubagentId = (stage: ChatStage) => {
+    const found = subagents.find(
+      (s) => s.enabled !== false && Array.isArray(s.stageIds) && s.stageIds.includes(stage.id)
+    );
+    if (found) return found.id;
+    if (stage.id === "stage_1_conexao" || stage.name.toLowerCase().includes("conex")) return "conexao_inicial";
+    if (stage.id === "stage_3_compatibilidade" || stage.name.toLowerCase().includes("compat")) return "compatibilidade";
+    return "descoberta";
+  };
+
+  const handleChangeResponsibleSubagent = async (stageId: string, newSubagentId: string) => {
+    try {
+      // Remove a etapa de qualquer outro subagente que a possua
+      for (const sub of subagents) {
+        if (sub.id !== newSubagentId && sub.stageIds?.includes(stageId)) {
+          const newStageIds = (sub.stageIds || []).filter((id) => id !== stageId);
+          await updateSubagent(sub.id, { stageIds: newStageIds });
+        }
+      }
+      // Atribui ao novo subagente selecionado
+      const targetSub = subagents.find((s) => s.id === newSubagentId);
+      if (targetSub) {
+        const currentStageIds = targetSub.stageIds || [];
+        if (!currentStageIds.includes(stageId)) {
+          await updateSubagent(newSubagentId, { stageIds: [...currentStageIds, stageId] });
+        }
+      }
+      toast.success("Subagente responsável atualizado para a etapa!");
+    } catch (err: any) {
+      toast.error(`Erro ao vincular subagente à etapa: ${err.message}`);
+    }
+  };
 
   const toggleStageGoals = (stageId: string) => {
     setExpandedStageGoals((prev) => ({
@@ -146,7 +179,7 @@ export function ChatStagesManager({
     setGoalMemoryEntity("self");
     setGoalMemoryField("");
     setGoalDescription("");
-    setGoalRequired(false);
+    setGoalRequired(true);
     setGoalEnabled(true);
     // Por padrão, seleciona os subagentes ativos
     const activeIds = subagents.filter((s) => s.enabled !== false).map((s) => s.id);
@@ -609,17 +642,34 @@ export function ChatStagesManager({
                     </div>
                   </div>
 
-                  {/* Linha 2: Metadados do Cofre */}
-                  <div className="flex items-center gap-2 text-xs text-zinc-400 pl-0 sm:pl-7 flex-wrap">
+                  {/* Linha 2: Metadados do Cofre e Subagente Responsável */}
+                  <div className="flex items-center gap-3 text-xs text-zinc-400 pl-0 sm:pl-7 flex-wrap">
                     <span className="flex items-center gap-1 truncate text-zinc-300">
                       <Folder className="w-3 h-3 text-sky-400 shrink-0" />
-                      <span className="truncate max-w-[200px] sm:max-w-none">{folderName}</span>
+                      <span className="truncate max-w-[160px] sm:max-w-none">{folderName}</span>
                     </span>
                     <span>•</span>
                     <span className="text-zinc-400">{itemCount} itens no cofre</span>
+                    <span>•</span>
+                    <div className="flex items-center gap-1.5">
+                      <Bot className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span className="text-zinc-400">Subagente:</span>
+                      <select
+                        value={getResponsibleSubagentId(stage)}
+                        onChange={(e) => handleChangeResponsibleSubagent(stage.id, e.target.value)}
+                        className="bg-zinc-900 border border-zinc-700/70 rounded px-1.5 py-0.5 text-xs text-emerald-300 font-medium focus:outline-none focus:border-emerald-500 cursor-pointer"
+                        title="Subagente especializado responsável pela condução desta etapa"
+                      >
+                        {subagents.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
 
-                  {/* Linha 3: Barra de Acesso aos Objetivos Semânticos */}
+                  {/* Linha 3: Barra de Acesso aos Checkpoints da Etapa */}
                   <div className="pt-2 border-t border-zinc-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <button
                       type="button"
@@ -628,7 +678,7 @@ export function ChatStagesManager({
                     >
                       <div className="flex items-center gap-1.5">
                         <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                        <span>Objetivos da Conversa ({stageGoals.length})</span>
+                        <span>Checkpoints da Etapa ({stageGoals.length})</span>
                       </div>
                       {isGoalsExpanded ? (
                         <ChevronUp className="w-3.5 h-3.5 text-zinc-400 ml-0.5" />
@@ -643,22 +693,22 @@ export function ChatStagesManager({
                       className="w-full sm:w-auto flex items-center justify-center gap-1 px-3 py-2 sm:py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 text-xs font-semibold active:scale-95 transition-all cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Novo Objetivo</span>
+                      <span>Novo Checkpoint</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Seção Expandida: Objetivos da Conversa (Checklist Semântico) */}
+                {/* Seção Expandida: Checkpoints / Objetivos da Etapa */}
                 {isGoalsExpanded && (
                   <div className="border-t border-[#27272a] bg-zinc-950/40 p-3 sm:p-3.5 space-y-3 animate-fade-in">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                         <span className="text-xs font-bold text-white">
-                          Objetivos Semânticos da Conversa
+                          Checkpoints / Objetivos da Etapa
                         </span>
                         <span className="text-[11px] text-zinc-500">
-                          (Bússola para subagentes, sem interrogatório)
+                          (Executados em ordem sequencial; todos os ativos precisam ser concluídos para avançar)
                         </span>
                       </div>
                       <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
@@ -666,7 +716,7 @@ export function ChatStagesManager({
                           type="button"
                           onClick={() => handleSuggestAiObjectives(stage.id)}
                           className="flex-1 sm:flex-initial flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold active:scale-95 transition-all min-h-[34px] sm:min-h-0 cursor-pointer"
-                          title="Sugerir objetivos padrão com IA"
+                          title="Sugerir checkpoints padrão com IA"
                         >
                           <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
                           <span>Sugerir com IA</span>
@@ -677,7 +727,7 @@ export function ChatStagesManager({
                           className="flex-1 sm:flex-initial flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 text-xs font-semibold active:scale-95 transition-all min-h-[34px] sm:min-h-0 cursor-pointer"
                         >
                           <Plus className="w-3 h-3 shrink-0" />
-                          <span>Adicionar Objetivo</span>
+                          <span>Adicionar Checkpoint</span>
                         </button>
                       </div>
                     </div>
@@ -685,7 +735,7 @@ export function ChatStagesManager({
                     {stageGoals.length === 0 ? (
                       <div className="p-4 rounded-xl border border-dashed border-zinc-800 text-center">
                         <p className="text-xs text-zinc-400">
-                          Nenhum objetivo conversacional definido para esta etapa.
+                          Nenhum checkpoint conversacional definido para esta etapa.
                         </p>
                         <p className="text-[11px] text-zinc-500 mt-0.5">
                           Adicione tópicos que a persona deve descobrir organicamente (ex: Idade, Cidade, Profissão).
@@ -710,7 +760,7 @@ export function ChatStagesManager({
                                 <span className="text-[11px] font-mono text-zinc-500 w-5 shrink-0 pt-0.5">
                                   #{gIdx + 1}
                                 </span>
-                                <div className="min-w-0 flex-1 space-y-1">
+                                <div className="min-w-0 flex-1 space-y-1.5">
                                   <div className="flex items-center gap-1.5 flex-wrap">
                                     <span className="text-xs font-bold text-zinc-100">
                                       {goal.label}
@@ -727,21 +777,21 @@ export function ChatStagesManager({
                                     <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[10px] font-mono border border-zinc-700/50">
                                       {goal.memoryEntity || "self"}.{goal.memoryField}
                                     </span>
-                                    {goal.required && (
-                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 text-[10px] font-medium border border-amber-500/20">
-                                        Obrigatório
+                                    {goal.enabled ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[10px] font-bold border border-sky-500/30">
+                                        Checkpoint Obrigatório
                                       </span>
-                                    )}
-                                    {!goal.enabled && (
+                                    ) : (
                                       <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 text-[10px]">
-                                        Inativo
+                                        Inativo (Ignorado)
                                       </span>
                                     )}
                                   </div>
                                   {goal.description && (
-                                    <p className="text-[11px] text-zinc-400 break-words leading-relaxed">
+                                    <div className="p-2 rounded-lg bg-zinc-950/70 border border-zinc-800/80 text-[11px] text-zinc-300 break-words leading-relaxed">
+                                      <span className="font-semibold text-sky-400">Missão do Checkpoint: </span>
                                       {goal.description}
-                                    </p>
+                                    </div>
                                   )}
                                   {goal.allowedSubagents && goal.allowedSubagents.length > 0 && (
                                     <div className="flex items-center gap-1 mt-1 flex-wrap">
@@ -1244,26 +1294,28 @@ export function ChatStagesManager({
                 )}
               </div>
 
-              {/* Flags: Obrigatório e Ativo */}
-              <div className="pt-1 flex items-center gap-4 flex-wrap">
-                <label className="flex items-center gap-2 cursor-pointer select-none py-1">
-                  <input
-                    type="checkbox"
-                    checked={goalRequired}
-                    onChange={(e) => setGoalRequired(e.target.checked)}
-                    className="w-4 h-4 rounded text-sky-500 bg-zinc-900 border-zinc-700 focus:ring-0 focus:ring-offset-0"
-                  />
-                  <span className="text-xs text-zinc-300">Obrigatório na etapa</span>
-                </label>
+              {/* Status do Checkpoint: Todo ativo é obrigatório no fluxo sequencial */}
+              <div className="pt-1 flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800">
+                <div className="space-y-0.5">
+                  <span className="text-xs font-semibold text-zinc-200">Status do Checkpoint</span>
+                  <p className="text-[10px] text-zinc-400">
+                    No fluxo determinístico, todos os checkpoints ativos são obrigatórios e executados em ordem sequencial.
+                  </p>
+                </div>
 
-                <label className="flex items-center gap-2 cursor-pointer select-none py-1">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={goalEnabled}
-                    onChange={(e) => setGoalEnabled(e.target.checked)}
+                    onChange={(e) => {
+                      setGoalEnabled(e.target.checked);
+                      setGoalRequired(e.target.checked);
+                    }}
                     className="w-4 h-4 rounded text-emerald-500 bg-zinc-900 border-zinc-700 focus:ring-0 focus:ring-offset-0"
                   />
-                  <span className="text-xs text-zinc-300">Ativo</span>
+                  <span className="text-xs font-medium text-zinc-300">
+                    {goalEnabled ? "Ativo (Obrigatório)" : "Inativo (Pular)"}
+                  </span>
                 </label>
               </div>
 

@@ -381,22 +381,16 @@ export class SupabaseSubagentRepository implements ISubagentRepository {
     if (!client) return 0;
 
     try {
-      // Busca etapas em instagram_conversations
       const { data, error } = await client
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .or("id.eq.__chat_stages__,contact_id.eq.__chat_stages__")
-        .maybeSingle();
+        .from("chat_stages")
+        .select("goals");
 
-      if (error || !data?.stage_completed_rules) {
+      if (error || !data || !Array.isArray(data)) {
         return 0;
       }
 
-      const rules = data.stage_completed_rules as { stages?: ChatStage[] };
-      const stages = Array.isArray(rules?.stages) ? rules.stages : [];
-
       let count = 0;
-      for (const stg of stages) {
+      for (const stg of data) {
         for (const goal of (stg.goals || []) as any[]) {
           const allowed = goal.allowedSubagents || goal.allowed_subagents;
           if (Array.isArray(allowed) && allowed.includes(subagentId)) {

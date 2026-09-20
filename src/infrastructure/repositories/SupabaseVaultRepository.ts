@@ -1,267 +1,343 @@
+/**
+ * src/infrastructure/repositories/SupabaseVaultRepository.ts
+ * Repositório Oficial do Cofre Compartilhado Vendeo via Supabase.
+ * 
+ * Regra Arquitetural Absoluta:
+ * - As tabelas 'public.vault_folders' e 'public.vault_items' são as ÚNICAS fontes de verdade.
+ * - Zero IndexedDB.
+ * - Zero localStorage.
+ * - Zero pseudo-registros globais (__vault_data__).
+ * - Sincronização em tempo real via canais do Supabase Realtime.
+ */
+
 import { IVaultRepository } from "@/domain/repositories/IVaultRepository";
 import {
   VaultFolder,
   VaultItem,
   VaultFolderWithStats,
 } from "@/domain/entities/Vault";
-import { IndexedDbVaultRepository } from "./IndexedDbVaultRepository";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 import { getApiUrl } from "../http/network";
 
-interface StoredVaultPayload {
-  folders: VaultFolder[];
-  items: VaultItem[];
-  updated_at: string;
-}
-
 export class SupabaseVaultRepository implements IVaultRepository {
-  private localFallback = new IndexedDbVaultRepository();
+  private customClient?: any;
   private cachedFolders: VaultFolder[] | null = null;
   private cachedItems: VaultItem[] | null = null;
   private lastFetchTime = 0;
   private cacheDurationMs = 2500;
   private realtimeSubscribed = false;
 
+  constructor(client?: any) {
+    if (client) {
+      this.customClient = client;
+    }
+  }
+
   private getClient() {
+    if (this.customClient) {
+      return this.customClient;
+    }
     if (typeof window !== "undefined") {
       return getSupabaseBrowserClient();
     }
     return getSupabaseServerClient();
   }
 
+  private mapRowToFolder(row: any): VaultFolder {
+    return {
+      id: row.id,
+      name: row.name,
+      color: row.color || undefined,
+      icon: row.icon || undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private mapRowToItem(row: any): VaultItem {
+    return {
+      id: row.id,
+      folderId: row.folder_id,
+      type: row.type,
+      title: row.title,
+      content: row.content || undefined,
+      mediaUrl: row.media_url || undefined,
+      duration: row.duration != null ? Number(row.duration) : undefined,
+      fileSize: row.file_size != null ? Number(row.file_size) : undefined,
+      fileName: row.file_name || undefined,
+      mimeType: row.mime_type || undefined,
+      linkedItemId: row.linked_item_id || undefined,
+      createdAt: row.created_at,
+    };
+  }
+
   private initRealtimeSubscription() {
-    if (this.realtimeSubscribed || typeof window === "undefined") return;
+    if (this.realtimeSubscribed || (typeof window === "undefined" && !this.customClient)) return;
     const client = this.getClient();
     if (!client) return;
 
     try {
       this.realtimeSubscribed = true;
       client
-        .channel("vault-cloud-sync")
+        .channel("vault-db-sync")
         .on(
           "postgres_changes",
           {
             event: "*",
             schema: "public",
-            table: "instagram_conversations",
-            filter: "id=eq.__vault_data__",
+            table: "vault_folders",
           },
-          (payload: any) => {
-            const rules = payload?.new?.stage_completed_rules as StoredVaultPayload | undefined;
-            if (rules && Array.isArray(rules.folders) && Array.isArray(rules.items)) {
-              this.cachedFolders = rules.folders;
-              this.cachedItems = rules.items;
-              this.lastFetchTime = Date.now();
-            }
+          () => {
+            this.cachedFolders = null;
+            this.lastFetchTime = 0;
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "vault_items",
+          },
+          () => {
+            this.cachedItems = null;
+            this.lastFetchTime = 0;
           }
         )
         .subscribe();
     } catch {
-      // Falha silenciosa de realtime se websocket não conectar
-    }
-  }
-
-  private async fetchCloudData(force = false): Promise<{ folders: VaultFolder[]; items: VaultItem[] }> {
-    this.initRealtimeSubscription();
-    const now = Date.now();
-    if (!force && this.cachedFolders && this.cachedItems && now - this.lastFetchTime < this.cacheDurationMs) {
-      return { folders: this.cachedFolders, items: this.cachedItems };
-    }
-
-    const client = this.getClient();
-    if (client) {
-      try {
-        const { data, error } = await client
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__vault_data__")
-          .maybeSingle();
-
-        if (!error && data?.stage_completed_rules) {
-          const rules = data.stage_completed_rules as StoredVaultPayload;
-          if (Array.isArray(rules.folders) && Array.isArray(rules.items)) {
-            this.cachedFolders = rules.folders;
-            this.cachedItems = rules.items;
-            this.lastFetchTime = now;
-
-            // Espelha silenciosamente os itens da nuvem para o armazenamento local
-            try {
-              for (const it of rules.items) {
-                await this.localFallback.saveItem(it);
-              }
-            } catch {}
-
-            return { folders: rules.folders, items: rules.items };
-          }
-        }
-      } catch (err) {
-        console.warn("Aviso ao carregar cofre do Supabase:", err);
-      }
-    }
-
-    // Se a nuvem estiver inacessível temporariamente, lê do armazenamento local sem NUNCA sobrescrever a nuvem
-    const localFolders = await this.localFallback.getFolders();
-    const allItems: VaultItem[] = [];
-    for (const f of localFolders) {
-      const fItems = await this.localFallback.getItems(f.id);
-      allItems.push(...fItems);
-    }
-
-    this.cachedFolders = localFolders;
-    this.cachedItems = allItems;
-    this.lastFetchTime = now;
-    return { folders: localFolders, items: allItems };
-  }
-
-  private async persistToCloud(data: StoredVaultPayload): Promise<void> {
-    const client = this.getClient();
-    if (!client) return;
-
-    try {
-      await client.from("instagram_conversations").upsert({
-        id: "__vault_data__",
-        username: "__vault__",
-        full_name: "Cofre Compartilhado Vendeo",
-        stage_completed_rules: data,
-        unread: false,
-        status: "vault",
-        updated_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn("Aviso ao persistir cofre na nuvem Supabase:", err);
+      // Fail-safe silencioso
     }
   }
 
   async getFolders(): Promise<VaultFolder[]> {
-    const { folders } = await this.fetchCloudData();
-    return folders;
+    this.initRealtimeSubscription();
+    const now = Date.now();
+    if (this.cachedFolders && now - this.lastFetchTime < this.cacheDurationMs) {
+      return [...this.cachedFolders];
+    }
+
+    const client = this.getClient();
+    if (!client) return [];
+
+    try {
+      const { data, error } = await client
+        .from("vault_folders")
+        .select("*")
+        .order("name", { ascending: true });
+
+      if (error || !data) {
+        console.error("[SupabaseVaultRepository] Erro ao carregar pastas do cofre:", error);
+        return this.cachedFolders || [];
+      }
+
+      const folders = data.map((r: any) => this.mapRowToFolder(r));
+      this.cachedFolders = folders;
+      this.lastFetchTime = now;
+      return folders;
+    } catch (err) {
+      console.error("[SupabaseVaultRepository] Exceção ao buscar pastas:", err);
+      return this.cachedFolders || [];
+    }
   }
 
   async getFoldersWithStats(): Promise<VaultFolderWithStats[]> {
-    const { folders, items } = await this.fetchCloudData();
-
-    const statsMap = new Map<string, { total: number; text: number; audio: number; image: number }>();
-    folders.forEach((f) => {
-      statsMap.set(f.id, { total: 0, text: 0, audio: 0, image: 0 });
-    });
-
-    items.forEach((item) => {
-      const stats = statsMap.get(item.folderId);
-      if (stats) {
-        stats.total++;
-        if (item.type === "text") stats.text++;
-        if (item.type === "audio") stats.audio++;
-        if (item.type === "image") stats.image++;
-      }
-    });
-
-    return folders.map((f) => {
-      const st = statsMap.get(f.id) || { total: 0, text: 0, audio: 0, image: 0 };
-      return {
+    const folders = await this.getFolders();
+    const client = this.getClient();
+    if (!client) {
+      return folders.map((f) => ({
         ...f,
-        totalItems: st.total,
-        textCount: st.text,
-        audioCount: st.audio,
-        imageCount: st.image,
-      };
-    });
+        totalItems: 0,
+        textCount: 0,
+        audioCount: 0,
+        imageCount: 0,
+      }));
+    }
+
+    try {
+      const { data: itemsData } = await client.from("vault_items").select("folder_id, type");
+      const items = itemsData || [];
+
+      const statsMap = new Map<string, { total: number; text: number; audio: number; image: number }>();
+      folders.forEach((f) => {
+        statsMap.set(f.id, { total: 0, text: 0, audio: 0, image: 0 });
+      });
+
+      items.forEach((item: any) => {
+        const stats = statsMap.get(item.folder_id);
+        if (stats) {
+          stats.total++;
+          if (item.type === "text") stats.text++;
+          if (item.type === "audio") stats.audio++;
+          if (item.type === "image") stats.image++;
+        }
+      });
+
+      return folders.map((f) => {
+        const st = statsMap.get(f.id) || { total: 0, text: 0, audio: 0, image: 0 };
+        return {
+          ...f,
+          totalItems: st.total,
+          textCount: st.text,
+          audioCount: st.audio,
+          imageCount: st.image,
+        };
+      });
+    } catch (err) {
+      console.warn("[SupabaseVaultRepository] Erro ao calcular estatísticas das pastas:", err);
+      return folders.map((f) => ({
+        ...f,
+        totalItems: 0,
+        textCount: 0,
+        audioCount: 0,
+        imageCount: 0,
+      }));
+    }
   }
 
   async getFolderById(id: string): Promise<VaultFolder | null> {
-    const { folders } = await this.fetchCloudData();
-    return folders.find((f) => f.id === id) || null;
+    const client = this.getClient();
+    if (!client) return null;
+
+    try {
+      const { data, error } = await client
+        .from("vault_folders")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error || !data) return null;
+      return this.mapRowToFolder(data);
+    } catch (err) {
+      console.warn(`[SupabaseVaultRepository] Erro ao buscar pasta ${id}:`, err);
+      return null;
+    }
   }
 
   async createFolder(name: string, color?: string): Promise<VaultFolder> {
-    const { folders, items } = await this.fetchCloudData(true);
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const newId = `folder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
-    const newFolder: VaultFolder = {
-      id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+
+    const rowPayload = {
+      id: newId,
       name: name.trim(),
       color: color || "#0095f6",
-      createdAt: now,
-      updatedAt: now,
+      icon: null,
+      created_at: now,
+      updated_at: now,
     };
 
-    const updatedFolders = [newFolder, ...folders];
-    this.cachedFolders = updatedFolders;
-    this.lastFetchTime = Date.now();
+    const { data, error } = await client
+      .from("vault_folders")
+      .insert(rowPayload)
+      .select()
+      .single();
 
-    await this.persistToCloud({
-      folders: updatedFolders,
-      items,
-      updated_at: now,
-    });
+    if (error) {
+      console.error("[SupabaseVaultRepository] Erro ao criar pasta no cofre:", error);
+      throw new Error(error.message || "Falha ao criar pasta");
+    }
 
-    void this.localFallback.createFolder(name, color).catch(() => {});
-    return newFolder;
+    this.cachedFolders = null;
+    this.lastFetchTime = 0;
+    return this.mapRowToFolder(data);
   }
 
   async updateFolder(id: string, updates: { name?: string; color?: string; icon?: string }): Promise<VaultFolder> {
-    const { folders, items } = await this.fetchCloudData(true);
-    const now = new Date().toISOString();
-    const idx = folders.findIndex((f) => f.id === id);
-    if (idx === -1) {
-      return this.localFallback.updateFolder(id, updates);
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const updatePayload: Record<string, any> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (updates.name !== undefined) updatePayload.name = updates.name.trim();
+    if (updates.color !== undefined) updatePayload.color = updates.color;
+    if (updates.icon !== undefined) updatePayload.icon = updates.icon;
+
+    const { data, error } = await client
+      .from("vault_folders")
+      .update(updatePayload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error(`[SupabaseVaultRepository] Erro ao atualizar pasta ${id}:`, error);
+      throw new Error(error.message || "Falha ao atualizar pasta");
     }
 
-    folders[idx] = {
-      ...folders[idx],
-      ...updates,
-      updatedAt: now,
-    };
-
-    this.cachedFolders = [...folders];
-    this.lastFetchTime = Date.now();
-
-    await this.persistToCloud({
-      folders,
-      items,
-      updated_at: now,
-    });
-
-    void this.localFallback.updateFolder(id, updates).catch(() => {});
-    return folders[idx];
+    this.cachedFolders = null;
+    this.lastFetchTime = 0;
+    return this.mapRowToFolder(data);
   }
 
   async deleteFolder(id: string): Promise<void> {
-    const { folders, items } = await this.fetchCloudData(true);
-    const now = new Date().toISOString();
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
 
-    const filteredFolders = folders.filter((f) => f.id !== id);
-    const filteredItems = items.filter((i) => i.folderId !== id);
+    const { error } = await client.from("vault_folders").delete().eq("id", id);
+    if (error) {
+      console.error(`[SupabaseVaultRepository] Erro ao excluir pasta ${id}:`, error);
+      throw new Error(error.message || "Falha ao excluir pasta");
+    }
 
-    this.cachedFolders = filteredFolders;
-    this.cachedItems = filteredItems;
-    this.lastFetchTime = Date.now();
-
-    await this.persistToCloud({
-      folders: filteredFolders,
-      items: filteredItems,
-      updated_at: now,
-    });
-
-    void this.localFallback.deleteFolder(id).catch(() => {});
+    this.cachedFolders = null;
+    this.cachedItems = null;
+    this.lastFetchTime = 0;
   }
 
   async getItems(folderId: string): Promise<VaultItem[]> {
-    const { items } = await this.fetchCloudData();
-    return items.filter((i) => i.folderId === folderId);
+    this.initRealtimeSubscription();
+    const client = this.getClient();
+    if (!client) return [];
+
+    try {
+      const { data, error } = await client
+        .from("vault_items")
+        .select("*")
+        .eq("folder_id", folderId)
+        .order("created_at", { ascending: false });
+
+      if (error || !data) return [];
+      return data.map((r: any) => this.mapRowToItem(r));
+    } catch (err) {
+      console.warn(`[SupabaseVaultRepository] Erro ao buscar itens da pasta ${folderId}:`, err);
+      return [];
+    }
   }
 
   async getItemById(id: string): Promise<VaultItem | null> {
-    const { items } = await this.fetchCloudData();
-    return items.find((i) => i.id === id) || null;
+    const client = this.getClient();
+    if (!client) return null;
+
+    try {
+      const { data, error } = await client
+        .from("vault_items")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error || !data) return null;
+      return this.mapRowToItem(data);
+    } catch (err) {
+      console.warn(`[SupabaseVaultRepository] Erro ao buscar item ${id}:`, err);
+      return null;
+    }
   }
 
   async saveItem(item: Omit<VaultItem, "id" | "createdAt">): Promise<VaultItem> {
-    const { folders, items } = await this.fetchCloudData(true);
-    const now = new Date().toISOString();
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
 
+    const newId = `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const now = new Date().toISOString();
     let finalMediaUrl = item.mediaUrl;
 
-    // Se houver mediaBlob e não tiver URL remota pública, envia via API para o bucket vendeo_vault
+    // Se houver mediaBlob e não tiver URL remota pública, faz upload via API para o bucket
     if (item.mediaBlob && (!finalMediaUrl || finalMediaUrl.startsWith("blob:"))) {
       try {
         const formData = new FormData();
@@ -286,125 +362,111 @@ export class SupabaseVaultRepository implements IVaultRepository {
           }
         }
       } catch (uploadErr) {
-        console.warn("Aviso ao fazer upload do blob para o Storage via API:", uploadErr);
-      }
-
-      // Se falhou o upload e o arquivo for pequeno (< 200KB), permite fallback data URL
-      if (!finalMediaUrl || finalMediaUrl.startsWith("blob:")) {
-        if (item.mediaBlob.size < 200 * 1024) {
-          try {
-            finalMediaUrl = await new Promise<string>((resolve) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result as string);
-              reader.onerror = () => resolve(item.mediaUrl || "");
-              reader.readAsDataURL(item.mediaBlob!);
-            });
-          } catch {
-            finalMediaUrl = item.mediaUrl;
-          }
-        }
+        console.warn("[SupabaseVaultRepository] Aviso ao fazer upload do arquivo para Storage:", uploadErr);
       }
     }
 
-    const newItem: VaultItem = {
-      id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      folderId: item.folderId,
+    const rowPayload = {
+      id: newId,
+      folder_id: item.folderId,
       type: item.type,
       title: item.title.trim(),
-      content: item.content,
-      mediaUrl: finalMediaUrl,
-      duration: item.duration,
-      fileSize: item.fileSize,
-      fileName: item.fileName,
-      mimeType: item.mimeType,
-      linkedItemId: item.linkedItemId,
-      createdAt: now,
+      content: item.content || null,
+      media_url: finalMediaUrl || null,
+      duration: item.duration != null ? Math.round(item.duration) : null,
+      file_size: item.fileSize != null ? Math.round(item.fileSize) : null,
+      file_name: item.fileName || null,
+      mime_type: item.mimeType || null,
+      linked_item_id: item.linkedItemId || null,
+      created_at: now,
     };
 
-    const updatedItems = [newItem, ...items];
-    this.cachedItems = updatedItems;
-    this.lastFetchTime = Date.now();
+    const { data, error } = await client
+      .from("vault_items")
+      .insert(rowPayload)
+      .select()
+      .single();
 
-    await this.persistToCloud({
-      folders,
-      items: updatedItems,
-      updated_at: now,
-    });
+    if (error) {
+      console.error("[SupabaseVaultRepository] Erro ao salvar item no cofre:", error);
+      throw new Error(error.message || "Falha ao salvar item no banco");
+    }
 
-    void this.localFallback.saveItem({ ...item, mediaUrl: finalMediaUrl }).catch(() => {});
-    return newItem;
-  }
-
-  async deleteItem(id: string): Promise<void> {
-    const { folders, items } = await this.fetchCloudData(true);
-    const now = new Date().toISOString();
-
-    const filteredItems = items.filter((i) => i.id !== id);
-    this.cachedItems = filteredItems;
-    this.lastFetchTime = Date.now();
-
-    await this.persistToCloud({
-      folders,
-      items: filteredItems,
-      updated_at: now,
-    });
-
-    void this.localFallback.deleteItem(id).catch(() => {});
+    this.cachedItems = null;
+    this.lastFetchTime = 0;
+    return this.mapRowToItem(data);
   }
 
   async updateItem(id: string, updates: Partial<VaultItem>): Promise<VaultItem> {
-    const { folders, items } = await this.fetchCloudData(true);
-    const now = new Date().toISOString();
-    const idx = items.findIndex((i) => i.id === id);
-    if (idx === -1) {
-      return this.localFallback.updateItem(id, updates);
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const updatePayload: Record<string, any> = {};
+    if (updates.folderId !== undefined) updatePayload.folder_id = updates.folderId;
+    if (updates.title !== undefined) updatePayload.title = updates.title.trim();
+    if (updates.content !== undefined) updatePayload.content = updates.content || null;
+    if (updates.mediaUrl !== undefined) updatePayload.media_url = updates.mediaUrl || null;
+    if (updates.duration !== undefined) updatePayload.duration = updates.duration != null ? Math.round(updates.duration) : null;
+    if (updates.fileSize !== undefined) updatePayload.file_size = updates.fileSize != null ? Math.round(updates.fileSize) : null;
+    if (updates.fileName !== undefined) updatePayload.file_name = updates.fileName || null;
+    if (updates.mimeType !== undefined) updatePayload.mime_type = updates.mimeType || null;
+    if (updates.linkedItemId !== undefined) updatePayload.linked_item_id = updates.linkedItemId || null;
+
+    const { data, error } = await client
+      .from("vault_items")
+      .update(updatePayload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error(`[SupabaseVaultRepository] Erro ao atualizar item ${id}:`, error);
+      throw new Error(error.message || "Falha ao atualizar item no banco");
     }
 
-    items[idx] = {
-      ...items[idx],
-      ...updates,
-    };
-
-    this.cachedItems = [...items];
-    this.lastFetchTime = Date.now();
-
-    await this.persistToCloud({
-      folders,
-      items,
-      updated_at: now,
-    });
-
-    void this.localFallback.updateItem(id, updates).catch(() => {});
-    return items[idx];
+    this.cachedItems = null;
+    this.lastFetchTime = 0;
+    return this.mapRowToItem(data);
   }
 
-  async reorderItems(folderId: string, orderedItems: VaultItem[]): Promise<void> {
-    const { folders, items } = await this.fetchCloudData(true);
-    const now = new Date().toISOString();
+  async deleteItem(id: string): Promise<void> {
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
 
-    const otherItems = items.filter((i) => i.folderId !== folderId);
-    const newItems = [...orderedItems, ...otherItems];
+    const { error } = await client.from("vault_items").delete().eq("id", id);
+    if (error) {
+      console.error(`[SupabaseVaultRepository] Erro ao excluir item ${id}:`, error);
+      throw new Error(error.message || "Falha ao excluir item no banco");
+    }
 
-    this.cachedItems = newItems;
-    this.lastFetchTime = Date.now();
+    this.cachedItems = null;
+    this.lastFetchTime = 0;
+  }
 
-    await this.persistToCloud({
-      folders,
-      items: newItems,
-      updated_at: now,
-    });
-
-    void this.localFallback.reorderItems(folderId, orderedItems).catch(() => {});
+  async reorderItems(_folderId: string, _orderedItems: VaultItem[]): Promise<void> {
+    // Ordem no Supabase preservada por criação/atualização
+    this.cachedItems = null;
+    this.lastFetchTime = 0;
   }
 
   async searchItems(query: string): Promise<VaultItem[]> {
-    const { items } = await this.fetchCloudData();
-    const q = query.toLowerCase().trim();
-    return items.filter(
-      (item) =>
-        item.title.toLowerCase().includes(q) ||
-        (item.content && item.content.toLowerCase().includes(q)) ||
-        (item.fileName && item.fileName.toLowerCase().includes(q))
-    );
+    const client = this.getClient();
+    if (!client) return [];
+
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+
+    try {
+      const { data, error } = await client
+        .from("vault_items")
+        .select("*")
+        .or(`title.ilike.%${q}%,content.ilike.%${q}%,file_name.ilike.%${q}%`);
+
+      if (error || !data) return [];
+      return data.map((r: any) => this.mapRowToItem(r));
+    } catch (err) {
+      console.warn("[SupabaseVaultRepository] Erro ao pesquisar itens do cofre:", err);
+      return [];
+    }
   }
 }

@@ -213,6 +213,23 @@ export function SubagentsManager() {
                     >
                       {agent.enabled !== false ? "Ativo" : "Inativo"}
                     </span>
+
+                    {/* Etapas Vinculadas (stageIds) */}
+                    {agent.stageIds && agent.stageIds.length > 0 ? (
+                      agent.stageIds.map((stgId) => (
+                        <span
+                          key={stgId}
+                          className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0"
+                          title={`Subagente responsável pela etapa: ${stgId}`}
+                        >
+                          Etapa: {stgId.replace(/^stage_\d+_/, "")}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[9px] text-zinc-500 px-1.5 py-0.5 rounded bg-zinc-800/60 shrink-0">
+                        Fluxo Geral
+                      </span>
+                    )}
                   </div>
 
                   {/* Missão Conversacional */}

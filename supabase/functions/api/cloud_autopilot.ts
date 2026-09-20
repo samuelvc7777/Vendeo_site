@@ -3,67 +3,48 @@ import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
 import { recordAutoPilotTrace } from "./autopilot_trace.ts";
 import { extractSearchCandidates, searchContextInfo } from "./web_search.ts";
 
-const CHAT_PROGRESS_ROW_ID = "__chat_progress__";
-
 /**
- * Consulta mensagens recentes do pretendente para detectar concorrência em tempo real.
- * Se o pretendente enviou nova mensagem enquanto a IA pensava ou digitava, retorna os dados.
+ * Persiste o progresso diretamente na linha da conversa em instagram_conversations.
+ * Zero pseudo-registros.
  */
-async function checkForNewerThemMessage(
-  supabase: any,
-  conversationId: string,
-  currentTriggerId: string,
-  currentTriggerTimestamp: string,
-): Promise<{ id: string; text: string; timestamp: string } | null> {
+async function persistChatProgress(supabase: any, conversationId: string, progresses: Record<string, any>) {
+  const now = new Date().toISOString();
+  const chatProg = progresses[conversationId];
+  if (!chatProg) return;
+
   try {
-    const { data: latestMsgs } = await supabase
-      .from("instagram_messages")
-      .select("id, text, timestamp, is_mine, sender_id")
-      .eq("conversation_id", conversationId)
-      .order("timestamp", { ascending: false })
-      .limit(5);
+    const { data: existing } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
 
-    if (!latestMsgs || latestMsgs.length === 0) return null;
-    const currentMs = new Date(currentTriggerTimestamp).getTime();
+    const currentRules = existing?.stage_completed_rules && typeof existing.stage_completed_rules === "object"
+      ? existing.stage_completed_rules
+      : {};
 
-    for (const msg of latestMsgs) {
-      if (msg.is_mine || msg.sender_id === "me") continue;
-      const msgMs = new Date(msg.timestamp).getTime();
-      // Mensagem do pretendente com ID diferente e timestamp posterior
-      if (msg.id !== currentTriggerId && msgMs > currentMs) {
-        return {
-          id: msg.id,
-          text: msg.text || "",
-          timestamp: msg.timestamp,
-        };
-      }
+    const { error } = await supabase
+      .from("instagram_conversations")
+      .update({
+        stage_completed_rules: {
+          ...currentRules,
+          ...chatProg,
+          chat_progress: {
+            ...chatProg,
+            updatedAt: now,
+          },
+          updated_at: now,
+        },
+        updated_at: now,
+      })
+      .eq("id", conversationId);
+
+    if (error) {
+      console.warn("[Cloud AutoPilot] Aviso ao persistir progresso na conversa:", error);
     }
   } catch (err) {
-    console.warn("[Cloud AutoPilot] Falha ao verificar mensagens concorrentes:", err);
+    console.warn("[Cloud AutoPilot] Exceção ao persistir progresso na conversa:", err);
   }
-  return null;
-}
-
-/**
- * A tabela de conversas possui campos obrigatórios além do JSON de progresso.
- * Sempre envie a identidade da linha-sistema para que o upsert também seja
- * seguro quando a linha ainda não existir no banco de destino.
- */
-async function persistChatProgress(supabase: any, progresses: Record<string, any>) {
-  const now = new Date().toISOString();
-  const { error } = await supabase.from("instagram_conversations").upsert({
-    id: CHAT_PROGRESS_ROW_ID,
-    username: "system_progress",
-    full_name: "Progresso das Conversas",
-    status: "system",
-    last_direction: "in",
-    stage_completed_rules: {
-      progresses,
-      updated_at: now,
-    },
-    updated_at: now,
-  });
-  if (error) throw error;
 }
 
 export interface CloudAutoPilotRuntime {
@@ -609,42 +590,56 @@ export async function runCloudAutoPilot({
       ),
     });
 
-    // 6. Carrega progresso, etapas e itens do cofre
-    const { data: progRow } = await supabase
+    // 6. Carrega progresso da própria conversa, etapas oficiais e itens do cofre oficial
+    const { data: convRow } = await supabase
       .from("instagram_conversations")
       .select("stage_completed_rules")
-      .eq("id", "__chat_progress__")
+      .eq("id", conversationId)
       .maybeSingle();
 
-    const progresses = progRow?.stage_completed_rules?.progresses || {};
-    const chatProg = progresses[conversationId] || {
-      currentStageId: "stage_1",
+    const convRules = convRow?.stage_completed_rules || {};
+    const chatProg = convRules.chat_progress || convRules || {
+      currentStageId: "stage_1_conexao",
       completedItemIds: [],
+      completedGoalIds: [],
       isConverted: false,
     };
+    const progresses: Record<string, any> = { [conversationId]: chatProg };
 
-    const { data: vaultRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", "__vault_data__")
-      .maybeSingle();
+    const { data: vaultFoldersData } = await supabase
+      .from("vault_folders")
+      .select("*")
+      .order("name", { ascending: true });
+    const vaultFolders = vaultFoldersData || [];
 
-    const vaultFolders = vaultRow?.stage_completed_rules?.folders || [];
-    const vaultItems = vaultRow?.stage_completed_rules?.items || [];
+    const { data: vaultItemsData } = await supabase
+      .from("vault_items")
+      .select("*")
+      .order("created_at", { ascending: false });
+    const vaultItems = (vaultItemsData || []).map((it: any) => ({
+      ...it,
+      folderId: it.folder_id,
+      mediaUrl: it.media_url,
+      fileSize: it.file_size,
+      fileName: it.file_name,
+      mimeType: it.mime_type,
+      linkedItemId: it.linked_item_id,
+    }));
 
-    const { data: stagesRow, error: stagesError } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", "__chat_stages__")
-      .maybeSingle();
+    const { data: stagesData, error: stagesError } = await supabase
+      .from("chat_stages")
+      .select("*")
+      .order("stage_order", { ascending: true });
     if (stagesError) throw stagesError;
 
     const sortedFolders = [...vaultFolders].sort((a: any, b: any) =>
       (a.name || "").localeCompare(b.name || ""),
     );
-    const configuredStages = [
-      ...(stagesRow?.stage_completed_rules?.stages || []),
-    ].sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
+    const configuredStages = (stagesData || []).map((s: any) => ({
+      ...s,
+      order: s.stage_order,
+      objectives: s.goals,
+    })).sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
     const stageSequence = configuredStages.length > 0
       ? configuredStages
       : sortedFolders.map((folder: any, index: number) => ({
@@ -742,7 +737,7 @@ export async function runCloudAutoPilot({
     if (autoReconciledProgress) {
       chatProg.completedItemIds = Array.from(completedSet);
       progresses[conversationId] = chatProg;
-      await persistChatProgress(supabase, progresses);
+      await persistChatProgress(supabase, conversationId, progresses);
     }
 
     let stageChecklist = vaultItems
@@ -791,7 +786,7 @@ export async function runCloudAutoPilot({
         chatProg.completedItemIds = Array.from(completedSet);
         chatProg.updatedAt = new Date().toISOString();
         progresses[conversationId] = chatProg;
-        await persistChatProgress(supabase, progresses);
+        await persistChatProgress(supabase, conversationId, progresses);
       }
     }
 
@@ -812,7 +807,7 @@ export async function runCloudAutoPilot({
           if (chatProg) {
             chatProg.raffleHandedOffAt = new Date().toISOString();
             progresses[conversationId] = chatProg;
-            await persistChatProgress(supabase, progresses);
+            await persistChatProgress(supabase, conversationId, progresses);
           }
           await pauseCloudAutoPilotForHandoff(
             supabase,
@@ -948,7 +943,7 @@ export async function runCloudAutoPilot({
     if (reconciledAny) {
       chatProg.completedItemIds = Array.from(completedSet);
       progresses[conversationId] = chatProg;
-      await persistChatProgress(supabase, progresses);
+      await persistChatProgress(supabase, conversationId, progresses);
     }
 
     const pretendenteName =
@@ -1134,7 +1129,7 @@ export async function runCloudAutoPilot({
         );
         chatProg.updatedAt = new Date().toISOString();
         progresses[conversationId] = chatProg;
-        await persistChatProgress(supabase, progresses);
+        await persistChatProgress(supabase, conversationId, progresses);
       }
       await pauseCloudAutoPilotForHandoff(
         supabase, conversationId, states, chatState,
@@ -1860,7 +1855,7 @@ export async function runCloudAutoPilot({
 
     chatProg.updatedAt = new Date().toISOString();
     progresses[conversationId] = chatProg;
-    await persistChatProgress(supabase, progresses);
+    await persistChatProgress(supabase, conversationId, progresses);
 
     // Se uma nova mensagem foi recebida do pretendente durante a entrega dos balões,
     // nós NÃO vamos parar nem deixar no vácuo: atendemos imediatamente a nova mensagem!

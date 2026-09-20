@@ -112,6 +112,7 @@ export class ManageChatProgressUseCase {
       const isCompleted = completedGoalSet.has(obj.id) || prog?.status === "completed";
       return {
         ...obj,
+        required: obj.required !== false,
         title: obj.title || obj.label || "Objetivo",
         status: isCompleted ? "completed" : "pending",
         value: prog?.value ?? null,

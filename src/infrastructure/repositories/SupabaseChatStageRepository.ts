@@ -1,27 +1,28 @@
+/**
+ * src/infrastructure/repositories/SupabaseChatStageRepository.ts
+ * Repositório Oficial de Etapas da Conversa e Objetivos Canônicos.
+ * 
+ * Regra Arquitetural Absoluta:
+ * - A tabela oficial 'public.chat_stages' é a ÚNICA fonte de verdade para etapas e objetivos.
+ * - Zero localStorage ou cache local em disco.
+ * - Zero pseudo-registros globais (__chat_stages__, __chat_progress__).
+ * - O progresso da conversa pertence estritamente ao registro da conversa em 'instagram_conversations'.
+ */
+
 import { IChatStageRepository } from "@/domain/repositories/IChatStageRepository";
-import { ChatStage, ChatProgress, ConversationGoal, CANONICAL_CHAT_STAGES_MATRIX } from "@/domain/entities/ChatStage";
+import {
+  ChatStage,
+  ChatProgress,
+  ConversationGoal,
+  CANONICAL_CHAT_STAGES_MATRIX,
+} from "@/domain/entities/ChatStage";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
-
-const LOCAL_STORAGE_STAGES_KEY = "vendeo_chat_stages_v1";
-const LOCAL_STORAGE_PROGRESS_KEY = "vendeo_chat_progress_v1";
-
-interface StoredStagesPayload {
-  stages: ChatStage[];
-  updated_at: string;
-}
-
-interface StoredProgressPayload {
-  progresses: Record<string, ChatProgress>;
-  updated_at: string;
-}
 
 export class SupabaseChatStageRepository implements IChatStageRepository {
   private customClient?: any;
   private cachedStages: ChatStage[] | null = null;
-  private cachedProgress: Record<string, ChatProgress> | null = null;
   private lastFetchStagesTime = 0;
-  private lastFetchProgressTime = 0;
   private cacheDurationMs = 2500;
   private realtimeSubscribed = false;
 
@@ -41,50 +42,20 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     return getSupabaseServerClient();
   }
 
-  private getLocalStages(): ChatStage[] {
-    if (typeof window === "undefined") return [];
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_STAGES_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      }
-    } catch (e) {
-      console.warn("Erro ao ler etapas locais:", e);
-    }
-    return [];
-  }
-
-  private saveLocalStages(stages: ChatStage[]) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_STAGES_KEY, JSON.stringify(stages));
-    } catch (e) {
-      console.warn("Erro ao salvar etapas locais:", e);
-    }
-  }
-
-  private getLocalProgress(): Record<string, ChatProgress> {
-    if (typeof window === "undefined") return {};
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_PROGRESS_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return typeof parsed === "object" && parsed !== null ? parsed : {};
-      }
-    } catch (e) {
-      console.warn("Erro ao ler progresso local:", e);
-    }
-    return {};
-  }
-
-  private saveLocalProgress(progress: Record<string, ChatProgress>) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_PROGRESS_KEY, JSON.stringify(progress));
-    } catch (e) {
-      console.warn("Erro ao salvar progresso local:", e);
-    }
+  private mapRowToStage(row: any): ChatStage {
+    const goals: ConversationGoal[] = Array.isArray(row.goals) ? row.goals : [];
+    return {
+      id: row.id,
+      name: row.name,
+      order: Number(row.stage_order ?? 0),
+      color: row.color || undefined,
+      icon: row.icon || undefined,
+      description: row.description || undefined,
+      goals,
+      objectives: goals,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   private initRealtimeSubscription() {
@@ -95,27 +66,17 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     try {
       this.realtimeSubscribed = true;
       client
-        .channel("chat-stages-sync")
+        .channel("chat-stages-db-sync")
         .on(
           "postgres_changes",
           {
             event: "*",
             schema: "public",
-            table: "instagram_conversations",
-            filter: "contact_id=in.(__chat_stages__,__chat_progress__)",
+            table: "chat_stages",
           },
-          (payload: any) => {
-            const contactId = payload?.new?.contact_id || payload?.new?.id;
-            const rules = payload?.new?.stage_completed_rules;
-            if (contactId === "__chat_stages__" && rules?.stages) {
-              this.cachedStages = rules.stages;
-              this.saveLocalStages(rules.stages);
-              this.lastFetchStagesTime = Date.now();
-            } else if (contactId === "__chat_progress__" && rules?.progresses) {
-              this.cachedProgress = rules.progresses;
-              this.saveLocalProgress(rules.progresses);
-              this.lastFetchProgressTime = Date.now();
-            }
+          () => {
+            this.cachedStages = null;
+            this.lastFetchStagesTime = 0;
           }
         )
         .subscribe();
@@ -124,17 +85,16 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     }
   }
 
-  // --- MÉTODOS DE ETAPAS ---
+  // --- MÉTODOS DE ETAPAS (chat_stages) ---
 
   /**
-   * Reconcilia etapas existentes com a matriz canônica oficial sem perder IDs,
+   * Reconcilia etapas com a matriz canônica oficial sem perder IDs,
    * nomes nem dados prévios, aplicando as novas regras da matriz.
    */
   public reconcileWithCanonicalMatrix(existingStages: ChatStage[]): ChatStage[] {
     const canonicalMatrix = CANONICAL_CHAT_STAGES_MATRIX;
     const reconciled: ChatStage[] = existingStages.map((stg) => ({ ...stg, goals: [...(stg.goals || [])] }));
 
-    // 1. Localiza ou cria as 3 etapas canônicas
     let conexaoStage = reconciled.find(
       (s) => s.id === "stage_1_conexao" || s.id === "stage_1" || s.name.toLowerCase().includes("conex")
     );
@@ -180,7 +140,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
     reconciled.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
 
-    // 2. Reconcilia objetivos em cada etapa
     for (const stage of reconciled) {
       const isConexao = stage === conexaoStage;
       const isDescoberta = stage === descobertaStage;
@@ -190,30 +149,25 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       const updatedGoals = goals.map((g) => {
         const copy = { ...g };
 
-        // goal_age: required vira false, kind fact
+        // No modelo canônico determinístico, todo objetivo ativo é checkpoint obrigatório
+        copy.required = copy.enabled !== false;
+
         if (copy.id === "goal_age") {
-          copy.required = false;
           copy.kind = "fact";
           if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["descoberta"];
           copy.primarySubagent = copy.primarySubagent || "descoberta";
         }
-        // goal_city: required vira false, kind fact
         if (copy.id === "goal_city") {
-          copy.required = false;
           copy.kind = "fact";
           if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["conexao_inicial", "descoberta"];
           copy.primarySubagent = copy.primarySubagent || "conexao_inicial";
         }
-        // goal_job: required vira false, kind fact
         if (copy.id === "goal_job") {
-          copy.required = false;
           copy.kind = "fact";
           if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["conexao_inicial", "descoberta"];
           copy.primarySubagent = copy.primarySubagent || "conexao_inicial";
         }
-        // goal_relationship: semântica restrita a status de relacionamento
         if (copy.id === "goal_relationship") {
-          copy.required = false;
           copy.kind = "fact";
           copy.title = "Status de relacionamento";
           copy.label = "Status de relacionamento";
@@ -229,7 +183,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         return copy;
       });
 
-      // Adiciona objetivos canônicos faltantes para a etapa correspondente
       if (isConexao) {
         const canonConexao = canonicalMatrix.find((c) => c.id === "stage_1_conexao");
         for (const cg of canonConexao?.goals || []) {
@@ -258,6 +211,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       }
 
       stage.goals = updatedGoals.sort((a, b) => (a.order || 0) - (b.order || 0));
+      stage.objectives = stage.goals;
     }
 
     return reconciled;
@@ -267,162 +221,163 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     this.initRealtimeSubscription();
     const now = Date.now();
     if (!force && this.cachedStages && now - this.lastFetchStagesTime < this.cacheDurationMs) {
-      return this.cachedStages;
+      return [...this.cachedStages];
     }
 
     const client = this.getClient();
-    let stagesFromDb: ChatStage[] | null = null;
-
-    if (client) {
-      try {
-        const { data, error } = await client
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("contact_id", "__chat_stages__")
-          .maybeSingle();
-
-        if (!error && data?.stage_completed_rules) {
-          const rules = data.stage_completed_rules as StoredStagesPayload;
-          if (Array.isArray(rules.stages) && rules.stages.length > 0) {
-            stagesFromDb = rules.stages;
-          }
-        }
-      } catch (err) {
-        console.warn("Aviso ao carregar etapas do Supabase:", err);
-      }
+    if (!client) {
+      return JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
     }
-
-    let finalStages: ChatStage[] = [];
-
-    if (stagesFromDb && stagesFromDb.length > 0) {
-      // Reconcilia com a matriz canônica sem perder dados nem IDs existentes
-      finalStages = this.reconcileWithCanonicalMatrix(stagesFromDb);
-    } else {
-      const local = this.getLocalStages();
-      if (local.length > 0) {
-        finalStages = this.reconcileWithCanonicalMatrix(local);
-      } else {
-        // Inicializa com a matriz canônica completa
-        finalStages = JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
-        // Persiste no Supabase imediatamente para que a fonte de verdade seja preenchida
-        this.persistStagesToCloud(finalStages).catch((err) => {
-          console.warn("Aviso ao persistir matriz canônica inicial:", err);
-        });
-      }
-    }
-
-    finalStages.sort((a, b) => a.order - b.order);
-    this.cachedStages = finalStages;
-    this.saveLocalStages(finalStages);
-    this.lastFetchStagesTime = now;
-    return finalStages;
-  }
-
-  private async persistStagesToCloud(stages: ChatStage[]): Promise<void> {
-    this.cachedStages = stages;
-    this.saveLocalStages(stages);
-    this.lastFetchStagesTime = Date.now();
-
-    const client = this.getClient();
-    if (!client) return;
 
     try {
-      const payload: StoredStagesPayload = {
-        stages,
-        updated_at: new Date().toISOString(),
-      };
+      const { data, error } = await client
+        .from("chat_stages")
+        .select("*")
+        .order("stage_order", { ascending: true });
 
-      await client.from("instagram_conversations").upsert(
-        {
-          contact_id: "__chat_stages__",
-          username: "system_stages",
-          display_name: "Sistema de Etapas e Checklists",
-          status: "system",
-          unread_count: 0,
-          last_message_preview: `Etapas sincronizadas: ${stages.length}`,
-          last_message_at: new Date().toISOString(),
-          is_restricted: false,
-          stage_completed_rules: payload as any,
+      if (error) {
+        console.error("[SupabaseChatStageRepository] Erro ao carregar etapas de chat_stages:", error);
+        if (this.cachedStages) return [...this.cachedStages];
+        return JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
+      }
+
+      if (data && Array.isArray(data) && data.length > 0) {
+        const stages = data.map((r) => this.mapRowToStage(r));
+        stages.sort((a, b) => a.order - b.order);
+        this.cachedStages = stages;
+        this.lastFetchStagesTime = now;
+        return [...stages];
+      }
+
+      // Se a tabela estiver vazia, popula a partir da matriz canônica oficial
+      const canonicalMatrix: ChatStage[] = JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
+      for (const stg of canonicalMatrix) {
+        await client.from("chat_stages").upsert({
+          id: stg.id,
+          name: stg.name,
+          stage_order: stg.order,
+          color: stg.color || null,
+          icon: stg.icon || null,
+          description: stg.description || null,
+          goals: stg.goals || [],
+          created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-        },
-        { onConflict: "contact_id" }
-      );
+        });
+      }
+
+      this.cachedStages = canonicalMatrix;
+      this.lastFetchStagesTime = now;
+      return [...canonicalMatrix];
     } catch (err) {
-      console.warn("Aviso ao persistir etapas no Supabase:", err);
+      console.error("[SupabaseChatStageRepository] Exceção ao buscar etapas:", err);
+      if (this.cachedStages) return [...this.cachedStages];
+      return JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
     }
   }
 
   async createStage(data: Omit<ChatStage, "id" | "createdAt" | "updatedAt">): Promise<ChatStage> {
     const current = await this.getStages();
-    const newStage: ChatStage = {
-      ...data,
-      id: "stage_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
-      order: data.order ?? current.length,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    const newId = "stage_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const order = data.order ?? current.length;
+    const now = new Date().toISOString();
 
-    const updated = [...current, newStage].sort((a, b) => a.order - b.order);
-    await this.persistStagesToCloud(updated);
-    return newStage;
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const goals = data.goals || data.objectives || [];
+
+    const { data: inserted, error } = await client
+      .from("chat_stages")
+      .insert({
+        id: newId,
+        name: data.name,
+        stage_order: order,
+        color: data.color || null,
+        icon: data.icon || null,
+        description: data.description || null,
+        goals,
+        created_at: now,
+        updated_at: now,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[SupabaseChatStageRepository] Erro ao criar etapa:", error);
+      throw new Error(error.message || "Falha ao criar etapa no banco de dados");
+    }
+
+    this.cachedStages = null;
+    this.lastFetchStagesTime = 0;
+    return this.mapRowToStage(inserted);
   }
 
   async updateStage(
     id: string,
     data: Partial<Omit<ChatStage, "id" | "createdAt" | "updatedAt">>
   ): Promise<ChatStage> {
-    const current = await this.getStages();
-    const index = current.findIndex((s) => s.id === id);
-    if (index === -1) {
-      throw new Error(`Etapa com id ${id} não encontrada.`);
-    }
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
 
-    const updatedStage: ChatStage = {
-      ...current[index],
-      ...data,
-      updatedAt: new Date().toISOString(),
+    const now = new Date().toISOString();
+    const updatePayload: Record<string, any> = {
+      updated_at: now,
     };
 
-    current[index] = updatedStage;
-    current.sort((a, b) => a.order - b.order);
-    await this.persistStagesToCloud(current);
-    return updatedStage;
+    if (data.name !== undefined) updatePayload.name = data.name;
+    if (data.order !== undefined) updatePayload.stage_order = data.order;
+    if (data.color !== undefined) updatePayload.color = data.color || null;
+    if (data.icon !== undefined) updatePayload.icon = data.icon || null;
+    if (data.description !== undefined) updatePayload.description = data.description || null;
+    if (data.goals !== undefined) updatePayload.goals = data.goals;
+    else if (data.objectives !== undefined) updatePayload.goals = data.objectives;
+
+    const { data: updated, error } = await client
+      .from("chat_stages")
+      .update(updatePayload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error(`[SupabaseChatStageRepository] Erro ao atualizar etapa ${id}:`, error);
+      throw new Error(error.message || "Falha ao atualizar etapa no banco");
+    }
+
+    this.cachedStages = null;
+    this.lastFetchStagesTime = 0;
+    return this.mapRowToStage(updated);
   }
 
   async deleteStage(id: string): Promise<void> {
-    const current = await this.getStages();
-    const filtered = current.filter((s) => s.id !== id);
-    // Reajusta a ordenação
-    filtered.forEach((s, idx) => {
-      s.order = idx;
-    });
-    await this.persistStagesToCloud(filtered);
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
+
+    const { error } = await client.from("chat_stages").delete().eq("id", id);
+    if (error) {
+      console.error(`[SupabaseChatStageRepository] Erro ao excluir etapa ${id}:`, error);
+      throw new Error(error.message || "Falha ao excluir etapa no banco");
+    }
+
+    this.cachedStages = null;
+    this.lastFetchStagesTime = 0;
   }
 
   async reorderStages(stageIds: string[]): Promise<ChatStage[]> {
-    const current = await this.getStages();
-    const stageMap = new Map(current.map((s) => [s.id, s]));
+    const client = this.getClient();
+    if (!client) throw new Error("Cliente Supabase indisponível");
 
-    const reordered: ChatStage[] = [];
-    stageIds.forEach((id, idx) => {
-      const stage = stageMap.get(id);
-      if (stage) {
-        stage.order = idx;
-        stage.updatedAt = new Date().toISOString();
-        reordered.push(stage);
-      }
-    });
+    for (let idx = 0; idx < stageIds.length; idx++) {
+      const stageId = stageIds[idx];
+      await client
+        .from("chat_stages")
+        .update({ stage_order: idx, updated_at: new Date().toISOString() })
+        .eq("id", stageId);
+    }
 
-    // Mantém eventuais etapas não listadas no final
-    current.forEach((s) => {
-      if (!stageIds.includes(s.id)) {
-        s.order = reordered.length;
-        reordered.push(s);
-      }
-    });
-
-    await this.persistStagesToCloud(reordered);
-    return reordered;
+    this.cachedStages = null;
+    this.lastFetchStagesTime = 0;
+    return this.getStages(true);
   }
 
   // --- GESTÃO DE OBJETIVOS DA CONVERSA (GOALS) ---
@@ -448,10 +403,8 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       kind: goalData.kind ?? "fact",
     };
 
-    stage.goals = [...currentGoals, newGoal].sort((a, b) => a.order - b.order);
-    stage.updatedAt = new Date().toISOString();
-
-    await this.persistStagesToCloud(stages);
+    const updatedGoals = [...currentGoals, newGoal].sort((a, b) => a.order - b.order);
+    await this.updateStage(stageId, { goals: updatedGoals });
     return newGoal;
   }
 
@@ -477,10 +430,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       ...updates,
     };
     goals.sort((a, b) => a.order - b.order);
-    stage.goals = goals;
-    stage.updatedAt = new Date().toISOString();
-
-    await this.persistStagesToCloud(stages);
+    await this.updateStage(stageId, { goals });
   }
 
   async deleteGoal(stageId: string, goalId: string): Promise<void> {
@@ -494,10 +444,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     filtered.forEach((g, idx) => {
       g.order = idx;
     });
-    stage.goals = filtered;
-    stage.updatedAt = new Date().toISOString();
-
-    await this.persistStagesToCloud(stages);
+    await this.updateStage(stageId, { goals: filtered });
   }
 
   async reorderGoals(stageId: string, goalIds: string[]): Promise<void> {
@@ -526,93 +473,118 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       }
     });
 
-    stage.goals = reordered;
-    stage.updatedAt = new Date().toISOString();
-
-    await this.persistStagesToCloud(stages);
+    await this.updateStage(stageId, { goals: reordered });
   }
 
-  // --- MÉTODOS DE PROGRESSO POR CONVERSA ---
+  // --- MÉTODOS DE PROGRESSO POR CONVERSA (instagram_conversations) ---
 
-  async getAllChatProgresses(force = false): Promise<Record<string, ChatProgress>> {
-    this.initRealtimeSubscription();
-    const now = Date.now();
-    if (!force && this.cachedProgress && now - this.lastFetchProgressTime < this.cacheDurationMs) {
-      return this.cachedProgress;
-    }
-
+  async getAllChatProgresses(): Promise<Record<string, ChatProgress>> {
     const client = this.getClient();
-    if (client) {
-      try {
-        const { data, error } = await client
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("contact_id", "__chat_progress__")
-          .maybeSingle();
+    const result: Record<string, ChatProgress> = {};
+    if (!client) return result;
 
-        if (!error && data?.stage_completed_rules) {
-          const rules = data.stage_completed_rules as StoredProgressPayload;
-          if (rules.progresses && typeof rules.progresses === "object") {
-            this.cachedProgress = rules.progresses;
-            this.saveLocalProgress(this.cachedProgress);
-            this.lastFetchProgressTime = now;
-            return this.cachedProgress;
-          }
+    try {
+      const { data, error } = await client
+        .from("instagram_conversations")
+        .select("id, contact_id, stage_completed_rules")
+        .not("id", "like", "__%")
+        .not("contact_id", "like", "__%");
+
+      if (error || !data) return result;
+
+      for (const row of data) {
+        const convId = row.id || row.contact_id;
+        const rules = row.stage_completed_rules;
+        if (!convId || !rules) continue;
+
+        const chatProgress = rules.chat_progress || rules;
+        if (chatProgress && (chatProgress.currentStageId || chatProgress.completedGoalIds || chatProgress.completedItemIds)) {
+          result[convId] = {
+            conversationId: convId,
+            currentStageId: chatProgress.currentStageId || "stage_1_conexao",
+            completedItemIds: Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [],
+            completedGoalIds: Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : [],
+            isConverted: Boolean(chatProgress.isConverted),
+            updatedAt: chatProgress.updatedAt || row.updated_at,
+          };
         }
-      } catch (err) {
-        console.warn("Aviso ao carregar progresso dos chats do Supabase:", err);
       }
+    } catch (err) {
+      console.warn("[SupabaseChatStageRepository] Erro ao carregar progressos das conversas:", err);
     }
 
-    const local = this.getLocalProgress();
-    this.cachedProgress = local;
-    this.lastFetchProgressTime = now;
-    return local;
+    return result;
   }
 
-  private async persistProgressToCloud(progresses: Record<string, ChatProgress>): Promise<void> {
-    this.cachedProgress = progresses;
-    this.saveLocalProgress(progresses);
-    this.lastFetchProgressTime = Date.now();
+  async getChatProgress(conversationId: string): Promise<ChatProgress | null> {
+    const client = this.getClient();
+    if (!client) return null;
 
+    try {
+      const { data, error } = await client
+        .from("instagram_conversations")
+        .select("id, contact_id, stage_completed_rules, updated_at")
+        .or(`id.eq.${conversationId},contact_id.eq.${conversationId}`)
+        .maybeSingle();
+
+      if (error || !data?.stage_completed_rules) return null;
+
+      const rules = data.stage_completed_rules;
+      const chatProgress = rules.chat_progress || rules;
+
+      return {
+        conversationId,
+        currentStageId: chatProgress.currentStageId || "stage_1_conexao",
+        completedItemIds: Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [],
+        completedGoalIds: Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : [],
+        isConverted: Boolean(chatProgress.isConverted),
+        updatedAt: chatProgress.updatedAt || data.updated_at,
+      };
+    } catch (err) {
+      console.warn(`[SupabaseChatStageRepository] Erro ao buscar progresso de ${conversationId}:`, err);
+      return null;
+    }
+  }
+
+  async saveChatProgress(progress: ChatProgress): Promise<void> {
     const client = this.getClient();
     if (!client) return;
 
     try {
-      const payload: StoredProgressPayload = {
-        progresses,
-        updated_at: new Date().toISOString(),
+      const convId = progress.conversationId;
+      const now = new Date().toISOString();
+
+      // Busca as regras existentes para mesclar sem sobrescrever outros campos como 'orchestration'
+      const { data: existing } = await client
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .or(`id.eq.${convId},contact_id.eq.${convId}`)
+        .maybeSingle();
+
+      const currentRules = existing?.stage_completed_rules && typeof existing.stage_completed_rules === "object"
+        ? existing.stage_completed_rules
+        : {};
+
+      const updatedRules = {
+        ...currentRules,
+        ...progress,
+        chat_progress: {
+          ...progress,
+          updatedAt: now,
+        },
+        updated_at: now,
       };
 
-      await client.from("instagram_conversations").upsert({
-        contact_id: "__chat_progress__",
-        username: "system_progress",
-        full_name: "Progresso das Conversas",
-        status: "system",
-        unread: false,
-        last_message: `Progresso rastreado em ${Object.keys(progresses).length} chats`,
-        last_message_at: new Date().toISOString(),
-        is_restricted: false,
-        stage_completed_rules: payload as any,
-        updated_at: new Date().toISOString(),
-      });
+      await client
+        .from("instagram_conversations")
+        .update({
+          stage_completed_rules: updatedRules,
+          updated_at: now,
+        })
+        .or(`id.eq.${convId},contact_id.eq.${convId}`);
     } catch (err) {
-      console.warn("Aviso ao persistir progresso no Supabase:", err);
+      console.warn("[SupabaseChatStageRepository] Erro ao salvar progresso da conversa:", err);
     }
-  }
-
-  async getChatProgress(conversationId: string): Promise<ChatProgress | null> {
-    const all = await this.getAllChatProgresses();
-    return all[conversationId] || null;
-  }
-
-  async saveChatProgress(progress: ChatProgress): Promise<void> {
-    const all = await this.getAllChatProgresses();
-    all[progress.conversationId] = {
-      ...progress,
-      updatedAt: new Date().toISOString(),
-    };
-    await this.persistProgressToCloud(all);
   }
 
   async toggleItemCompletion(
@@ -620,16 +592,16 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     itemId: string,
     isCompleted: boolean
   ): Promise<ChatProgress> {
-    const all = await this.getAllChatProgresses();
-    const existing = all[conversationId] || {
+    const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
-      currentStageId: "",
+      currentStageId: "stage_1_conexao",
       completedItemIds: [],
+      completedGoalIds: [],
       isConverted: false,
       updatedAt: new Date().toISOString(),
     };
 
-    let completed = new Set(existing.completedItemIds || []);
+    const completed = new Set(existing.completedItemIds || []);
     if (isCompleted) {
       completed.add(itemId);
     } else {
@@ -642,8 +614,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       updatedAt: new Date().toISOString(),
     };
 
-    all[conversationId] = updated;
-    await this.persistProgressToCloud(all);
+    await this.saveChatProgress(updated);
     return updated;
   }
 
@@ -652,17 +623,16 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     goalId: string,
     isCompleted: boolean
   ): Promise<ChatProgress> {
-    const all = await this.getAllChatProgresses();
-    const existing = all[conversationId] || {
+    const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
-      currentStageId: "",
+      currentStageId: "stage_1_conexao",
       completedItemIds: [],
       completedGoalIds: [],
       isConverted: false,
       updatedAt: new Date().toISOString(),
     };
 
-    let completedGoals = new Set(existing.completedGoalIds || []);
+    const completedGoals = new Set(existing.completedGoalIds || []);
     if (isCompleted) {
       completedGoals.add(goalId);
     } else {
@@ -675,17 +645,16 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       updatedAt: new Date().toISOString(),
     };
 
-    all[conversationId] = updated;
-    await this.persistProgressToCloud(all);
+    await this.saveChatProgress(updated);
     return updated;
   }
 
   async advanceStage(conversationId: string, nextStageId: string): Promise<ChatProgress> {
-    const all = await this.getAllChatProgresses();
-    const existing = all[conversationId] || {
+    const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
       currentStageId: nextStageId,
       completedItemIds: [],
+      completedGoalIds: [],
       isConverted: false,
       updatedAt: new Date().toISOString(),
     };
@@ -696,18 +665,17 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       updatedAt: new Date().toISOString(),
     };
 
-    all[conversationId] = updated;
-    await this.persistProgressToCloud(all);
+    await this.saveChatProgress(updated);
     return updated;
   }
 
   async markAsConverted(conversationId: string, isConverted: boolean): Promise<ChatProgress> {
-    const all = await this.getAllChatProgresses();
-    const existing = all[conversationId] || {
+    const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
-      currentStageId: "",
+      currentStageId: "stage_1_conexao",
       completedItemIds: [],
-      isConverted: isConverted,
+      completedGoalIds: [],
+      isConverted,
       updatedAt: new Date().toISOString(),
     };
 
@@ -717,8 +685,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       updatedAt: new Date().toISOString(),
     };
 
-    all[conversationId] = updated;
-    await this.persistProgressToCloud(all);
+    await this.saveChatProgress(updated);
     return updated;
   }
 }

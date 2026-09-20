@@ -643,7 +643,8 @@ export function validateRoutingDecision(
 // ----------------------------------------------------------------------------
 export function validateSubagentDecision(
   data: unknown,
-  currentPhase: OrchestrationPhase
+  currentPhase: OrchestrationPhase,
+  allowedSubagents?: string[]
 ): SubagentDecision {
   if (!data || typeof data !== "object") {
     throw new Error("Decisão do subagente inválida: payload não é um objeto.");
@@ -664,14 +665,22 @@ export function validateSubagentDecision(
       ? obj.action
       : "reply";
 
-  const nextPhase: OrchestrationPhase =
-    obj.nextPhase === "descoberta" ? "descoberta" : "conexao_inicial";
+  const rawNext = typeof obj.nextPhase === "string" ? obj.nextPhase.trim() : "";
+  const standardPhases = ["conexao_inicial", "descoberta", "compatibilidade"];
+  const isAllowedPhase =
+    rawNext &&
+    (standardPhases.includes(rawNext) ||
+      (allowedSubagents && allowedSubagents.includes(rawNext)) ||
+      rawNext.startsWith("stage_"));
+  const nextPhase: OrchestrationPhase = isAllowedPhase ? rawNext : currentPhase;
 
   const checkpoint =
     typeof obj.checkpoint === "string" && obj.checkpoint.trim()
       ? obj.checkpoint.trim()
       : currentPhase === "descoberta"
       ? "chk_pergunta_sobre_ele"
+      : currentPhase === "compatibilidade"
+      ? "chk_alinhamento_valores"
       : "chk_saudacao_feita";
 
   const summary = typeof obj.summary === "string" ? obj.summary.trim() : "Turno processado";
@@ -695,7 +704,7 @@ export function validateSubagentDecision(
 
   let objectiveCompletion: { objectiveId: string; evidenceMessageId?: string; value?: any } | undefined;
   const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
-  if (rawObjComp && typeof rawObjComp === "object" && rawObjComp.objectiveId) {
+  if (rawObjComp && typeof rawObjComp === "object" && (rawObjComp.objectiveId || rawObjComp.goalId)) {
     objectiveCompletion = {
       objectiveId: String(rawObjComp.objectiveId || rawObjComp.goalId || "").trim(),
       evidenceMessageId: rawObjComp.evidenceMessageId ? String(rawObjComp.evidenceMessageId).trim() : undefined,
@@ -721,7 +730,7 @@ export function validateSubagentDecision(
 // ----------------------------------------------------------------------------
 // 3. Validador de Esquema Estrito (Compatibilidade Retroativa)
 // ----------------------------------------------------------------------------
-export function validateOrchestratorDecision(data: unknown): OrchestratorDecision {
+export function validateOrchestratorDecision(data: unknown, allowedPhases?: string[]): OrchestratorDecision {
   if (!data || typeof data !== "object") {
     throw new Error("Decisão do orquestrador inválida: payload não é um objeto.");
   }
@@ -732,11 +741,19 @@ export function validateOrchestratorDecision(data: unknown): OrchestratorDecisio
     throw new Error(`Ação inválida: "${obj.action}". Esperado: ${validActions.join(", ")}`);
   }
 
-  const validPhases: OrchestrationPhase[] = ["conexao_inicial", "descoberta"];
-  if (!validPhases.includes(obj.currentPhase)) {
+  const defaultPhases = ["conexao_inicial", "descoberta", "compatibilidade"];
+  const validPhases = allowedPhases && allowedPhases.length > 0 ? allowedPhases : defaultPhases;
+
+  if (
+    typeof obj.currentPhase !== "string" ||
+    (!validPhases.includes(obj.currentPhase) && !obj.currentPhase.startsWith("stage_"))
+  ) {
     throw new Error(`Fase atual inválida: "${obj.currentPhase}".`);
   }
-  if (!validPhases.includes(obj.nextPhase)) {
+  if (
+    typeof obj.nextPhase !== "string" ||
+    (!validPhases.includes(obj.nextPhase) && !obj.nextPhase.startsWith("stage_"))
+  ) {
     throw new Error(`Próxima fase inválida: "${obj.nextPhase}".`);
   }
 
@@ -760,6 +777,16 @@ export function validateOrchestratorDecision(data: unknown): OrchestratorDecisio
     throw new Error("Motivo da decisão (reasoning) é obrigatório.");
   }
 
+  let objectiveCompletion: { objectiveId: string; evidenceMessageId?: string; value?: any } | undefined;
+  const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
+  if (rawObjComp && typeof rawObjComp === "object" && (rawObjComp.objectiveId || rawObjComp.goalId)) {
+    objectiveCompletion = {
+      objectiveId: String(rawObjComp.objectiveId || rawObjComp.goalId || "").trim(),
+      evidenceMessageId: rawObjComp.evidenceMessageId ? String(rawObjComp.evidenceMessageId).trim() : undefined,
+      value: rawObjComp.value !== undefined ? rawObjComp.value : true,
+    };
+  }
+
   return {
     action: obj.action,
     currentPhase: obj.currentPhase,
@@ -767,8 +794,13 @@ export function validateOrchestratorDecision(data: unknown): OrchestratorDecisio
     checkpoint: obj.checkpoint.trim(),
     summary: obj.summary.trim(),
     suggestedResponse: obj.suggestedResponse.trim(),
+    responses: Array.isArray(obj.responses) ? obj.responses.map(String) : undefined,
     requiredTools: obj.requiredTools.map(String),
     reasoning: obj.reasoning.trim(),
+    routedSubagent: obj.routedSubagent,
+    audioId: typeof obj.audioId === "string" ? obj.audioId : undefined,
+    audioUrl: typeof obj.audioUrl === "string" ? obj.audioUrl : undefined,
+    objectiveCompletion,
   };
 }
 
@@ -778,32 +810,70 @@ export function validateOrchestratorDecision(data: unknown): OrchestratorDecisio
 export function validatePhaseTransition(
   currentPhase: OrchestrationPhase,
   requestedNextPhase: OrchestrationPhase,
-  checkpoint: string
+  checkpoint: string,
+  stagesOrder?: Array<{ id: string; order: number }>
 ): { allowed: boolean; validatedNextPhase: OrchestrationPhase; reason?: string } {
   if (requestedNextPhase === currentPhase) {
     return { allowed: true, validatedNextPhase: currentPhase };
   }
 
   // Transição de 'conexao_inicial' -> 'descoberta'
-  if (currentPhase === "conexao_inicial" && requestedNextPhase === "descoberta") {
-    const validCheckpoints = ["chk_rapport_estabelecido", "chk_conexao_validada", "chk_saudacao_reciproca"];
-    if (validCheckpoints.includes(checkpoint)) {
-      return { allowed: true, validatedNextPhase: "descoberta" };
+  if (
+    (currentPhase === "conexao_inicial" || currentPhase === "stage_1_conexao") &&
+    (requestedNextPhase === "descoberta" || requestedNextPhase === "stage_2_descoberta")
+  ) {
+    const validCheckpoints = [
+      "chk_rapport_estabelecido",
+      "chk_conexao_validada",
+      "chk_saudacao_reciproca",
+      "chk_etapa_concluida",
+      "stage_complete",
+    ];
+    if (validCheckpoints.includes(checkpoint) || checkpoint.includes("rapport") || checkpoint.includes("concluid")) {
+      return { allowed: true, validatedNextPhase: requestedNextPhase };
     }
     return {
       allowed: false,
-      validatedNextPhase: "conexao_inicial",
+      validatedNextPhase: currentPhase,
       reason: `Checkpoint "${checkpoint}" insuficiente para avançar para descoberta. Requer um de: ${validCheckpoints.join(", ")}`,
     };
   }
 
-  // Descoberta não regride automaticamente sem comando explícito
-  if (currentPhase === "descoberta" && requestedNextPhase === "conexao_inicial") {
+  // Transição de 'descoberta' -> 'compatibilidade'
+  if (
+    (currentPhase === "descoberta" || currentPhase === "stage_2_descoberta") &&
+    (requestedNextPhase === "compatibilidade" || requestedNextPhase === "stage_3_compatibilidade")
+  ) {
+    return { allowed: true, validatedNextPhase: requestedNextPhase };
+  }
+
+  // Descoberta e compatibilidade não regridem automaticamente sem comando explícito
+  if (
+    (currentPhase === "descoberta" && requestedNextPhase === "conexao_inicial") ||
+    (currentPhase === "compatibilidade" &&
+      (requestedNextPhase === "descoberta" || requestedNextPhase === "conexao_inicial"))
+  ) {
     return {
       allowed: false,
-      validatedNextPhase: "descoberta",
+      validatedNextPhase: currentPhase,
       reason: "Regressão de fase não permitida automaticamente pelo agente.",
     };
+  }
+
+  // Validação dinâmica por ordem de etapas se fornecida
+  if (stagesOrder && stagesOrder.length > 0) {
+    const curr = stagesOrder.find((s) => s.id === currentPhase);
+    const next = stagesOrder.find((s) => s.id === requestedNextPhase);
+    if (curr && next) {
+      if (next.order < curr.order) {
+        return {
+          allowed: false,
+          validatedNextPhase: currentPhase,
+          reason: "Regressão de etapa não permitida pelo backend.",
+        };
+      }
+      return { allowed: true, validatedNextPhase: requestedNextPhase };
+    }
   }
 
   return { allowed: true, validatedNextPhase: requestedNextPhase };
@@ -1771,7 +1841,7 @@ export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
     memoryField: "city",
     description: "Descobrir onde ele mora ou contexto geográfico",
     kind: "fact",
-    required: false,
+    required: true,
     order: 2,
     enabled: true,
     allowedSubagents: ["conexao_inicial", "descoberta"],
@@ -1785,7 +1855,7 @@ export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
     memoryField: "job",
     description: "Descobrir profissão, ocupação ou trabalho atual",
     kind: "fact",
-    required: false,
+    required: true,
     order: 3,
     enabled: true,
     allowedSubagents: ["conexao_inicial", "descoberta"],
@@ -1802,7 +1872,7 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     memoryField: "age",
     description: "Descobrir a idade ou faixa etária",
     kind: "fact",
-    required: false,
+    required: true,
     order: 1,
     enabled: true,
     allowedSubagents: ["descoberta"],
@@ -1816,7 +1886,7 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     memoryField: "routine",
     description: "Conhecer alguma informação útil sobre como é o cotidiano dele (horário de trabalho, dia/noite, rotina corrida/tranquila, estudos, academia)",
     kind: "fact",
-    required: false,
+    required: true,
     order: 2,
     enabled: true,
     allowedSubagents: ["descoberta"],
@@ -1830,7 +1900,7 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     memoryField: "hobbies",
     description: "Conhecer pelo menos um gosto, hobby ou atividade que ele realmente curta",
     kind: "fact",
-    required: false,
+    required: true,
     order: 3,
     enabled: true,
     allowedSubagents: ["descoberta"],
@@ -1844,7 +1914,7 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     memoryField: "social_style",
     description: "Entender de forma natural que tipo de programa costuma gostar (caseiro, restaurante, bar, festa, viagem, natureza, passeios)",
     kind: "fact",
-    required: false,
+    required: true,
     order: 4,
     enabled: true,
     allowedSubagents: ["descoberta", "compatibilidade"],
@@ -1875,7 +1945,7 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "relationship_status",
     description: "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.",
     kind: "fact",
-    required: false,
+    required: true,
     order: 1,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
@@ -1889,7 +1959,7 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "relationship_intent",
     description: "Entender a intenção atual dele em relação a conhecer alguém (algo sério, conhecer sem pressa, relacionamento, não sabe ainda)",
     kind: "fact",
-    required: false,
+    required: true,
     order: 2,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
@@ -1903,7 +1973,7 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "has_children",
     description: "Registrar se ele possui ou não filhos (fato presente). Não misturar com desejo futuro de filhos.",
     kind: "fact",
-    required: false,
+    required: true,
     order: 3,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
@@ -1917,7 +1987,7 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "wants_children",
     description: "Registrar a visão dele sobre ter filhos no futuro. Só concluir com evidência clara. Não inferir de ter filhos.",
     kind: "fact",
-    required: false,
+    required: true,
     order: 4,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
@@ -1931,7 +2001,7 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "family_values",
     description: "Conhecer algum aspecto relevante sobre como ele enxerga família, vínculo, respeito, estabilidade ou relações pessoais",
     kind: "fact",
-    required: false,
+    required: true,
     order: 5,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
@@ -1945,7 +2015,7 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "future_plans",
     description: "Conhecer algum plano relevante de médio/longo prazo (carreira, moradia, viagens, família, projetos pessoais)",
     kind: "fact",
-    required: false,
+    required: true,
     order: 6,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
@@ -1959,13 +2029,25 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     memoryField: "faith_values",
     description: "Conhecer esse aspecto SOMENTE quando surgir naturalmente. Nunca forçar pergunta religiosa.",
     kind: "fact",
-    required: false,
+    required: true,
     order: 7,
     enabled: true,
     allowedSubagents: ["compatibilidade"],
     primarySubagent: "compatibilidade",
   },
 ];
+
+export interface StageResolutionResult {
+  stage: string;
+  stageId: string;
+  goals: ResolvedStageGoal[];
+  objectives: any[];
+  currentObjective: ResolvedStageGoal | null;
+  completedObjectives: ResolvedStageGoal[];
+  remainingObjectives: ResolvedStageGoal[];
+  stageComplete: boolean;
+  responsibleSubagent: string;
+}
 
 export async function resolveStageChecklistGoals(params: {
   supabase: any;
@@ -1975,21 +2057,36 @@ export async function resolveStageChecklistGoals(params: {
   completedGoalIds?: string[];
   historyMessages?: any[];
   episodicMemory?: any[];
-}): Promise<{ stage: string; goals: ResolvedStageGoal[]; objectives: any[] }> {
+}): Promise<StageResolutionResult> {
   const { supabase, conversationId, stageNameOrId, memoryProvider, completedGoalIds = [] } = params;
   const targetStageQuery = (stageNameOrId || "descoberta").trim().toLowerCase();
 
   let stagesList: any[] = [];
+  let subagentsList: any[] = [];
   try {
     if (supabase) {
-      const { data: stagesRow } = await supabase
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .eq("contact_id", "__chat_stages__")
-        .maybeSingle();
+      const [stagesRes, subagentsRes] = await Promise.all([
+        supabase
+          .from("chat_stages")
+          .select("*")
+          .order("stage_order", { ascending: true }),
+        supabase
+          .from("subagent_definitions")
+          .select("*")
+          .order("is_system", { ascending: false }),
+      ]);
 
-      if (stagesRow?.stage_completed_rules?.stages && Array.isArray(stagesRow.stage_completed_rules.stages)) {
-        stagesList = stagesRow.stage_completed_rules.stages;
+      if (stagesRes.data && Array.isArray(stagesRes.data) && stagesRes.data.length > 0) {
+        stagesList = stagesRes.data.map((s: any) => ({
+          ...s,
+          order: s.stage_order,
+          objectives: s.goals,
+          goals: s.goals,
+        }));
+      }
+
+      if (subagentsRes.data && Array.isArray(subagentsRes.data)) {
+        subagentsList = subagentsRes.data;
       }
     }
   } catch (err) {
@@ -2011,39 +2108,77 @@ export async function resolveStageChecklistGoals(params: {
     matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("compat"));
   }
 
+  const resolvedStageId = matchedStage?.id || (
+    targetStageQuery.includes("conexao") || targetStageQuery.includes("conexão") || targetStageQuery === "stage_1_conexao"
+      ? "stage_1_conexao"
+      : targetStageQuery.includes("compatibilidade") || targetStageQuery === "stage_3_compatibilidade"
+      ? "stage_3_compatibilidade"
+      : "stage_2_descoberta"
+  );
+
+  // Determinação determinística do subagente responsável pela etapa (1:1 no fluxo principal)
+  let responsibleSubagent = "";
+  if (subagentsList.length > 0) {
+    const matchedSub = subagentsList.find(
+      (sub: any) =>
+        sub.enabled !== false &&
+        Array.isArray(sub.stage_ids) &&
+        sub.stage_ids.includes(resolvedStageId)
+    );
+    if (matchedSub) {
+      responsibleSubagent = matchedSub.id;
+    }
+  }
+
+  if (!responsibleSubagent) {
+    if (resolvedStageId === "stage_1_conexao" || targetStageQuery.includes("conex")) {
+      responsibleSubagent = "conexao_inicial";
+    } else if (resolvedStageId === "stage_3_compatibilidade" || targetStageQuery.includes("compat")) {
+      responsibleSubagent = "compatibilidade";
+    } else {
+      responsibleSubagent = "descoberta";
+    }
+  }
+
   let rawGoals: SemanticGoalDefinition[] = [];
   if (matchedStage?.objectives && Array.isArray(matchedStage.objectives) && matchedStage.objectives.length > 0) {
     rawGoals = matchedStage.objectives.map((o: any) => ({
       id: o.id,
-      stageId: o.stageId,
+      stageId: o.stageId || resolvedStageId,
       label: o.title || o.label,
       memoryEntity: o.memoryEntity || "self",
       memoryField: o.memoryField || "",
       description: o.description,
       kind: o.kind || (o.id === "goal_initial_reciprocity" || o.id === "goal_discovery_depth" ? "conversation_state" : "fact"),
-      required: o.required,
-      order: o.order,
-      enabled: o.enabled,
-      allowedSubagents: o.allowedSubagents,
-      primarySubagent: o.primarySubagent,
+      required: o.required !== false,
+      order: Number(o.order ?? 0),
+      enabled: o.enabled !== false,
+      allowedSubagents: o.allowedSubagents || [responsibleSubagent],
+      primarySubagent: o.primarySubagent || responsibleSubagent,
     }));
   } else if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
     rawGoals = matchedStage.goals.map((g: any) => ({
       ...g,
+      stageId: g.stageId || resolvedStageId,
       kind: g.kind || (g.id === "goal_initial_reciprocity" || g.id === "goal_discovery_depth" ? "conversation_state" : "fact"),
+      required: g.required !== false,
+      order: Number(g.order ?? 0),
+      enabled: g.enabled !== false,
+      allowedSubagents: g.allowedSubagents || [responsibleSubagent],
+      primarySubagent: g.primarySubagent || responsibleSubagent,
     }));
-  } else if (targetStageQuery.includes("conexao") || targetStageQuery.includes("conexão") || targetStageQuery === "stage_1_conexao") {
+  } else if (resolvedStageId === "stage_1_conexao") {
     rawGoals = DEFAULT_CONEXAO_GOALS;
-  } else if (targetStageQuery.includes("compatibilidade") || targetStageQuery === "stage_3_compatibilidade") {
+  } else if (resolvedStageId === "stage_3_compatibilidade") {
     rawGoals = DEFAULT_COMPATIBILIDADE_GOALS;
   } else {
     rawGoals = DEFAULT_DESCOBERTA_GOALS;
   }
 
-  // Filtra apenas habilitados
+  // Ordenação determinística estrita por order ASC
   const activeGoals = rawGoals
     .filter((g) => g.enabled !== false)
-    .sort((a, b) => (a.order || 0) - (b.order || 0));
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
 
   const resolvedGoals: ResolvedStageGoal[] = [];
 
@@ -2057,9 +2192,9 @@ export async function resolveStageChecklistGoals(params: {
       id: goal.id,
       label: goal.label,
       kind: isStateGoal ? ("conversation_state" as const) : ("fact" as const),
-      required: goal.required,
-      allowedSubagents: goal.allowedSubagents,
-      primarySubagent: goal.primarySubagent,
+      required: true, // No modelo mental determinístico, todo ativo é checkpoint obrigatório
+      allowedSubagents: goal.allowedSubagents || [responsibleSubagent],
+      primarySubagent: goal.primarySubagent || responsibleSubagent,
       description: goal.description,
     };
 
@@ -2130,9 +2265,19 @@ export async function resolveStageChecklistGoals(params: {
     }
   }
 
-  // ZERO nextGoal no backend: a IA decide organicamente
+  // Resolução determinística da sequência de checkpoints
+  const completedObjectives = resolvedGoals.filter((g) => g.status === "completed");
+  const openObjectives = resolvedGoals.filter((g) => g.status === "pending");
+  const currentObjective = openObjectives[0] || null;
+  const remainingObjectives = openObjectives.slice(1);
+  const stageComplete = activeGoals.length > 0 && openObjectives.length === 0;
+
   return {
-    stage: matchedStage?.name || targetStageQuery,
+    stage: matchedStage?.name || (
+      resolvedStageId === "stage_1_conexao" ? "Conexão Inicial" :
+      resolvedStageId === "stage_3_compatibilidade" ? "Compatibilidade" : "Descoberta"
+    ),
+    stageId: resolvedStageId,
     goals: resolvedGoals,
     objectives: resolvedGoals.map((g) => ({
       id: g.id,
@@ -2141,10 +2286,16 @@ export async function resolveStageChecklistGoals(params: {
       kind: g.kind || "fact",
       status: g.status,
       value: g.value,
-      required: g.required,
+      required: true,
       allowedSubagents: g.allowedSubagents,
       primarySubagent: g.primarySubagent,
+      description: g.description,
     })),
+    currentObjective,
+    completedObjectives,
+    remainingObjectives,
+    stageComplete,
+    responsibleSubagent,
   };
 }
 
@@ -2174,47 +2325,299 @@ export function filterGoalsForSubagent(
 
 /**
  * Formata um snippet compacto de Missão e Objetivos autorizados para injeção no prompt do subagente.
- * Baixo consumo de tokens e sem ambiguidade.
+ * Suporta assinatura sobrecarregada (objeto ou parâmetros soltos) para retrocompatibilidade total.
  */
 export function formatGoalsSnippetForSubagent(
-  subagentId: string,
-  mission: string,
-  openGoals: ResolvedStageGoal[],
-  completedGoals: ResolvedStageGoal[]
+  subagentIdOrParams:
+    | string
+    | {
+        subagentId: string;
+        stageName?: string;
+        mission?: string;
+        currentObjective?: ResolvedStageGoal | null;
+        completedObjectives?: ResolvedStageGoal[];
+        remainingObjectives?: ResolvedStageGoal[];
+        knownFacts?: Record<string, any>;
+      },
+  mission?: string,
+  openGoals?: ResolvedStageGoal[],
+  completedGoals?: ResolvedStageGoal[]
 ): string {
-  const parts: string[] = [
-    `### SUA MISSÃO NESTE TURNO`,
-    mission,
-    ``,
-    `### OBJETIVOS DA SUA RESPONSABILIDADE`,
-  ];
+  let subagentId = typeof subagentIdOrParams === "string" ? subagentIdOrParams : subagentIdOrParams.subagentId;
+  let subMission = typeof subagentIdOrParams === "string" ? (mission || "") : (subagentIdOrParams.mission || mission || "");
+  let stageName = typeof subagentIdOrParams === "object" ? subagentIdOrParams.stageName : undefined;
+  let currentObj =
+    typeof subagentIdOrParams === "object"
+      ? subagentIdOrParams.currentObjective
+      : openGoals && openGoals[0]
+      ? openGoals[0]
+      : null;
+  let completedList =
+    typeof subagentIdOrParams === "object"
+      ? subagentIdOrParams.completedObjectives || []
+      : completedGoals || [];
+  let remainingList =
+    typeof subagentIdOrParams === "object"
+      ? subagentIdOrParams.remainingObjectives || []
+      : openGoals && openGoals.length > 1
+      ? openGoals.slice(1)
+      : [];
+  let knownFacts = typeof subagentIdOrParams === "object" ? subagentIdOrParams.knownFacts : undefined;
 
-  if (openGoals.length > 0) {
-    parts.push(`- ABERTOS (considere no máximo 1 objetivo neste turno, SOMENTE se couber naturalmente):`);
-    for (const g of openGoals) {
-      const desc = g.description ? ` (${g.description})` : "";
-      const reqLabel = g.required ? " [obrigatório da etapa]" : "";
-      parts.push(`  • ${g.label}${reqLabel}${desc}`);
-    }
-  } else {
-    parts.push(`- ABERTOS: Nenhum objetivo pendente na sua responsabilidade neste momento.`);
+  const parts: string[] = [];
+  if (stageName) {
+    parts.push(`### ETAPA ATUAL: ${stageName.toUpperCase()} (Subagente Responsável: ${subagentId})`);
   }
-
-  if (completedGoals.length > 0) {
-    parts.push(`- JÁ CONHECIDOS (PROIBIDO REPETIR OU PERGUNTAR):`);
-    for (const g of completedGoals) {
-      const valStr = g.value !== undefined && g.value !== null && g.value !== true ? `: ${g.value}` : "";
-      parts.push(`  • ${g.label}${valStr}`);
-    }
-  }
-
+  parts.push(`### SUA MISSÃO NESTE TURNO`);
+  parts.push(subMission);
   parts.push(``);
-  parts.push(`### DIRETRIZ DE OURO DE OBJETIVOS`);
+
+  parts.push(`### CHECKPOINT ATUAL OBRIGATÓRIO (FOCO IMEDIATO)`);
+  if (currentObj) {
+    const desc = currentObj.description ? `\n  Missão: ${currentObj.description}` : "";
+    parts.push(`• [ATIVO OBRIGATÓRIO] ${currentObj.label}${desc}`);
+    parts.push(
+      `  Diretriz: Este é o seu destino obrigatório imediato na conversa. Busque cumpri-lo com naturalidade, afeto e organicidade caso o homem dê abertura, sem forçar nem fazer entrevista.`
+    );
+  } else {
+    parts.push(`• Todos os checkpoints desta etapa foram concluídos! Conduza o diálogo com leveza e acolhimento.`);
+  }
+  parts.push(``);
+
+  if (completedList.length > 0) {
+    parts.push(`### CHECKPOINTS JÁ CONCLUÍDOS (PROIBIDO REPETIR OU PERGUNTAR)`);
+    for (const g of completedList) {
+      const valStr = g.value !== undefined && g.value !== null && g.value !== true ? `: ${g.value}` : "";
+      parts.push(`• ${g.label}${valStr}`);
+    }
+    parts.push(``);
+  }
+
+  if (knownFacts && Object.keys(knownFacts).length > 0) {
+    parts.push(`### FATOS CONHECIDOS DO CONTATO NA MEMÓRIA (NÃO PERGUNTE NOVAMENTE)`);
+    for (const [k, v] of Object.entries(knownFacts)) {
+      if (v !== undefined && v !== null && v !== "") {
+        parts.push(`• ${k}: ${v}`);
+      }
+    }
+    parts.push(``);
+  }
+
+  if (remainingList.length > 0) {
+    parts.push(`### PRÓXIMOS CHECKPOINTS DA ETAPA (HORIZONTE - NÃO ANTECIPAR)`);
+    for (const g of remainingList) {
+      parts.push(`• ${g.label}`);
+    }
+    parts.push(`(Aviso estrito: NÃO antecipe perguntas destes tópicos antes de superar o checkpoint atual).`);
+    parts.push(``);
+  }
+
+  parts.push(`### REGRAS DE PROGRESSÃO CONVERSACIONAL`);
   parts.push(`1. Responder o que ele falou e acolher o momento emocional dele tem PRIORIDADE MÁXIMA.`);
-  parts.push(`2. NUNCA faça mais de uma pergunta por turno.`);
-  parts.push(`3. Se nenhum objetivo aberto couber com extrema naturalidade, NÃO pergunte objetivo algum; apenas continue o papo.`);
+  parts.push(`2. NUNCA faça mais de uma pergunta por turno. Perguntas não são obrigatórias em todo turno.`);
+  parts.push(`3. Quando ele fornecer a evidência necessária para o checkpoint atual, inclua no JSON:`);
+  parts.push(
+    `   "objectiveCompletion": { "objectiveId": "${currentObj ? currentObj.id : "id_do_objetivo"}", "evidenceMessageId": "id_da_msg", "value": "dado_descoberto" }`
+  );
+  parts.push(`4. Se o momento não tiver gancho natural para o checkpoint, NÃO force; apenas continue a conversa com calor humano.`);
 
   return parts.join("\n");
+}
+
+/**
+ * Processamento determinístico de conclusão de checkpoints e progressão sequencial de etapas.
+ * - Valida objectiveCompletion proposto pelo subagente
+ * - Registra progresso no banco de dados (completed_goals e objectiveProgress)
+ * - Avalia se todos os objetivos ativos da etapa atual foram concluídos
+ * - Avança deterministicamente por order ASC para a próxima etapa cadastrada
+ * - Entrega para o subagente responsável pela próxima etapa (sem regredir na última etapa)
+ */
+export async function processDeterministicStageProgression(params: {
+  supabase: any;
+  conversationId: string;
+  currentPhase: OrchestrationPhase;
+  decision: OrchestratorDecision;
+  claimedMessages?: any[];
+  rawInbounds?: any[];
+  stageRules?: any;
+  orchState?: any;
+  currentCycle?: any;
+}): Promise<{
+  updatedCompletedGoals: string[];
+  updatedObjectiveProgress: Record<string, any>;
+  nextPhase: OrchestrationPhase;
+  stageAdvanced: boolean;
+  advancementReason?: string;
+}> {
+  const {
+    supabase,
+    conversationId,
+    currentPhase,
+    decision,
+    claimedMessages = [],
+    rawInbounds = [],
+    stageRules = {},
+    orchState = {},
+    currentCycle,
+  } = params;
+
+  const updatedCompletedGoals: string[] = [
+    ...(orchState.completedGoalIds || stageRules.completed_goals || []),
+  ];
+  const updatedObjectiveProgress: Record<string, any> = {
+    ...(orchState.objectiveProgress || stageRules.objective_progress || {}),
+  };
+
+  // 1. Processa objectiveCompletion proposto pelo modelo/subagente
+  if (decision.objectiveCompletion && decision.objectiveCompletion.objectiveId) {
+    const comp = decision.objectiveCompletion;
+    const validEvidence = comp.evidenceMessageId
+      ? claimedMessages.some((m: any) => m.id === comp.evidenceMessageId) ||
+        rawInbounds.some((m: any) => m.id === comp.evidenceMessageId)
+      : true;
+
+    if (validEvidence) {
+      if (!updatedCompletedGoals.includes(comp.objectiveId)) {
+        updatedCompletedGoals.push(comp.objectiveId);
+      }
+      updatedObjectiveProgress[comp.objectiveId] = {
+        conversationId,
+        stageId: currentPhase,
+        objectiveId: comp.objectiveId,
+        status: "completed",
+        value: comp.value !== undefined ? comp.value : true,
+        evidenceMessageId: comp.evidenceMessageId,
+        completedAt: new Date().toISOString(),
+      };
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(`objective_completed_by_agent: ${comp.objectiveId}`);
+      }
+    } else {
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(`objective_completion_rejected_invalid_evidence: ${comp.objectiveId}`);
+      }
+    }
+  }
+
+  // 2. Busca lista ordenada de etapas (chat_stages) e subagentes (subagent_definitions)
+  let stagesList: any[] = [];
+  let subagentsList: any[] = [];
+  try {
+    if (supabase) {
+      const [stgRes, subRes] = await Promise.all([
+        supabase
+          .from("chat_stages")
+          .select("*")
+          .order("stage_order", { ascending: true }),
+        supabase
+          .from("subagent_definitions")
+          .select("*")
+          .order("is_system", { ascending: false }),
+      ]);
+      if (stgRes.data && Array.isArray(stgRes.data) && stgRes.data.length > 0) {
+        stagesList = stgRes.data;
+      }
+      if (subRes.data && Array.isArray(subRes.data)) {
+        subagentsList = subRes.data;
+      }
+    }
+  } catch {}
+
+  // Fallback para etapas canônicas se tabela estiver vazia
+  if (stagesList.length === 0) {
+    stagesList = [
+      { id: "stage_1_conexao", name: "Conexão Inicial", stage_order: 0, goals: DEFAULT_CONEXAO_GOALS },
+      { id: "stage_2_descoberta", name: "Descoberta", stage_order: 1, goals: DEFAULT_DESCOBERTA_GOALS },
+      { id: "stage_3_compatibilidade", name: "Compatibilidade", stage_order: 2, goals: DEFAULT_COMPATIBILIDADE_GOALS },
+    ];
+  }
+
+  // Identifica a etapa atual na lista
+  const normalizedCurrent = (currentPhase || "").trim().toLowerCase();
+  let currentStageIndex = stagesList.findIndex(
+    (s) =>
+      (s.id && s.id.toLowerCase() === normalizedCurrent) ||
+      (normalizedCurrent === "conexao_inicial" && (s.id === "stage_1_conexao" || s.name?.toLowerCase().includes("conex"))) ||
+      (normalizedCurrent === "descoberta" && (s.id === "stage_2_descoberta" || s.name?.toLowerCase().includes("descoberta"))) ||
+      (normalizedCurrent === "compatibilidade" && (s.id === "stage_3_compatibilidade" || s.name?.toLowerCase().includes("compat")))
+  );
+
+  if (currentStageIndex === -1) {
+    currentStageIndex = 0;
+  }
+
+  const currentStage = stagesList[currentStageIndex];
+
+  // 3. Avalia se TODOS os objetivos ativos da etapa atual foram concluídos
+  const rawGoals = currentStage?.goals || currentStage?.objectives || [];
+  const activeGoals = Array.isArray(rawGoals)
+    ? rawGoals.filter((g: any) => g.enabled !== false)
+    : [];
+
+  const allActiveCompleted =
+    activeGoals.length > 0 &&
+    activeGoals.every((g: any) => updatedCompletedGoals.includes(g.id));
+
+  let nextPhase: OrchestrationPhase = currentPhase;
+  let stageAdvanced = false;
+  let advancementReason: string | undefined;
+
+  if (allActiveCompleted) {
+    // Se há próxima etapa na ordem sequencial
+    if (currentStageIndex < stagesList.length - 1) {
+      const nextStage = stagesList[currentStageIndex + 1];
+      stageAdvanced = true;
+      advancementReason = `Todos os ${activeGoals.length} checkpoints da etapa "${currentStage.name}" foram concluídos. Avançando deterministicamente para "${nextStage.name}".`;
+
+      // Resolve subagente / fase responsável da próxima etapa
+      let mappedPhase: OrchestrationPhase = nextStage.id;
+      if (nextStage.id === "stage_1_conexao" || nextStage.name?.toLowerCase().includes("conex")) {
+        mappedPhase = "conexao_inicial";
+      } else if (nextStage.id === "stage_2_descoberta" || nextStage.name?.toLowerCase().includes("descoberta")) {
+        mappedPhase = "descoberta";
+      } else if (nextStage.id === "stage_3_compatibilidade" || nextStage.name?.toLowerCase().includes("compat")) {
+        mappedPhase = "compatibilidade";
+      } else {
+        // Para etapas personalizadas, verifica se há subagente associado via stage_ids
+        const responsibleSub = subagentsList.find(
+          (sub: any) =>
+            sub.enabled !== false &&
+            Array.isArray(sub.stage_ids) &&
+            sub.stage_ids.includes(nextStage.id)
+        );
+        mappedPhase = responsibleSub?.id || nextStage.id;
+      }
+
+      nextPhase = mappedPhase;
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(`deterministic_stage_advanced: ${nextPhase}`);
+      }
+    } else {
+      // Última etapa: permanece na etapa sem regredir
+      nextPhase = currentPhase;
+      if (currentCycle?.trace) {
+        currentCycle.trace.push("deterministic_last_stage_retained");
+      }
+    }
+  } else {
+    // Se nem todos os checkpoints foram cumpridos, bloqueia qualquer avanço prematuro solicitado pelo modelo
+    if (decision.nextPhase && decision.nextPhase !== currentPhase) {
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(
+          `stage_advancement_blocked_pending_checkpoints: requested=${decision.nextPhase}, current=${currentPhase}`
+        );
+      }
+    }
+    nextPhase = currentPhase;
+  }
+
+  return {
+    updatedCompletedGoals,
+    updatedObjectiveProgress,
+    nextPhase,
+    stageAdvanced,
+    advancementReason,
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -2669,14 +3072,25 @@ export async function searchPersonaAudios(params: {
   let audios: PersonaAudioAsset[] = [];
 
   try {
-    const { data: row } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", "__persona_audios__")
-      .maybeSingle();
+    const { data: audioRows } = await supabase
+      .from("persona_audios")
+      .select("*")
+      .eq("enabled", true)
+      .order("title", { ascending: true });
 
-    if (row?.stage_completed_rules?.audios && Array.isArray(row.stage_completed_rules.audios)) {
-      audios = row.stage_completed_rules.audios;
+    if (audioRows && Array.isArray(audioRows) && audioRows.length > 0) {
+      audios = audioRows.map((r: any) => ({
+        id: r.id,
+        stageId: r.stage_id || undefined,
+        title: r.title,
+        audioUrl: r.audio_url,
+        duration: r.duration != null ? Number(r.duration) : undefined,
+        transcript: r.transcript || "",
+        usageInstruction: r.usage_instruction || "",
+        enabled: r.enabled ?? true,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      }));
     }
   } catch {}
 
@@ -2686,16 +3100,14 @@ export async function searchPersonaAudios(params: {
 
   let sentAudioIds = new Set<string>();
   try {
-    const { data: histRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", "__audio_history__")
-      .maybeSingle();
+    const { data: histRows } = await supabase
+      .from("audio_delivery_history")
+      .select("audio_id")
+      .eq("conversation_id", conversationId);
 
-    const histList: AudioDeliveryHistory[] = histRow?.stage_completed_rules?.history || [];
-    histList
-      .filter((h) => h.conversationId === conversationId)
-      .forEach((h) => sentAudioIds.add(h.audioId));
+    if (histRows && Array.isArray(histRows)) {
+      histRows.forEach((h: any) => sentAudioIds.add(h.audio_id));
+    }
   } catch {}
 
   try {
@@ -2779,34 +3191,53 @@ export async function recordAudioDeliveryHistory(params: {
 }): Promise<void> {
   const { supabase, conversationId, audioId, providerMessageId } = params;
   try {
-    const { data: row } = await supabase
+    const newEntryId = `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const now = new Date().toISOString();
+
+    // 1. Grava na tabela oficial audio_delivery_history
+    await supabase.from("audio_delivery_history").insert({
+      id: newEntryId,
+      conversation_id: conversationId,
+      audio_id: audioId,
+      sent_at: now,
+      provider_message_id: providerMessageId || null,
+    });
+
+    // 2. Espelha no histórico da própria conversa para conveniência rápida
+    const { data: convRow } = await supabase
       .from("instagram_conversations")
       .select("stage_completed_rules")
-      .eq("id", "__audio_history__")
+      .eq("id", conversationId)
       .maybeSingle();
 
-    const currentHistory: AudioDeliveryHistory[] = row?.stage_completed_rules?.history || [];
-    const newEntry: AudioDeliveryHistory = {
-      id: `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    const convRules = convRow?.stage_completed_rules || {};
+    const convHist = Array.isArray(convRules.audio_delivery_history) ? convRules.audio_delivery_history : [];
+    convHist.push({
+      id: newEntryId,
       conversationId,
       audioId,
-      sentAt: new Date().toISOString(),
+      sentAt: now,
       providerMessageId,
-    };
-    currentHistory.push(newEntry);
+    });
 
     await supabase
       .from("instagram_conversations")
-      .upsert({
-        id: "__audio_history__",
+      .update({
         stage_completed_rules: {
-          history: currentHistory,
-          updated_at: new Date().toISOString(),
+          ...convRules,
+          audio_delivery_history: convHist,
         },
-      });
+      })
+      .eq("id", conversationId);
 
     if ((supabase as any)?.__mockAudioHistory) {
-      (supabase as any).__mockAudioHistory.push(newEntry);
+      (supabase as any).__mockAudioHistory.push({
+        id: newEntryId,
+        conversationId,
+        audioId,
+        sentAt: now,
+        providerMessageId,
+      });
     }
   } catch (err) {
     console.warn("[Orchestrator] Falha ao gravar histórico de áudio:", err);
@@ -4678,15 +5109,33 @@ export async function runExperimentalOrchestration(
           : CANONICAL_SUBAGENTS.conexao_inicial.mission,
       };
 
-      // Filtra os objetivos da etapa autorizados para o subagente
-      const filteredGoals = filterGoalsForSubagent(stageChecklistForRouter.goals, targetSubagent);
-      const softFocusGoal = filteredGoals.openGoals[0] || null;
-      const goalsSnippet = formatGoalsSnippetForSubagent(
-        targetSubagent,
-        subagentDef.mission,
-        filteredGoals.openGoals,
-        filteredGoals.completedGoals
-      );
+      // Fatos conhecidos do contato na memória estruturada
+      let knownFactsForSubagent: Record<string, any> = {};
+      try {
+        const selfFacts = await memoryProvider.listEntityFacts(conversationId, "self");
+        if (selfFacts && typeof selfFacts === "object") {
+          for (const [k, f] of Object.entries(selfFacts)) {
+            if (f && (f as any).value !== undefined && (f as any).value !== null && (f as any).value !== "") {
+              knownFactsForSubagent[k] = (f as any).value;
+            }
+          }
+        }
+      } catch {}
+
+      if (stageRules?.known_facts && typeof stageRules.known_facts === "object") {
+        knownFactsForSubagent = { ...stageRules.known_facts, ...knownFactsForSubagent };
+      }
+
+      // Constrói o snippet de Missão e Checkpoints Sequenciais Determinísticos
+      const goalsSnippet = formatGoalsSnippetForSubagent({
+        subagentId: targetSubagent,
+        stageName: stageChecklistForRouter.stage,
+        mission: subagentDef.mission,
+        currentObjective: stageChecklistForRouter.currentObjective,
+        completedObjectives: stageChecklistForRouter.completedObjectives,
+        remainingObjectives: stageChecklistForRouter.remainingObjectives,
+        knownFacts: knownFactsForSubagent,
+      });
 
       const styleStateSnippet = `[ESTILO RECENTE & ANTI-REPETIÇÃO]
 - Última forma de resposta: ${recentStyleState.last_response_shape}
@@ -4694,12 +5143,14 @@ export async function runExperimentalOrchestration(
 - Perguntas recentes: ${recentStyleState.recent_questions.join(" | ") || "nenhuma"}
 - Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`;
 
-      const softFocusSnippet = softFocusGoal
-        ? `[FOCO SUAVE DO TURNO (Bússola Orgânica)]
-Se houver gancho natural, explore com leveza "${softFocusGoal.label}". NUNCA force nem faça interrogatório.
-Se ele fez uma pergunta, responda a pergunta dele com acolhimento. Perguntas NÃO são obrigatórias em todo turno.`
-        : `[FOCO SUAVE DO TURNO]
-Todos os objetivos principais desta etapa foram atingidos ou já são conhecidos. Apenas converse com naturalidade, acolhimento e leveza.`;
+      const currentCheckpointObj = stageChecklistForRouter.currentObjective;
+      const softFocusSnippet = currentCheckpointObj
+        ? `[CHECKPOINT ATUAL OBRIGATÓRIO (Bússola Orgânica)]
+Destino imediato da etapa: "${currentCheckpointObj.label}"${currentCheckpointObj.description ? ` (${currentCheckpointObj.description})` : ""}.
+Se houver gancho natural e ele der abertura, busque cumpri-lo com delicadeza, afeto e organicidade. NUNCA force nem faça interrogatório.
+Se ele fez uma pergunta ou desabafou, responda e acolha PRIMEIRO. Perguntas NÃO são obrigatórias em todo turno.`
+        : `[CHECKPOINT ATUAL OBRIGATÓRIO]
+Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas converse com naturalidade, acolhimento e leveza.`;
 
       subagentPrompt = buildSubagentPrompt({
         subagentId: targetSubagent,
@@ -5178,6 +5629,9 @@ Responda ESTRITAMENTE em JSON puro:
       requiredTools: finalSubDecision.requiredTools || ["send_text"],
       reasoning: finalSubDecision.reasoning,
       routedSubagent: routingDecision.targetSubagent,
+      audioId: finalSubDecision.audioId,
+      audioUrl: finalSubDecision.audioUrl,
+      objectiveCompletion: finalSubDecision.objectiveCompletion,
     };
     currentCycle.decision = decision;
 
@@ -5305,6 +5759,21 @@ Responda ESTRITAMENTE em JSON puro:
         ledger[id] = "processed";
       }
 
+      const stageProgression = await processDeterministicStageProgression({
+        supabase,
+        conversationId,
+        currentPhase,
+        decision,
+        claimedMessages: claimedMessages || [],
+        rawInbounds: rawInbounds || [],
+        stageRules,
+        orchState,
+        currentCycle,
+      });
+
+      const finalPhaseForShadow = stageProgression.nextPhase || validatedNextPhase;
+      decision.nextPhase = finalPhaseForShadow;
+
       const durationMs = Date.now() - startTime;
       currentCycle.completedAt = new Date().toISOString();
       currentCycle.metrics = {
@@ -5322,7 +5791,7 @@ Responda ESTRITAMENTE em JSON puro:
       const updatedState: ConversationOrchestrationState = {
         version: 1,
         mode: "shadow",
-        currentPhase: validatedNextPhase,
+        currentPhase: finalPhaseForShadow,
         checkpoint: decision.checkpoint,
         lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
         lastProcessedAt: new Date().toISOString(),
@@ -5338,14 +5807,16 @@ Responda ESTRITAMENTE em JSON puro:
         outbox: outboxMap,
         messageLedger: ledger,
       };
-      (updatedState as any).completedGoalIds = completedGoalIds;
+      (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
+      (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
 
       await supabase
         .from("instagram_conversations")
         .update({
           stage_completed_rules: {
             ...stageRules,
-            completed_goals: completedGoalIds,
+            completed_goals: stageProgression.updatedCompletedGoals,
+            objective_progress: stageProgression.updatedObjectiveProgress,
             active_cycle_token: null,
             orchestration: updatedState,
           },
@@ -5811,6 +6282,18 @@ Responda ESTRITAMENTE em JSON puro:
         currentCycle.status === "completed" &&
         (decision.action === "wait" || sentBalloonsCount === balloons.length);
 
+      let stageProgression = {
+        updatedCompletedGoals: [
+          ...((orchState as any).completedGoalIds || stageRules.completed_goals || []),
+        ],
+        updatedObjectiveProgress: {
+          ...((orchState as any).objectiveProgress || stageRules.objective_progress || {}),
+        },
+        nextPhase: validatedNextPhase,
+        stageAdvanced: false,
+        advancementReason: undefined as string | undefined,
+      };
+
       if (isConfirmedSuccess) {
         try {
           await executeMemoryWriter({
@@ -5850,49 +6333,29 @@ Responda ESTRITAMENTE em JSON puro:
           currentCycle.trace.push(`episode_writer_error: ${epErr.message || String(epErr)}`);
         }
 
-        // Validação e conclusão de objetivo proposto semânticamente pelo agente
-        if (decision.objectiveCompletion && decision.objectiveCompletion.objectiveId) {
-          const comp = decision.objectiveCompletion;
-          const validEvidence = comp.evidenceMessageId
-            ? claimedMessages.some((m) => m.id === comp.evidenceMessageId) ||
-              rawInbounds.some((m: any) => m.id === comp.evidenceMessageId)
-            : true;
-
-          if (validEvidence) {
-            const currentCompletedGoals: string[] = [
-              ...((orchState as any).completedGoalIds || stageRules.completed_goals || []),
-            ];
-            if (!currentCompletedGoals.includes(comp.objectiveId)) {
-              currentCompletedGoals.push(comp.objectiveId);
-            }
-            (orchState as any).completedGoalIds = currentCompletedGoals;
-            stageRules.completed_goals = currentCompletedGoals;
-
-            const objProg: Record<string, any> = (orchState as any).objectiveProgress || {};
-            objProg[comp.objectiveId] = {
-              conversationId,
-              stageId: currentPhase,
-              objectiveId: comp.objectiveId,
-              status: "completed",
-              value: comp.value !== undefined ? comp.value : true,
-              evidenceMessageId: comp.evidenceMessageId,
-              completedAt: new Date().toISOString(),
-            };
-            (orchState as any).objectiveProgress = objProg;
-
-            currentCycle.trace.push(`objective_completed_by_agent: ${comp.objectiveId}`);
-          } else {
-            currentCycle.trace.push(`objective_completion_rejected_invalid_evidence: ${comp.objectiveId}`);
-          }
-        }
+        // Validação e conclusão determinística de checkpoints e avanço de etapa
+        stageProgression = await processDeterministicStageProgression({
+          supabase,
+          conversationId,
+          currentPhase,
+          decision,
+          claimedMessages: claimedMessages || [],
+          rawInbounds: rawInbounds || [],
+          stageRules,
+          orchState,
+          currentCycle,
+        });
+        decision.nextPhase = stageProgression.nextPhase;
       } else {
         currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");
       }
 
+      const finalPhaseForExp = stageProgression.nextPhase || validatedNextPhase;
+
       const updatedState: ConversationOrchestrationState = {
         version: 1,
         mode: "experimental",
-        currentPhase: validatedNextPhase,
+        currentPhase: finalPhaseForExp,
         checkpoint: decision.checkpoint,
         lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
         lastProcessedAt: new Date().toISOString(),
@@ -5909,7 +6372,8 @@ Responda ESTRITAMENTE em JSON puro:
         messageLedger: ledger,
         memory: orchState.memory,
       };
-      (updatedState as any).completedGoalIds = completedGoalIds;
+      (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
+      (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
 
       // Checagem de preempção antes do commit final no banco:
       // Se outro ciclo assumiu o lock durante o processamento/despacho, não sobrescreve seu estado!
@@ -5967,7 +6431,8 @@ Responda ESTRITAMENTE em JSON puro:
         .update({
           stage_completed_rules: {
             ...freshRules,
-            completed_goals: completedGoalIds,
+            completed_goals: stageProgression.updatedCompletedGoals,
+            objective_progress: stageProgression.updatedObjectiveProgress,
             active_cycle_token: null,
             orchestration: updatedState,
           },

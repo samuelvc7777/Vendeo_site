@@ -68,7 +68,14 @@ async function runTests() {
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
   const orchestratorModule = loadTsModule("supabase/functions/api/experimental_orchestrator.ts");
-  const { resolveStageChecklistGoals, filterGoalsForSubagent, formatGoalsSnippetForSubagent } = orchestratorModule;
+  const {
+    resolveStageChecklistGoals,
+    filterGoalsForSubagent,
+    formatGoalsSnippetForSubagent,
+    processDeterministicStageProgression,
+    validateSubagentDecision,
+    validateOrchestratorDecision,
+  } = orchestratorModule;
 
   let passed = 0;
   function runTest(num, name, fn) {
@@ -115,24 +122,22 @@ async function runTests() {
     assert(stage3.name.includes("Compatibilidade"));
   });
 
-  // 3. Apenas 2 objetivos obrigatórios (required: true) em todo o sistema
-  runTest(3, "Apenas 2 objetivos obrigatórios (required: true) em todo o sistema", () => {
+  // 3. No modelo canônico determinístico, todos os 15 objetivos ativos são checkpoints obrigatórios
+  runTest(3, "Todos os objetivos ativos são checkpoints obrigatórios (required: true)", () => {
     const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
-    const requiredGoals = allGoals.filter((g) => g.required === true);
+    const activeGoals = allGoals.filter((g) => g.enabled !== false);
+    const requiredGoals = activeGoals.filter((g) => g.required === true);
 
-    assert.equal(requiredGoals.length, 2);
-    const requiredIds = requiredGoals.map((g) => g.id).sort();
-    assert.deepEqual(requiredIds, ["goal_discovery_depth", "goal_initial_reciprocity"].sort());
+    assert.equal(requiredGoals.length, 15);
   });
 
-  // 4. Todos os demais 13 objetivos são opcionais (required: false)
-  runTest(4, "Todos os demais objetivos são opcionais (required: false)", () => {
+  // 4. Todos os objetivos ativos possuem ordenação determinística e enabled: true
+  runTest(4, "Todos os objetivos ativos possuem enabled: true e required: true", () => {
     const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
-    const optionalGoals = allGoals.filter((g) => !g.required);
-
-    assert.equal(optionalGoals.length, 13);
-    optionalGoals.forEach((g) => {
-      assert.equal(g.required, false);
+    allGoals.forEach((g) => {
+      assert.equal(g.enabled !== false, true);
+      assert.equal(g.required, true);
+      assert(typeof g.order === "number");
     });
   });
 
@@ -171,35 +176,35 @@ async function runTests() {
     assert(ids.includes("goal_relationship"), "goal_relationship deve existir");
   });
 
-  // 8. goal_city possui kind: fact, required: false e memória correta
-  runTest(8, "goal_city possui kind: fact, required: false e memória self.city", () => {
+  // 8. goal_city possui kind: fact, required: true e memória correta
+  runTest(8, "goal_city possui kind: fact, required: true e memória self.city", () => {
     const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
     const goal = allGoals.find((g) => g.id === "goal_city");
 
     assert.equal(goal.kind, "fact");
-    assert.equal(goal.required, false);
+    assert.equal(goal.required, true);
     assert.equal(goal.memoryEntity, "self");
     assert.equal(goal.memoryField, "city");
   });
 
-  // 9. goal_job possui kind: fact, required: false e memória correta
-  runTest(9, "goal_job possui kind: fact, required: false e memória self.job", () => {
+  // 9. goal_job possui kind: fact, required: true e memória correta
+  runTest(9, "goal_job possui kind: fact, required: true e memória self.job", () => {
     const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
     const goal = allGoals.find((g) => g.id === "goal_job");
 
     assert.equal(goal.kind, "fact");
-    assert.equal(goal.required, false);
+    assert.equal(goal.required, true);
     assert.equal(goal.memoryEntity, "self");
     assert.equal(goal.memoryField, "job");
   });
 
-  // 10. goal_age possui kind: fact, required: false e memória correta
-  runTest(10, "goal_age possui kind: fact, required: false e memória self.age", () => {
+  // 10. goal_age possui kind: fact, required: true e memória correta
+  runTest(10, "goal_age possui kind: fact, required: true e memória self.age", () => {
     const allGoals = CANONICAL_CHAT_STAGES_MATRIX.flatMap((s) => s.goals);
     const goal = allGoals.find((g) => g.id === "goal_age");
 
     assert.equal(goal.kind, "fact");
-    assert.equal(goal.required, false);
+    assert.equal(goal.required, true);
     assert.equal(goal.memoryEntity, "self");
     assert.equal(goal.memoryField, "age");
   });
@@ -315,11 +320,12 @@ async function runTests() {
     assert.equal(ageGoal.value, 28);
   });
 
-  // 19. Falta de fatos opcionais NÃO bloqueia transição de etapa
-  await runAsyncTest(19, "Falta de fatos opcionais não bloqueia a etapa", async () => {
+  // 19. Avanço determinístico: Etapa só é concluída quando TODOS os checkpoints ativos forem superados
+  await runAsyncTest(19, "Avanço determinístico de etapa: stageComplete apenas quando 100% dos checkpoints ativos forem concluídos", async () => {
     const memory = new MockMemoryProvider();
-    // Apenas reciprocidade estabelecida, nenhum fato conhecido
-    const res = await resolveStageChecklistGoals({
+
+    // Cenário A: Apenas o primeiro checkpoint concluído -> stageComplete é false e currentObjective é o próximo
+    const partialRes = await resolveStageChecklistGoals({
       supabase: null,
       conversationId: "chat_789",
       stageNameOrId: "conexao",
@@ -327,8 +333,21 @@ async function runTests() {
       completedGoalIds: ["goal_initial_reciprocity"],
     });
 
-    const requiredPending = res.goals.filter((g) => g.required && g.status === "pending");
-    assert.equal(requiredPending.length, 0, "Nenhum objetivo obrigatório pendente");
+    assert.equal(partialRes.stageComplete, false, "Etapa não deve estar completa enquanto houver checkpoints pendentes");
+    assert(partialRes.currentObjective, "Deve haver um currentObjective ativo");
+    assert.equal(partialRes.currentObjective.id, "goal_city", "O próximo checkpoint obrigatório deve ser goal_city");
+
+    // Cenário B: Todos os 3 checkpoints de conexão inicial concluídos
+    const fullRes = await resolveStageChecklistGoals({
+      supabase: null,
+      conversationId: "chat_789",
+      stageNameOrId: "conexao",
+      memoryProvider: memory,
+      completedGoalIds: ["goal_initial_reciprocity", "goal_city", "goal_job"],
+    });
+
+    assert.equal(fullRes.stageComplete, true, "Etapa deve estar completa quando todos os checkpoints ativos forem cumpridos");
+    assert.equal(fullRes.currentObjective, null, "Nenhum checkpoint deve restar pendente");
   });
 
   // 20. Avaliação de conversation_state: goal_initial_reciprocity avaliado sem salvar em ContactMemory
@@ -435,13 +454,13 @@ async function runTests() {
     assert(ids.includes("goal_has_children"));
   });
 
-  // 26. SupabaseChatStageRepository usa contact_id em vez de id
-  runTest(26, "SupabaseChatStageRepository usa contact_id = '__chat_stages__'", () => {
+  // 26. SupabaseChatStageRepository opera na tabela oficial chat_stages e zero localStorage
+  runTest(26, "SupabaseChatStageRepository opera na tabela oficial chat_stages e zero localStorage", () => {
     const repoFile = fs.readFileSync("src/infrastructure/repositories/SupabaseChatStageRepository.ts", "utf8");
-    assert(repoFile.includes('.eq("contact_id", "__chat_stages__")'), "Deve buscar por contact_id __chat_stages__");
-    assert(repoFile.includes('.eq("contact_id", "__chat_progress__")'), "Deve buscar por contact_id __chat_progress__");
-    assert(repoFile.includes('contact_id: "__chat_stages__"'), "Deve persistir com contact_id __chat_stages__");
-    assert(repoFile.includes('contact_id: "__chat_progress__"'), "Deve persistir com contact_id __chat_progress__");
+    assert(repoFile.includes('.from("chat_stages")'), "Deve buscar na tabela oficial chat_stages");
+    assert(!repoFile.includes("localStorage.getItem"), "Zero localStorage.getItem");
+    assert(!repoFile.includes("localStorage.setItem"), "Zero localStorage.setItem");
+    assert(!repoFile.includes('contact_id: "__chat_stages__"'), "Zero pseudo-registro __chat_stages__");
   });
 
   // 27. Reconciliação com matriz canônica não sobrescreve personalizações válidas
@@ -506,16 +525,24 @@ async function runTests() {
     assert(uiFile.includes("Fato do Contato"), "UI deve exibir label de Fato do Contato");
   });
 
-  // 30. Sem filas de perguntas forçadas: formatGoalsSnippetForSubagent orienta sem impor ordem
-  runTest(30, "formatGoalsSnippetForSubagent orienta sem criar roteiro fixo", () => {
-    const openGoals = [
-      { id: "goal_age", label: "Idade", kind: "fact", required: false },
-      { id: "goal_city", label: "Cidade", kind: "fact", required: false },
-    ];
-    const snippet = formatGoalsSnippetForSubagent("descoberta", "Conhecer o pretendente", openGoals, []);
+  // 30. formatGoalsSnippetForSubagent estrutura checkpoint atual obrigatório, concluídos e fatos conhecidos sem interrogatório
+  runTest(30, "formatGoalsSnippetForSubagent estrutura checkpoint atual e orienta sem interrogatório", () => {
+    const snippet = formatGoalsSnippetForSubagent({
+      subagentId: "descoberta",
+      stageName: "Descoberta",
+      mission: "Conhecer o pretendente",
+      currentObjective: { id: "goal_age", label: "Descobrir idade", kind: "fact", required: true },
+      completedObjectives: [{ id: "goal_city", label: "Descobrir cidade", value: "Divinópolis" }],
+      remainingObjectives: [{ id: "goal_job", label: "Descobrir trabalho" }],
+      knownFacts: { city: "Divinópolis" },
+    });
 
-    assert(!snippet.includes("pendingGoals[0]"), "Não deve conter pendingGoals indexado");
-    assert(!snippet.includes("ordem obrigatória"), "Não deve forçar ordem obrigatória");
+    assert(snippet.includes("CHECKPOINT ATUAL OBRIGATÓRIO"), "Deve conter seção de Checkpoint Atual Obrigatório");
+    assert(snippet.includes("Descobrir idade"), "Deve conter a label do checkpoint atual");
+    assert(snippet.includes("CHECKPOINTS JÁ CONCLUÍDOS"), "Deve conter seção de concluídos");
+    assert(snippet.includes("FATOS CONHECIDOS DO CONTATO NA MEMÓRIA"), "Deve conter fatos conhecidos");
+    assert(snippet.includes("Divinópolis"), "Deve listar o fato da cidade");
+    assert(snippet.includes("NUNCA faça mais de uma pergunta por turno"), "Deve reforçar regra de ouro de no máximo 1 pergunta");
   });
 
   // 31. Zero ranking / score de pretendente no modelo de dados
@@ -548,8 +575,144 @@ async function runTests() {
     assert(true, "Operação 100% isolada e segura");
   });
 
+  // 34. validateSubagentDecision parseia objectiveCompletion, audioId e aceita fase compatibilidade
+  runTest(34, "validateSubagentDecision parseia objectiveCompletion, audioId e aceita fase compatibilidade", () => {
+    const rawDecision = {
+      action: "reply",
+      nextPhase: "compatibilidade",
+      checkpoint: "chk_alinhamento_valores",
+      summary: "Turno concluído",
+      responses: ["Oi tudo bem", "como foi seu dia"],
+      audioId: "audio_123",
+      objectiveCompletion: {
+        objectiveId: "goal_relationship",
+        evidenceMessageId: "msg_abc",
+        value: "solteiro",
+      },
+    };
+
+    const validated = validateSubagentDecision(rawDecision, "descoberta");
+    assert.equal(validated.nextPhase, "compatibilidade");
+    assert.equal(validated.audioId, "audio_123");
+    assert(validated.objectiveCompletion, "Deve conter objectiveCompletion");
+    assert.equal(validated.objectiveCompletion.objectiveId, "goal_relationship");
+    assert.equal(validated.objectiveCompletion.value, "solteiro");
+  });
+
+  // 35. validateOrchestratorDecision aceita fase compatibilidade e propaga objectiveCompletion
+  runTest(35, "validateOrchestratorDecision aceita fase compatibilidade e propaga objectiveCompletion", () => {
+    const raw = {
+      action: "reply",
+      currentPhase: "descoberta",
+      nextPhase: "compatibilidade",
+      checkpoint: "chk_alinhamento_valores",
+      summary: "Avanço",
+      suggestedResponse: "Vamos conversar",
+      requiredTools: ["send_text"],
+      reasoning: "Avançando para compatibilidade",
+      objectiveCompletion: {
+        objectiveId: "goal_age",
+        value: 30,
+      },
+    };
+
+    const valid = validateOrchestratorDecision(raw);
+    assert.equal(valid.nextPhase, "compatibilidade");
+    assert.equal(valid.objectiveCompletion?.objectiveId, "goal_age");
+    assert.equal(valid.objectiveCompletion?.value, 30);
+  });
+
+  // 36. processDeterministicStageProgression registra objectiveCompletion em completed_goals e objectiveProgress
+  await runAsyncTest(36, "processDeterministicStageProgression registra objectiveCompletion no progresso", async () => {
+    const decision = {
+      action: "reply",
+      currentPhase: "stage_1_conexao",
+      nextPhase: "stage_1_conexao",
+      checkpoint: "chk_saudacao_feita",
+      summary: "Concluindo cidade",
+      suggestedResponse: "Que legal!",
+      requiredTools: ["send_text"],
+      reasoning: "Pretendente informou cidade",
+      objectiveCompletion: {
+        objectiveId: "goal_city",
+        evidenceMessageId: "msg_1",
+        value: "Uberlândia",
+      },
+    };
+
+    const res = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_prog_1",
+      currentPhase: "stage_1_conexao",
+      decision,
+      claimedMessages: [{ id: "msg_1", text: "Moro em Uberlândia" }],
+      stageRules: { completed_goals: ["goal_initial_reciprocity"] },
+    });
+
+    assert(res.updatedCompletedGoals.includes("goal_city"), "goal_city deve estar em updatedCompletedGoals");
+    assert(res.updatedCompletedGoals.includes("goal_initial_reciprocity"), "Deve manter os concluídos prévios");
+    assert(res.updatedObjectiveProgress["goal_city"], "Deve registrar no objectiveProgress");
+    assert.equal(res.updatedObjectiveProgress["goal_city"].value, "Uberlândia");
+  });
+
+  // 37. processDeterministicStageProgression bloqueia avanço prematuro se houver checkpoints pendentes
+  await runAsyncTest(37, "processDeterministicStageProgression bloqueia avanço prematuro se checkpoints pendentes", async () => {
+    const decision = {
+      action: "advance_phase",
+      currentPhase: "stage_1_conexao",
+      nextPhase: "stage_2_descoberta", // Tentativa de avanço do modelo
+      checkpoint: "chk_rapport_estabelecido",
+      summary: "Tentando avançar",
+      suggestedResponse: "Vamos em frente",
+      requiredTools: ["send_text"],
+      reasoning: "Tentativa de avanço",
+    };
+
+    // Apenas goal_initial_reciprocity concluído, goal_city e goal_job ainda pendentes
+    const res = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_block_1",
+      currentPhase: "stage_1_conexao",
+      decision,
+      stageRules: { completed_goals: ["goal_initial_reciprocity"] },
+    });
+
+    assert.equal(res.stageAdvanced, false, "Não deve avançar etapa enquanto houver checkpoints pendentes");
+    assert.equal(res.nextPhase, "stage_1_conexao", "Deve manter a fase atual");
+  });
+
+  // 38. processDeterministicStageProgression avança deterministicamente quando todos os checkpoints forem concluídos
+  await runAsyncTest(38, "processDeterministicStageProgression avança deterministicamente quando 100% concluídos", async () => {
+    const decision = {
+      action: "reply",
+      currentPhase: "stage_1_conexao",
+      nextPhase: "stage_1_conexao",
+      checkpoint: "chk_trabalho",
+      summary: "Último checkpoint de conexão",
+      suggestedResponse: "Que bom!",
+      requiredTools: ["send_text"],
+      reasoning: "Todos os checkpoints cumpridos",
+      objectiveCompletion: {
+        objectiveId: "goal_job",
+        value: "Engenheiro",
+      },
+    };
+
+    // Já tínhamos goal_initial_reciprocity e goal_city; agora conclui goal_job (completando todos os 3 da etapa 1)
+    const res = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_advance_1",
+      currentPhase: "stage_1_conexao",
+      decision,
+      stageRules: { completed_goals: ["goal_initial_reciprocity", "goal_city"] },
+    });
+
+    assert.equal(res.stageAdvanced, true, "Deve avançar etapa automaticamente");
+    assert.equal(res.nextPhase, "descoberta", "Deve avançar para a próxima etapa (descoberta)");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/33 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/38 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 
