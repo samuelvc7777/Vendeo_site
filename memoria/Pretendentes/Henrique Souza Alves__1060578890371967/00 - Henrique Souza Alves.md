@@ -1,0 +1,42 @@
+---
+vendeo_managed: true
+vendeo_contact_id: "1060578890371967"
+vendeo_type: "pretendente_hub"
+full_name: "Henrique Souza Alves"
+username: "henrique.souzalves"
+current_phase: "conexao_inicial"
+checkpoint: "Nenhum"
+updated_at: "2026-09-15T21:45:38.082+00:00"
+---
+
+# 🧭 Hub: Henrique Souza Alves
+
+> [[INDEX|⬅️ Voltar ao Índice Geral de Pretendentes]]
+
+---
+
+## 👤 Ficha Resumida
+- **ID da Conversa:** `1060578890371967`
+- **Nome:** **Henrique Souza Alves**
+- **Instagram:** @henrique.souzalves
+- **Etapa Atual:** `conexao_inicial`
+- **Idade:** Não informado
+- **Cidade:** Não informada
+- **Profissão:** Não informada
+- **Status:** Não informado
+- **Última Atualização:** 15/09/2026, 18:45:38
+
+---
+
+## 🗺️ Navegação do Pretendente
+
+| Documento | Descrição |
+| :--- | :--- |
+| [[01 - Sobre Henrique Souza Alves]] | 🧠 **Fatos Conhecidos** da ContactMemory (idade, trabalho, gostos, pessoas) |
+| [[02 - Conversa com Henrique Souza Alves]] | 💬 **Histórico & Dinâmica** (mensagens recentes, ritmo e tom) |
+| [[03 - Objetivos de Henrique Souza Alves]] | 🎯 **Bússola & Metas** (checklist da etapa e critérios cumpridos) |
+| [[04 - Episódios de Henrique Souza Alves]] | 📜 **Memória Episódica** (perguntas feitas, respostas e autorevelações) |
+| [[05 - Metadados de Henrique Souza Alves]] | ⚙️ **Dados Técnicos** (payload de orquestração e checkpoints) |
+
+---
+*Gerado automaticamente pelo Vendeo Memory Sync (Espelho Humano do Obsidian)*

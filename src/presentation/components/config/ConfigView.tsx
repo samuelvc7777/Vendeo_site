@@ -27,6 +27,7 @@ import { InstagramConnectModal } from "@/presentation/components/instagram/Insta
 import { InstagramAccount } from "@/domain/entities/Instagram";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { ChatStagesManager } from "./ChatStagesManager";
+import { SubagentsManager } from "./SubagentsManager";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 
@@ -244,7 +245,7 @@ export function ConfigView() {
       </div>
 
       {/* Conteúdo com scroll isolado */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 scrollbar-none overscroll-contain">
+      <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-5 scrollbar-none overscroll-contain">
         {/* SEÇÃO 1: BANCO DE DADOS & PERSISTÊNCIA */}
         <div className="space-y-2.5">
           <h2 className="text-xs font-semibold text-[#8e8e8e] uppercase tracking-wider px-1">
@@ -728,7 +729,7 @@ export function ConfigView() {
 
         {/* SEÇÃO: FUNIL DE CONVERSÃO & ETAPAS (CHECK-UPS) */}
         <div className="space-y-2.5">
-          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-4 shadow-sm">
+          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-3.5 sm:p-5 shadow-sm">
             <ChatStagesManager
               stages={stages}
               onCreateStage={createStage}
@@ -745,9 +746,16 @@ export function ConfigView() {
           </div>
         </div>
 
+        {/* SEÇÃO: SUBAGENTES DA PERSONA (CATÁLOGO & MISSÕES) */}
+        <div className="space-y-2.5">
+          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-3.5 sm:p-5 shadow-sm">
+            <SubagentsManager />
+          </div>
+        </div>
+
         {/* SEÇÃO: PILOTO AUTOMÁTICO INTELIGENTE (IA AUTÔNOMA) */}
         <div className="space-y-2.5">
-          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-4 shadow-sm">
+          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-3.5 sm:p-5 shadow-sm">
             <AutoPilotConfigManager />
           </div>
         </div>
@@ -757,7 +765,7 @@ export function ConfigView() {
           <h2 className="text-xs font-semibold text-[#8e8e8e] uppercase tracking-wider px-1">
             Sistema & Infraestrutura
           </h2>
-          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-4 text-xs space-y-2 shadow-sm text-[#a8a8a8]">
+          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-3.5 sm:p-5 text-xs space-y-2 shadow-sm text-[#a8a8a8]">
             <div className="flex justify-between items-center py-1 border-b border-[#222]">
               <span>Versão do Vendeo</span>
               <span className="font-mono text-white font-medium">v1.0.0</span>

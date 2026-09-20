@@ -5,11 +5,46 @@
 // Suporta modos: 'legacy' | 'shadow' | 'experimental'
 // ============================================================================
 import { publishAutoPilotState, activity } from "./cloud_autopilot.ts";
+import {
+  ConversationEpisode,
+  EpisodeActor,
+  EpisodeEventType,
+  EpisodicSearchResult,
+  extractEpisodesFromLarissaMessage,
+  extractEpisodesFromPretendenteMessage,
+  createAudioDeliveredEpisode,
+  saveConversationEpisodes,
+  executeEpisodeWriter,
+  searchConversationEpisodicMemory,
+  validateAntiRepeatGate,
+} from "./conversation_episodic_memory.ts";
+export { validateAntiRepeatGate };
+import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
+export { LARISSA_CONVERSATION_STYLE };
+import {
+  LARISSA_CHAT_STYLE_V2,
+  computeDynamicEmojiBudget,
+  runStyleLint,
+  type StyleLintResult,
+  type EmojiBudgetResult,
+} from "./LarissaChatStyle.ts";
+export {
+  LARISSA_CHAT_STYLE_V2,
+  computeDynamicEmojiBudget,
+  runStyleLint,
+  type StyleLintResult,
+  type EmojiBudgetResult,
+};
 
 export type OrchestrationMode = "legacy" | "shadow" | "experimental";
-export type OrchestrationPhase = "conexao_inicial" | "descoberta";
+export type OrchestrationPhase = "conexao_inicial" | "descoberta" | "compatibilidade" | (string & {});
 export type OrchestrationAction = "reply" | "send_audio" | "wait" | "advance_phase" | "escalate";
-export type SubagentTarget = "conexao_inicial" | "descoberta" | "none";
+export type SubagentTarget =
+  | "conexao_inicial"
+  | "descoberta"
+  | "compatibilidade"
+  | "none"
+  | (string & {});
 export type ProcessingStatus =
   | "idle"
   | "analyzing"
@@ -75,6 +110,7 @@ export interface SubagentDecision {
   checkpoint: string;
   summary: string;
   suggestedResponse: string;
+  responses?: string[];
   nextPhase: OrchestrationPhase;
   reasoning: string;
   requiredTools?: string[];
@@ -94,6 +130,7 @@ export interface OrchestratorDecision {
   checkpoint: string;
   summary: string;
   suggestedResponse: string;
+  responses?: string[];
   requiredTools: string[];
   reasoning: string;
   routedSubagent?: SubagentTarget;
@@ -251,6 +288,133 @@ export interface MemoryProvider {
 }
 
 
+export interface SubagentDefinition {
+  id: string;
+  name: string;
+  mission: string;
+  enabled?: boolean;
+  isSystem?: boolean;
+  stageIds?: string[];
+  description?: string;
+  objectiveFamilies?: string[];
+  capabilities?: string[];
+  restrictions?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export const CANONICAL_SUBAGENTS: Record<string, SubagentDefinition> = {
+  conexao_inicial: {
+    id: "conexao_inicial",
+    name: "Conexão Inicial",
+    mission: "Criar conforto, reciprocidade e um começo natural de conversa, sem transformar o contato em entrevista nem antecipar assuntos profundos.",
+    enabled: true,
+    isSystem: true,
+  },
+  descoberta: {
+    id: "descoberta",
+    name: "Descoberta",
+    mission: "Conhecer organicamente quem o pretendente é, sua rotina, vida, trabalho, gostos e contexto pessoal, aproveitando naturalmente os assuntos que surgem.",
+    enabled: true,
+    isSystem: true,
+  },
+  compatibilidade: {
+    id: "compatibilidade",
+    name: "Compatibilidade",
+    mission: "Entender valores, momento de vida, visão de relacionamento, família, planos e compatibilidade com Larissa, somente quando houver abertura natural para assuntos mais pessoais.",
+    enabled: true,
+    isSystem: true,
+  },
+};
+
+let _subagentsCatalogCache: { data: SubagentDefinition[]; fetchedAt: number } | null = null;
+const SUBAGENTS_CATALOG_CACHE_TTL_MS = 60000;
+
+/**
+ * Carrega catálogo de subagentes diretamente da tabela dedicada `public.subagent_definitions` no Supabase
+ * como Fonte de Verdade Única, com cache em memória (TTL 60s) e fallback seguro em memória para os 3 canônicos.
+ */
+export async function loadSubagentsCatalog(params?: {
+  supabase?: any;
+  forceRefresh?: boolean;
+  includeDisabled?: boolean;
+}): Promise<SubagentDefinition[]> {
+  const now = Date.now();
+  if (
+    !params?.forceRefresh &&
+    _subagentsCatalogCache &&
+    now - _subagentsCatalogCache.fetchedAt < SUBAGENTS_CATALOG_CACHE_TTL_MS
+  ) {
+    if (params?.includeDisabled) {
+      return _subagentsCatalogCache.data;
+    }
+    return _subagentsCatalogCache.data.filter((s) => s.enabled !== false);
+  }
+
+  const fallbackList = Object.values(CANONICAL_SUBAGENTS);
+
+  if (!params?.supabase) {
+    _subagentsCatalogCache = { data: fallbackList, fetchedAt: now };
+    return params?.includeDisabled ? fallbackList : fallbackList.filter((s) => s.enabled !== false);
+  }
+
+  try {
+    const { data, error } = await params.supabase
+      .from("subagent_definitions")
+      .select("*")
+      .order("is_system", { ascending: false })
+      .order("name", { ascending: true });
+
+    if (error || !data || !Array.isArray(data) || data.length === 0) {
+      // Fallback seguro em memória caso banco ou tabela estejam indisponíveis
+      _subagentsCatalogCache = { data: fallbackList, fetchedAt: now };
+      return params?.includeDisabled ? fallbackList : fallbackList.filter((s) => s.enabled !== false);
+    }
+
+    const parsedSubagents: SubagentDefinition[] = data.map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      mission: row.mission,
+      enabled: row.enabled ?? true,
+      isSystem: Boolean(row.is_system),
+      description: row.description || undefined,
+      stageIds: Array.isArray(row.stage_ids) ? row.stage_ids : [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+
+    // Merge resiliente garantindo que os 3 canônicos existam e mantenham isSystem: true
+    const mergedMap = new Map<string, SubagentDefinition>();
+    for (const canon of fallbackList) {
+      mergedMap.set(canon.id, { ...canon });
+    }
+    for (const sub of parsedSubagents) {
+      if (sub && typeof sub.id === "string") {
+        const existing = mergedMap.get(sub.id);
+        if (existing) {
+          mergedMap.set(sub.id, {
+            ...existing,
+            ...sub,
+            isSystem: existing.isSystem, // canônicos sempre preservam isSystem: true
+          });
+        } else {
+          mergedMap.set(sub.id, {
+            ...sub,
+            isSystem: Boolean(sub.isSystem),
+          });
+        }
+      }
+    }
+
+    const resultList = Array.from(mergedMap.values());
+    _subagentsCatalogCache = { data: resultList, fetchedAt: now };
+    return params?.includeDisabled ? resultList : resultList.filter((s) => s.enabled !== false);
+  } catch (err) {
+    _subagentsCatalogCache = { data: fallbackList, fetchedAt: now };
+    return params?.includeDisabled ? fallbackList : fallbackList.filter((s) => s.enabled !== false);
+  }
+}
+
 export interface ConversationAgentInput {
   conversationId: string;
   currentPhase: OrchestrationPhase;
@@ -263,6 +427,8 @@ export interface ConversationAgentInput {
     sender: string;
   };
   recentHistory?: string;
+  openGoalsSummary?: string;
+  availableSubagents?: SubagentDefinition[];
 }
 
 export interface SubagentInput {
@@ -277,6 +443,9 @@ export interface SubagentInput {
     sender: string;
   };
   recentHistory?: string;
+  emojiBudgetSnippet?: string;
+  mission?: string;
+  goalsSnippet?: string;
 }
 
 // Mantido para compatibilidade retroativa
@@ -372,7 +541,8 @@ export function extractJsonFromText(raw: string): any {
 // ----------------------------------------------------------------------------
 export function validateRoutingDecision(
   data: unknown,
-  fallbackPhase: OrchestrationPhase
+  fallbackPhase: OrchestrationPhase,
+  validSubagentIds?: string[]
 ): ConversationRoutingDecision {
   if (!data || typeof data !== "object") {
     return {
@@ -382,18 +552,53 @@ export function validateRoutingDecision(
     };
   }
   const obj = data as Record<string, any>;
+  const action = obj.action === "wait" || obj.action === "pause" ? obj.action : "delegate";
+  const reason =
+    typeof obj.reason === "string"
+      ? obj.reason.trim()
+      : typeof obj.reasoning === "string"
+      ? obj.reasoning.trim()
+      : "Decisão de roteamento válida";
 
-  if (
-    obj.targetSubagent === "conexao_inicial" ||
-    obj.targetSubagent === "descoberta" ||
-    obj.targetSubagent === "none"
-  ) {
-    const action = obj.action === "wait" || obj.action === "pause" ? obj.action : "delegate";
+  // Se 'none' foi expressamente retornado
+  if (obj.targetSubagent === "none") {
     return {
-      targetSubagent: obj.targetSubagent,
-      action,
-      reason: typeof obj.reason === "string" ? obj.reason.trim() : "Decisão de roteamento válida",
+      targetSubagent: "none",
+      action: obj.action === "pause" ? "pause" : "wait",
+      reason,
     };
+  }
+
+  // Se lista de IDs válidos foi informada (catálogo ativo)
+  if (validSubagentIds && Array.isArray(validSubagentIds) && validSubagentIds.length > 0) {
+    if (typeof obj.targetSubagent === "string" && validSubagentIds.includes(obj.targetSubagent)) {
+      return {
+        targetSubagent: obj.targetSubagent,
+        action,
+        reason,
+      };
+    }
+  } else {
+    // Validação aberta padrão (aceita canônicos ou identificador alfanumérico válido)
+    if (
+      obj.targetSubagent === "conexao_inicial" ||
+      obj.targetSubagent === "descoberta" ||
+      obj.targetSubagent === "compatibilidade"
+    ) {
+      return {
+        targetSubagent: obj.targetSubagent,
+        action,
+        reason,
+      };
+    }
+
+    if (typeof obj.targetSubagent === "string" && /^[a-z0-9_]{2,64}$/i.test(obj.targetSubagent)) {
+      return {
+        targetSubagent: obj.targetSubagent,
+        action,
+        reason,
+      };
+    }
   }
 
   // Compatibilidade resiliente com mocks e decisões diretas
@@ -404,11 +609,23 @@ export function validateRoutingDecision(
       reason: "Roteado com base na fase da decisão",
     };
   }
+  if (obj.currentPhase === "compatibilidade" || obj.nextPhase === "compatibilidade") {
+    return {
+      targetSubagent: "compatibilidade",
+      action: "delegate",
+      reason: "Roteado com base na fase da decisão",
+    };
+  }
 
   return {
     targetSubagent: fallbackPhase || "conexao_inicial",
     action: obj.action === "wait" ? "wait" : "delegate",
-    reason: typeof obj.reasoning === "string" ? obj.reasoning.trim() : "Roteamento padrão para fase atual",
+    reason:
+      typeof obj.reasoning === "string"
+        ? obj.reasoning.trim()
+        : typeof obj.reason === "string"
+        ? obj.reason.trim()
+        : "Roteamento padrão para fase atual",
   };
 }
 
@@ -449,7 +666,19 @@ export function validateSubagentDecision(
       : "chk_saudacao_feita";
 
   const summary = typeof obj.summary === "string" ? obj.summary.trim() : "Turno processado";
-  const suggestedResponse = typeof obj.suggestedResponse === "string" ? obj.suggestedResponse.trim() : "";
+
+  let responses: string[] | undefined;
+  if (Array.isArray(obj.responses) && obj.responses.length > 0) {
+    responses = obj.responses.map(String).map((s) => s.trim()).filter(Boolean);
+  }
+
+  let suggestedResponse = typeof obj.suggestedResponse === "string" ? obj.suggestedResponse.trim() : "";
+  if (!suggestedResponse && responses && responses.length > 0) {
+    suggestedResponse = responses.join("\n\n");
+  } else if (suggestedResponse && (!responses || responses.length === 0)) {
+    responses = splitIntoBalloons(suggestedResponse);
+  }
+
   const reasoning =
     typeof obj.reasoning === "string" && obj.reasoning.trim()
       ? obj.reasoning.trim()
@@ -470,6 +699,7 @@ export function validateSubagentDecision(
     checkpoint,
     summary,
     suggestedResponse,
+    responses,
     nextPhase,
     reasoning,
     requiredTools: Array.isArray(obj.requiredTools) ? obj.requiredTools.map(String) : [action === "send_audio" ? "send_audio" : "send_text"],
@@ -1370,24 +1600,49 @@ export function buildConversationAgentPrompt(input: ConversationAgentInput): str
       ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
       : input.recentHistory || "Início da interação");
 
+  // Carrega subagentes ativos do catálogo recebido ou fallback para os 3 canônicos
+  const activeSubagents = (
+    input.availableSubagents && input.availableSubagents.length > 0
+      ? input.availableSubagents
+      : Object.values(CANONICAL_SUBAGENTS)
+  ).filter((s) => s.enabled !== false);
+
+  const subagentsSnippet = activeSubagents
+    .map((s, idx) => {
+      // Limite estrito de tokens: condensado em no máximo 300 caracteres
+      const cleanMission = s.mission?.trim() || "";
+      const compactMission =
+        cleanMission.length > 300 ? cleanMission.substring(0, 297) + "..." : cleanMission;
+      return `${idx + 1}. "${s.id}" (${s.name}):\n   Missão: ${compactMission}`;
+    })
+    .join("\n");
+
+  const noneOptionNumber = activeSubagents.length + 1;
+  const targetSubagentOptions = activeSubagents.map((s) => `"${s.id}"`).join(" | ");
+
   return `Você é o Agente da Conversa da Larissa no Vendeo.
 Sua missão é estritamente de roteamento: analisar o estágio do diálogo e decidir qual subagente especializado deve responder ao pretendente.
+Você NÃO gera a resposta final da Larissa; apenas seleciona o especialista mais adequado.
 
-### SUBAGENTES DISPONÍVEIS:
-1. "conexao_inicial": Atendimento inicial, troca de saudações ("oi", "tudo bem", "como foi seu dia"), acolhimento caloroso e estabelecimento de reciprocidade inicial.
-2. "descoberta": Quando o contato inicial já foi correspondido e o diálogo deve aprofundar em quem ele é (profissão/trabalho, cidade onde mora, rotina, gostos).
-3. "none": Mensagem não exige resposta imediata ou deve aguardar.
+### SUBAGENTES E SUAS MISSÕES:
+${subagentsSnippet}
+${noneOptionNumber}. "none": Mensagem não exige resposta imediata ou deve aguardar.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
+${input.openGoalsSummary ? `\n### TEMAS/OBJETIVOS EM ABERTO DA ETAPA:\n${input.openGoalsSummary}\n` : ""}
 
 ### DIRETRIZ DE DECISÃO
-- Se a fase atual for 'conexao_inicial' e o pretendente estiver apenas cumprimentando ou trocando amenidades, direcione para "conexao_inicial".
-- Se ele já cumprimentou, respondeu com reciprocidade e deu abertura para saber mais, ou se a conversa já estiver na fase 'descoberta', direcione para "descoberta".
+- Avalie a mensagem do pretendente, o contexto emocional e a MISSÃO de cada subagente.
+- Se a fase atual for 'conexao_inicial' e o diálogo estiver em saudações, amenidades ou acolhimento inicial, direcione para "conexao_inicial".
+- Se ele já cumprimentou com reciprocidade e deu abertura para saber quem ele é, ou se a conversa já estiver na fase 'descoberta', direcione para "descoberta".
+- Se o diálogo tocar em valores, momento de vida, relacionamento, família ou compatibilidade com Larissa, direcione para "compatibilidade".
+- Para subagentes adicionais personalizados, utilize estritamente a missão definida de cada um para decidir a delegação adequada.
+- A existência de um objetivo aberto ajuda a nortear a escolha, mas NUNCA sobrepõe a compreensão conversacional e a missão do subagente.
 
 Responda ESTRITAMENTE em JSON puro com as seguintes chaves:
 {
-  "targetSubagent": "conexao_inicial" | "descoberta" | "none",
+  "targetSubagent": ${targetSubagentOptions ? `${targetSubagentOptions} | ` : ""}"none",
   "action": "delegate" | "wait" | "pause",
   "reason": "explicação curta da escolha do subagente"
 }`;
@@ -1403,19 +1658,18 @@ export function buildConexaoInicialPrompt(input: SubagentInput): string {
       ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
       : input.recentHistory || "Início da conversa");
 
-  return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
-Seu objetivo é acolher com carinho, simpatia e validação de reciprocidade.
+  const missionText = input.mission || CANONICAL_SUBAGENTS.conexao_inicial.mission;
 
-### DIRETRIZES DA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
-- Tom: meigo, carinhoso, mineiro natural (usando 'né', 'vc', 'tô', 'tá', 'pra').
-- PROIBIDO terminar balão com ponto final (.)
-- PROIBIDO usar ponto de exclamação (!)
+  return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
+SUA MISSÃO: ${missionText}
+
+### DIRETRIZES DA LARISSA (.agents/LARISSA_CONVERSATION_STYLE.md & .agents/LARISSA_CHAT_STYLE_V2.md)
+${LARISSA_CONVERSATION_STYLE}
+
+${LARISSA_CHAT_STYLE_V2}
+${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
 - Jamais chame o pretendente de Larissa.
-- Responda ao que ele falou antes de fazer qualquer pergunta leve.
-- Mantenha o balão curto e natural de celular.
-- REGRA INVIOLÁVEL DE 'UAI' (RARO E OPCIONAL): O 'uai' é estritamente OPCIONAL e MUITO RARO (use no máximo em 1 a cada 15 falas). Na dúvida, NUNCA use 'uai'. A mineiridade natural da Larissa vem de "vc", "tô", "tá", "né", "pra", pelo ritmo acolhedor e humor, NUNCA carimbando 'uai'. Se puder falar sem 'uai', prefira SEMPRE sem 'uai'.
-- MODERAÇÃO DE RISADAS ('kkk'): Use "kkk" apenas de forma espontânea quando houver motivo real de humor, brincadeira ou deboche meigo. PROIBIDO carimbar "kkk" mecanicamente ao final de respostas factuais simples, idade, cidade, faculdade ou explicações neutras. Em boa parte das falas a Larissa responde com afeto sem usar risada.
-- DIRETRIZ DE FECHAMENTO NATURAL (ZERO PERGUNTA MECÂNICA): NÃO termine toda fala devolvendo a pergunta ("e você?", "e vc?", "você costuma...?"). Uma resposta pode simplesmente fechar afirmando ou comentando (ex: "bife com batata frita fácil", "Simone Mendes", "sou moça de família rapaz kkk"). Só devolva pergunta se houver motivo real ou curiosidade genuína (na maioria das falas encerre sem pergunta).
 - REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar a informação suficiente para responder à pergunta/intenção atual, PARE a busca imediatamente e responda. NÃO encadeie ferramentas adicionais se o fato já foi encontrado. Uma segunda ferramenta só é permitida se a primeira retornou 'found: false' ou for manifestamente insuficiente.
 - PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia ("nossa deve ser puxado mesmo"), É TERMINANTEMENTE PROIBIDO chamar ferramentas (nem persona_audio_search, nem persona_get_fact, nem persona_search). Responda DIRETO em texto com action: "reply".
 - REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é afetuosa, mas NUNCA mente gostos para agradar o homem. Se a memória indicar 'false' ou que ela não curte/não consome (ex: drinks.likes_wine: false, music.likes_tribo_da_periferia: false, movies.shark_movies_preference: false), assuma o fato com sinceridade e bom humor mineiro (ex: "não curto muito não", "não é muito a minha praia"). NUNCA transforme 'false' em "até que curto algumas" ou "acho legal".
@@ -1426,11 +1680,13 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-Se precisar checar fatos já descobertos ou consultar preferências pontuais:
+Se precisar checar fatos já descobertos, consultar objetivos da sua responsabilidade ou consultar preferências pontuais:
+- stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "conexao_inicial"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Priorize SEMPRE persona_get_fact quando a pergunta for sobre um atributo identificável. Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
 - memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
 
 Regras de Uso:
 - PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact / persona_search) > contexto da conversa. Exemplos de diálogos externos/seeds servem APENAS para calibrar estilo coloquial, NUNCA para inventar ou sobrescrever fatos pessoais da Larissa.
@@ -1447,7 +1703,11 @@ Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de racio
   "action": "reply",
   "checkpoint": "chk_saudacao_feita" | "chk_rapport_estabelecido",
   "summary": "resumo de 3 palavras",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "responses": [
+    "balão 1 curto de celular",
+    "balão 2 leve (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos",
   "nextPhase": "conexao_inicial" | "descoberta"
 }`;
 }
@@ -1459,59 +1719,244 @@ export interface SemanticGoalDefinition {
   memoryEntity: string;
   memoryField: string;
   description?: string;
+  kind?: "fact" | "conversation_state";
   required?: boolean;
   order?: number;
   enabled?: boolean;
+  /** Subagentes autorizados a perseguir ou interagir com este objetivo */
+  allowedSubagents?: string[];
+  /** Subagente prioritário de referência (opcional) */
+  primarySubagent?: string;
 }
 
 export interface ResolvedStageGoal {
   id: string;
   label: string;
+  kind?: "fact" | "conversation_state";
   status: "completed" | "pending";
   value: any;
   required?: boolean;
+  allowedSubagents?: string[];
+  primarySubagent?: string;
+  description?: string;
 }
+
+export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
+  {
+    id: "goal_initial_reciprocity",
+    stageId: "stage_1_conexao",
+    label: "Reciprocidade inicial",
+    memoryEntity: "conversation",
+    memoryField: "initial_reciprocity",
+    description: "Reconhecer que a conversa deixou de ser apenas uma saudação e houve pelo menos uma troca minimamente recíproca entre os dois.",
+    kind: "conversation_state",
+    required: true,
+    order: 1,
+    enabled: true,
+    allowedSubagents: ["conexao_inicial"],
+    primarySubagent: "conexao_inicial",
+  },
+  {
+    id: "goal_city",
+    stageId: "stage_1_conexao",
+    label: "Cidade",
+    memoryEntity: "self",
+    memoryField: "city",
+    description: "Descobrir onde ele mora ou contexto geográfico",
+    kind: "fact",
+    required: false,
+    order: 2,
+    enabled: true,
+    allowedSubagents: ["conexao_inicial", "descoberta"],
+    primarySubagent: "conexao_inicial",
+  },
+  {
+    id: "goal_job",
+    stageId: "stage_1_conexao",
+    label: "Profissão / trabalho",
+    memoryEntity: "self",
+    memoryField: "job",
+    description: "Descobrir profissão, ocupação ou trabalho atual",
+    kind: "fact",
+    required: false,
+    order: 3,
+    enabled: true,
+    allowedSubagents: ["conexao_inicial", "descoberta"],
+    primarySubagent: "conexao_inicial",
+  },
+];
 
 export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
   {
     id: "goal_age",
+    stageId: "stage_2_descoberta",
     label: "Idade",
     memoryEntity: "self",
     memoryField: "age",
-    description: "Descobrir a idade naturalmente",
-    required: true,
+    description: "Descobrir a idade ou faixa etária",
+    kind: "fact",
+    required: false,
     order: 1,
     enabled: true,
+    allowedSubagents: ["descoberta"],
+    primarySubagent: "descoberta",
   },
   {
-    id: "goal_city",
-    label: "Cidade",
+    id: "goal_routine",
+    stageId: "stage_2_descoberta",
+    label: "Rotina",
     memoryEntity: "self",
-    memoryField: "city",
-    description: "Descobrir onde ele mora",
-    required: true,
+    memoryField: "routine",
+    description: "Conhecer alguma informação útil sobre como é o cotidiano dele (horário de trabalho, dia/noite, rotina corrida/tranquila, estudos, academia)",
+    kind: "fact",
+    required: false,
     order: 2,
     enabled: true,
+    allowedSubagents: ["descoberta"],
+    primarySubagent: "descoberta",
   },
   {
-    id: "goal_job",
-    label: "Profissão",
+    id: "goal_hobbies",
+    stageId: "stage_2_descoberta",
+    label: "Hobbies e interesses",
     memoryEntity: "self",
-    memoryField: "job",
-    description: "Descobrir o trabalho ou ocupação dele",
+    memoryField: "hobbies",
+    description: "Conhecer pelo menos um gosto, hobby ou atividade que ele realmente curta",
+    kind: "fact",
     required: false,
     order: 3,
     enabled: true,
+    allowedSubagents: ["descoberta"],
+    primarySubagent: "descoberta",
   },
   {
-    id: "goal_relationship",
-    label: "Relacionamento / Filhos",
+    id: "goal_social_style",
+    stageId: "stage_2_descoberta",
+    label: "Estilo de lazer / rolê",
     memoryEntity: "self",
-    memoryField: "relationship_status",
-    description: "Saber sobre status de relacionamento ou se tem filhos",
+    memoryField: "social_style",
+    description: "Entender de forma natural que tipo de programa costuma gostar (caseiro, restaurante, bar, festa, viagem, natureza, passeios)",
+    kind: "fact",
     required: false,
     order: 4,
     enabled: true,
+    allowedSubagents: ["descoberta", "compatibilidade"],
+    primarySubagent: "descoberta",
+  },
+  {
+    id: "goal_discovery_depth",
+    stageId: "stage_2_descoberta",
+    label: "Contexto suficiente de descoberta",
+    memoryEntity: "conversation",
+    memoryField: "discovery_depth",
+    description: "Reconhecer que já existe contexto pessoal suficiente (pelo menos 2 fatos duráveis de categorias distintas ou revelação mais rica acompanhada de reciprocidade) para avançar naturalmente para compatibilidade.",
+    kind: "conversation_state",
+    required: true,
+    order: 5,
+    enabled: true,
+    allowedSubagents: ["descoberta"],
+    primarySubagent: "descoberta",
+  },
+];
+
+export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
+  {
+    id: "goal_relationship",
+    stageId: "stage_3_compatibilidade",
+    label: "Status de relacionamento",
+    memoryEntity: "self",
+    memoryField: "relationship_status",
+    description: "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.",
+    kind: "fact",
+    required: false,
+    order: 1,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
+  },
+  {
+    id: "goal_relationship_intent",
+    stageId: "stage_3_compatibilidade",
+    label: "O que procura atualmente",
+    memoryEntity: "self",
+    memoryField: "relationship_intent",
+    description: "Entender a intenção atual dele em relação a conhecer alguém (algo sério, conhecer sem pressa, relacionamento, não sabe ainda)",
+    kind: "fact",
+    required: false,
+    order: 2,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
+  },
+  {
+    id: "goal_has_children",
+    stageId: "stage_3_compatibilidade",
+    label: "Tem filhos",
+    memoryEntity: "self",
+    memoryField: "has_children",
+    description: "Registrar se ele possui ou não filhos (fato presente). Não misturar com desejo futuro de filhos.",
+    kind: "fact",
+    required: false,
+    order: 3,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
+  },
+  {
+    id: "goal_wants_children",
+    stageId: "stage_3_compatibilidade",
+    label: "Quer ter filhos",
+    memoryEntity: "self",
+    memoryField: "wants_children",
+    description: "Registrar a visão dele sobre ter filhos no futuro. Só concluir com evidência clara. Não inferir de ter filhos.",
+    kind: "fact",
+    required: false,
+    order: 4,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
+  },
+  {
+    id: "goal_family_values",
+    stageId: "stage_3_compatibilidade",
+    label: "Família e valores",
+    memoryEntity: "self",
+    memoryField: "family_values",
+    description: "Conhecer algum aspecto relevante sobre como ele enxerga família, vínculo, respeito, estabilidade ou relações pessoais",
+    kind: "fact",
+    required: false,
+    order: 5,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
+  },
+  {
+    id: "goal_future_plans",
+    stageId: "stage_3_compatibilidade",
+    label: "Planos futuros",
+    memoryEntity: "self",
+    memoryField: "future_plans",
+    description: "Conhecer algum plano relevante de médio/longo prazo (carreira, moradia, viagens, família, projetos pessoais)",
+    kind: "fact",
+    required: false,
+    order: 6,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
+  },
+  {
+    id: "goal_faith_values",
+    stageId: "stage_3_compatibilidade",
+    label: "Fé / espiritualidade",
+    memoryEntity: "self",
+    memoryField: "faith_values",
+    description: "Conhecer esse aspecto SOMENTE quando surgir naturalmente. Nunca forçar pergunta religiosa.",
+    kind: "fact",
+    required: false,
+    order: 7,
+    enabled: true,
+    allowedSubagents: ["compatibilidade"],
+    primarySubagent: "compatibilidade",
   },
 ];
 
@@ -1521,20 +1966,24 @@ export async function resolveStageChecklistGoals(params: {
   stageNameOrId?: string;
   memoryProvider: MemoryProvider;
   completedGoalIds?: string[];
-}): Promise<{ stage: string; goals: ResolvedStageGoal[] }> {
+  historyMessages?: any[];
+  episodicMemory?: any[];
+}): Promise<{ stage: string; goals: ResolvedStageGoal[]; objectives: any[] }> {
   const { supabase, conversationId, stageNameOrId, memoryProvider, completedGoalIds = [] } = params;
   const targetStageQuery = (stageNameOrId || "descoberta").trim().toLowerCase();
 
   let stagesList: any[] = [];
   try {
-    const { data: stagesRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", "__chat_stages__")
-      .maybeSingle();
+    if (supabase) {
+      const { data: stagesRow } = await supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .eq("contact_id", "__chat_stages__")
+        .maybeSingle();
 
-    if (stagesRow?.stage_completed_rules?.stages && Array.isArray(stagesRow.stage_completed_rules.stages)) {
-      stagesList = stagesRow.stage_completed_rules.stages;
+      if (stagesRow?.stage_completed_rules?.stages && Array.isArray(stagesRow.stage_completed_rules.stages)) {
+        stagesList = stagesRow.stage_completed_rules.stages;
+      }
     }
   } catch (err) {
     // Fail-safe silencioso
@@ -1549,6 +1998,10 @@ export async function resolveStageChecklistGoals(params: {
 
   if (!matchedStage && targetStageQuery.includes("descoberta")) {
     matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("descoberta"));
+  } else if (!matchedStage && (targetStageQuery.includes("conexao") || targetStageQuery.includes("conexão"))) {
+    matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("conex"));
+  } else if (!matchedStage && targetStageQuery.includes("compatibilidade")) {
+    matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("compat"));
   }
 
   let rawGoals: SemanticGoalDefinition[] = [];
@@ -1560,13 +2013,23 @@ export async function resolveStageChecklistGoals(params: {
       memoryEntity: o.memoryEntity || "self",
       memoryField: o.memoryField || "",
       description: o.description,
+      kind: o.kind || (o.id === "goal_initial_reciprocity" || o.id === "goal_discovery_depth" ? "conversation_state" : "fact"),
       required: o.required,
       order: o.order,
       enabled: o.enabled,
+      allowedSubagents: o.allowedSubagents,
+      primarySubagent: o.primarySubagent,
     }));
   } else if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
-    rawGoals = matchedStage.goals;
-  } else if (targetStageQuery.includes("descoberta") || targetStageQuery === "descoberta") {
+    rawGoals = matchedStage.goals.map((g: any) => ({
+      ...g,
+      kind: g.kind || (g.id === "goal_initial_reciprocity" || g.id === "goal_discovery_depth" ? "conversation_state" : "fact"),
+    }));
+  } else if (targetStageQuery.includes("conexao") || targetStageQuery.includes("conexão") || targetStageQuery === "stage_1_conexao") {
+    rawGoals = DEFAULT_CONEXAO_GOALS;
+  } else if (targetStageQuery.includes("compatibilidade") || targetStageQuery === "stage_3_compatibilidade") {
+    rawGoals = DEFAULT_COMPATIBILIDADE_GOALS;
+  } else {
     rawGoals = DEFAULT_DESCOBERTA_GOALS;
   }
 
@@ -1578,35 +2041,84 @@ export async function resolveStageChecklistGoals(params: {
   const resolvedGoals: ResolvedStageGoal[] = [];
 
   for (const goal of activeGoals) {
+    const isStateGoal =
+      goal.kind === "conversation_state" ||
+      goal.id === "goal_initial_reciprocity" ||
+      goal.id === "goal_discovery_depth";
+
+    const baseResolved = {
+      id: goal.id,
+      label: goal.label,
+      kind: isStateGoal ? ("conversation_state" as const) : ("fact" as const),
+      required: goal.required,
+      allowedSubagents: goal.allowedSubagents,
+      primarySubagent: goal.primarySubagent,
+      description: goal.description,
+    };
+
+    if (isStateGoal) {
+      let isCompleted = completedGoalIds.includes(goal.id);
+
+      if (!isCompleted) {
+        if (goal.id === "goal_initial_reciprocity") {
+          const msgs = params.historyMessages || [];
+          if (msgs.length >= 2) {
+            const hasUserSubstantive = msgs.some((m: any) => {
+              const isUser = !m.is_from_me && m.sender_id !== "me" && m.sender !== "me" && !m.is_mine;
+              const text = (m.text || m.content || "").trim();
+              return isUser && text.length > 3 && !/^(oi|olá|ola|oii|boa noite|boa tarde|bom dia)[.!]?$/i.test(text);
+            });
+            if (hasUserSubstantive || msgs.length >= 4) {
+              isCompleted = true;
+            }
+          }
+        } else if (goal.id === "goal_discovery_depth") {
+          let knownFactsCount = 0;
+          const factsToCheck = ["age", "city", "job", "routine", "hobbies", "social_style"];
+          for (const f of factsToCheck) {
+            const r = await memoryProvider.getFact(conversationId, "self", f);
+            if (r.found && r.value !== undefined && r.value !== null && r.value !== "") {
+              knownFactsCount++;
+            }
+          }
+          if (knownFactsCount >= 2) {
+            isCompleted = true;
+          } else if (params.episodicMemory && params.episodicMemory.length >= 2) {
+            isCompleted = true;
+          }
+        }
+      }
+
+      resolvedGoals.push({
+        ...baseResolved,
+        status: isCompleted ? "completed" : "pending",
+        value: isCompleted ? true : null,
+      });
+      continue;
+    }
+
+    // Objetivo do tipo FACT: busca estritamente na memória estruturada do contato
     const entity = (goal.memoryEntity || "self").trim().toLowerCase();
     const field = (goal.memoryField || "").trim().toLowerCase();
-
-    // 1. Consulta fato estruturado na memória do contato (deterministico)
     const factRes = await memoryProvider.getFact(conversationId, entity, field);
 
     if (factRes.found && factRes.value !== undefined && factRes.value !== null && factRes.value !== "") {
       resolvedGoals.push({
-        id: goal.id,
-        label: goal.label,
+        ...baseResolved,
         status: "completed",
         value: factRes.value,
-        required: goal.required,
       });
     } else if (completedGoalIds.includes(goal.id)) {
       resolvedGoals.push({
-        id: goal.id,
-        label: goal.label,
+        ...baseResolved,
         status: "completed",
         value: true,
-        required: goal.required,
       });
     } else {
       resolvedGoals.push({
-        id: goal.id,
-        label: goal.label,
+        ...baseResolved,
         status: "pending",
         value: null,
-        required: goal.required,
       });
     }
   }
@@ -1619,14 +2131,84 @@ export async function resolveStageChecklistGoals(params: {
       id: g.id,
       title: g.label,
       label: g.label,
+      kind: g.kind || "fact",
       status: g.status,
       value: g.value,
       required: g.required,
+      allowedSubagents: g.allowedSubagents,
+      primarySubagent: g.primarySubagent,
     })),
   };
 }
 
 export const resolveStageObjectives = resolveStageChecklistGoals;
+
+/**
+ * Filtra os objetivos da etapa autorizados para a responsabilidade do subagente (Many-to-Many).
+ * Preserva retrocompatibilidade total: se allowedSubagents for null, undefined ou vazio,
+ * o objetivo é considerado acessível para todos os subagentes da etapa.
+ */
+export function filterGoalsForSubagent(
+  goals: ResolvedStageGoal[],
+  subagentId: string
+): { openGoals: ResolvedStageGoal[]; completedGoals: ResolvedStageGoal[] } {
+  const authorized = goals.filter((g) => {
+    if (!g.allowedSubagents || !Array.isArray(g.allowedSubagents) || g.allowedSubagents.length === 0) {
+      return true;
+    }
+    return g.allowedSubagents.includes(subagentId);
+  });
+
+  return {
+    openGoals: authorized.filter((g) => g.status === "pending"),
+    completedGoals: authorized.filter((g) => g.status === "completed"),
+  };
+}
+
+/**
+ * Formata um snippet compacto de Missão e Objetivos autorizados para injeção no prompt do subagente.
+ * Baixo consumo de tokens e sem ambiguidade.
+ */
+export function formatGoalsSnippetForSubagent(
+  subagentId: string,
+  mission: string,
+  openGoals: ResolvedStageGoal[],
+  completedGoals: ResolvedStageGoal[]
+): string {
+  const parts: string[] = [
+    `### SUA MISSÃO NESTE TURNO`,
+    mission,
+    ``,
+    `### OBJETIVOS DA SUA RESPONSABILIDADE`,
+  ];
+
+  if (openGoals.length > 0) {
+    parts.push(`- ABERTOS (considere no máximo 1 objetivo neste turno, SOMENTE se couber naturalmente):`);
+    for (const g of openGoals) {
+      const desc = g.description ? ` (${g.description})` : "";
+      const reqLabel = g.required ? " [obrigatório da etapa]" : "";
+      parts.push(`  • ${g.label}${reqLabel}${desc}`);
+    }
+  } else {
+    parts.push(`- ABERTOS: Nenhum objetivo pendente na sua responsabilidade neste momento.`);
+  }
+
+  if (completedGoals.length > 0) {
+    parts.push(`- JÁ CONHECIDOS (PROIBIDO REPETIR OU PERGUNTAR):`);
+    for (const g of completedGoals) {
+      const valStr = g.value !== undefined && g.value !== null && g.value !== true ? `: ${g.value}` : "";
+      parts.push(`  • ${g.label}${valStr}`);
+    }
+  }
+
+  parts.push(``);
+  parts.push(`### DIRETRIZ DE OURO DE OBJETIVOS`);
+  parts.push(`1. Responder o que ele falou e acolher o momento emocional dele tem PRIORIDADE MÁXIMA.`);
+  parts.push(`2. NUNCA faça mais de uma pergunta por turno.`);
+  parts.push(`3. Se nenhum objetivo aberto couber com extrema naturalidade, NÃO pergunte objetivo algum; apenas continue o papo.`);
+
+  return parts.join("\n");
+}
 
 // ----------------------------------------------------------------------------
 // Persona Memory da Larissa (Dossiê Canônico Estruturado & Persistente)
@@ -2202,18 +2784,18 @@ export function buildDescobertaPrompt(input: SubagentInput): string {
       ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_pergunta_sobre_ele"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
       : input.recentHistory || "Início da conversa");
 
-  return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
-Seu objetivo é conduzir um diálogo afetuoso, recíproco e natural para conhecer quem o pretendente é.
+  const missionText = input.mission || CANONICAL_SUBAGENTS.descoberta.mission;
 
-### DIRETRIZES DA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
+  return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
+SUA MISSÃO: ${missionText}
+
+### DIRETRIZES DA LARISSA (.agents/LARISSA_CONVERSATION_STYLE.md & .agents/LARISSA_CHAT_STYLE_V2.md)
+${LARISSA_CONVERSATION_STYLE}
+
+${LARISSA_CHAT_STYLE_V2}
+${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
 - Aplique a Regra da Reciprocidade: conte algo breve sobre você (estuda enfermagem, mora em São João del Rei, trabalha com vendas em casa).
-- Tom: meigo, carinhoso, mineiro natural (usando 'né', 'vc', 'tô', 'tá', 'pra').
-- PROIBIDO terminar balão com ponto final (.)
-- PROIBIDO usar ponto de exclamação (!)
-- Uma pergunta leve por vez, sem interrogatório. Balão curto de celular.
-- REGRA INVIOLÁVEL DE 'UAI' (RARO E OPCIONAL): O 'uai' é estritamente OPCIONAL e MUITO RARO (use no máximo em 1 a cada 15 falas). Na dúvida, NUNCA use 'uai'. A mineiridade natural da Larissa vem de "vc", "tô", "tá", "né", "pra", pelo ritmo acolhedor e humor, NUNCA carimbando 'uai'. Se puder falar sem 'uai', prefira SEMPRE sem 'uai'.
-- MODERAÇÃO DE RISADAS ('kkk'): Use "kkk" apenas de forma espontânea quando houver motivo real de humor, brincadeira, deboche meigo ou situação engraçada. PROIBIDO carimbar "kkk" mecanicamente ao final de respostas factuais simples, idade, cidade, faculdade, período ou explicações neutras. Em boa parte das falas a Larissa responde de forma carinhosa sem colocar risada.
-- DIRETRIZ DE FECHAMENTO NATURAL (ZERO PERGUNTA MECÂNICA): NÃO termine toda fala devolvendo pergunta ("e você?", "e vc?", "você costuma...?"). Em conversas reais, a Larissa com frequência apenas responde afirmando, comentando, fazendo deboche meigo ou rindo (ex: "bife com batata frita fácil", "Simone Mendes", "sou moça de família rapaz kkk", "moro no Matosinhos"). Na maioria das falas, encerre sem pergunta. Só faça pergunta se houver motivo real ou curiosidade genuína.
 - REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar a informação suficiente para responder à pergunta/intenção atual, PARE a busca imediatamente e formule a resposta. NÃO encadeie ferramentas adicionais se o fato pedido já foi encontrado. Uma segunda ferramenta só é permitida se a primeira retornou 'found: false' ou for manifestamente insuficiente.
 - PRESERVAÇÃO DE TÓPICO ESPECÍFICO EM PERGUNTAS: Quando o pretendente citar um ITEM, BANDA, MÚSICA, PESSOA, COMIDA, BEBIDA, ATIVIDADE ou FILME específico e perguntar se você gosta, curte, ouve, bebe, assiste ou qual sua opinião (ex: Tribo da Periferia, filme de tubarão, vinho, café puro): consulte a preferência sobre ESSE ITEM ESPECÍFICO (ex: persona_get_fact com chave daquele item ou persona_search com o nome exato citado). NUNCA substitua a busca por uma categoria genérica (ex: 'qual artista favorito').
 - REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é afetuosa, mas NUNCA finge afinidade para agradar o homem. Se a memória indicar 'false' ou que ela não curte/não consome (ex: drinks.likes_wine: false, music.likes_tribo_da_periferia: false, movies.shark_movies_preference: false), assuma o fato com sinceridade e bom humor mineiro (ex: "não curto muito não, sou mais do sertanejo", "filme de tubarão não é muito a minha praia"). NUNCA transforme 'false' em "até que curto algumas" ou "acho legal". (Atenção: not_found NÃO é false; para itens não cadastrados responda com cautela sem inventar).
@@ -2246,6 +2828,7 @@ Se precisar checar fatos já descobertos, consultar objetivos ou buscar dados so
 - persona_search: busca aberta para histórias, perrengues, motivos ou narrativas da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "perrengue faculdade moto chuva"}}
 - memory_get_fact: consulta fatos estruturados sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
 - memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
 
 Regras de Uso de Ferramentas:
 - PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact / persona_search) > contexto da conversa. Exemplos externos servem APENAS para estilo coloquial, NUNCA para inventar ou sobrescrever fatos pessoais da Larissa.
@@ -2262,8 +2845,104 @@ Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de racio
   "action": "reply",
   "checkpoint": "chk_pergunta_sobre_ele" | "chk_troca_cidade",
   "summary": "resumo de 3 palavras",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "responses": [
+    "balão 1 curto e natural",
+    "balão 2 afetuoso (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos",
   "nextPhase": "descoberta"
+}`;
+}
+
+/**
+ * Construtor Unificado de Prompt de Subagente (suporta canônicos e customizados).
+ * Garante que qualquer subagente receba sua missão específica e herde 100% o estilo e as restrições da Larissa.
+ */
+export function buildSubagentPrompt(
+  input: SubagentInput & {
+    subagentId: string;
+    subagentName?: string;
+  }
+): string {
+  const targetId = input.subagentId;
+  if (targetId === "conexao_inicial") {
+    return buildConexaoInicialPrompt(input);
+  }
+  if (targetId === "descoberta") {
+    return buildDescobertaPrompt(input);
+  }
+
+  // Suporte a compatibilidade e a subagentes customizados
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_interacao"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da conversa");
+
+  const displayName = input.subagentName || (targetId === "compatibilidade" ? "Compatibilidade" : targetId);
+  const missionText =
+    input.mission ||
+    (targetId === "compatibilidade"
+      ? CANONICAL_SUBAGENTS.compatibilidade.mission
+      : `Atuar com foco especializado em ${displayName}, mantendo conversa natural e acolhedora.`);
+
+  return `Você é a subagente especialista em ${displayName.toUpperCase()} da Larissa (23 anos, moça meiga de Minas Gerais).
+SUA MISSÃO: ${missionText}
+
+### DIRETRIZES DA LARISSA (.agents/LARISSA_CONVERSATION_STYLE.md & .agents/LARISSA_CHAT_STYLE_V2.md)
+${LARISSA_CONVERSATION_STYLE}
+
+${LARISSA_CHAT_STYLE_V2}
+${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+- Jamais chame o pretendente de Larissa.
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar a informação suficiente para responder à pergunta/intenção atual, PARE a busca imediatamente e responda. NÃO encadeie ferramentas adicionais se o fato já foi encontrado.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia, É TERMINANTEMENTE PROIBIDO chamar ferramentas. Responda DIRETO em texto com action: "reply".
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é afetuosa, mas NUNCA finge afinidade ou mente gostos para agradar o homem. Se a memória indicar 'false' ou que ela não curte/não consome, assuma o fato com sinceridade e bom humor mineiro.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar estritamente a partir do antecedente imediatamente anterior da conversa.
+- ESTILO NUNCA SOBRESCREVE FATO: Ser meiga não autoriza transformar desgostos em afinidade. Sinceridade com doçura.
+
+### REGRAS DE OURO DOS OBJETIVOS SEMÂNTICOS (BÚSSOLA DE CONVERSA)
+1. Os objetivos da etapa são uma **BÚSSOLA DE ORIENTAÇÃO** para a conversa, **NUNCA UM INTERROGATÓRIO**.
+2. **Máximo 1 pergunta leve por turno**: Jamais dispare múltiplas perguntas ou perguntas em sequência se ele não respondeu.
+3. Responda e acolha com afeto o que o pretendente acabou de falar ANTES de qualquer pergunta.
+4. Se o pretendente mudou de assunto, fez outra pergunta ou ignorou sua curiosidade anterior, **NÃO INSISTA**; acompanhe o fluxo dele com naturalidade.
+5. Se ele já informou espontaneamente algo, registre como conhecido e **NÃO PERGUNTE DE NOVO**.
+6. Você decide organicamente qual tópico abordar ou se neste turno deve apenas acolher sem fazer pergunta alguma.
+
+### CONTEXTO DA CONVERSA
+${contextBlock}
+
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
+Trabalhe primeiro apenas com o contexto recebido.
+Se precisar checar fatos já descobertos, consultar objetivos da sua responsabilidade ou consultar preferências pontuais:
+- stage_objectives_get (ou checklist_get_stage_state): consulta o estado atual dos objetivos da fase (quais tópicos estão 'completed' ou 'pending'). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "${input.currentPhase}"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Priorize SEMPRE persona_get_fact quando a pergunta for sobre um atributo identificável. Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
+- memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
+- memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
+
+Regras de Uso:
+- PRIORIDADE ABSOLUTA DE FATOS: PersonaMemory canônica (persona_get_fact / persona_search) > contexto da conversa. Exemplos externos servem APENAS para estilo coloquial, NUNCA para inventar fatos da Larissa.
+- Não consulte memória por curiosidade ou se o contexto atual já for suficiente. Em saudações triviais, NUNCA chame ferramentas.
+- Para acionar ferramenta, responda em JSON compacto: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "..."}}
+
+### CHECKPOINTS DESTA FASE
+- 'chk_interacao': Interação regular em andamento. Próxima fase: '${input.currentPhase}'.
+- 'chk_concluido': Subagente concluiu sua atuação no momento ou conduziu o alinhamento. Próxima fase: '${input.currentPhase}'.
+
+Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
+{
+  "action": "reply",
+  "checkpoint": "chk_interacao" | "chk_concluido",
+  "summary": "resumo de 3 palavras",
+  "responses": [
+    "balão 1 curto de celular",
+    "balão 2 leve (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos",
+  "nextPhase": "${input.currentPhase}"
 }`;
 }
 
@@ -2804,68 +3483,305 @@ export async function executeMemoryWriter(params: {
 }
 
 // ----------------------------------------------------------------------------
-// 8. Helper de Invocação de Modelo (Runtime Mock ou Atria-Dawn-Preview)
+// 8. Helper de Invocação de Modelo (Runtime Mock ou Kie.ai Sol / Terra)
 // ----------------------------------------------------------------------------
-async function callModelOrAtria(
-  prompt: string,
-  options: {
-    runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }> };
-    supabase: any;
+
+function extractKieResponseText(rawTextOrPayload: any): string {
+  if (!rawTextOrPayload) return "";
+  if (typeof rawTextOrPayload === "object") {
+    if (typeof rawTextOrPayload.output_text === "string") return rawTextOrPayload.output_text;
+    if (Array.isArray(rawTextOrPayload.output)) {
+      return rawTextOrPayload.output
+        .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
+        .map((content: any) => (typeof content?.text === "string" ? content.text : ""))
+        .filter(Boolean)
+        .join("\n");
+    }
   }
+
+  if (typeof rawTextOrPayload === "string") {
+    try {
+      const parsed = JSON.parse(rawTextOrPayload);
+      const res = extractKieResponseText(parsed);
+      if (res) return res;
+    } catch {}
+
+    const lines = rawTextOrPayload.split("\n");
+    let accumulatedDelta = "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const dataStr = line.slice(6).trim();
+      if (!dataStr || dataStr === "[DONE]") continue;
+      try {
+        const data = JSON.parse(dataStr);
+        if (data.type === "response.output_text.done" && typeof data.text === "string") {
+          return data.text;
+        }
+        if (data.type === "response.output_item.done" && Array.isArray(data.item?.content)) {
+          const joined = data.item.content
+            .map((c: any) => c.text || "")
+            .filter(Boolean)
+            .join("\n");
+          if (joined) return joined;
+        }
+        if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
+          accumulatedDelta += data.delta;
+        }
+      } catch {}
+    }
+    if (accumulatedDelta.trim()) return accumulatedDelta.trim();
+  }
+
+  return "";
+}
+
+export interface ModelCallOptions {
+  runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }> };
+  supabase: any;
+  model?: string;
+  temperature?: number;
+  reasoningEffort?: "low" | "medium";
+}
+
+async function callModelOrOpenAi(
+  prompt: string,
+  options: ModelCallOptions
 ): Promise<{ content: string; tokens: number }> {
   if (options.runtime?.callModel) {
     const res = await options.runtime.callModel(prompt);
     return { content: res.content, tokens: res.tokens || 0 };
   }
 
-  // Motor Oficial Atria (Atria-Dawn-Preview / api.atria-asi.ai)
-  let atriaKey = (Deno?.env?.get?.("ATRIA_API_KEY") || "").trim();
-  if (!atriaKey) {
-    const { data: cfgSecret } = await options.supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "atria_api_key")
-      .maybeSingle();
-    atriaKey = (cfgSecret?.app_secret || "").trim();
-  }
-  if (!atriaKey) {
-    throw new Error("Chave de API da Atria (atria_api_key) não configurada.");
-  }
-
-  const atriaRes = await fetch("https://api.atria-asi.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${atriaKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "Atria-Dawn-Preview",
-      temperature: 0.2,
-      max_tokens: 3000,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  if (!atriaRes.ok) {
-    throw new Error(`Atria retornou erro HTTP ${atriaRes.status}: ${await atriaRes.text()}`);
-  }
-
-  const jsonRes = await atriaRes.json();
-  const choice = jsonRes.choices?.[0];
-  const content = choice?.message?.content || "";
-  const tokens = jsonRes.usage?.total_tokens || 0;
-
-  if (!content) {
-    console.error(
-      `[Orchestrator] Atria retornou content vazio! finish_reason=${choice?.finish_reason}, tokens=${JSON.stringify(jsonRes.usage)}`
-    );
-    if (choice?.message?.reasoning_content) {
-      console.log(`[Orchestrator] reasoning_content da Atria (${choice.message.reasoning_content.length} chars): ${choice.message.reasoning_content.slice(0, 300)}...`);
+  // 1. Motor Oficial Prioritário: OpenAI (api.openai.com)
+  let openAiKey = (Deno?.env?.get?.("OPENAI_API_KEY") || "").trim();
+  if (!openAiKey) {
+    try {
+      const { data: cfgSecret } = await options.supabase
+        .from("instagram_config")
+        .select("app_secret")
+        .eq("id", "openai_api_key")
+        .maybeSingle();
+      openAiKey = (cfgSecret?.app_secret || "").trim();
+    } catch (_err) {
+      // Fail-safe silencioso
     }
   }
 
-  return { content, tokens };
+  const primaryModel = options.model || "gpt-4o-mini";
+  const maxRetries = 3;
+  let lastError: any = null;
+
+  if (openAiKey) {
+    let currentModel = primaryModel;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[Orchestrator] Invocando OpenAI oficial (${currentModel}) tentativa ${attempt}/${maxRetries}...`);
+        const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${openAiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: currentModel,
+            messages: [{ role: "user", content: prompt }],
+            temperature: options.temperature ?? 0.3,
+            response_format: { type: "json_object" },
+          }),
+          signal: AbortSignal.timeout(35000),
+        });
+
+        if (oaiRes.ok) {
+          const jsonRes = await oaiRes.json();
+          const choice = jsonRes.choices?.[0];
+          let content = choice?.message?.content || "";
+          const tokens = jsonRes.usage?.total_tokens || Math.ceil((prompt.length + content.length) / 4);
+
+          if (!content && choice?.message?.reasoning_content) {
+            const match = choice.message.reasoning_content.match(/\{[\s\S]*\}/);
+            if (match) content = match[0];
+          }
+
+          if (content.trim()) {
+            return { content: content.trim(), tokens };
+          }
+        }
+
+        // Se o modelo solicitado der 404 (model_not_found), tenta fallback para gpt-4o-mini
+        if (oaiRes.status === 404 && currentModel !== "gpt-4o-mini") {
+          console.warn(`[Orchestrator] Modelo ${currentModel} não encontrado na OpenAI (404). Alternando para gpt-4o-mini...`);
+          currentModel = "gpt-4o-mini";
+          continue;
+        }
+
+        if ([500, 502, 503, 504, 429].includes(oaiRes.status)) {
+          const warnText = await oaiRes.text();
+          console.warn(`[Orchestrator] OpenAI (${currentModel}) retornou status transitório ${oaiRes.status} na tentativa ${attempt}/${maxRetries}. Aguardando retry...`);
+          lastError = new Error(`OpenAI retornou erro HTTP ${oaiRes.status}: ${warnText.slice(0, 150)}`);
+          await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+          continue;
+        }
+
+        const errText = await oaiRes.text();
+        lastError = new Error(`OpenAI retornou erro HTTP ${oaiRes.status}: ${errText.slice(0, 200)}`);
+        break;
+      } catch (fetchErr: any) {
+        lastError = fetchErr;
+        console.warn(`[Orchestrator] Falha de conexão com OpenAI na tentativa ${attempt}/${maxRetries}:`, fetchErr.message);
+        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+      }
+    }
+  }
+
+  // 2. Fallback Secundário via Kie.ai (gpt-5-6-sol / gpt-5-6-terra)
+  let kieKey = (Deno?.env?.get?.("KIE_API_KEY") || "").trim();
+  if (!kieKey) {
+    try {
+      const { data: cfgSecret } = await options.supabase
+        .from("instagram_config")
+        .select("app_secret")
+        .eq("id", "kie_api_key")
+        .maybeSingle();
+      kieKey = (cfgSecret?.app_secret || "").trim();
+    } catch (_err) {}
+  }
+  if (!kieKey) {
+    kieKey = "467f4240bdb260cfed28f392c08d6771";
+  }
+
+  if (kieKey) {
+    try {
+      console.log("[Orchestrator] Acionando contingência Kie.ai Codex...");
+      const kieModel = options.model?.includes("terra") ? "gpt-5-6-terra" : "gpt-5-6-sol";
+      const kieRes = await fetch("https://api.kie.ai/codex/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${kieKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: kieModel,
+          input: [
+            {
+              role: "user",
+              content: [{ type: "input_text", text: prompt }],
+            },
+          ],
+          reasoning: { effort: options.reasoningEffort || "low" },
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (kieRes.ok) {
+        const sseText = await kieRes.text();
+        const content = extractKieResponseText(sseText);
+        if (content.trim()) {
+          const approxTokens = Math.ceil((prompt.length + content.length) / 4);
+          return { content: content.trim(), tokens: approxTokens };
+        }
+      }
+    } catch (kieErr: any) {
+      console.warn("[Orchestrator] Contingência Kie.ai indisponível:", kieErr.message);
+    }
+  }
+
+  // 3. Fallback Terciário via Atria (Atria-Dawn-Preview)
+  let atriaKey = (Deno?.env?.get?.("ATRIA_API_KEY") || "").trim();
+  if (!atriaKey) {
+    try {
+      const { data: atriaSecret } = await options.supabase
+        .from("instagram_config")
+        .select("app_secret")
+        .eq("id", "atria_api_key")
+        .maybeSingle();
+      atriaKey = (atriaSecret?.app_secret || "").trim();
+    } catch (_err) {}
+  }
+
+  if (atriaKey) {
+    try {
+      console.log("[Orchestrator] Acionando contingência Atria...");
+      const atriaRes = await fetch("https://api.atria-asi.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${atriaKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "Atria-Dawn-Preview",
+          temperature: 0.2,
+          max_tokens: 3000,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+
+      if (atriaRes.ok) {
+        const jsonRes = await atriaRes.json();
+        const choice = jsonRes.choices?.[0];
+        let content = choice?.message?.content || "";
+        const tokens = jsonRes.usage?.total_tokens || 0;
+
+        if (!content && choice?.message?.reasoning_content) {
+          const match = choice.message.reasoning_content.match(/\{[\s\S]*\}/);
+          if (match) content = match[0];
+        }
+
+        if (content) {
+          return { content, tokens };
+        }
+      }
+    } catch (atriaErr: any) {
+      console.warn("[Orchestrator] Contingência Atria indisponível:", atriaErr.message);
+    }
+  }
+
+  // 4. Fallback Defensivo Final via Groq Cloud
+  let groqKey = (Deno?.env?.get?.("GROQ_API_KEY") || "").trim();
+  if (!groqKey) {
+    try {
+      const { data: groqSecret } = await options.supabase
+        .from("instagram_config")
+        .select("app_secret")
+        .eq("id", "groq_api_key")
+        .maybeSingle();
+      groqKey = (groqSecret?.app_secret || "").trim();
+    } catch (_err) {}
+  }
+
+  if (groqKey) {
+    try {
+      console.log("[Orchestrator] Acionando fallback defensivo final via Groq...");
+      const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${groqKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "qwen/qwen3.8-27b",
+          temperature: 0.2,
+          max_tokens: 600,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (groqRes.ok) {
+        const jsonRes = await groqRes.json();
+        const content = jsonRes.choices?.[0]?.message?.content || "";
+        const tokens = jsonRes.usage?.total_tokens || 0;
+        if (content) return { content, tokens };
+      }
+    } catch (groqErr: any) {
+      console.warn("[Orchestrator] Fallback final da Groq também falhou:", groqErr.message);
+    }
+  }
+
+  throw lastError || new Error("Falha na invocação da IA (OpenAI, Kie.ai, Atria e Groq indisponíveis).");
 }
+
+const callModelOrKie = callModelOrOpenAi;
+const callModelOrAtria = callModelOrOpenAi;
 
 // ----------------------------------------------------------------------------
 // 9. Motor Operacional Determinístico do Backend (runExperimentalOrchestration)
@@ -2880,6 +3796,7 @@ export interface RunOrchestrationParams {
     sender: string;
   };
   correlationId?: string;
+  model?: string;
   memoryProvider?: MemoryProvider;
   runtime?: {
     sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
@@ -3305,20 +4222,44 @@ export async function runExperimentalOrchestration(
     });
 
     // ------------------------------------------------------------------------
-    // CAMADA 1: AGENTE DA CONVERSA (ROTEADOR DE DECISÃO)
+    // RESOLUÇÃO DE OBJETIVOS DA ETAPA (Many-to-Many & Subagent Missions)
     // ------------------------------------------------------------------------
+    const completedGoalIds = (orchState as any).completedGoalIds || stageRules.completed_goals || [];
+    const stageChecklistForRouter = await resolveStageObjectives({
+      supabase,
+      conversationId,
+      stageNameOrId: currentPhase,
+      memoryProvider,
+      completedGoalIds,
+    });
+
+    const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
+    const openGoalsSummary = openGoalsForRouter.length > 0
+      ? openGoalsForRouter.map((g) => `• ${g.label}${g.description ? `: ${g.description}` : ""}`).join("\n")
+      : undefined;
+
+    // ------------------------------------------------------------------------
+    // CARREGAMENTO DO CATÁLOGO DE SUBAGENTES & CAMADA 1: ROTEADOR
+    // ------------------------------------------------------------------------
+    const availableSubagents = await loadSubagentsCatalog({ supabase });
+    const activeSubagentIds = availableSubagents
+      .filter((s: any) => s.enabled !== false)
+      .map((s: any) => s.id);
+
     const routingPrompt = buildConversationAgentPrompt({
       conversationId,
       currentPhase,
       checkpoint: currentCheckpoint,
       contextText: routerContextText,
       newMessage,
+      openGoalsSummary,
+      availableSubagents,
     });
 
-    const routingRes = await callModelOrAtria(routingPrompt, { runtime, supabase });
+    const routingRes = await callModelOrOpenAi(routingPrompt, { runtime, supabase, model: params.model });
     totalTokens += routingRes.tokens;
     const rawRoutingJson = extractJsonFromText(routingRes.content);
-    const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase);
+    const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase, activeSubagentIds);
     currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
 
     // ------------------------------------------------------------------------
@@ -3353,32 +4294,76 @@ export async function runExperimentalOrchestration(
       const targetSubagent = routingDecision.targetSubagent;
       let subagentPrompt = "";
 
-      if (targetSubagent === "descoberta") {
-        subagentPrompt = buildDescobertaPrompt({
-          conversationId,
-          currentPhase: "descoberta",
-          checkpoint: "chk_pergunta_sobre_ele",
-          contextText: descobertaContextText,
-          newMessage,
-        });
-      } else {
-        subagentPrompt = buildConexaoInicialPrompt({
-          conversationId,
-          currentPhase: "conexao_inicial",
-          checkpoint: "chk_saudacao_feita",
-          contextText: conexaoContextText,
-          newMessage,
-        });
+      // ----------------------------------------------------------------------
+      // EMOJI BUDGET DINÂMICO DETERMINÍSTICO
+      // ----------------------------------------------------------------------
+      const recentLarissaOutbounds: string[] = [];
+      try {
+        const { data: recentMsgs } = await supabase
+          .from("instagram_messages")
+          .select("message, text, is_from_me, sender_id, created_at")
+          .eq("conversation_id", conversationId)
+          .or("is_from_me.eq.true,sender_id.eq.me,sender_id.eq.larissa")
+          .order("created_at", { ascending: false })
+          .limit(5);
+
+        if (recentMsgs && recentMsgs.length > 0) {
+          for (const m of recentMsgs) {
+            const txt = m.text || m.message || "";
+            if (txt && typeof txt === "string" && txt.trim()) {
+              recentLarissaOutbounds.push(txt.trim());
+            }
+          }
+        }
+      } catch (outErr) {
+        // Fail-safe silencioso
       }
+
+      const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds);
+      currentCycle.trace.push(`emoji_budget_computed: budget=${emojiBudgetInfo.budget}, recentCount=${emojiBudgetInfo.recentEmojis.length}`);
+
+      // Definição e Missão Semântica do Subagente Selecionado (catálogo ou canônico)
+      const catalogSub = availableSubagents.find((s: any) => s.id === targetSubagent);
+      const subagentDef: SubagentDefinition = catalogSub || CANONICAL_SUBAGENTS[targetSubagent] || {
+        id: targetSubagent,
+        name: targetSubagent,
+        mission: targetSubagent === "descoberta"
+          ? CANONICAL_SUBAGENTS.descoberta.mission
+          : targetSubagent === "compatibilidade"
+          ? CANONICAL_SUBAGENTS.compatibilidade.mission
+          : CANONICAL_SUBAGENTS.conexao_inicial.mission,
+      };
+
+      // Filtra os objetivos da etapa autorizados para o subagente
+      const filteredGoals = filterGoalsForSubagent(stageChecklistForRouter.goals, targetSubagent);
+      const goalsSnippet = formatGoalsSnippetForSubagent(
+        targetSubagent,
+        subagentDef.mission,
+        filteredGoals.openGoals,
+        filteredGoals.completedGoals
+      );
+
+      subagentPrompt = buildSubagentPrompt({
+        subagentId: targetSubagent,
+        subagentName: subagentDef.name,
+        conversationId,
+        currentPhase: (targetSubagent as any),
+        checkpoint: targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+        contextText: targetSubagent === "descoberta" ? descobertaContextText : conexaoContextText,
+        newMessage,
+        emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
+        mission: subagentDef.mission,
+        goalsSnippet,
+      });
 
       await publishAutoPilotState(supabase, conversationId, {
         status: "processing",
         activity: activity(
           "atria",
-          orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${targetSubagent}`,
-          `Formulando resposta na fase ${targetSubagent}...`,
+          orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${subagentDef.name || targetSubagent}`,
+          `Formulando resposta com o subagente ${subagentDef.name || targetSubagent}...`,
           {
-            atriaThought: `Executando diretrizes do subagente ${targetSubagent}...`,
+            atriaThought: `Executando missão do subagente ${subagentDef.name || targetSubagent}...`,
             mode: orchState.mode,
             currentPhase,
           }
@@ -3406,7 +4391,7 @@ export async function runExperimentalOrchestration(
           }
         }
 
-        const subRes = await callModelOrAtria(currentSubagentPrompt, { runtime, supabase });
+        const subRes = await callModelOrOpenAi(currentSubagentPrompt, { runtime, supabase, model: params.model });
         totalTokens += subRes.tokens;
         const rawSubJson = extractJsonFromText(subRes.content);
 
@@ -3430,6 +4415,8 @@ export async function runExperimentalOrchestration(
               ? `persona_fact_requested: ${toolParams.field || toolField}`
               : toolName === "persona_search"
               ? `persona_search_requested: ${toolParams.query || toolParams.intent || ""}`
+              : toolName === "conversation_search"
+              ? `conversation_search_requested: ${toolParams.query || toolParams.intent || ""}`
               : `memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`
           );
           const tStart = Date.now();
@@ -3447,11 +4434,23 @@ export async function runExperimentalOrchestration(
               completedGoalIds,
             });
 
+            const filteredForSubagent = filterGoalsForSubagent(stageChecklist.goals, targetSubagent);
+            const activeGoals = [...filteredForSubagent.openGoals, ...filteredForSubagent.completedGoals];
             toolResult = {
               tool: toolName,
               stage: stageChecklist.stage,
-              goals: stageChecklist.goals,
-              objectives: stageChecklist.objectives,
+              subagent: targetSubagent,
+              goals: activeGoals,
+              objectives: activeGoals.map((g) => ({
+                id: g.id,
+                title: g.label,
+                label: g.label,
+                status: g.status,
+                value: g.value,
+                required: g.required,
+              })),
+              openGoals: filteredForSubagent.openGoals,
+              completedGoals: filteredForSubagent.completedGoals,
             };
           } else if (toolName === "persona_audio_search") {
             const intent = String(toolParams.intent || toolParams.query || "").trim();
@@ -3496,6 +4495,22 @@ export async function runExperimentalOrchestration(
               query,
               results,
             };
+          } else if (toolName === "conversation_search") {
+            const query = String(toolParams.query || toolParams.intent || "").trim();
+            const limit = typeof toolParams.limit === "number" ? toolParams.limit : 5;
+            const results = await searchConversationEpisodicMemory({
+              supabase,
+              conversationId, // Backend-bound estrito
+              query,
+              limit,
+            });
+
+            toolResult = {
+              tool: "conversation_search",
+              found: results.length > 0,
+              query,
+              results,
+            };
           } else if (toolName === "memory_search") {
             const query = String(toolParams.query || "").trim();
             const results = await memoryProvider.searchMemory(conversationId, query, {
@@ -3530,6 +4545,8 @@ export async function runExperimentalOrchestration(
               ? `persona_fact_found: ${toolResult.found}`
               : toolName === "persona_search"
               ? `persona_search_count: ${toolResult.results?.length || 0}`
+              : toolName === "conversation_search"
+              ? `conversation_search_count: ${toolResult.results?.length || 0}`
               : `memory_tool_found: ${toolResult.found}`
           );
           currentCycle.trace.push(`tool_duration_ms: ${toolDuration}`);
@@ -3613,7 +4630,7 @@ Gere sua resposta final estritamente no formato JSON abaixo:
 }`;
 
         try {
-          const finalRes = await callModelOrAtria(finalCallPrompt, { runtime, supabase });
+          const finalRes = await callModelOrOpenAi(finalCallPrompt, { runtime, supabase, model: params.model });
           totalTokens += finalRes.tokens;
           const rawFinalJson = extractJsonFromText(finalRes.content);
           if (
@@ -3646,6 +4663,95 @@ Gere sua resposta final estritamente no formato JSON abaixo:
             reasoning: "Subagente atingiu o limite de consultas de ferramentas sem gerar resposta válida do modelo",
             requiredTools: [],
           };
+        }
+      }
+
+      // ----------------------------------------------------------------------
+      // STYLE LINT DETERMINÍSTICO & RETRY DE ESTILO (Máximo 1)
+      // ----------------------------------------------------------------------
+      const isAudioDecision = finalSubDecision.action === "send_audio" || Boolean(finalSubDecision.audioId);
+      if (
+        finalSubDecision &&
+        (finalSubDecision.action === "reply" || finalSubDecision.action === "advance_phase") &&
+        !isAudioDecision &&
+        ((finalSubDecision.responses && finalSubDecision.responses.length > 0) || finalSubDecision.suggestedResponse)
+      ) {
+        let candidateBalloons = (finalSubDecision.responses && finalSubDecision.responses.length > 0)
+          ? finalSubDecision.responses
+          : splitIntoBalloons(finalSubDecision.suggestedResponse);
+
+        let lintResult = runStyleLint(candidateBalloons, {
+          emojiBudget: emojiBudgetInfo.budget,
+          recentEmojis: emojiBudgetInfo.recentEmojis,
+          isRetry: false,
+        });
+
+        if (lintResult.requiresRetry) {
+          currentCycle.trace.push(`style_lint_retry_triggered: ${lintResult.retryReason}`);
+
+          const retryPrompt = `${subagentPrompt}
+
+### INSTRUÇÃO DE AJUSTE DE ESTILO (Style Lint Retry)
+Detectada inconsistência com a digitação da Larissa: ${lintResult.retryReason}
+
+Reescreva mantendo exatamente fatos e intenção.
+Use o estilo de digitação da Larissa: curto, natural, informal, sem formalidade, sem eco e em balões proporcionais.
+
+Responda ESTRITAMENTE em JSON puro:
+{
+  "action": "reply",
+  "checkpoint": "${finalSubDecision.checkpoint}",
+  "summary": "${finalSubDecision.summary}",
+  "responses": [
+    "balão 1 corrigido",
+    "balão 2 corrigido"
+  ],
+  "nextPhase": "${finalSubDecision.nextPhase}"
+}`;
+
+          try {
+            const retryRes = await callModelOrOpenAi(retryPrompt, { runtime, supabase, model: params.model });
+            totalTokens += retryRes.tokens;
+            const retryJson = extractJsonFromText(retryRes.content);
+            if (retryJson) {
+              const validatedRetry = validateSubagentDecision(retryJson, currentPhase);
+              candidateBalloons = (validatedRetry.responses && validatedRetry.responses.length > 0)
+                ? validatedRetry.responses
+                : splitIntoBalloons(validatedRetry.suggestedResponse);
+
+              // Passa pelo lint em modo defensivo (isRetry: true)
+              lintResult = runStyleLint(candidateBalloons, {
+                emojiBudget: emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                isRetry: true,
+              });
+
+              finalSubDecision.responses = lintResult.cleanedBalloons;
+              finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+              currentCycle.trace.push("style_lint_retry_completed");
+            } else {
+              lintResult = runStyleLint(candidateBalloons, {
+                emojiBudget: emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                isRetry: true,
+              });
+              finalSubDecision.responses = lintResult.cleanedBalloons;
+              finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+            }
+          } catch (retryErr: any) {
+            currentCycle.trace.push(`style_lint_retry_err: ${retryErr.message || String(retryErr)}`);
+            lintResult = runStyleLint(candidateBalloons, {
+              emojiBudget: emojiBudgetInfo.budget,
+              recentEmojis: emojiBudgetInfo.recentEmojis,
+              isRetry: true,
+            });
+            finalSubDecision.responses = lintResult.cleanedBalloons;
+            finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+          }
+        } else {
+          finalSubDecision.responses = lintResult.cleanedBalloons;
+          finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+          currentCycle.trace.push("style_lint_passed_first_try");
         }
       }
     }
@@ -3688,6 +4794,7 @@ Gere sua resposta final estritamente no formato JSON abaixo:
       checkpoint: finalSubDecision.checkpoint,
       summary: finalSubDecision.summary,
       suggestedResponse: finalSubDecision.suggestedResponse,
+      responses: finalSubDecision.responses,
       requiredTools: finalSubDecision.requiredTools || ["send_text"],
       reasoning: finalSubDecision.reasoning,
       routedSubagent: routingDecision.targetSubagent,
@@ -3914,11 +5021,31 @@ Gere sua resposta final estritamente no formato JSON abaixo:
         if (isAudioAction && (audioPayload?.audioUrl || decision.audioUrl)) {
           const aUrl = audioPayload?.audioUrl || decision.audioUrl;
           balloons = [`[audio:${aUrl}]`];
+        } else if (decision.responses && decision.responses.length > 0) {
+          balloons = [...decision.responses];
         } else if (decision.suggestedResponse) {
           balloons = splitIntoBalloons(decision.suggestedResponse);
         } else {
           balloons = [];
         }
+
+        // ANTI-REPEAT GATE DETERMINÍSTICO PRÉ-OUTBOX:
+        // Intercepta e poda perguntas primitivas repetidas antes de despachar à Meta
+        if (!isAudioAction && balloons.length > 0) {
+          const gateResult = await validateAntiRepeatGate({
+            conversationId,
+            candidateBalloons: balloons,
+            supabase,
+          });
+
+          if (gateResult.isBlocked) {
+            currentCycle.trace.push(
+              `anti_repeat_gate_blocked: pruned=${gateResult.blockedBalloons.length}, remaining=${gateResult.allowedBalloons.length}`
+            );
+            balloons = gateResult.allowedBalloons;
+          }
+        }
+
         sentBalloonsCount = 0;
 
         for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
@@ -4012,6 +5139,27 @@ Gere sua resposta final estritamente no formato JSON abaixo:
                   { mode: "experimental", sentBalloonsCount, totalBalloons: balloons.length }
                 ),
               });
+
+              if (sentBalloonsCount > 0) {
+                try {
+                  await executeEpisodeWriter({
+                    conversationId,
+                    claimedMessages: (claimedMessages || []).map((m: any) => ({
+                      id: String(m.id),
+                      text: m.text || "",
+                      sender: "pretendente",
+                      direction: "inbound",
+                    })),
+                    sentBalloons: balloons.slice(0, sentBalloonsCount),
+                    sentMessageIds: balloons.slice(0, sentBalloonsCount).map((_, idx) => `out_${correlationId}_${idx}`),
+                    audioPayload: audioPayload ? { id: audioPayload.id, theme: audioPayload.title, transcript: audioPayload.transcript } : null,
+                    supabase,
+                    trace: currentCycle.trace || [],
+                  });
+                } catch (epErr: any) {
+                  console.warn("[EpisodeWriter] Erro fail-safe ao persistir episódios parciais:", epErr);
+                }
+              }
 
               return {
                 mode: orchState.mode,
@@ -4278,6 +5426,30 @@ Gere sua resposta final estritamente no formato JSON abaixo:
           currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
         }
 
+        // Executa EpisodeWriter para registrar fatos episódicos no Supabase de forma fail-safe
+        try {
+          await executeEpisodeWriter({
+            conversationId,
+            claimedMessages: (claimedMessages || []).map((m: any) => ({
+              id: String(m.id),
+              text: m.text || "",
+              sender: "pretendente",
+              direction: "inbound",
+            })),
+            sentBalloons: balloons.slice(0, sentBalloonsCount),
+            sentMessageIds: sentBalloonsCount > 0 ? [`out_${Date.now()}`] : [],
+            audioPayload: audioPayload ? {
+              id: audioPayload.id,
+              theme: (audioPayload as any).theme || (audioPayload as any).category,
+              transcript: (audioPayload as any).transcript,
+            } : null,
+            supabase,
+            trace: currentCycle.trace,
+          });
+        } catch (epErr: any) {
+          currentCycle.trace.push(`episode_writer_error: ${epErr.message || String(epErr)}`);
+        }
+
         // Validação e conclusão de objetivo proposto semânticamente pelo agente
         if (decision.objectiveCompletion && decision.objectiveCompletion.objectiveId) {
           const comp = decision.objectiveCompletion;
@@ -4421,6 +5593,31 @@ Gere sua resposta final estritamente no formato JSON abaixo:
           }
         ),
       });
+
+      // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
+      // Executa apenas quando a mensagem foi entregue com sucesso (sentSuccessfully === true)
+      if (sentSuccessfully) {
+        try {
+          await executeEpisodeWriter({
+            conversationId,
+            claimedMessages: (claimedMessages || []).map((m: any) => ({
+              id: String(m.id),
+              text: m.text || "",
+              sender: "pretendente",
+              direction: "inbound",
+            })),
+            sentBalloons: balloons || [],
+            sentMessageIds: (balloons || []).map((_, idx) => `out_${correlationId}_${idx}`),
+            audioPayload: audioPayload
+              ? { id: audioPayload.id, theme: audioPayload.title, transcript: audioPayload.transcript }
+              : null,
+            supabase,
+            trace: currentCycle.trace || [],
+          });
+        } catch (epErr: any) {
+          console.warn("[EpisodeWriter] Erro fail-safe ao persistir episódios da conversa:", epErr);
+        }
+      }
 
       console.log(
         `[Orchestrator] [EXPERIMENTAL] Execução concluída para ${conversationId} (subagente=${decision.routedSubagent}, ação=${decision.action}, fase=${validatedNextPhase}).`

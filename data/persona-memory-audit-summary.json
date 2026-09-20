@@ -1,0 +1,1397 @@
+{
+  "timestamp": "2026-09-19T02:42:35.358Z",
+  "totalFacts": 447,
+  "bySourceType": {
+    "canonical": 333,
+    "temporal": 18,
+    "generated": 96
+  },
+  "temporalFactsCount": 18,
+  "overlappingAliasesCount": 21,
+  "topicFindings": {
+    "bebida alcoólica": [
+      {
+        "key": "routine.likes_black_coffee",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.drinks_while_eating",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.favorite",
+        "value": "Coca-Cola",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.likes_coffee",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.likes_energy_drink",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.drinks_alcohol",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.likes_beer",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.likes_wine",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.accepts_mocktails",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "vinho": [
+      {
+        "key": "drinks.likes_wine",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "cerveja": [
+      {
+        "key": "drinks.likes_beer",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "Tribo da Periferia": [
+      {
+        "key": "music.likes_tribo_da_periferia",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "filmes de tubarão": [
+      {
+        "key": "movies.shark_movies_preference",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "café": [
+      {
+        "key": "routine.eats_breakfast",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.breakfast",
+        "value": [
+          "leite",
+          "pão"
+        ],
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.likes_black_coffee",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.likes_bakery",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "drinks.likes_coffee",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.likes_cafes",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.quiet_conversation_place",
+        "value": "cafeteria, como Bombocado",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "social.likes_cafes",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "hobbies.likes_discovering_cafes",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "manha",
+        "value": "Acorda na preguiça gostosa, toma leite com pão (odeia café preto puro), segue para o estágio ou vendas online",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "alimentação durante o almoço": [
+      {
+        "key": "routine.lunch_time",
+        "value": "12:00",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "routine.lunch_often_at_internship",
+        "value": true,
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "routine.prefers_light_lunch",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.sometimes_lunches_at_grandmother",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.reason_grandmother_lunch",
+        "value": "pais trabalham fora",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.drinks_while_eating",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.sunday",
+        "value": [
+          "família",
+          "almoço em família",
+          "missa"
+        ],
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "family.lunches_with_grandmother",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "family.sunday_family_lunch",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "almoco",
+        "value": "Almoça por volta de 12h/13h no hospital ou na avó, e sempre bebe líquidos durante a refeição",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "cidade": [
+      {
+        "key": "identity.birth_city",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "identity.current_city",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "identity.has_lived_elsewhere",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "identity.wants_to_live_elsewhere",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "identity.prefers_small_city",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.likes_historic_center",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.dislikes_city_lack_of_development",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.likes_cafes",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.likes_tiradentes",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.recommends_maria_fumaca",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.favorite_traditional_event",
+        "value": "Exposição",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "places.visitor_day_plan",
+        "value": [
+          "centro histórico",
+          "passeio",
+          "barzinho tranquilo"
+        ],
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "cidade_natal",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "cidade_atual",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "bairro": [
+      {
+        "key": "identity.neighborhood",
+        "value": "Matosinhos",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "bairro",
+        "value": "Matosinhos",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "curso": [
+      {
+        "key": "education.course",
+        "value": "Enfermagem",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.expected_graduation",
+        "value": "final de 2026",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "education.chose_nursing_age",
+        "value": 15,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.reason_for_nursing",
+        "value": "Escolheu Enfermagem porque gosta de cuidar das pessoas",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.family_influenced_choice",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.favorite_area",
+        "value": "Geriatria / cuidados com idosos",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.wants_public_exam",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.might_work_abroad",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.regrets_nursing",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.has_wanted_to_quit",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.motivation",
+        "value": "pacientes e a gratidão deles",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.best_part_of_profession",
+        "value": "sentir que ajudou alguém e criar vínculo com o paciente",
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "future.wants_public_exam",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "stories.patient_gratitude",
+        "value": "Pacientes e a gratidão deles são uma das principais motivações para continuar na Enfermagem.",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "curso",
+        "value": "Enfermagem",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "período da faculdade": [
+      {
+        "key": "education.current_period",
+        "value": "10º período",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "education.internship_period",
+        "value": "manhã e tarde",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "periodo_atual",
+        "value": "10º",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T00:00:00Z"
+      }
+    ],
+    "formatura": [
+      {
+        "key": "education.expected_graduation",
+        "value": "final de 2026",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "previsao_formatura",
+        "value": "final de 2026",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T00:00:00Z"
+      }
+    ],
+    "estágio": [
+      {
+        "key": "education.internship_locations",
+        "value": [
+          "hospital",
+          "UPA",
+          "posto de saúde",
+          "Santa Casa"
+        ],
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "education.internship_period",
+        "value": "manhã e tarde",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "education.internship_hours_per_day",
+        "value": 8,
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "education.internship_paid",
+        "value": false,
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "education.internship_day_description",
+        "value": "corrido, estressante e desgastante",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.most_tiring_task",
+        "value": "curativos",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.has_seen_emotional_cases",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "education.likes_pediatrics",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "routine.morning",
+        "value": "estágio",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "routine.lunch_often_at_internship",
+        "value": true,
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "routine.usual_end_of_day_obligations",
+        "value": "18:30",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "stories.iv_access",
+        "value": "Larissa gosta muito de pegar acesso venoso.",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "hospital",
+        "value": "Hospital Nossa Senhora das Mercês",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "estagio_obrigatorio",
+        "value": "Estágio curricular supervisionado hospitalar durante o dia",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "vivencia_hospitalar",
+        "value": "Rotina puxada com pacientes, médicos e professoras; hospital suga energia mas ama o cuidado",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "trabalho com vendas": [
+      {
+        "key": "education.college_work_balance",
+        "value": "muito desgastante",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.digital_sales",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.started_through",
+        "value": "Instagram",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.likes_sales",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.works_many_hours",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.customer_source",
+        "value": "Instagram",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.uses_whatsapp",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.favorite_task",
+        "value": [
+          "embalar peças",
+          "postar fotos"
+        ],
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.dislikes_task",
+        "value": "ir ao Correio",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.biggest_sale",
+        "value": 2000,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "work.sales_current_phase",
+        "value": "meses recentes mais fracos",
+        "source_type": "temporal",
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2026-12-31T23:59:59Z"
+      },
+      {
+        "key": "work.income_helps_with",
+        "value": [
+          "faculdade",
+          "contas",
+          "lazer"
+        ],
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "values.work",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "vendas_online",
+        "value": "Trabalha em casa com vendas online de moda masculina pelo celular e computador",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "profissao",
+        "value": "Estudante de Enfermagem (estagiária hospitalar) e vendedora online",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "músicas": [
+      {
+        "key": "music.favorite_female_artist",
+        "value": "Simone Mendes",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.favorite_duo",
+        "value": "Henrique & Juliano",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.favorite_song",
+        "value": "Papum",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.current_favorite_song",
+        "value": "Suor Pingado",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.favorite_genre",
+        "value": "sertanejo",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_sertanejo_universitario",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_marilia_mendonca",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_henrique_juliano",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_jorge_mateus",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_funk",
+        "value": "mais ou menos",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_trap",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_rap",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_tribo_da_periferia",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_mpb",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_rock",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.likes_international",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.happy_music",
+        "value": "Murilo Huff",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.sad_music",
+        "value": "internacional",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.in_love_music",
+        "value": "Jorge & Mateus",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.cleaning_music",
+        "value": "gospel",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.best_concert",
+        "value": "Simone Mendes",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.wants_to_see_live",
+        "value": "Simaria",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.has_playlist",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.sings_in_shower",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.thinks_sings_well",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.dances_well",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "music.driving_music",
+        "value": "sertanejo",
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "social.likes_quiet_bars",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "social.likes_concerts",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "musica_favorita",
+        "value": "Simone Mendes, Henrique & Juliano, Marília Mendonça, Jorge & Mateus (não ouve Tribo da Periferia)",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "filmes": [
+      {
+        "key": "routine.watches_movies_in_bed",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.favorite_format",
+        "value": "doramas",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_horror",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_psychological_thriller",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_supernatural_horror",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.scariest_movie",
+        "value": "A Bruxa de Blair",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.could_not_finish",
+        "value": "A Bruxa de Blair",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.watches_horror_alone",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_romance",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_romcom",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_action",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_scifi",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_fantasy",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_marvel",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_dc",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_harry_potter",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_fast_and_furious",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_sad_movies",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.cries_in_movies",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_cinema",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.likes_watching_at_home",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.popcorn",
+        "value": [
+          "doce",
+          "salgada"
+        ],
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.hates_spoilers",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.hates_people_talking_during_movie",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "movies.shark_movies_preference",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "stories.blair_witch",
+        "value": "A Bruxa de Blair foi um filme que assustou Larissa de verdade e ela não conseguiu terminar.",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "genero_filme_favorito",
+        "value": "Filmes de terror e suspense psicológico (filmes de tubarão não são preferência)",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "relacionamento": [
+      {
+        "key": "identity.relationship_status",
+        "value": "Solteira",
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "family.good_relationship_with_father",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "faith.religious_marriage_matters",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.wants_serious_relationship",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.does_not_like_forced_rush",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.wants_marriage",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.wants_children",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.preferred_children_count",
+        "value": 2,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.values_maturity",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.values_humor",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.values_work_ethic",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.values_family",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.values_affection",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.values_communication",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.green_flags",
+        "value": [
+          "respeito",
+          "constância",
+          "cuidado",
+          "trabalho",
+          "boa comunicação"
+        ],
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.red_flags",
+        "value": [
+          "mentira",
+          "vulgaridade",
+          "falta de respeito",
+          "ciúme excessivo",
+          "controle",
+          "insistência"
+        ],
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.prefers_getting_to_know_before_intimacy",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.how_to_win_her_over",
+        "value": [
+          "atenção",
+          "respeito",
+          "constância",
+          "humor"
+        ],
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "future.wants_family",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "filhos": [
+      {
+        "key": "relationships.wants_children",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "relationships.preferred_children_count",
+        "value": 2,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "future.wants_family",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "filhos",
+        "value": false,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "religião": [
+      {
+        "key": "places.likes_churches",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "family.sunday_mass",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "family.christian",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "faith.christian",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "faith.goes_to_mass",
+        "value": true,
+        "source_type": "canonical",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "faith.prefers_partner_who_respects_faith",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key": "faith.religious_marriage_matters",
+        "value": true,
+        "source_type": "generated",
+        "valid_from": null,
+        "valid_until": null
+      }
+    ]
+  }
+}

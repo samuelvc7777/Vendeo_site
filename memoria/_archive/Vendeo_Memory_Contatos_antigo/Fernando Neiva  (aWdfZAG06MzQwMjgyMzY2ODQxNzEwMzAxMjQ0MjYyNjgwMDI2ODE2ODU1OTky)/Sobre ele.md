@@ -1,0 +1,40 @@
+---
+vendeo_managed: true
+vendeo_contact_id: "aWdfZAG06MzQwMjgyMzY2ODQxNzEwMzAxMjQ0MjYyNjgwMDI2ODE2ODU1OTky"
+vendeo_type: "profile"
+full_name: "Fernando Neiva "
+username: "_fernandoneiva_"
+current_phase: "conexao_inicial"
+checkpoint: "Nenhum"
+updated_at: "2026-09-09T02:24:37.494+00:00"
+---
+
+# Perfil: Fernando Neiva 
+
+- **ID do Contato:** `aWdfZAG06MzQwMjgyMzY2ODQxNzEwMzAxMjQ0MjYyNjgwMDI2ODE2ODU1OTky`
+- **Nome Completo:** Fernando Neiva 
+- **Instagram Username:** @_fernandoneiva_
+- **Fase da Conversa:** `conexao_inicial`
+- **Último Checkpoint:** `Nenhum`
+- **Última Atualização:** 2026-09-09T02:24:37.494+00:00
+
+---
+
+## Fatos Conhecidos (Sobre Ele)
+
+Nenhum fato específico registrado ainda sobre o pretendente.
+
+---
+
+## Checklist — Descoberta
+
+- [ ] **Idade**
+- [ ] **Cidade**
+- [ ] **Profissão**
+- [ ] **Relacionamento / Filhos**
+
+---
+
+## Trechos e Observações Relevantes
+
+Nenhum trecho registrado.

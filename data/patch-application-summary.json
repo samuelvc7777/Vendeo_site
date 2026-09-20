@@ -1,0 +1,94 @@
+{
+  "timestamp": "2026-09-19T02:55:58.717Z",
+  "countBefore": 447,
+  "insertedCount": 228,
+  "ignoredCount": 0,
+  "finalCount": 675,
+  "distribution": {
+    "canonical": 333,
+    "temporal": 18,
+    "generated": 324
+  },
+  "searchResults": [
+    {
+      "query": "qual estilo de roupa dela",
+      "top": {
+        "key": "identity.current_city",
+        "category": "identidade",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "score": 37
+      }
+    },
+    {
+      "query": "ela gosta de receber flores",
+      "top": {
+        "key": "identity.current_city",
+        "category": "identidade",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "score": 37
+      }
+    },
+    {
+      "query": "o que ela faria se ganhasse um milhão",
+      "top": {
+        "key": "relationships.wants_serious_relationship",
+        "category": "relacionamentos",
+        "value": true,
+        "source_type": "generated",
+        "score": 33
+      }
+    },
+    {
+      "query": "ela gosta de academia",
+      "top": {
+        "key": "identity.current_city",
+        "category": "identidade",
+        "value": "São João del-Rei",
+        "source_type": "canonical",
+        "score": 37
+      }
+    },
+    {
+      "query": "qual tipo de humor dela",
+      "top": {
+        "key": "humor.style",
+        "category": "humor",
+        "value": "leve e com deboche carinhoso",
+        "source_type": "generated",
+        "score": 62
+      }
+    },
+    {
+      "query": "ela usa muito instagram",
+      "top": {
+        "key": "tech.uses_instagram_a_lot",
+        "category": "tecnologia",
+        "value": true,
+        "source_type": "generated",
+        "score": 29
+      }
+    },
+    {
+      "query": "qual o maior medo dela",
+      "top": {
+        "key": "fears.losing_family",
+        "category": "medos",
+        "value": true,
+        "source_type": "generated",
+        "score": 27
+      }
+    },
+    {
+      "query": "o que ela gosta de fazer numa praia",
+      "top": {
+        "key": "travel.loves_beach",
+        "category": "viagens",
+        "value": true,
+        "source_type": "canonical",
+        "score": 38
+      }
+    }
+  ]
+}

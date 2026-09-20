@@ -1,0 +1,40 @@
+---
+vendeo_managed: true
+vendeo_contact_id: "1084774384098647"
+vendeo_type: "profile"
+full_name: "André Rocha"
+username: "andreluiz3"
+current_phase: "conexao_inicial"
+checkpoint: "Nenhum"
+updated_at: "2026-09-15T21:18:46+00:00"
+---
+
+# Perfil: André Rocha
+
+- **ID do Contato:** `1084774384098647`
+- **Nome Completo:** André Rocha
+- **Instagram Username:** @andreluiz3
+- **Fase da Conversa:** `conexao_inicial`
+- **Último Checkpoint:** `Nenhum`
+- **Última Atualização:** 2026-09-15T21:18:46+00:00
+
+---
+
+## Fatos Conhecidos (Sobre Ele)
+
+Nenhum fato específico registrado ainda sobre o pretendente.
+
+---
+
+## Checklist — Descoberta
+
+- [ ] **Idade**
+- [ ] **Cidade**
+- [ ] **Profissão**
+- [ ] **Relacionamento / Filhos**
+
+---
+
+## Trechos e Observações Relevantes
+
+Nenhum trecho registrado.

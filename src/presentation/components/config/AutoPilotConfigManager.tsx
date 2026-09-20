@@ -136,13 +136,13 @@ export function AutoPilotConfigManager() {
   return (
     <div className="space-y-4">
       {/* Cabeçalho da Seção */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-md shrink-0">
             <Bot className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+            <h3 className="text-sm font-bold text-white flex items-center gap-1.5 flex-wrap">
               Piloto Automático Inteligente
               <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30">
                 IA Autônoma
@@ -155,7 +155,7 @@ export function AutoPilotConfigManager() {
         </div>
 
         {/* Chave Mestra Geral com Badge Visual */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center justify-between sm:justify-end gap-2.5 w-full sm:w-auto pt-1 sm:pt-0 border-t border-zinc-800/40 sm:border-t-0">
           <span
             className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border transition-all ${
               config.isEnabledGlobally
@@ -189,7 +189,7 @@ export function AutoPilotConfigManager() {
         <div className="flex items-start gap-2.5">
           <Info className={`w-4 h-4 shrink-0 mt-0.5 ${config.isEnabledGlobally ? "text-emerald-400" : "text-amber-400"}`} />
           <div className="space-y-1">
-            <span className="font-bold text-xs block text-white flex items-center gap-1.5">
+            <span className="font-bold text-xs block text-white flex items-center gap-1.5 flex-wrap">
               Observação sobre Desligamento & Parada
               <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${config.isEnabledGlobally ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
                 {config.isEnabledGlobally ? "Monitoramento Ativo" : "Parada Segura"}
@@ -207,12 +207,12 @@ export function AutoPilotConfigManager() {
 
       {/* Card: Arquitetura Dual de Inteligência Artificial (Orquestrador + Persona ChatGPT Sol) */}
       <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-purple-500/20 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <span className="text-xs font-semibold text-white flex items-center gap-1.5">
-            <Bot className="w-3.5 h-3.5 text-purple-400" />
+            <Bot className="w-3.5 h-3.5 text-purple-400 shrink-0" />
             Motor Dual de IA (Orquestrador + ChatGPT Sol)
           </span>
-          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 self-start sm:self-auto">
             {openAiKey ? "OpenAI Sol Conectada" : "Groq Ativo (Custo Zero)"}
           </span>
         </div>

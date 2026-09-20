@@ -1,5 +1,5 @@
 import { IChatStageRepository } from "@/domain/repositories/IChatStageRepository";
-import { ChatStage, ChatProgress, ConversationGoal } from "@/domain/entities/ChatStage";
+import { ChatStage, ChatProgress, ConversationGoal, CANONICAL_CHAT_STAGES_MATRIX } from "@/domain/entities/ChatStage";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 
@@ -17,6 +17,7 @@ interface StoredProgressPayload {
 }
 
 export class SupabaseChatStageRepository implements IChatStageRepository {
+  private customClient?: any;
   private cachedStages: ChatStage[] | null = null;
   private cachedProgress: Record<string, ChatProgress> | null = null;
   private lastFetchStagesTime = 0;
@@ -24,7 +25,16 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
   private cacheDurationMs = 2500;
   private realtimeSubscribed = false;
 
+  constructor(client?: any) {
+    if (client) {
+      this.customClient = client;
+    }
+  }
+
   private getClient() {
+    if (this.customClient) {
+      return this.customClient;
+    }
     if (typeof window !== "undefined") {
       return getSupabaseBrowserClient();
     }
@@ -78,7 +88,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
   }
 
   private initRealtimeSubscription() {
-    if (this.realtimeSubscribed || typeof window === "undefined") return;
+    if (this.realtimeSubscribed || (typeof window === "undefined" && !this.customClient)) return;
     const client = this.getClient();
     if (!client) return;
 
@@ -92,16 +102,16 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
             event: "*",
             schema: "public",
             table: "instagram_conversations",
-            filter: "id=in.(__chat_stages__,__chat_progress__)",
+            filter: "contact_id=in.(__chat_stages__,__chat_progress__)",
           },
           (payload: any) => {
-            const id = payload?.new?.id;
+            const contactId = payload?.new?.contact_id || payload?.new?.id;
             const rules = payload?.new?.stage_completed_rules;
-            if (id === "__chat_stages__" && rules?.stages) {
+            if (contactId === "__chat_stages__" && rules?.stages) {
               this.cachedStages = rules.stages;
               this.saveLocalStages(rules.stages);
               this.lastFetchStagesTime = Date.now();
-            } else if (id === "__chat_progress__" && rules?.progresses) {
+            } else if (contactId === "__chat_progress__" && rules?.progresses) {
               this.cachedProgress = rules.progresses;
               this.saveLocalProgress(rules.progresses);
               this.lastFetchProgressTime = Date.now();
@@ -116,6 +126,143 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
   // --- MÉTODOS DE ETAPAS ---
 
+  /**
+   * Reconcilia etapas existentes com a matriz canônica oficial sem perder IDs,
+   * nomes nem dados prévios, aplicando as novas regras da matriz.
+   */
+  public reconcileWithCanonicalMatrix(existingStages: ChatStage[]): ChatStage[] {
+    const canonicalMatrix = CANONICAL_CHAT_STAGES_MATRIX;
+    const reconciled: ChatStage[] = existingStages.map((stg) => ({ ...stg, goals: [...(stg.goals || [])] }));
+
+    // 1. Localiza ou cria as 3 etapas canônicas
+    let conexaoStage = reconciled.find(
+      (s) => s.id === "stage_1_conexao" || s.id === "stage_1" || s.name.toLowerCase().includes("conex")
+    );
+    let descobertaStage = reconciled.find(
+      (s) => s.id === "stage_2_descoberta" || s.id === "stage_2" || s.name.toLowerCase().includes("descoberta")
+    );
+    let compatibilidadeStage = reconciled.find(
+      (s) => s.id === "stage_3_compatibilidade" || s.id === "stage_3" || s.name.toLowerCase().includes("compat")
+    );
+
+    if (!conexaoStage) {
+      const canon = canonicalMatrix.find((c) => c.id === "stage_1_conexao");
+      if (canon) {
+        conexaoStage = JSON.parse(JSON.stringify(canon));
+        if (conexaoStage) {
+          conexaoStage.order = 0;
+          reconciled.push(conexaoStage);
+        }
+      }
+    }
+
+    if (!descobertaStage) {
+      const canon = canonicalMatrix.find((c) => c.id === "stage_2_descoberta");
+      if (canon) {
+        descobertaStage = JSON.parse(JSON.stringify(canon));
+        if (descobertaStage) {
+          descobertaStage.order = 1;
+          reconciled.push(descobertaStage);
+        }
+      }
+    }
+
+    if (!compatibilidadeStage) {
+      const canonComp = canonicalMatrix.find((c) => c.id === "stage_3_compatibilidade");
+      if (canonComp) {
+        compatibilidadeStage = JSON.parse(JSON.stringify(canonComp));
+        if (compatibilidadeStage) {
+          compatibilidadeStage.order = 2;
+          reconciled.push(compatibilidadeStage);
+        }
+      }
+    }
+
+    reconciled.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+
+    // 2. Reconcilia objetivos em cada etapa
+    for (const stage of reconciled) {
+      const isConexao = stage === conexaoStage;
+      const isDescoberta = stage === descobertaStage;
+      const isCompatibilidade = stage === compatibilidadeStage;
+
+      const goals = stage.goals || [];
+      const updatedGoals = goals.map((g) => {
+        const copy = { ...g };
+
+        // goal_age: required vira false, kind fact
+        if (copy.id === "goal_age") {
+          copy.required = false;
+          copy.kind = "fact";
+          if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["descoberta"];
+          copy.primarySubagent = copy.primarySubagent || "descoberta";
+        }
+        // goal_city: required vira false, kind fact
+        if (copy.id === "goal_city") {
+          copy.required = false;
+          copy.kind = "fact";
+          if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["conexao_inicial", "descoberta"];
+          copy.primarySubagent = copy.primarySubagent || "conexao_inicial";
+        }
+        // goal_job: required vira false, kind fact
+        if (copy.id === "goal_job") {
+          copy.required = false;
+          copy.kind = "fact";
+          if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["conexao_inicial", "descoberta"];
+          copy.primarySubagent = copy.primarySubagent || "conexao_inicial";
+        }
+        // goal_relationship: semântica restrita a status de relacionamento
+        if (copy.id === "goal_relationship") {
+          copy.required = false;
+          copy.kind = "fact";
+          copy.title = "Status de relacionamento";
+          copy.label = "Status de relacionamento";
+          copy.description = "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.";
+          copy.allowedSubagents = ["compatibilidade"];
+          copy.primarySubagent = "compatibilidade";
+        }
+
+        if (!copy.kind) {
+          copy.kind = copy.id.includes("reciprocity") || copy.id.includes("depth") ? "conversation_state" : "fact";
+        }
+
+        return copy;
+      });
+
+      // Adiciona objetivos canônicos faltantes para a etapa correspondente
+      if (isConexao) {
+        const canonConexao = canonicalMatrix.find((c) => c.id === "stage_1_conexao");
+        for (const cg of canonConexao?.goals || []) {
+          if (!updatedGoals.some((g) => g.id === cg.id)) {
+            updatedGoals.push({ ...cg, stageId: stage.id, order: updatedGoals.length + 1 });
+          }
+        }
+      }
+
+      if (isDescoberta) {
+        const canonDescoberta = canonicalMatrix.find((c) => c.id === "stage_2_descoberta");
+        for (const dg of canonDescoberta?.goals || []) {
+          if (!updatedGoals.some((g) => g.id === dg.id)) {
+            updatedGoals.push({ ...dg, stageId: stage.id, order: updatedGoals.length + 1 });
+          }
+        }
+      }
+
+      if (isCompatibilidade) {
+        const canonComp = canonicalMatrix.find((c) => c.id === "stage_3_compatibilidade");
+        for (const cg of canonComp?.goals || []) {
+          if (!updatedGoals.some((g) => g.id === cg.id)) {
+            updatedGoals.push({ ...cg, stageId: stage.id, order: updatedGoals.length + 1 });
+          }
+        }
+      }
+
+      stage.goals = updatedGoals.sort((a, b) => (a.order || 0) - (b.order || 0));
+    }
+
+    return reconciled;
+  }
+
   async getStages(force = false): Promise<ChatStage[]> {
     this.initRealtimeSubscription();
     const now = Date.now();
@@ -124,21 +271,20 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     }
 
     const client = this.getClient();
+    let stagesFromDb: ChatStage[] | null = null;
+
     if (client) {
       try {
         const { data, error } = await client
           .from("instagram_conversations")
           .select("stage_completed_rules")
-          .eq("id", "__chat_stages__")
+          .eq("contact_id", "__chat_stages__")
           .maybeSingle();
 
         if (!error && data?.stage_completed_rules) {
           const rules = data.stage_completed_rules as StoredStagesPayload;
-          if (Array.isArray(rules.stages)) {
-            this.cachedStages = rules.stages.sort((a, b) => a.order - b.order);
-            this.saveLocalStages(this.cachedStages);
-            this.lastFetchStagesTime = now;
-            return this.cachedStages;
+          if (Array.isArray(rules.stages) && rules.stages.length > 0) {
+            stagesFromDb = rules.stages;
           }
         }
       } catch (err) {
@@ -146,11 +292,30 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       }
     }
 
-    // Fallback local
-    const local = this.getLocalStages().sort((a, b) => a.order - b.order);
-    this.cachedStages = local;
+    let finalStages: ChatStage[] = [];
+
+    if (stagesFromDb && stagesFromDb.length > 0) {
+      // Reconcilia com a matriz canônica sem perder dados nem IDs existentes
+      finalStages = this.reconcileWithCanonicalMatrix(stagesFromDb);
+    } else {
+      const local = this.getLocalStages();
+      if (local.length > 0) {
+        finalStages = this.reconcileWithCanonicalMatrix(local);
+      } else {
+        // Inicializa com a matriz canônica completa
+        finalStages = JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
+        // Persiste no Supabase imediatamente para que a fonte de verdade seja preenchida
+        this.persistStagesToCloud(finalStages).catch((err) => {
+          console.warn("Aviso ao persistir matriz canônica inicial:", err);
+        });
+      }
+    }
+
+    finalStages.sort((a, b) => a.order - b.order);
+    this.cachedStages = finalStages;
+    this.saveLocalStages(finalStages);
     this.lastFetchStagesTime = now;
-    return local;
+    return finalStages;
   }
 
   private async persistStagesToCloud(stages: ChatStage[]): Promise<void> {
@@ -167,18 +332,21 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         updated_at: new Date().toISOString(),
       };
 
-      await client.from("instagram_conversations").upsert({
-        id: "__chat_stages__",
-        username: "system_stages",
-        full_name: "Sistema de Etapas e Checklists",
-        status: "system",
-        unread: false,
-        last_message: `Etapas sincronizadas: ${stages.length}`,
-        last_message_at: new Date().toISOString(),
-        is_restricted: false,
-        stage_completed_rules: payload as any,
-        updated_at: new Date().toISOString(),
-      });
+      await client.from("instagram_conversations").upsert(
+        {
+          contact_id: "__chat_stages__",
+          username: "system_stages",
+          display_name: "Sistema de Etapas e Checklists",
+          status: "system",
+          unread_count: 0,
+          last_message_preview: `Etapas sincronizadas: ${stages.length}`,
+          last_message_at: new Date().toISOString(),
+          is_restricted: false,
+          stage_completed_rules: payload as any,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "contact_id" }
+      );
     } catch (err) {
       console.warn("Aviso ao persistir etapas no Supabase:", err);
     }
@@ -277,6 +445,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       order: goalData.order ?? currentGoals.length,
       enabled: goalData.enabled ?? true,
       required: goalData.required ?? false,
+      kind: goalData.kind ?? "fact",
     };
 
     stage.goals = [...currentGoals, newGoal].sort((a, b) => a.order - b.order);
@@ -378,7 +547,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         const { data, error } = await client
           .from("instagram_conversations")
           .select("stage_completed_rules")
-          .eq("id", "__chat_progress__")
+          .eq("contact_id", "__chat_progress__")
           .maybeSingle();
 
         if (!error && data?.stage_completed_rules) {
@@ -416,7 +585,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       };
 
       await client.from("instagram_conversations").upsert({
-        id: "__chat_progress__",
+        contact_id: "__chat_progress__",
         username: "system_progress",
         full_name: "Progresso das Conversas",
         status: "system",

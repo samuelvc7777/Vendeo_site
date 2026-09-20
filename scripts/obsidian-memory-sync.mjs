@@ -693,43 +693,21 @@ export async function runSync(options = {}) {
     throw new Error(`Vault do Obsidian não encontrado: ${vaultPath}`);
   }
 
-  console.log(`[Obsidian Sync] Buscando memórias no Supabase...`);
-  const contacts = await fetchRemoteMemories(supabaseUrl, token, options.contactId);
-  console.log(`[Obsidian Sync] ${contacts.length} contato(s) retornado(s) pelo Supabase.`);
+  // Delega para a arquitetura moderna com navegação centrada no pretendente
+  const { runRestructure } = await import('./restructure-obsidian-mirror.mjs');
+  const res = await runRestructure({
+    dryRun: false,
+    vault: vaultPath,
+    contactId: options.contactId,
+  });
 
-  let totalUpdated = 0;
-  let totalUnchanged = 0;
-  let totalPreserved = 0;
-
-  for (const c of contacts) {
-    const res = syncContactToVault(vaultPath, c);
-    totalUpdated += res.updatedCount;
-    totalUnchanged += res.unchangedCount;
-    totalPreserved += res.preservedCount;
-  }
-
-  // Sincronização da Persona Memory da Larissa em Vendeo Memory/Persona/Larissa/
-  try {
-    let personaFacts = await fetchRemotePersona(supabaseUrl, token, 'larissa');
-    if (!personaFacts || personaFacts.length === 0) {
-      const { LARISSA_CANONICAL_FACTS } = await import('./import-larissa-persona-memory.mjs').catch(() => ({
-        LARISSA_CANONICAL_FACTS: [],
-      }));
-      personaFacts = LARISSA_CANONICAL_FACTS;
-    }
-    if (personaFacts && personaFacts.length > 0) {
-      const pRes = syncPersonaToVault(vaultPath, personaFacts, 'Larissa');
-      totalUpdated += pRes.updatedCount;
-      totalUnchanged += pRes.unchangedCount;
-      totalPreserved += pRes.preservedCount;
-      console.log(`[Obsidian Sync] Persona Larissa sincronizada: ${pRes.updatedCount} arquivo(s) gravado(s), ${pRes.unchangedCount} inalterado(s).`);
-    }
-  } catch (pErr) {
-    console.warn(`[Obsidian Sync] Aviso na sincronização da Persona:`, pErr.message);
-  }
-
-  console.log(`[Obsidian Sync] Concluído: ${totalUpdated} arquivo(s) gravado(s)/atualizado(s), ${totalUnchanged} inalterado(s), ${totalPreserved} manual(is) preservado(s).`);
-  return { totalUpdated, totalUnchanged, totalPreserved, contactsCount: contacts.length, vaultPath };
+  return {
+    totalUpdated: res.totalWritten,
+    totalUnchanged: res.totalUnchanged,
+    totalPreserved: res.totalPreserved,
+    contactsCount: res.contactsCount,
+    vaultPath,
+  };
 }
 
 // Execução CLI caso seja chamado diretamente
