@@ -25,16 +25,29 @@ function loadTsModule(filePath) {
     exports: moduleObj.exports,
     process: process,
     console: console,
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
+    Deno: { env: { get: () => undefined } },
     require: (dep) => {
       if (dep === "@/domain/entities/ChatStage" || dep.endsWith("ChatStage")) {
         return loadTsModule("src/domain/entities/ChatStage.ts");
+      }
+      if (dep.includes("cloud_autopilot")) {
+        return {
+          publishAutoPilotState: async () => {},
+          activity: (status, title, desc, extra) => ({ status, title, desc, extra }),
+        };
+      }
+      if (dep.includes("LarissaChatStyle")) {
+        return loadTsModule("supabase/functions/api/LarissaChatStyle.ts");
       }
       return {};
     },
   };
 
-  const fn = new Function("module", "exports", "require", "process", "console", jsCode);
-  fn(moduleObj, moduleObj.exports, context.require, process, console);
+  const fn = new Function("module", "exports", "require", "process", "console", "fetch", "setTimeout", "clearTimeout", "Deno", jsCode);
+  fn(moduleObj, moduleObj.exports, context.require, process, console, context.fetch, context.setTimeout, context.clearTimeout, context.Deno);
   return moduleObj.exports;
 }
 
@@ -75,7 +88,7 @@ class MockMemoryProvider {
 
 async function runTests() {
   console.log("================================================================================");
-  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (45 CENÁRIOS)");
+  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (50 CENÁRIOS)");
   console.log("================================================================================\n");
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
@@ -88,12 +101,15 @@ async function runTests() {
     processDeterministicStageProgression,
     validateSubagentDecision,
     validateOrchestratorDecision,
+    validatePhaseTransition,
+    detectSpontaneousObjectiveCompletions,
+    runExperimentalOrchestration,
   } = orchestratorModule;
 
   let passed = 0;
-  function runTest(num, name, fn) {
+  async function runTest(num, name, fn) {
     try {
-      fn();
+      await fn();
       console.log(`✅ [TESTE ${num.toString().padStart(2, "0")}] Aprovado: ${name}`);
       passed++;
     } catch (err) {
@@ -744,6 +760,7 @@ async function runTests() {
       objectiveCompletion: {
         objectiveId: "goal_job",
         value: "Engenheiro",
+        evidenceMessageId: "msg_job_1",
       },
     };
 
@@ -753,6 +770,7 @@ async function runTests() {
       conversationId: "conv_advance_1",
       currentPhase: "stage_1_conexao",
       decision,
+      claimedMessages: [{ id: "msg_job_1", text: "Sou engenheiro" }],
       stageRules: { completed_goals: ["goal_initial_reciprocity", "goal_city"] },
     });
 
@@ -797,6 +815,7 @@ async function runTests() {
       objectiveCompletion: {
         objectiveId: "goal_city",
         value: "Barbacena",
+        evidenceMessageId: "msg_1",
       },
     };
 
@@ -1007,7 +1026,7 @@ async function runTests() {
       assert(cycle.trace.some((t) => t.includes("invalid_objective_completion_rejected: not_current_objective")));
     }
 
-    // 41.E: Aceita apenas se for o currentObjective da etapa
+    // 41.E: Aceita apenas se for o currentObjective da etapa e contiver evidência válida
     {
       const cycle = { trace: [] };
       const res = await processDeterministicStageProgression({
@@ -1017,8 +1036,13 @@ async function runTests() {
         decision: {
           action: "reply",
           currentPhase: "stage_1_conexao",
-          objectiveCompletion: { objectiveId: "goal_city", value: "Tiradentes" },
+          objectiveCompletion: {
+            objectiveId: "goal_city",
+            value: "Tiradentes",
+            evidenceMessageId: "msg_city_tiradentes",
+          },
         },
+        claimedMessages: [{ id: "msg_city_tiradentes", text: "sou de Tiradentes" }],
         stageRules: { completed_goals: ["goal_initial_reciprocity"] },
         currentCycle: cycle,
       });
@@ -1178,8 +1202,396 @@ async function runTests() {
     assert(!orchContent.includes(`memoryField: "work"`), "Não deve haver memoryField: work no código");
   });
 
+  // 46. Modo Shadow: Detecção espontânea isolada no shadowSimulation sem poluir ContactMemory nem progresso oficial
+  await runTest(46, "Modo Shadow: Detecção espontânea isolada no shadowSimulation sem poluir ContactMemory nem progresso oficial", async () => {
+    const memoryProvider = new MockMemoryProvider();
+    let updatedRules = null;
+
+    const mockState = {
+      version: 1,
+      mode: "shadow",
+      currentPhase: "conexao_inicial",
+      currentStageId: "stage_1_conexao",
+      responsibleSubagentId: "conexao_inicial",
+      checkpoint: "chk_saudacao_feita",
+      completedGoalIds: [],
+      objectiveProgress: {},
+    };
+
+    const conversationRow = {
+      id: "conv_shadow_pure",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: [],
+        objective_progress: {},
+        orchestration: mockState,
+      },
+    };
+
+    const mockSupabase = {
+      from: (table) => ({
+        select: () => ({
+          eq: (col, val) => ({
+            maybeSingle: async () => ({
+              data: conversationRow,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: [
+                  { id: "msg_in_0", text: "oi", sender: "pretendente", created_at: new Date().toISOString() },
+                ],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog" ? [{ id: "conexao_inicial", enabled: true }] : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: () => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              updatedRules = conversationRow.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+      }),
+    };
+
+    const runtime = {
+      callModel: async (prompt) => {
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Fase de conexao inicial",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Que bom saber que você é de Barbacena!",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Que bom saber que você é de Barbacena!"],
+          }),
+          tokens: 50,
+        };
+      },
+      _fastTest: true,
+    };
+
+    // Pretendente diz espontaneamente cidade e profissão em modo Shadow
+    const result = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_shadow_pure",
+      newMessage: {
+        id: "msg_in_spontaneous",
+        text: "sou de Barbacena e trabalho como médica",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(result.mode, "shadow", "Deve rodar em modo shadow");
+    assert.equal(result.handled, true, "Deve ser manipulado no shadow");
+
+    // 1. Proibido salvar na ContactMemory em modo shadow!
+    assert.equal(
+      memoryProvider.saveHistory.length,
+      0,
+      "ContactMemory DEVE ter ZERO chamadas de saveFact em modo shadow"
+    );
+
+    // 2. Proibido mutar completed_goals oficiais no banco!
+    assert.deepEqual(
+      updatedRules.completed_goals,
+      [],
+      "completed_goals oficiais no banco NÃO podem conter os objetivos detectados"
+    );
+
+    // 3. Proibido avançar etapa oficial da conversa!
+    assert.equal(
+      updatedRules.orchestration.currentPhase,
+      "conexao_inicial",
+      "currentPhase oficial deve permanecer inalterada"
+    );
+    assert.equal(
+      updatedRules.orchestration.currentStageId,
+      "stage_1_conexao",
+      "currentStageId oficial deve permanecer inalterada"
+    );
+
+    // 4. Objetivos e fatos detectados devem estar isolados no shadowSimulation para observabilidade
+    const sim = updatedRules.orchestration.shadowSimulation;
+    assert(sim, "Deve conter objeto shadowSimulation");
+    assert(Array.isArray(sim.detectedFacts), "shadowSimulation deve conter detectedFacts");
+    assert(Array.isArray(sim.wouldCompleteObjectives), "shadowSimulation deve conter wouldCompleteObjectives");
+    assert(sim.wouldCompleteObjectives.includes("goal_city"), "wouldCompleteObjectives deve listar goal_city");
+    assert(sim.wouldCompleteObjectives.includes("goal_job"), "wouldCompleteObjectives deve listar goal_job");
+  });
+
+  // 47. Validação estrita de evidenceMessageId em objectiveCompletion (missing_evidence e invalid_evidence)
+  await runTest(47, "Validação estrita de evidenceMessageId em objectiveCompletion (missing_evidence e invalid_evidence)", async () => {
+    const memoryProvider = new MockMemoryProvider();
+    const cycle = { trace: [] };
+
+    // Cenário 1: Omissão de evidenceMessageId -> Rejeição categórica com missing_evidence
+    const resMissing = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_ev_1",
+      currentPhase: "conexao_inicial",
+      currentStageId: "stage_1_conexao",
+      decision: {
+        action: "reply",
+        currentPhase: "conexao_inicial",
+        checkpoint: "chk_saudacao_feita",
+        objectiveCompletion: {
+          objectiveId: "goal_initial_reciprocity",
+          value: true,
+          // Sem evidenceMessageId!
+        },
+      },
+      claimedMessages: [{ id: "m_claim_1", text: "tudo bem e você?", sender: "pretendente" }],
+      rawInbounds: [{ id: "m_claim_1", text: "tudo bem e você?", sender: "pretendente" }],
+      stageRules: { completed_goals: [], objective_progress: {} },
+      orchState: { completedGoalIds: [], objectiveProgress: {} },
+      currentCycle: cycle,
+      memoryProvider,
+    });
+
+    assert(cycle.trace.includes("objective_completion_rejected_missing_evidence: goal_initial_reciprocity"));
+    assert(cycle.trace.includes("invalid_objective_completion_rejected: missing_evidence"));
+    assert(!resMissing.updatedCompletedGoals.includes("goal_initial_reciprocity"), "Não pode aceitar conclusão sem evidência");
+
+    // Cenário 2: evidenceMessageId falso/inexistente -> Rejeição com invalid_evidence
+    const cycle2 = { trace: [] };
+    const resInvalid = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_ev_2",
+      currentPhase: "conexao_inicial",
+      currentStageId: "stage_1_conexao",
+      decision: {
+        action: "reply",
+        currentPhase: "conexao_inicial",
+        checkpoint: "chk_saudacao_feita",
+        objectiveCompletion: {
+          objectiveId: "goal_initial_reciprocity",
+          value: true,
+          evidenceMessageId: "fake_msg_id_99999", // ID fantasma
+        },
+      },
+      claimedMessages: [{ id: "m_claim_1", text: "tudo bem e você?", sender: "pretendente" }],
+      rawInbounds: [{ id: "m_claim_1", text: "tudo bem e você?", sender: "pretendente" }],
+      stageRules: { completed_goals: [], objective_progress: {} },
+      orchState: { completedGoalIds: [], objectiveProgress: {} },
+      currentCycle: cycle2,
+      memoryProvider,
+    });
+
+    assert(cycle2.trace.includes("objective_completion_rejected_invalid_evidence: goal_initial_reciprocity"));
+    assert(cycle2.trace.includes("invalid_objective_completion_rejected: invalid_evidence"));
+    assert(!resInvalid.updatedCompletedGoals.includes("goal_initial_reciprocity"), "Não pode aceitar evidência inexistente");
+
+    // Cenário 3: evidenceMessageId legítimo existente em claimedMessages -> Aprovado
+    const cycle3 = { trace: [] };
+    const resValid = await processDeterministicStageProgression({
+      supabase: null,
+      conversationId: "conv_ev_3",
+      currentPhase: "conexao_inicial",
+      currentStageId: "stage_1_conexao",
+      decision: {
+        action: "reply",
+        currentPhase: "conexao_inicial",
+        checkpoint: "chk_saudacao_feita",
+        objectiveCompletion: {
+          objectiveId: "goal_initial_reciprocity",
+          value: true,
+          evidenceMessageId: "m_claim_1", // Evidência real!
+        },
+      },
+      claimedMessages: [{ id: "m_claim_1", text: "tudo bem e você?", sender: "pretendente" }],
+      rawInbounds: [{ id: "m_claim_1", text: "tudo bem e você?", sender: "pretendente" }],
+      stageRules: { completed_goals: [], objective_progress: {} },
+      orchState: { completedGoalIds: [], objectiveProgress: {} },
+      currentCycle: cycle3,
+      memoryProvider,
+    });
+
+    assert(cycle3.trace.includes("objective_completion_accepted: goal_initial_reciprocity"));
+    assert(resValid.updatedCompletedGoals.includes("goal_initial_reciprocity"), "Deve aceitar conclusão com evidência legítima");
+  });
+
+  // 48. Preempção parcial (remaining_bubbles_superseded): Preserva fase, etapa e subagente sem avançar etapa
+  await runTest(48, "Preempção parcial (remaining_bubbles_superseded): Preserva fase, etapa e subagente sem avançar etapa", async () => {
+    // Inspeciona experimental_orchestrator.ts garantindo que o branch de remaining_bubbles_superseded preserva estado oficial
+    const orchContent = fs.readFileSync("supabase/functions/api/experimental_orchestrator.ts", "utf8");
+    const startIdx = orchContent.indexOf("remaining_bubbles_superseded: sent=");
+    assert(startIdx > -1, "Deve existir branch de remaining_bubbles_superseded");
+    const preemptionBlock = orchContent.slice(startIdx, startIdx + 3000);
+
+    assert(
+      preemptionBlock.includes("currentPhase: orchState.currentPhase || currentPhase"),
+      "remaining_bubbles_superseded DEVE preservar orchState.currentPhase sem avançar para validatedNextPhase"
+    );
+    assert(
+      preemptionBlock.includes("currentStageId: orchState.currentStageId || currentStageId"),
+      "remaining_bubbles_superseded DEVE preservar orchState.currentStageId"
+    );
+    assert(
+      preemptionBlock.includes("responsibleSubagentId: orchState.responsibleSubagentId || responsibleSubagent"),
+      "remaining_bubbles_superseded DEVE preservar orchState.responsibleSubagentId"
+    );
+    assert(
+      preemptionBlock.includes("(updatedState as any).completedGoalIds = orchState.completedGoalIds"),
+      "remaining_bubbles_superseded DEVE preservar completedGoalIds intactos"
+    );
+  });
+
+  // 49. validatePhaseTransition NÃO é autoridade de workflow (função auxiliar pura de validação/debug)
+  await runTest(49, "validatePhaseTransition NÃO é autoridade de workflow (função auxiliar pura de validação/debug)", async () => {
+    // 1. Inspeciona o contrato de arquitetura documentado
+    const orchContent = fs.readFileSync("supabase/functions/api/experimental_orchestrator.ts", "utf8");
+    assert(
+      orchContent.includes("validatePhaseTransition NÃO É autoridade de workflow"),
+      "Deve conter aviso explícito de que validatePhaseTransition não é autoridade"
+    );
+
+    // 2. Testa comportamento puro da função
+    const checkValid = validatePhaseTransition("conexao_inicial", "descoberta", "chk_rapport_estabelecido");
+    assert.equal(checkValid.allowed, true);
+    assert.equal(checkValid.validatedNextPhase, "descoberta");
+
+    // Tentativa inválida sem checkpoint
+    const checkInvalid = validatePhaseTransition("conexao_inicial", "descoberta", "chk_inexistente");
+    assert.equal(checkInvalid.allowed, false);
+    assert.equal(checkInvalid.validatedNextPhase, "conexao_inicial");
+  });
+
+  // 50. Integração de Fluxo Real com runtime.callModel: Ciclo ponta-a-ponta executa com observabilidade e fidelidade
+  await runTest(50, "Integração de Fluxo Real com runtime.callModel: Ciclo ponta-a-ponta executa com observabilidade e fidelidade", async () => {
+    const memoryProvider = new MockMemoryProvider();
+    let savedStageRules = null;
+
+    const conversationRow50 = {
+      id: "conv_flow_test",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: [],
+        objective_progress: {},
+        orchestration: {
+          version: 1,
+          mode: "shadow",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: [],
+          objectiveProgress: {},
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: (table) => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: conversationRow50,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: [
+                  { id: "msg_in_prev", text: "oi Larissa", sender: "pretendente", created_at: new Date().toISOString() },
+                ],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog" ? [{ id: "conexao_inicial", enabled: true }] : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: () => {
+            if (payload.stage_completed_rules) {
+              conversationRow50.stage_completed_rules = {
+                ...conversationRow50.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+              savedStageRules = conversationRow50.stage_completed_rules;
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+      }),
+    };
+
+    let modelCalled = false;
+    const runtime = {
+      callModel: async (prompt) => {
+        modelCalled = true;
+        if (prompt.includes("targetSubagent") || prompt.includes("ROTEADOR") || prompt.includes("Subagente Alvo") || prompt.includes("CLASSIFICAÇÃO")) {
+          return {
+            content: JSON.stringify({
+              action: "route",
+              targetSubagent: "conexao_inicial",
+              reason: "Iniciando conexao",
+            }),
+            tokens: 50,
+          };
+        }
+        return {
+          content: JSON.stringify({
+            action: "reply",
+            suggestedResponse: "Oi! Tudo bem sim, e com você como estão as coisas?",
+            checkpoint: "chk_saudacao_feita",
+            responses: ["Oi! Tudo bem sim, e com você como estão as coisas?"],
+            objectiveCompletion: {
+              objectiveId: "goal_initial_reciprocity",
+              value: true,
+              evidenceMessageId: "msg_in_now",
+            },
+          }),
+          tokens: 50,
+        };
+      },
+      _fastTest: true,
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_flow_test",
+      newMessage: {
+        id: "msg_in_now",
+        text: "tudo ótimo por aqui, adorei seu perfil!",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(res.handled, true, "Orchestrator deve processar o ciclo com sucesso");
+    assert.equal(modelCalled, true, "Subagente deve chamar o modelo LLM");
+    assert(savedStageRules, "Deve persistir stage_completed_rules");
+    assert(savedStageRules.orchestration.recentCycles.length > 0, "Deve registrar recentCycles");
+    assert.equal(savedStageRules.orchestration.recentCycles[0].status, "completed");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/45 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/50 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

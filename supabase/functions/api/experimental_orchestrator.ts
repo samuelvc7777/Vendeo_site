@@ -817,8 +817,13 @@ export function validateOrchestratorDecision(data: unknown, allowedPhases?: stri
 }
 
 // ----------------------------------------------------------------------------
-// 4. Validador de Transição de Fase pelo Backend (Guarda de Integridade)
+// 4. Validador de Transição de Fase pelo Backend (Guarda de Integridade / Normalização)
 // ----------------------------------------------------------------------------
+// AVISO DE ARQUITETURA: validatePhaseTransition NÃO É autoridade de workflow e
+// NÃO tem permissão para alterar o estado oficial da conversa (currentPhase/currentStageId).
+// Serve exclusivamente para normalização de payload, telemetria de trace, compatibilidade
+// legada e debug. A ÚNICA autoridade determinística oficial para progressão e avanço de etapa
+// é a função processDeterministicStageProgression().
 export function validatePhaseTransition(
   currentPhase: OrchestrationPhase,
   requestedNextPhase: OrchestrationPhase,
@@ -2633,12 +2638,18 @@ export async function processDeterministicStageProgression(params: {
         currentCycle.trace.push(`objective_completion_rejected_reason: not_current_objective`);
         currentCycle.trace.push(`invalid_objective_completion_rejected: not_current_objective`);
       }
+    } else if (!comp.evidenceMessageId) {
+      // Regra E1: Validação de evidência obrigatória (rejeição categórica se ausente)
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(`objective_completion_rejected_missing_evidence: ${comp.objectiveId}`);
+        currentCycle.trace.push(`objective_completion_rejected_reason: missing_evidence`);
+        currentCycle.trace.push(`invalid_objective_completion_rejected: missing_evidence`);
+      }
     } else {
-      // Regra E: Validação de evidência
-      const validEvidence = comp.evidenceMessageId
-        ? claimedMessages.some((m: any) => m.id === comp.evidenceMessageId) ||
-          rawInbounds.some((m: any) => m.id === comp.evidenceMessageId)
-        : true;
+      // Regra E2: Validação de evidência obrigatória (deve existir em claimedMessages ou rawInbounds)
+      const validEvidence =
+        claimedMessages.some((m: any) => String(m.id) === String(comp.evidenceMessageId)) ||
+        rawInbounds.some((m: any) => String(m.id) === String(comp.evidenceMessageId));
 
       if (!validEvidence) {
         if (currentCycle?.trace) {
@@ -3501,11 +3512,11 @@ export function detectSpontaneousObjectiveCompletions(
   if (targetWorkGoal) {
     // Primeiro prioriza declaração clara de presente ("hoje sou motorista", "atualmente trabalho como...", "sou motorista")
     const presentJobMatch = textLower.match(
-      /(?:(?:hoje|atualmente|agora)\s+)?(?:sou\s+(?:médico|engenheiro|advogado|motorista|autônomo|empresário|enfermeiro|professor|pedreiro|estudante|programador|dev|analista|minerador|técnico|policial|bancário|vendedor)[^,.;!?\n]*|(?:hoje|atualmente|agora)\s+trabalho\s+(?:com|em|na|no|de)\s+([^,.;!?\n]+))/i
+      /(?:(?:hoje|atualmente|agora)\s+)?(?:sou\s+(?:médico|médica|engenheiro|engenheira|advogado|advogada|motorista|autônomo|autônoma|empresário|empresária|enfermeiro|enfermeira|professor|professora|pedreiro|estudante|programador|programadora|dev|analista|minerador|mineradora|técnico|técnica|policial|bancário|bancária|vendedor|vendedora)[^,.;!?\n]*|(?:hoje|atualmente|agora)\s+trabalho\s+(?:com|em|na|no|de|como)\s+([^,.;!?\n]+))/i
     );
 
     const generalWorkMatch = textLower.match(
-      /(?:trabalho\s+(?:com|em|na|no|de)\s+([^,.;!?\n]+)|sou\s+(?:médico|engenheiro|advogado|motorista|autônomo|empresário|enfermeiro|professor|pedreiro|estudante|programador|dev|analista|minerador|técnico|policial|bancário|vendedor)[^,.;!?\n]*)/i
+      /(?:trabalho\s+(?:com|em|na|no|de|como)\s+([^,.;!?\n]+)|sou\s+(?:médico|médica|engenheiro|engenheira|advogado|advogada|motorista|autônomo|autônoma|empresário|empresária|enfermeiro|enfermeira|professor|professora|pedreiro|estudante|programador|programadora|dev|analista|minerador|mineradora|técnico|técnica|policial|bancário|bancária|vendedor|vendedora)[^,.;!?\n]*)/i
     );
 
     const pastWorkMatch = textLower.match(
@@ -4472,7 +4483,7 @@ async function callModelOrOpenAi(
 ): Promise<{ content: string; tokens: number }> {
   if (options.runtime?.callModel) {
     const res = await options.runtime.callModel(prompt);
-    return { content: res.content, tokens: res.tokens || 0 };
+    return { content: res.content || (res as any).text || "", tokens: res.tokens || 0 };
   }
 
   // 1. Motor Oficial Prioritário: OpenAI (api.openai.com)
@@ -4944,6 +4955,7 @@ export async function runExperimentalOrchestration(
       status: "claimed" as MessageProcessingStatus,
       claimedByCycleId: correlationId,
     }));
+    const rawInbounds = (claimedMessages || []).filter((m: any) => m.sender === "pretendente" || m.direction === "inbound");
 
     for (const id of claimedMessageIds) {
       ledger[id] = "claimed";
@@ -5130,6 +5142,7 @@ export async function runExperimentalOrchestration(
 
     let totalTokens = 0;
     let initialContextTokens = 0;
+    let toolCallsCount = 0;
     let toolCallsTokens = 0;
     let toolResultTokens = 0;
     let finalGenerationTokens = 0;
@@ -5178,36 +5191,72 @@ export async function runExperimentalOrchestration(
       pendingGoalIdsBefore
     );
 
+    const isShadowMode = orchState.mode === "shadow";
+    let workingCompletedGoalIds: string[] = [...completedGoalIds];
+    const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
+    const shadowWouldCompleteObjectives: string[] = [];
+
     if (spontaneousMatches.length > 0) {
       const newlyCompleted = spontaneousMatches.map((m) => m.objectiveId);
-      completedGoalIds = [...new Set([...completedGoalIds, ...newlyCompleted])];
-      (orchState as any).completedGoalIds = completedGoalIds;
       currentCycle.trace.push(`spontaneous_objectives_detected: ${newlyCompleted.join(",")}`);
-      currentCycle.trace.push(`spontaneous_objectives_completed: ${newlyCompleted.join(",")}`);
 
-      // Salva fatos espontâneos na ContactMemory com entidade canônica "self"
-      for (const m of spontaneousMatches) {
-        try {
+      if (isShadowMode) {
+        // MODO SHADOW: Isolamento estrito! NUNCA altera estado oficial e NUNCA salva em ContactMemory
+        shadowWouldCompleteObjectives.push(...newlyCompleted);
+        currentCycle.trace.push(`shadow_spontaneous_objectives_simulated: ${newlyCompleted.join(",")}`);
+
+        for (const m of spontaneousMatches) {
           const entity = m.memoryEntity || "self";
           const field = m.memoryField || m.field;
-          await memoryProvider.saveFact(conversationId, entity, field, m.value, {
-            confidence: 1.0,
+          shadowDetectedFacts.push({
+            entity,
+            field,
+            value: m.value,
             sourceMessageId: m.evidenceMessageId || newMessage.id,
           });
-        } catch (err) {
-          // Fail-safe silencioso
         }
-      }
 
-      // Re-resolve os objetivos com os fatos atualizados
-      stageChecklistForRouter = await resolveStageObjectives({
-        supabase,
-        conversationId,
-        stageNameOrId: currentStageId,
-        memoryProvider,
-        completedGoalIds,
-        historyMessages: claimedMessages,
-      });
+        // Para observabilidade do ciclo simulado atual, calcula checklist com os objetivos detectados sem persistência
+        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, ...newlyCompleted])];
+        stageChecklistForRouter = await resolveStageObjectives({
+          supabase,
+          conversationId,
+          stageNameOrId: currentStageId,
+          memoryProvider,
+          completedGoalIds: workingCompletedGoalIds,
+          historyMessages: claimedMessages,
+        });
+      } else {
+        // MODO REAL/EXPERIMENTAL: Salva fatos e atualiza estado oficial
+        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, ...newlyCompleted])];
+        completedGoalIds = workingCompletedGoalIds;
+        (orchState as any).completedGoalIds = completedGoalIds;
+        currentCycle.trace.push(`spontaneous_objectives_completed: ${newlyCompleted.join(",")}`);
+
+        // Salva fatos espontâneos na ContactMemory com entidade canônica "self"
+        for (const m of spontaneousMatches) {
+          try {
+            const entity = m.memoryEntity || "self";
+            const field = m.memoryField || m.field;
+            await memoryProvider.saveFact(conversationId, entity, field, m.value, {
+              confidence: 1.0,
+              sourceMessageId: m.evidenceMessageId || newMessage.id,
+            });
+          } catch (err) {
+            // Fail-safe silencioso
+          }
+        }
+
+        // Re-resolve os objetivos com os fatos atualizados
+        stageChecklistForRouter = await resolveStageObjectives({
+          supabase,
+          conversationId,
+          stageNameOrId: currentStageId,
+          memoryProvider,
+          completedGoalIds,
+          historyMessages: claimedMessages,
+        });
+      }
     }
 
     const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
@@ -5401,7 +5450,7 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
       });
 
       const MAX_TOOL_ITERATIONS = 3;
-      let toolCallsCount = 0;
+      toolCallsCount = 0;
       let currentSubagentPrompt = subagentPrompt;
       let lastToolResultForFinalCall: any = null;
 
@@ -5991,7 +6040,7 @@ Responda ESTRITAMENTE em JSON puro:
         orchState,
         currentCycle,
         memoryProvider,
-        episodicMemory: episodes,
+        episodicMemory: [],
       });
 
       // Traces de simulação exigidos para observabilidade em Shadow
@@ -6005,6 +6054,8 @@ Responda ESTRITAMENTE em JSON puro:
         wouldNextStageId: stageProgression.nextStageId,
         simulatedCompletedGoals: stageProgression.updatedCompletedGoals,
         simulatedObjectiveProgress: stageProgression.updatedObjectiveProgress,
+        detectedFacts: shadowDetectedFacts,
+        wouldCompleteObjectives: shadowWouldCompleteObjectives,
       };
 
       const durationMs = Date.now() - startTime;
@@ -6201,7 +6252,9 @@ Responda ESTRITAMENTE em JSON puro:
               const updatedState: ConversationOrchestrationState = {
                 version: 1,
                 mode: "experimental",
-                currentPhase: validatedNextPhase,
+                currentPhase: orchState.currentPhase || currentPhase,
+                currentStageId: orchState.currentStageId || currentStageId,
+                responsibleSubagentId: orchState.responsibleSubagentId || responsibleSubagent,
                 checkpoint: decision.checkpoint,
                 lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
                 lastProcessedAt: new Date().toISOString(),
@@ -6217,6 +6270,8 @@ Responda ESTRITAMENTE em JSON puro:
                 outbox: outboxMap,
                 messageLedger: ledger,
               };
+              (updatedState as any).completedGoalIds = orchState.completedGoalIds || stageRules.completed_goals || [];
+              (updatedState as any).objectiveProgress = orchState.objectiveProgress || stageRules.objective_progress || {};
 
               await supabase
                 .from("instagram_conversations")
@@ -6582,7 +6637,7 @@ Responda ESTRITAMENTE em JSON puro:
           orchState,
           currentCycle,
           memoryProvider,
-          episodicMemory: episodes,
+          episodicMemory: [],
         });
         decision.nextPhase = stageProgression.nextPhase;
       } else {
