@@ -113,6 +113,7 @@ async function runTests() {
     OverlayMemoryProvider,
     createOverlayMemoryProvider,
     commitExperimentalCycleAtomic,
+    requestExperimentalCyclePreemptionAtomic,
   } = orchestratorModule;
 
   let passed = 0;
@@ -3036,8 +3037,400 @@ async function runTests() {
     assert.equal(conversationRow.stage_completed_rules.orchestration.currentStageId, "stage_2");
   });
 
+  // 58. TESTE CRÍTICO OBRIGATÓRIO (Preempção do Webhook): SNAPSHOT VELHO NÃO PODE APAGAR COMMIT NOVO
+  await runTest(58, "TESTE CRÍTICO OBRIGATÓRIO: Snapshot velho não pode apagar commit novo (Patch atômico da preempção)", async () => {
+    // ESTADO INICIAL
+    let conversationRow = {
+      id: "conv_test_58",
+      ai_auto_respond: false,
+      ai_debounce_until: null,
+      stage_completed_rules: {
+        active_cycle_token: "cycle_a",
+        preempt_requested: false,
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed" },
+        },
+        orchestration: {
+          inboundRevision: 1,
+          preemptRequested: false,
+          currentStageId: "descoberta",
+          currentPhase: "descoberta",
+          responsibleSubagentId: "descoberta",
+          messageLedger: { msg_init: "processed" },
+          memory: {
+            entities: {
+              self: {},
+            },
+          },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: (table) => ({
+        select: (cols) => ({
+          eq: (col, val) => ({
+            maybeSingle: () => Promise.resolve({ data: JSON.parse(JSON.stringify(conversationRow)) }),
+          }),
+        }),
+        update: (data) => ({
+          eq: (col, val) => {
+            Object.assign(conversationRow, data);
+            return Promise.resolve({ data: [conversationRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "commit_experimental_cycle_if_owned") {
+          const currentToken = conversationRow.stage_completed_rules?.active_cycle_token;
+          const isPreempt = Boolean(conversationRow.stage_completed_rules?.preempt_requested);
+          if (currentToken !== params.p_cycle_token) {
+            return Promise.resolve({
+              data: { committed: false, reason: "lost_lock", activeToken: currentToken },
+              error: null,
+            });
+          }
+          if (isPreempt) {
+            return Promise.resolve({
+              data: { committed: false, reason: "preempted" },
+              error: null,
+            });
+          }
+          conversationRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          return Promise.resolve({
+            data: { committed: true, reason: "committed" },
+            error: null,
+          });
+        }
+        if (fn === "request_experimental_cycle_preemption") {
+          const rules = conversationRow.stage_completed_rules || {};
+          const orch = rules.orchestration || {};
+          const currentRev = typeof orch.inboundRevision === "number" ? orch.inboundRevision : 0;
+          const newRev = currentRev + 1;
+          const ledger = { ...(orch.messageLedger || {}) };
+          if (params.p_message_id) {
+            ledger[params.p_message_id] = "pending";
+          }
+          const targetDebounce = params.p_debounce_until || new Date(Date.now() + 2500).toISOString();
+          conversationRow.stage_completed_rules = {
+            ...rules,
+            preempt_requested: true,
+            ai_debounce_until: targetDebounce,
+            orchestration: {
+              ...orch,
+              inboundRevision: newRev,
+              preemptRequested: true,
+              messageLedger: ledger,
+            },
+          };
+          conversationRow.ai_auto_respond = true;
+          conversationRow.ai_debounce_until = targetDebounce;
+          return Promise.resolve({
+            data: {
+              success: true,
+              inboundRevision: newRev,
+              activeCycleToken: rules.active_cycle_token ?? null,
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // 1. Webhook B conceitualmente teria feito um SELECT antes do commit do ciclo A.
+    // Guardamos o snapshot velho para provar que ele JAMAIS é usado na nova preempção:
+    const oldSnapshotThatWouldHaveBeenReadByB = JSON.parse(JSON.stringify(conversationRow.stage_completed_rules));
+
+    // 2. Antes da preempção ser aplicada, ciclo A faz o commit atômico (CAS) e grava no banco:
+    const cycleACommitRules = {
+      ...conversationRow.stage_completed_rules,
+      completed_goals: ["goal_initial_reciprocity", "goal_city"],
+      objective_progress: {
+        goal_initial_reciprocity: { status: "completed" },
+        goal_city: { status: "completed", value: "Barbacena" },
+      },
+      orchestration: {
+        ...conversationRow.stage_completed_rules.orchestration,
+        memory: {
+          entities: {
+            self: {
+              city: { value: "Barbacena", field: "city", entity: "self" },
+            },
+          },
+        },
+      },
+    };
+
+    const commitRes = await commitExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_58",
+      correlationId: "cycle_a",
+      newStageCompletedRules: cycleACommitRules,
+    });
+
+    assert.equal(commitRes.committed, true, "Ciclo A deve commitar com sucesso");
+
+    // 3. Agora chega a sinalização de preempção do Webhook B para a nova mensagem 'msg_new':
+    const preemptionRes = await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_58",
+      messageId: "msg_new",
+      debounceUntil: new Date(Date.now() + 2500).toISOString(),
+    });
+
+    assert.equal(preemptionRes.success, true, "Preempção atômica deve retornar sucesso");
+    assert.equal(preemptionRes.inboundRevision, 2, "inboundRevision deve ser incrementada em +1 (1 -> 2)");
+
+    // 4. Verificação estrita: O estado final contém AO MESMO TEMPO os dados novos e o patch da preempção!
+    const finalRules = conversationRow.stage_completed_rules;
+    assert.deepEqual(
+      finalRules.completed_goals,
+      ["goal_initial_reciprocity", "goal_city"],
+      "completed_goals DEVE conter goal_city gravado pelo ciclo A (NÃO pode ser apagado pelo snapshot velho!)"
+    );
+    assert.equal(
+      finalRules.objective_progress?.goal_city?.status,
+      "completed",
+      "objective_progress.goal_city DEVE existir como completed"
+    );
+    assert.equal(
+      finalRules.orchestration?.memory?.entities?.self?.city?.value,
+      "Barbacena",
+      "memory.self.city DEVE continuar Barbacena (preservação estrita de ContactMemory!)"
+    );
+    assert.equal(finalRules.preempt_requested, true, "preempt_requested DEVE ser true");
+    assert.equal(finalRules.orchestration?.preemptRequested, true, "orchestration.preemptRequested DEVE ser true");
+    assert.equal(finalRules.orchestration?.inboundRevision, 2, "orchestration.inboundRevision deve ser exatamente 2");
+    assert.equal(
+      finalRules.orchestration?.messageLedger?.msg_new,
+      "pending",
+      "orchestration.messageLedger.msg_new DEVE ser pending"
+    );
+    assert.equal(
+      finalRules.orchestration?.messageLedger?.msg_init,
+      "processed",
+      "Mensagens anteriores do messageLedger devem continuar intactas"
+    );
+    assert.equal(conversationRow.ai_auto_respond, true, "ai_auto_respond deve ser true");
+    assert.ok(conversationRow.ai_debounce_until, "ai_debounce_until deve ter sido agendado");
+  });
+
+  // 59. TESTE DE DUAS PREEMPÇÕES CONCORRENTES:
+  await runTest(59, "TESTE DE DUAS PREEMPÇÕES CONCORRENTES: Duas mensagens incrementam inboundRevision (+2) sem perder mensagens no ledger", async () => {
+    let conversationRow = {
+      id: "conv_test_59",
+      ai_auto_respond: false,
+      ai_debounce_until: null,
+      stage_completed_rules: {
+        active_cycle_token: "cycle_running",
+        preempt_requested: false,
+        orchestration: {
+          inboundRevision: 10,
+          preemptRequested: false,
+          messageLedger: { msg_base: "processed" },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        update: (data) => ({
+          eq: () => {
+            Object.assign(conversationRow, data);
+            return Promise.resolve({ data: [conversationRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "request_experimental_cycle_preemption") {
+          const rules = conversationRow.stage_completed_rules || {};
+          const orch = rules.orchestration || {};
+          const currentRev = typeof orch.inboundRevision === "number" ? orch.inboundRevision : 0;
+          const newRev = currentRev + 1;
+          const ledger = { ...(orch.messageLedger || {}) };
+          if (params.p_message_id) {
+            ledger[params.p_message_id] = "pending";
+          }
+          conversationRow.stage_completed_rules = {
+            ...rules,
+            preempt_requested: true,
+            orchestration: {
+              ...orch,
+              inboundRevision: newRev,
+              preemptRequested: true,
+              messageLedger: ledger,
+            },
+          };
+          return Promise.resolve({
+            data: {
+              success: true,
+              inboundRevision: newRev,
+              activeCycleToken: rules.active_cycle_token ?? null,
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // Chamada 1: mensagem msg_1
+    const res1 = await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_59",
+      messageId: "msg_1",
+    });
+
+    // Chamada 2: mensagem msg_2
+    const res2 = await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_59",
+      messageId: "msg_2",
+    });
+
+    assert.equal(res1.success, true);
+    assert.equal(res1.inboundRevision, 11, "msg_1 incrementa de 10 para 11");
+    assert.equal(res2.success, true);
+    assert.equal(res2.inboundRevision, 12, "msg_2 incrementa de 11 para 12");
+
+    const orch = conversationRow.stage_completed_rules.orchestration;
+    assert.equal(orch.inboundRevision, 12, "inboundRevision final deve ser exatamente 12");
+    assert.equal(orch.messageLedger.msg_1, "pending", "msg_1 deve estar no ledger");
+    assert.equal(orch.messageLedger.msg_2, "pending", "msg_2 deve estar no ledger");
+    assert.equal(orch.messageLedger.msg_base, "processed", "msg_base deve ser preservada");
+  });
+
+  // 60. TESTE DE PRESERVAÇÃO INTEGRAL DE CAMPOS:
+  await runTest(60, "TESTE DE PRESERVAÇÃO DE CAMPOS: Preempção não altera completed_goals, objective_progress, memory, outbox, etc.", async () => {
+    const originalMemory = {
+      entities: {
+        self: {
+          city: { value: "Belo Horizonte" },
+          job: { value: "Médica" },
+        },
+      },
+      snippets: ["fato_1"],
+    };
+
+    const originalOutbox = {
+      outbox_key_1: { status: "sent", content: "olá!" },
+    };
+
+    const originalCycles = [
+      { id: "cycle_1", durationMs: 120 },
+    ];
+
+    let conversationRow = {
+      id: "conv_test_60",
+      ai_auto_respond: false,
+      ai_debounce_until: null,
+      stage_completed_rules: {
+        active_cycle_token: "cycle_active_60",
+        preempt_requested: false,
+        completed_goals: ["goal_city", "goal_job"],
+        objective_progress: {
+          goal_city: { status: "completed" },
+          goal_job: { status: "completed" },
+        },
+        orchestration: {
+          inboundRevision: 5,
+          preemptRequested: false,
+          currentStageId: "compatibilidade",
+          currentPhase: "compatibilidade",
+          responsibleSubagentId: "compatibilidade",
+          checkpoint: { lastAction: "reply" },
+          outbox: originalOutbox,
+          recentCycles: originalCycles,
+          memory: originalMemory,
+          messageLedger: { msg_old: "processed" },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      from: () => ({
+        update: (data) => ({
+          eq: () => {
+            Object.assign(conversationRow, data);
+            return Promise.resolve({ data: [conversationRow], error: null });
+          },
+        }),
+      }),
+      rpc: (fn, params) => {
+        if (fn === "request_experimental_cycle_preemption") {
+          const rules = conversationRow.stage_completed_rules || {};
+          const orch = rules.orchestration || {};
+          const currentRev = typeof orch.inboundRevision === "number" ? orch.inboundRevision : 0;
+          const newRev = currentRev + 1;
+          const ledger = { ...(orch.messageLedger || {}) };
+          if (params.p_message_id) {
+            ledger[params.p_message_id] = "pending";
+          }
+          conversationRow.stage_completed_rules = {
+            ...rules,
+            preempt_requested: true,
+            orchestration: {
+              ...orch,
+              inboundRevision: newRev,
+              preemptRequested: true,
+              messageLedger: ledger,
+            },
+          };
+          return Promise.resolve({
+            data: {
+              success: true,
+              inboundRevision: newRev,
+              activeCycleToken: rules.active_cycle_token ?? null,
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    const res = await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_60",
+      messageId: "msg_incoming",
+    });
+
+    assert.equal(res.success, true);
+    assert.equal(res.inboundRevision, 6);
+
+    const rules = conversationRow.stage_completed_rules;
+    const orch = rules.orchestration;
+
+    // Campos que DEVEM ser preservados integralmente:
+    assert.deepEqual(rules.completed_goals, ["goal_city", "goal_job"], "completed_goals preservado");
+    assert.deepEqual(rules.objective_progress, {
+      goal_city: { status: "completed" },
+      goal_job: { status: "completed" },
+    }, "objective_progress preservado");
+    assert.deepEqual(orch.memory, originalMemory, "memory preservada");
+    assert.deepEqual(orch.outbox, originalOutbox, "outbox preservada");
+    assert.deepEqual(orch.recentCycles, originalCycles, "recentCycles preservados");
+    assert.equal(orch.currentStageId, "compatibilidade", "currentStageId preservado");
+    assert.equal(orch.currentPhase, "compatibilidade", "currentPhase preservada");
+    assert.equal(orch.responsibleSubagentId, "compatibilidade", "responsibleSubagentId preservado");
+    assert.deepEqual(orch.checkpoint, { lastAction: "reply" }, "checkpoint preservado");
+    assert.equal(orch.messageLedger.msg_old, "processed", "msg_old no ledger preservado");
+
+    // Únicos campos que DEVEM mudar:
+    assert.equal(rules.preempt_requested, true, "preempt_requested alterado para true");
+    assert.equal(orch.preemptRequested, true, "orch.preemptRequested alterado para true");
+    assert.equal(orch.inboundRevision, 6, "inboundRevision incrementado para 6");
+    assert.equal(orch.messageLedger.msg_incoming, "pending", "nova mensagem adicionada como pending");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/57 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/60 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

@@ -1679,6 +1679,94 @@ export async function commitExperimentalCycleAtomic(
   }
 }
 
+export interface RequestCyclePreemptionParams {
+  supabase: any;
+  conversationId: string;
+  messageId?: string | null;
+  debounceUntil?: string | null;
+}
+
+export interface RequestCyclePreemptionResult {
+  success: boolean;
+  inboundRevision?: number;
+  activeCycleToken?: string | null;
+  reason?: string;
+  error?: any;
+}
+
+/**
+ * Sinaliza preempção ao ciclo experimental ativo de forma atômica no PostgreSQL.
+ * Realiza patch transacional direto no banco (inboundRevision + 1, preempt_requested = true,
+ * messageLedger[messageId] = 'pending') com SELECT ... FOR UPDATE.
+ * Elimina 100% de janelas TOCTOU causadas por read-modify-write em snapshots do JavaScript.
+ *
+ * FAIL-CLOSED: Se a RPC falhar, NUNCA tenta reescrever stage_completed_rules via JS;
+ * no máximo atualiza colunas isoladas ai_auto_respond e ai_debounce_until.
+ */
+export async function requestExperimentalCyclePreemptionAtomic(
+  params: RequestCyclePreemptionParams
+): Promise<RequestCyclePreemptionResult> {
+  const { supabase, conversationId, messageId, debounceUntil } = params;
+  const targetDebounce = debounceUntil || new Date(Date.now() + 2500).toISOString();
+
+  // 1. PREFERÊNCIA 1: RPC atômica no PostgreSQL com SELECT ... FOR UPDATE (Zero TOCTOU)
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("request_experimental_cycle_preemption", {
+        p_conversation_id: conversationId,
+        p_message_id: messageId || null,
+        p_debounce_until: targetDebounce,
+      });
+
+      if (!error && data && typeof data === "object") {
+        if (data.success === true) {
+          return {
+            success: true,
+            inboundRevision: typeof data.inboundRevision === "number" ? data.inboundRevision : undefined,
+            activeCycleToken: data.activeCycleToken ?? null,
+            reason: "preemption_requested",
+          };
+        }
+        return {
+          success: false,
+          reason: data.reason || "preemption_rejected",
+        };
+      }
+
+      if (error) {
+        console.warn(
+          `[requestExperimentalCyclePreemptionAtomic] Erro na RPC request_experimental_cycle_preemption para conv=${conversationId}:`,
+          error.message || error
+        );
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[requestExperimentalCyclePreemptionAtomic] Exceção na RPC request_experimental_cycle_preemption para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
+    }
+  }
+
+  // 2. FAIL-CLOSED: NUNCA fazer read-modify-write de stage_completed_rules em JS!
+  // No máximo atualiza colunas isoladas ai_auto_respond e ai_debounce_until.
+  try {
+    await supabase
+      .from("instagram_conversations")
+      .update({
+        ai_auto_respond: true,
+        ai_debounce_until: targetDebounce,
+      })
+      .eq("id", conversationId);
+  } catch (_colErr) {
+    // Silencia falha em fallback fail-closed
+  }
+
+  return {
+    success: false,
+    reason: "rpc_failed_fail_closed",
+  };
+}
+
 export interface DispatchOutboxParams {
   supabase: any;
   outboxEntry: OutboxEntry;

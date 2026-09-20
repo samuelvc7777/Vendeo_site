@@ -7,7 +7,7 @@ import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
 import { runCloudAutoPilot, publishAutoPilotState, activity } from "./cloud_autopilot.ts";
 import { createCloudAutoPilotSupport } from "./cloud_autopilot_support.ts";
 import { recordAutoPilotTrace } from "./autopilot_trace.ts";
-import { runExperimentalOrchestration } from "./experimental_orchestrator.ts";
+import { runExperimentalOrchestration, requestExperimentalCyclePreemptionAtomic } from "./experimental_orchestrator.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1062,51 +1062,16 @@ serve(async (req: Request) => {
                         },
                       });
 
-                      // Em caso de concorrência com ciclo ativo, sinaliza preempção ao ciclo em andamento e agenda debounce para novo ciclo com snapshot atualizado
+                      // Em caso de concorrência com ciclo ativo, sinaliza preempção atômica no PostgreSQL
+                      // sem NUNCA usar read-modify-write de snapshot JS (elimina 100% de TOCTOU pós-commit).
                       if (!res.handled && res.error === "Lock ativo concorrente") {
-                        console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Sinalizando preempção e debounce de 2.5s.`);
-                        try {
-                          const { data: latestC } = await supabase
-                            .from("instagram_conversations")
-                            .select("stage_completed_rules")
-                            .eq("id", conversationId)
-                            .maybeSingle();
-
-                          const currentStageRules = latestC?.stage_completed_rules || {};
-                          const orch = currentStageRules.orchestration || {};
-                          const currentRev = typeof orch.inboundRevision === "number" ? orch.inboundRevision : 0;
-                          const ledger = { ...(orch.messageLedger || {}) };
-                          if (messageId) {
-                            ledger[messageId] = "pending";
-                          }
-
-                          await supabase
-                            .from("instagram_conversations")
-                            .update({
-                              ai_auto_respond: true,
-                              ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
-                              stage_completed_rules: {
-                                ...currentStageRules,
-                                preempt_requested: true,
-                                orchestration: {
-                                  ...orch,
-                                  inboundRevision: currentRev + 1,
-                                  preemptRequested: true,
-                                  messageLedger: ledger,
-                                },
-                              },
-                            })
-                            .eq("id", conversationId);
-                        } catch (pErr) {
-                          console.warn(`[Orchestrator] Falha ao sinalizar preempção em ${conversationId}:`, pErr);
-                          await supabase
-                            .from("instagram_conversations")
-                            .update({
-                              ai_auto_respond: true,
-                              ai_debounce_until: new Date(Date.now() + 2500).toISOString(),
-                            })
-                            .eq("id", conversationId);
-                        }
+                        console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Sinalizando preempção atômica e debounce de 2.5s.`);
+                        await requestExperimentalCyclePreemptionAtomic({
+                          supabase,
+                          conversationId,
+                          messageId: messageId || null,
+                          debounceUntil: new Date(Date.now() + 2500).toISOString(),
+                        });
                       }
 
                       // BLOQUEIO EXPLÍCITO DO FALLBACK LEGADO:
