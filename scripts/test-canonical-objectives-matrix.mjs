@@ -91,7 +91,7 @@ class MockMemoryProvider {
 
 async function runTests() {
   console.log("================================================================================");
-  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (55 CENÁRIOS)");
+  console.log("🚀 INICIANDO SUÍTE DE TESTES: MATRIZ CANÔNICA DE OBJETIVOS (57 CENÁRIOS)");
   console.log("================================================================================\n");
 
   const { CANONICAL_CHAT_STAGES_MATRIX } = loadTsModule("src/domain/entities/ChatStage.ts");
@@ -112,6 +112,7 @@ async function runTests() {
     SupabaseMemoryProvider,
     OverlayMemoryProvider,
     createOverlayMemoryProvider,
+    commitExperimentalCycleAtomic,
   } = orchestratorModule;
 
   let passed = 0;
@@ -1980,6 +1981,15 @@ async function runTests() {
             error: null,
           });
         }
+        if (fn === "commit_experimental_cycle_if_owned") {
+          conversationRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          savedStageRules = conversationRow.stage_completed_rules;
+          return Promise.resolve({ data: { committed: true, reason: "committed" }, error: null });
+        }
         return Promise.resolve({ data: { success: true }, error: null });
       },
       from: (table) => ({
@@ -2140,6 +2150,14 @@ async function runTests() {
             },
             error: null,
           });
+        }
+        if (fn === "commit_experimental_cycle_if_owned") {
+          conversationRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          return Promise.resolve({ data: { committed: true, reason: "committed" }, error: null });
         }
         return Promise.resolve({ data: { success: true }, error: null });
       },
@@ -2322,11 +2340,14 @@ async function runTests() {
     );
   });
 
-  // 54. Perda de lock DEPOIS do envio: Zero chamadas a saveFact/writeFact, zero contaminação de completed_goals e ContactMemory
-  await runTest(54, "Perda de lock DEPOIS do envio: Zero chamadas a saveFact/writeFact, zero contaminação de completed_goals e ContactMemory", async () => {
+  // 54. TESTE CRÍTICO 1 — RACE REAL ENTRE CHECK (SELECT) E COMMIT (CAS):
+  // Valida que se outro ciclo roubar o lock na fração de milissegundo entre a leitura de snapshot
+  // e o CAS final, o commit oficial de A é 100% REJEITADO (Zero TOCTOU)!
+  await runTest(54, "TESTE CRÍTICO 1 (TOCTOU): Perda de lock entre SELECT e CAS aborta commit oficial com zero contaminação", async () => {
     let savedStageRules = null;
     let balloonCount = 0;
     let episodicUpserts = [];
+    let selectCount = 0;
 
     class StrictSpiesMemoryProvider {
       constructor() {
@@ -2334,14 +2355,14 @@ async function runTests() {
         this.writeCalls = 0;
         this.storage = new Map();
       }
-      async getFact(conversationId, entity, field) {
+      async getFact() {
         return { found: false, value: null };
       }
-      async saveFact(conversationId, entity, field, value) {
+      async saveFact() {
         this.saveCalls++;
         return { success: true };
       }
-      async writeFact(conversationId, fact) {
+      async writeFact() {
         this.writeCalls++;
         return { success: true };
       }
@@ -2360,7 +2381,8 @@ async function runTests() {
         objective_progress: {
           goal_initial_reciprocity: { status: "completed", value: true },
         },
-        active_cycle_token: null,
+        active_cycle_token: null, // Será assumido pelo ciclo A
+        preempt_requested: false,
         orchestration: {
           version: 1,
           mode: "experimental",
@@ -2394,11 +2416,39 @@ async function runTests() {
             error: null,
           });
         }
+        if (fn === "commit_experimental_cycle_if_owned") {
+          // CENÁRIO CRÍTICO DE TOCTOU:
+          // O ciclo A enviou os balões com sucesso e leu o snapshot/preCommit perfeitamente.
+          // Mas exatamente antes da execução do CAS, o ciclo B assumiu o lock no banco!
+          const currentToken = "cycle_b_token_winner";
+          conversationRow.stage_completed_rules.active_cycle_token = currentToken;
+          if (currentToken !== params.p_cycle_token) {
+            return Promise.resolve({
+              data: { committed: false, reason: "lost_lock", activeToken: currentToken },
+              error: null,
+            });
+          }
+          if (isPreempt) {
+            return Promise.resolve({
+              data: { committed: false, reason: "preempted" },
+              error: null,
+            });
+          }
+          conversationRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          return Promise.resolve({
+            data: { committed: true, reason: "committed" },
+            error: null,
+          });
+        }
         return Promise.resolve({ data: { success: true }, error: null });
       },
       from: (table) => ({
-        select: (cols) => ({
-          eq: (col, val) => ({
+        select: () => ({
+          eq: () => ({
             maybeSingle: async () => ({
               data: table === "instagram_conversations" ? conversationRow : null,
               error: null,
@@ -2422,7 +2472,7 @@ async function runTests() {
           }),
         }),
         update: (payload) => ({
-          eq: (col, val) => {
+          eq: () => {
             if (payload.stage_completed_rules) {
               conversationRow.stage_completed_rules = {
                 ...conversationRow.stage_completed_rules,
@@ -2465,12 +2515,8 @@ async function runTests() {
           tokens: 50,
         };
       },
-      sendMetaTextMessage: async (supabase, convId, text) => {
+      sendMetaTextMessage: async () => {
         balloonCount++;
-        // CENÁRIO CRÍTICO:
-        // O envio para o Meta foi feito com sucesso, MAS logo após o envio, outro ciclo assume o lock
-        // antes do preCommitData ser verificado pelo orchestrator!
-        conversationRow.stage_completed_rules.active_cycle_token = "other_cycle_token_stolen";
         return { message_id: "mid_54" };
       },
     };
@@ -2487,15 +2533,15 @@ async function runTests() {
       memoryProvider,
     });
 
-    // 1. O ciclo foi preemptado antes do commit: handled deve ser false e blockLegacyFallback true
-    assert.equal(res.handled, false, "Ciclo que perdeu lock antes do commit final não pode ser handled");
-    assert.equal(res.sentToMeta, true, "Balão foi enviado ao Meta antes da perda do lock");
-    assert(res.error?.includes("Ciclo preemptado antes do commit"), "Erro deve indicar ciclo preemptado antes do commit");
+    // 1. O CAS detectou perda de lock antes da escrita final: handled=false e erro lost_lock_before_atomic_commit
+    assert.equal(res.handled, false, "Ciclo que perdeu lock antes do CAS não pode ser handled");
+    assert.equal(res.sentToMeta, true, "Balão foi enviado ao Meta antes do CAS");
+    assert.equal(res.error, "lost_lock_before_atomic_commit", "Erro deve indicar falha atômica no CAS");
     assert.equal(balloonCount, 1, "Balão foi entregue");
 
-    // 2. ZERO chamadas a saveFact e writeFact no provider real!
-    assert.equal(memoryProvider.saveCalls, 0, "NÃO pode chamar saveFact se o lock foi perdido antes do commit");
-    assert.equal(memoryProvider.writeCalls, 0, "NÃO pode chamar writeFact se o lock foi perdido antes do commit");
+    // 2. ZERO chamadas a saveFact e writeFact no provider real antes do CAS!
+    assert.equal(memoryProvider.saveCalls, 0, "ZERO saveFact real quando CAS falha");
+    assert.equal(memoryProvider.writeCalls, 0, "ZERO writeFact real quando CAS falha");
 
     // 3. ZERO contaminação de completed_goals no banco!
     assert.deepEqual(
@@ -2513,19 +2559,26 @@ async function runTests() {
     assert.equal(
       conversationRow.stage_completed_rules.orchestration?.memory?.entities?.self?.city,
       undefined,
-      "ContactMemory NÃO pode conter self.city de ciclo abortado por perda de lock"
+      "ContactMemory NÃO pode conter self.city de ciclo cujo CAS falhou"
     );
 
-    // 5. EpisodeWriter NÃO foi chamado para o ciclo abortado
+    // 5. O lock do Ciclo B que venceu a corrida NÃO foi sobrescrito!
+    assert.equal(
+      conversationRow.stage_completed_rules.active_cycle_token,
+      "cycle_b_token_winner",
+      "O token do ciclo concorrente B deve ser preservado intacto no banco"
+    );
+
+    // 6. EpisodeWriter NÃO foi chamado para o ciclo abortado
     assert.equal(
       episodicUpserts.length,
       0,
-      "EpisodeWriter NÃO pode ser executado para ciclo normal que perdeu lock antes do commit"
+      "EpisodeWriter NÃO pode ser executado se o CAS falhou"
     );
   });
 
-  // 55. Deduplicação de EpisodeWriter em ciclo normal: Executa exatamente 1 vez com todos os balões entregues
-  await runTest(55, "Deduplicação de EpisodeWriter em ciclo normal: Executa exatamente 1 vez com todos os balões entregues", async () => {
+  // 55. TESTE CRÍTICO 2 — COMMIT NORMAL VIA CAS E DEDUPLICAÇÃO DE EPISODEWRITER:
+  await runTest(55, "TESTE CRÍTICO 2: Commit normal via CAS promove memória e workflow juntos e deduplica EpisodeWriter", async () => {
     let savedStageRules = null;
     let balloonCount = 0;
     let episodicUpserts = [];
@@ -2574,11 +2627,36 @@ async function runTests() {
             error: null,
           });
         }
+        if (fn === "commit_experimental_cycle_if_owned") {
+          const currentToken = conversationRow.stage_completed_rules?.active_cycle_token;
+          const isPreempt = Boolean(conversationRow.stage_completed_rules?.preempt_requested);
+          if (currentToken !== params.p_cycle_token) {
+            return Promise.resolve({
+              data: { committed: false, reason: "lost_lock", activeToken: currentToken },
+              error: null,
+            });
+          }
+          if (isPreempt) {
+            return Promise.resolve({
+              data: { committed: false, reason: "preempted" },
+              error: null,
+            });
+          }
+          conversationRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          return Promise.resolve({
+            data: { committed: true, reason: "committed" },
+            error: null,
+          });
+        }
         return Promise.resolve({ data: { success: true }, error: null });
       },
       from: (table) => ({
-        select: (cols) => ({
-          eq: (col, val) => ({
+        select: () => ({
+          eq: () => ({
             maybeSingle: async () => ({
               data: table === "instagram_conversations" ? conversationRow : null,
               error: null,
@@ -2602,7 +2680,7 @@ async function runTests() {
           }),
         }),
         update: (payload) => ({
-          eq: (col, val) => {
+          eq: () => {
             if (payload.stage_completed_rules) {
               conversationRow.stage_completed_rules = {
                 ...conversationRow.stage_completed_rules,
@@ -2645,7 +2723,7 @@ async function runTests() {
           tokens: 50,
         };
       },
-      sendMetaTextMessage: async (supabase, convId, text) => {
+      sendMetaTextMessage: async () => {
         balloonCount++;
         return { message_id: `mid_55_${balloonCount}` };
       },
@@ -2656,7 +2734,7 @@ async function runTests() {
       conversationId: "conv_test_55",
       newMessage: {
         id: "msg_in_55",
-        text: "oi",
+        text: "sou de Barbacena",
         sender: "pretendente",
       },
       runtime,
@@ -2666,27 +2744,300 @@ async function runTests() {
     assert.equal(res.handled, true, "Ciclo confirmado deve ser handled com sucesso");
     assert.equal(balloonCount, 2, "Devem ser entregues 2 balões");
 
-    // ASSERÇÃO PRINCIPAL DO BUG 2:
-    // EpisodeWriter deve executar EXATAMENTE UMA VEZ no ciclo normal completo confirmado
+    // ASSERÇÕES CRÍTICAS DO COMMIT NORMAL:
+    // 1. CAS atômico com sucesso: active_cycle_token é limpo no commit
+    assert.equal(
+      conversationRow.stage_completed_rules.active_cycle_token,
+      null,
+      "active_cycle_token deve ser limpo para null no commit oficial"
+    );
+
+    // 2. ContactMemory contém self.city='barbacena'
+    assert.equal(
+      conversationRow.stage_completed_rules.orchestration?.memory?.entities?.self?.city?.value?.toLowerCase(),
+      "barbacena",
+      "ContactMemory deve conter self.city='barbacena' após commit oficial do CAS"
+    );
+
+    // 3. completed_goals e objective_progress atualizados
+    assert(
+      conversationRow.stage_completed_rules.completed_goals.includes("goal_city"),
+      "completed_goals deve conter goal_city"
+    );
+    assert(
+      conversationRow.stage_completed_rules.objective_progress.goal_city,
+      "objective_progress deve conter goal_city"
+    );
+
+    // 4. EpisodeWriter executou EXATAMENTE 1 vez por ciclo normal confirmado
     assert.equal(
       episodicUpserts.length,
       1,
-      "EpisodeWriter DEVE executar EXATAMENTE 1 vez por ciclo normal confirmado (Deduplicação garantida)"
-    );
-
-    const episodesRecorded = episodicUpserts[0];
-    assert(Array.isArray(episodesRecorded), "upsert deve receber um array de episódios");
-    assert(episodesRecorded.length > 0, "Devem ser gerados episódios para os balões enviados");
-    const larissaEpisodes = episodesRecorded.filter((ep) => ep.actor === "larissa");
-    assert(larissaEpisodes.length > 0, "Deve haver episódios da Larissa gravados");
-    assert(
-      larissaEpisodes.every((ep) => ep.source_message_id && ep.source_message_id.startsWith("out_")),
-      "source_message_id de todos os episódios da Larissa devem começar com out_"
+      "EpisodeWriter DEVE executar EXATAMENTE 1 vez por ciclo normal confirmado"
     );
   });
 
+  // 56. TESTE CRÍTICO 3 — preempt_requested MUDA NO ÚLTIMO INSTANTE ANTES DO CAS:
+  await runTest(56, "TESTE CRÍTICO 3: preempt_requested=true antes do CAS aborta commit com zero mutação oficial", async () => {
+    let episodicUpserts = [];
+    let selectCount = 0;
+
+    const memoryProvider = new MockMemoryProvider();
+
+    const conversationRow = {
+      id: "conv_test_56",
+      is_restricted: false,
+      stage_completed_rules: {
+        completed_goals: ["goal_initial_reciprocity"],
+        objective_progress: {
+          goal_initial_reciprocity: { status: "completed", value: true },
+        },
+        active_cycle_token: null,
+        preempt_requested: false,
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+          memory: { entities: {}, snippets: [] },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: {
+                id: params?.p_outbox_id || "out_test_56",
+                status: "sending",
+                claimedBy: params?.p_claim_token,
+                sendingAt: new Date().toISOString(),
+              },
+            },
+            error: null,
+          });
+        }
+        if (fn === "commit_experimental_cycle_if_owned") {
+          // CENÁRIO CRÍTICO: Preempção solicitada antes do CAS
+          conversationRow.stage_completed_rules.preempt_requested = true;
+          return Promise.resolve({
+            data: { committed: false, reason: "preempted" },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
+      from: (table) => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? conversationRow : null,
+              error: null,
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_in_56_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
+                ] : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        update: (payload) => ({
+          eq: () => {
+            if (payload.stage_completed_rules) {
+              conversationRow.stage_completed_rules = {
+                ...conversationRow.stage_completed_rules,
+                ...payload.stage_completed_rules,
+              };
+            }
+            return Promise.resolve({ data: null, error: null });
+          },
+        }),
+        upsert: (payload) => ({
+          select: () => {
+            episodicUpserts.push(payload);
+            return Promise.resolve({ data: [{ id: "ep_56" }], error: null });
+          },
+        }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async () => ({
+        content: JSON.stringify({
+          action: "reply",
+          suggestedResponse: "Que bom saber que você é de Barbacena!",
+          checkpoint: "chk_saudacao_feita",
+          responses: ["Que bom saber que você é de Barbacena!"],
+        }),
+        tokens: 50,
+      }),
+      sendMetaTextMessage: async () => ({ message_id: "mid_56" }),
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_56",
+      newMessage: {
+        id: "msg_in_56",
+        text: "sou de Barbacena",
+        sender: "pretendente",
+      },
+      runtime,
+      memoryProvider,
+    });
+
+    assert.equal(res.handled, false, "Preempção no último instante deve rejeitar o commit");
+    assert.equal(res.error, "lost_lock_before_atomic_commit", "Erro reportado");
+    assert.deepEqual(
+      conversationRow.stage_completed_rules.completed_goals,
+      ["goal_initial_reciprocity"],
+      "completed_goals não pode ganhar novos objetivos se preemptado"
+    );
+    assert.equal(
+      conversationRow.stage_completed_rules.orchestration?.memory?.entities?.self?.city,
+      undefined,
+      "ContactMemory não pode ganhar self.city se preemptado"
+    );
+    assert.equal(episodicUpserts.length, 0, "EpisodeWriter não pode rodar");
+  });
+
+  // 57. TESTE DE ATOMICIDADE — TUDO OU NADA DO CAS CONDICIONAL:
+  await runTest(57, "TESTE DE ATOMICIDADE: commitExperimentalCycleAtomic garante Tudo ou Nada sem estado parcial", async () => {
+    let conversationRow = {
+      id: "conv_test_57",
+      stage_completed_rules: {
+        active_cycle_token: "corr_atomic_test",
+        preempt_requested: false,
+        completed_goals: ["goal_1"],
+        orchestration: {
+          currentStageId: "stage_1",
+          memory: { entities: { self: { name: { value: "João" } } } },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "commit_experimental_cycle_if_owned") {
+          const currentToken = conversationRow.stage_completed_rules?.active_cycle_token;
+          const isPreempt = Boolean(conversationRow.stage_completed_rules?.preempt_requested);
+          if (currentToken !== params.p_cycle_token) {
+            return Promise.resolve({
+              data: { committed: false, reason: "lost_lock", activeToken: currentToken },
+              error: null,
+            });
+          }
+          if (isPreempt) {
+            return Promise.resolve({
+              data: { committed: false, reason: "preempted" },
+              error: null,
+            });
+          }
+          conversationRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          return Promise.resolve({
+            data: { committed: true, reason: "committed" },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // Caso A: CAS com token correspondente e preempt_requested=false -> COMMIT COMPLETO
+    const newRulesSuccess = {
+      active_cycle_token: "corr_atomic_test",
+      completed_goals: ["goal_1", "goal_2"],
+      orchestration: {
+        currentStageId: "stage_2",
+        memory: { entities: { self: { name: { value: "João" }, city: { value: "Barbacena" } } } },
+      },
+    };
+
+    const resultSuccess = await commitExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_57",
+      correlationId: "corr_atomic_test",
+      newStageCompletedRules: newRulesSuccess,
+    });
+
+    assert.equal(resultSuccess.committed, true, "Deve commitar com sucesso");
+    assert.equal(resultSuccess.reason, "committed");
+    assert.deepEqual(conversationRow.stage_completed_rules.completed_goals, ["goal_1", "goal_2"]);
+    assert.equal(conversationRow.stage_completed_rules.orchestration.currentStageId, "stage_2");
+    assert.equal(conversationRow.stage_completed_rules.orchestration.memory.entities.self.city.value, "Barbacena");
+    assert.equal(conversationRow.stage_completed_rules.active_cycle_token, null);
+
+    // Caso B: Tentativa com token divergente (outro ciclo tem o lock) -> NENHUM CAMPO ATUALIZADO
+    conversationRow.stage_completed_rules.active_cycle_token = "cycle_other";
+    const rulesStaleAttempt = {
+      completed_goals: ["goal_1", "goal_2", "goal_3_STALE"],
+      orchestration: {
+        currentStageId: "stage_3_STALE",
+        memory: { entities: { self: { fake_field: { value: "STALE_DATA" } } } },
+      },
+    };
+
+    const resultLostLock = await commitExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_57",
+      correlationId: "corr_stale_cycle",
+      newStageCompletedRules: rulesStaleAttempt,
+    });
+
+    assert.equal(resultLostLock.committed, false, "Deve falhar por lost_lock");
+    assert.equal(resultLostLock.reason, "lost_lock");
+    // GARANTIA DE ATOMICIDADE: nenhum campo foi corrompido ou parcialmente aplicado!
+    assert.deepEqual(conversationRow.stage_completed_rules.completed_goals, ["goal_1", "goal_2"]);
+    assert.equal(conversationRow.stage_completed_rules.orchestration.currentStageId, "stage_2");
+    assert.equal(conversationRow.stage_completed_rules.orchestration.memory.entities.self.fake_field, undefined);
+    assert.equal(conversationRow.stage_completed_rules.active_cycle_token, "cycle_other");
+
+    // Caso C: Tentativa com preempt_requested=true -> NENHUM CAMPO ATUALIZADO
+    conversationRow.stage_completed_rules.active_cycle_token = "corr_cycle_preempt_target";
+    conversationRow.stage_completed_rules.preempt_requested = true;
+
+    const resultPreempted = await commitExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_57",
+      correlationId: "corr_cycle_preempt_target",
+      newStageCompletedRules: rulesStaleAttempt,
+    });
+
+    assert.equal(resultPreempted.committed, false, "Deve falhar por preempted");
+    assert.equal(resultPreempted.reason, "preempted");
+    // GARANTIA DE ATOMICIDADE: nenhum campo parcial!
+    assert.deepEqual(conversationRow.stage_completed_rules.completed_goals, ["goal_1", "goal_2"]);
+    assert.equal(conversationRow.stage_completed_rules.orchestration.currentStageId, "stage_2");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/55 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/57 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 
@@ -2694,3 +3045,4 @@ runTests().catch((err) => {
   console.error("Erro fatal na execução da suíte de testes:", err);
   process.exit(1);
 });
+

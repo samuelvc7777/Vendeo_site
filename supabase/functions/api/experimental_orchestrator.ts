@@ -1573,6 +1573,112 @@ export async function claimOutboxEntryAtomic(
   }
 }
 
+// ----------------------------------------------------------------------------
+// COMMIT ATÔMICO CONDICIONAL DE CICLO EXPERIMENTAL (COMPARE-AND-SET / CAS)
+// ----------------------------------------------------------------------------
+
+export interface CommitExperimentalCycleParams {
+  supabase: any;
+  conversationId: string;
+  correlationId: string;
+  newStageCompletedRules: any;
+}
+
+export interface CommitExperimentalCycleResult {
+  committed: boolean;
+  reason: "committed" | "lost_lock" | "preempted" | "not_found" | "infra_failure";
+  activeToken?: string;
+  error?: any;
+}
+
+/**
+ * Realiza o commit oficial final do ciclo experimental de forma estritamente atômica e condicional (CAS).
+ * Garante que ContactMemory, completed_goals, objective_progress e workflow só sejam persistidos
+ * se o ciclo ainda for o detentor exclusivo do lock (active_cycle_token = correlationId)
+ * e nenhuma preempção foi solicitada (preempt_requested != true).
+ *
+ * Elimina 100% de janelas TOCTOU: a autoridade de escrita é o próprio CAS atômico.
+ */
+export async function commitExperimentalCycleAtomic(
+  params: CommitExperimentalCycleParams
+): Promise<CommitExperimentalCycleResult> {
+  const { supabase, conversationId, correlationId, newStageCompletedRules } = params;
+
+  // 1. PREFERÊNCIA 1: RPC atômica no PostgreSQL com SELECT ... FOR UPDATE (Zero janela TOCTOU)
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("commit_experimental_cycle_if_owned", {
+        p_conversation_id: conversationId,
+        p_cycle_token: correlationId,
+        p_new_stage_completed_rules: newStageCompletedRules,
+      });
+
+      if (!error && data && typeof data === "object") {
+        if (data.committed === true) {
+          return { committed: true, reason: "committed" };
+        }
+        return {
+          committed: false,
+          reason: data.reason || "lost_lock",
+          activeToken: data.activeToken,
+        };
+      }
+
+      if (error) {
+        console.warn(
+          `[commitExperimentalCycleAtomic] RPC commit_experimental_cycle_if_owned retornou erro para conv=${conversationId}:`,
+          error.message
+        );
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[commitExperimentalCycleAtomic] Exceção na RPC commit_experimental_cycle_if_owned para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
+    }
+  }
+
+  // 2. ALTERNATIVA / FALLBACK: Update condicional atômico direto no banco via CAS
+  try {
+    const finalRules = {
+      ...newStageCompletedRules,
+      active_cycle_token: null,
+      preempt_requested: false,
+    };
+
+    const { data, error } = await supabase
+      .from("instagram_conversations")
+      .update({
+        stage_completed_rules: finalRules,
+      })
+      .eq("id", conversationId)
+      .eq("stage_completed_rules->>active_cycle_token", correlationId)
+      .neq("stage_completed_rules->>preempt_requested", "true")
+      .select("id");
+
+    if (error) {
+      console.warn(
+        `[commitExperimentalCycleAtomic] Erro no update condicional direto para conv=${conversationId}:`,
+        error.message
+      );
+      return { committed: false, reason: "infra_failure", error };
+    }
+
+    if (Array.isArray(data) && data.length > 0) {
+      return { committed: true, reason: "committed" };
+    }
+
+    // Se nenhuma linha foi afetada, o active_cycle_token mudou ou preempt_requested é true
+    return { committed: false, reason: "lost_lock" };
+  } catch (err: any) {
+    console.warn(
+      `[commitExperimentalCycleAtomic] Exceção no update condicional direto para conv=${conversationId}:`,
+      err?.message || err
+    );
+    return { committed: false, reason: "infra_failure", error: err };
+  }
+}
+
 export interface DispatchOutboxParams {
   supabase: any;
   outboxEntry: OutboxEntry;
@@ -6834,64 +6940,15 @@ Responda ESTRITAMENTE em JSON puro:
         });
         decision.nextPhase = stageProgression.nextPhase;
 
-        // 2. PRE-COMMIT RECHECK: Checagem atômica de lock e preempção ANTES de qualquer escrita!
-        // Se outro ciclo assumiu o lock ou preempção foi solicitada, este ciclo NÃO toca na ContactMemory,
-        // nem no MemoryWriter, nem no banco!
-        const { data: preCommitData } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        const latestCycleToken = preCommitData?.stage_completed_rules?.active_cycle_token;
-        const isPreemptRequested = Boolean(preCommitData?.stage_completed_rules?.preempt_requested);
-
-        if (latestCycleToken !== correlationId || isPreemptRequested) {
-          console.warn(
-            `[Orchestrator] Ciclo ${correlationId} perdeu o lock antes do commit final (token atual: ${latestCycleToken || "null"}, preemptRequested: ${isPreemptRequested}). Abortando sobrescrita de estado e zero gravação de ContactMemory.`
-          );
-          return {
-            mode: orchState.mode,
-            handled: false,
-            sentToMeta: sentSuccessfully,
-            blockLegacyFallback: true,
-            error: `Ciclo preemptado antes do commit por ${latestCycleToken || "lock_expirado"}`,
-          };
-        }
-
-        // 3. SOMENTE APÓS PRE-COMMIT AUTORIZADO (Lock verificado e intacto):
-        // Persistência confirmada de fatos espontâneos no memoryProvider real
-        const pendingFacts = cycleMemoryProvider.getPendingFacts();
-        for (const f of pendingFacts) {
-          try {
-            if (typeof memoryProvider.saveFact === "function") {
-              await memoryProvider.saveFact(conversationId, f.entity, f.field, f.value, {
-                confidence: f.confidence ?? 1.0,
-                sourceMessageId: f.sourceMessageId,
-              });
-            } else {
-              await memoryProvider.writeFact(conversationId, {
-                entity: f.entity,
-                field: f.field,
-                value: f.value,
-                confidence: f.confidence ?? 1.0,
-                sourceMessageId: f.sourceMessageId,
-              });
-            }
-            currentCycle.trace.push(`confirmed_spontaneous_fact_saved=${f.entity}.${f.field}`);
-          } catch (memErr: any) {
-            currentCycle.trace.push(`spontaneous_fact_save_error: ${memErr.message || String(memErr)}`);
-          }
-        }
-
-        // Executa MemoryWriter no provider real
+        // 2. Executa MemoryWriter CONTRA O OVERLAY DE MEMÓRIA (cycleMemoryProvider)
+        // Zero escritas reais no banco antes do commit atômico condicional (CAS)!
         try {
           await executeMemoryWriter({
             conversationId,
             claimedMessages: claimedMessages,
             lastLarissaTurn: baseContextPayload.lastLarissaTurn,
             sentResponseText: decision.suggestedResponse,
-            memoryProvider,
+            memoryProvider: cycleMemoryProvider, // OVERLAY EM RAM: zero persistência antes do CAS
             supabase,
             trace: currentCycle.trace,
           });
@@ -6899,35 +6956,16 @@ Responda ESTRITAMENTE em JSON puro:
           currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
         }
 
-        const finalPhaseForExp = stageProgression.nextPhase || currentPhase;
+        // 3. Obtém todos os fatos confirmados do turno gravados no overlay em RAM
+        const pendingFacts = cycleMemoryProvider.getPendingFacts();
 
-        const updatedState: ConversationOrchestrationState = {
-          version: 1,
-          mode: "experimental",
-          currentPhase: finalPhaseForExp,
-          currentStageId: stageProgression.nextStageId,
-          responsibleSubagentId: stageProgression.responsibleSubagentId,
-          checkpoint: decision.checkpoint,
-          lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
-          lastProcessedAt: new Date().toISOString(),
-          lastProcessingStatus: sentSuccessfully || decision.action === "wait" ? "sent" : "decided",
-          lastCorrelationId: correlationId,
-          lastDecision: decision,
-          lastError: null,
-          durationMs,
-          tokens: totalTokens,
-          updatedAt: new Date().toISOString(),
-          activeCycle: null,
-          recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
-          outbox: outboxMap,
-          messageLedger: ledger,
-          memory: orchState.memory,
-        };
-        (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
-        (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
+        // 4. Leitura snapshot para preservação estrita de fatos já existentes no banco
+        const { data: preCommitData } = await supabase
+          .from("instagram_conversations")
+          .select("stage_completed_rules")
+          .eq("id", conversationId)
+          .maybeSingle();
 
-        // PRESERVAÇÃO ESTRITA DE MEMÓRIA:
-        // Mesclamos a memória mais recente do banco (e do provider) para JAMAIS sobrescrever com o snapshot antigo da RAM.
         const freshRules = preCommitData?.stage_completed_rules || stageRules;
         const latestMemoryFromDb = freshRules?.orchestration?.memory;
 
@@ -6966,22 +7004,67 @@ Responda ESTRITAMENTE em JSON puro:
           snippets: latestMemoryFromDb?.snippets || orchState.memory?.snippets || [],
         };
 
-        updatedState.memory = mergedMemory;
+        const finalPhaseForExp = stageProgression.nextPhase || currentPhase;
+
+        const updatedState: ConversationOrchestrationState = {
+          version: 1,
+          mode: "experimental",
+          currentPhase: finalPhaseForExp,
+          currentStageId: stageProgression.nextStageId,
+          responsibleSubagentId: stageProgression.responsibleSubagentId,
+          checkpoint: decision.checkpoint,
+          lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
+          lastProcessedAt: new Date().toISOString(),
+          lastProcessingStatus: sentSuccessfully || decision.action === "wait" ? "sent" : "decided",
+          lastCorrelationId: correlationId,
+          lastDecision: decision,
+          lastError: null,
+          durationMs,
+          tokens: totalTokens,
+          updatedAt: new Date().toISOString(),
+          activeCycle: null,
+          recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
+          outbox: outboxMap,
+          messageLedger: ledger,
+          memory: mergedMemory,
+        };
+        (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
+        (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
         updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
         updatedState.preemptRequested = false;
 
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            stage_completed_rules: {
-              ...freshRules,
-              completed_goals: stageProgression.updatedCompletedGoals,
-              objective_progress: stageProgression.updatedObjectiveProgress,
-              active_cycle_token: null,
-              orchestration: updatedState,
-            },
-          })
-          .eq("id", conversationId);
+        const finalStageCompletedRules = {
+          ...freshRules,
+          completed_goals: stageProgression.updatedCompletedGoals,
+          objective_progress: stageProgression.updatedObjectiveProgress,
+          active_cycle_token: null,
+          preempt_requested: false,
+          orchestration: updatedState,
+        };
+
+        // 5. COMPARE-AND-SET / CAS ATÔMICO CONDICIONAL:
+        // A autoridade final absoluta reside na própria escrita atômica no PostgreSQL.
+        // Se outro ciclo assumiu o lock ou se preempt_requested mudou antes deste instante,
+        // a escrita falha inteira: ZERO ContactMemory nova, ZERO progresso novo e ZERO EpisodeWriter!
+        const casResult = await commitExperimentalCycleAtomic({
+          supabase,
+          conversationId,
+          correlationId,
+          newStageCompletedRules: finalStageCompletedRules,
+        });
+
+        if (!casResult.committed) {
+          console.warn(
+            `[Orchestrator] CAS final falhou para ciclo ${correlationId} (motivo=${casResult.reason}, activeToken=${casResult.activeToken || "null"}). Abortando commit oficial com zero contaminação de memória.`
+          );
+          return {
+            mode: orchState.mode,
+            handled: false,
+            sentToMeta: sentSuccessfully,
+            blockLegacyFallback: true,
+            error: "lost_lock_before_atomic_commit",
+          };
+        }
 
         await publishAutoPilotState(supabase, conversationId, {
           status: "idle",
