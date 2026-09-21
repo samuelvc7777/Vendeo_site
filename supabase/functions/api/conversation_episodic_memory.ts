@@ -697,9 +697,7 @@ export async function saveConversationEpisodes(params: {
         memory_class:
           ep.memory_class ||
           ep.metadata?.memory_class ||
-          (ep.event_type === "fact_reveal" || ep.event_type === "self_disclosure" || ep.event_type === "audio_sent"
-            ? "landmark"
-            : "speech_act"),
+          (ep.event_type === "audio_sent" ? "landmark" : "speech_act"),
       },
       created_at: ep.created_at || new Date().toISOString(),
       episode_fingerprint: fingerprint,
@@ -946,9 +944,7 @@ export async function searchConversationEpisodicMemory(params: {
     const epClass: EpisodeMemoryClass =
       ep.memory_class ||
       ep.metadata?.memory_class ||
-      (ep.event_type === "fact_reveal" || ep.event_type === "self_disclosure" || ep.event_type === "audio_sent"
-        ? "landmark"
-        : "speech_act");
+      (ep.event_type === "audio_sent" ? "landmark" : "speech_act");
 
     if (memoryClass && memoryClass !== "all" && epClass !== memoryClass) {
       continue;

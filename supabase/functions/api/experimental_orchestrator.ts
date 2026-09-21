@@ -108,6 +108,44 @@ export function buildBudgetedRecentContext(params: {
   return { messages: selected, estimatedTokens, budgetOverflowRequired };
 }
 
+export async function loadMandatoryBrainContextCandidates(params: {
+  supabase: any;
+  conversationId: string;
+  claimedMessages: CanonicalMessage[];
+}): Promise<CanonicalMessage[]> {
+  const { supabase, conversationId, claimedMessages } = params;
+  const mandatory: CanonicalMessage[] = [];
+  try {
+    const { data: lastOutboundRows } = await supabase
+      .from("instagram_messages")
+      .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
+      .eq("conversation_id", conversationId)
+      .or("is_mine.eq.true,is_from_me.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (Array.isArray(lastOutboundRows) && lastOutboundRows[0]) {
+      mandatory.push(normalizeToCanonicalMessage(lastOutboundRows[0], conversationId));
+    }
+  } catch {}
+
+  const replyTargetIds = Array.from(new Set(claimedMessages
+    .map((message) => message.replyToMessageId)
+    .filter((id): id is string => Boolean(id))));
+  if (replyTargetIds.length > 0) {
+    try {
+      const { data: replyTargetRows } = await supabase
+        .from("instagram_messages")
+        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
+        .eq("conversation_id", conversationId)
+        .in("id", replyTargetIds);
+      if (Array.isArray(replyTargetRows)) {
+        mandatory.push(...replyTargetRows.map((row) => normalizeToCanonicalMessage(row, conversationId)));
+      }
+    } catch {}
+  }
+  return Array.from(new Map(mandatory.map((message) => [String(message.id), message])).values());
+}
+
 export interface ConversationLiveState {
   conversationId: string;
   lastUserEmotionalTone: string; // ex: "tranquilo", "desabafando", "animado", "curioso"
@@ -235,6 +273,44 @@ export interface MissionPackage {
     adherenceScore: number;
   }>;
   preferAudio?: boolean;
+  selectedAudioId?: string | null;
+}
+
+export async function searchPersonaMemoryForBrain(
+  personaProvider: { searchPersonaFacts: (personaId: string, query: string) => Promise<any[]> },
+  query: string,
+  limit = 8
+): Promise<string> {
+  const hits = await personaProvider.searchPersonaFacts("larissa", query);
+  const formatted = (hits || []).slice(0, limit).map((fact: any) => {
+    const key = fact.key || fact.field || fact.category || "fato";
+    const value = fact.value ?? fact.summary;
+    return value === undefined || value === null || value === ""
+      ? ""
+      : `• ${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`;
+  }).filter(Boolean).join("\n");
+  return formatted || "Nenhum fato encontrado na PersonaMemory.";
+}
+
+export function authorizeMissionAudioSelection(
+  requestedMission: MissionPackage | undefined,
+  candidates: CofreAudioCandidate[]
+): { selectedAudioId: string | null; candidateAudios: NonNullable<MissionPackage["candidateAudios"]>; preferAudio: boolean } {
+  const requestedAudioId = requestedMission?.selectedAudioId || null;
+  const authorized = requestedAudioId
+    ? candidates.find((candidate) => candidate.audio_id === requestedAudioId)
+    : undefined;
+  return {
+    selectedAudioId: authorized?.audio_id || null,
+    candidateAudios: authorized ? [{
+      audioId: authorized.audio_id,
+      title: authorized.title,
+      transcript: authorized.full_transcript,
+      instruction: authorized.when_to_use,
+      adherenceScore: authorized.match_score || 0,
+    }] : [],
+    preferAudio: Boolean(authorized && requestedMission?.preferAudio),
+  };
 }
 
 export interface ConversationBrainPlan {
@@ -1350,7 +1426,7 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
     timestamp: raw.timestamp || raw.created_at || new Date().toISOString(),
     type: msgType,
     text: rawText,
-    replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId || null,
+    replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId || raw.quoted_message_id || raw.quotedMessageId || null,
     mediaUrl: raw.media_url || null,
     status: raw.status || "received",
   };
@@ -2612,7 +2688,8 @@ Quando estiver pronto para delegar ao subagente executor:
     "targetObjective": { "id": "...", "label": "..." },
     "relevantMemoryContext": "fatos essenciais que o subagente precisa saber para este turno",
     "liveStateContext": "resumo do tom e do momento da conversa",
-    "preferAudio": false
+    "preferAudio": false,
+    "selectedAudioId": "id retornado por cofre_audio_search ou null"
   }
 }`;
 }
@@ -6747,8 +6824,19 @@ export async function runExperimentalOrchestration(
       }
     } catch {}
 
+    // Contextos obrigatórios são buscados explicitamente e não dependem do LIMIT de recentes.
+    allRecentCandidates.push(...await loadMandatoryBrainContextCandidates({
+      supabase,
+      conversationId,
+      claimedMessages: canonicalClaimed,
+    }));
+
+    const deduplicatedRecentCandidates = Array.from(
+      new Map(allRecentCandidates.map((message) => [String(message.id), message])).values()
+    );
+
     const budgetedRecentContext = buildBudgetedRecentContext({
-      messages: allRecentCandidates,
+      messages: deduplicatedRecentCandidates,
       claimedMessageIds,
       tokenBudget,
       messageLimit: recentMessageLimit,
@@ -6918,7 +7006,8 @@ export async function runExperimentalOrchestration(
             brainMemorySearchesCount++;
             brainMemorySourcesUsed.add("persona_memory");
             const q = String(toolParams.query || inboundsText).trim();
-            toolResultsHistory.push(`[TOOL: persona_memory_search | query: "${q}"]\nLarissa cursa Enfermagem na Santa Casa, tem 23 anos, mora em São João del-Rei/MG e adora bife com batata frita e strogonoff.`);
+            const formatted = await searchPersonaMemoryForBrain(cyclePersonaMemoryProvider, q);
+            toolResultsHistory.push(`[TOOL: persona_memory_search | query: "${q}"]\n${formatted}`);
           } else {
             toolResultsHistory.push(`[TOOL: persona_memory_search] Limite de buscas de memória atingido.`);
           }
@@ -7055,9 +7144,7 @@ export async function runExperimentalOrchestration(
         ["pursue", "defer", "already_satisfied", "none"].includes(requestedDirective)
           ? requestedDirective
           : "pursue";
-      const requestedAudioId = (brainPlan.missionPackage as any)?.audioCandidate?.audioId
-        || (brainPlan.missionPackage as any)?.audioId;
-      const authorizedAudio = brainAudioCandidates.find((audio) => audio.audio_id === requestedAudioId);
+      const audioSelection = authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
         subagentId: responsibleSubagent,
@@ -7072,14 +7159,9 @@ export async function runExperimentalOrchestration(
           toolResultsHistory.length > 0 ? `PESQUISAS FEITAS NESTE TURNO:\n${toolResultsHistory.join("\n")}` : "",
         ].filter(Boolean).join("\n\n")),
         liveStateContext: serializeLiveStateForPrompt(currentLiveState),
-        candidateAudios: authorizedAudio ? [{
-          audioId: authorizedAudio.audio_id,
-          title: authorizedAudio.title,
-          transcript: authorizedAudio.full_transcript,
-          instruction: authorizedAudio.when_to_use,
-          adherenceScore: authorizedAudio.match_score || 0,
-        }] : [],
-        preferAudio: Boolean(authorizedAudio && brainPlan.missionPackage?.preferAudio),
+        selectedAudioId: audioSelection.selectedAudioId,
+        candidateAudios: audioSelection.candidateAudios,
+        preferAudio: audioSelection.preferAudio,
       };
 
       // Subagente selecionado (definição do catálogo ou canônico)
@@ -8256,12 +8338,13 @@ Responda ESTRITAMENTE em JSON puro:
                   conversation_id: conversationId,
                   actor: "pretendente" as const,
                   event_type: cand.kind === "fact" ? ("fact_reveal" as const) : ("preference_reveal" as const),
+                  memory_class: "speech_act" as const,
                   topic: cand.key,
                   summary: cand.summary || `${cand.key}: ${cand.value}`,
                   original_text: evMsg?.text || null,
                   source_message_id: cand.evidenceMessageId,
                   semantic_keys: cand.tags && cand.tags.length > 0 ? cand.tags : [cand.key],
-                  metadata: { value: cand.value, key: cand.key, entity: cand.entity },
+                  metadata: { value: cand.value, key: cand.key, entity: cand.entity, memory_class: "speech_act", importance: 0.5 },
                 };
               });
               await saveConversationEpisodes({

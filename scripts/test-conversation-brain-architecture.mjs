@@ -640,6 +640,104 @@ console.log('\n🔹 CENÁRIO 17: Raw history encontra hits depois das primeiras 
   assert(hits[0].contextWindow.length <= 3, 'Somente janela compacta [prev, hit, next] foi retornada');
 }
 
+console.log('\n🔹 CENÁRIO 18: PersonaMemory do Brain é dinâmica e não inventa fallback');
+{
+  const provider = {
+    value: 'lasanha',
+    async searchPersonaFacts(_personaId, _query) {
+      return this.value ? [{ key: 'favorite_food', value: this.value }] : [];
+    },
+  };
+  const first = await orchMod.searchPersonaMemoryForBrain(provider, 'comida favorita');
+  provider.value = 'strogonoff';
+  const second = await orchMod.searchPersonaMemoryForBrain(provider, 'comida favorita');
+  provider.value = '';
+  const empty = await orchMod.searchPersonaMemoryForBrain(provider, 'comida favorita');
+  assert(first.includes('lasanha'), 'Primeiro valor veio da PersonaMemory mockada');
+  assert(second.includes('strogonoff') && !second.includes('lasanha'), 'Troca no provider altera o resultado sem mudar código ou query');
+  assert(empty === 'Nenhum fato encontrado na PersonaMemory.', 'PersonaMemory vazia não inventa biografia');
+}
+
+console.log('\n🔹 CENÁRIO 19: selectedAudioId é validado contra candidatos do ciclo');
+{
+  const candidates = ['audio_1', 'audio_2'].map((id) => ({
+    audio_id: id, title: id, summary: id, full_transcript: `transcript ${id}`,
+    transcript: `transcript ${id}`, usage_instruction: 'usar quando aderente', when_to_use: 'usar quando aderente',
+  }));
+  const selected = orchMod.authorizeMissionAudioSelection({ selectedAudioId: 'audio_2', preferAudio: true }, candidates);
+  const fake = orchMod.authorizeMissionAudioSelection({ selectedAudioId: 'audio_999', preferAudio: true }, candidates);
+  const missing = orchMod.authorizeMissionAudioSelection({ selectedAudioId: null, preferAudio: true }, candidates);
+  assert(selected.selectedAudioId === 'audio_2', 'ID retornado pelo Cofre é autorizado');
+  assert(selected.candidateAudios.length === 1 && selected.candidateAudios[0].audioId === 'audio_2', 'Executor recebe somente o candidato selecionado');
+  assert(fake.candidateAudios.length === 0 && fake.preferAudio === false, 'ID inexistente é rejeitado');
+  assert(missing.selectedAudioId === null && missing.preferAudio === false, 'preferAudio sem ID válido é normalizado para false');
+}
+
+console.log('\n🔹 CENÁRIO 20: Persistência não promove fact_reveal comum a Landmark');
+{
+  let persisted = [];
+  const supabase = {
+    from: () => ({
+      upsert: (payloads) => ({
+        select: async () => {
+          persisted = payloads;
+          return { data: payloads.map((_, index) => ({ id: `ep_${index}` })), error: null };
+        },
+      }),
+    }),
+  };
+  await epMod.saveConversationEpisodes({
+    supabase,
+    conversationId: 'conv_persist',
+    episodes: [{ conversation_id: 'conv_persist', actor: 'pretendente', event_type: 'fact_reveal', topic: 'age', summary: 'idade 27' }],
+  });
+  assert(persisted[0].metadata.memory_class === 'speech_act', 'fact_reveal sem classificação persiste como speech_act');
+  await epMod.saveConversationEpisodes({
+    supabase,
+    conversationId: 'conv_persist',
+    episodes: [{ conversation_id: 'conv_persist', actor: 'pretendente', event_type: 'fact_reveal', topic: 'family', summary: 'história marcante', memory_class: 'landmark', metadata: { memory_class: 'landmark' } }],
+  });
+  assert(persisted[0].metadata.memory_class === 'landmark', 'Landmark narrativo explícito permanece Landmark');
+}
+
+console.log('\n🔹 CENÁRIO 21: Contextos obrigatórios são buscados fora das últimas 12 mensagens');
+{
+  const rows = [
+    { id: 'larissa_old', conversation_id: 'conv_ctx_a', sender_id: 'larissa', is_mine: true, text: 'Vc trabalha com o que?', created_at: '2026-09-18T10:00:00Z', direction: 'outbound' },
+    { id: 'old_reply_1', conversation_id: 'conv_ctx_a', sender_id: 'larissa', is_mine: true, text: 'Mensagem antiga citada', created_at: '2026-09-18T10:01:00Z', direction: 'outbound' },
+    { id: 'foreign_reply', conversation_id: 'conv_ctx_b', sender_id: 'larissa', is_mine: true, text: 'Não pode vazar', created_at: '2026-09-18T10:02:00Z', direction: 'outbound' },
+    ...Array.from({ length: 13 }, (_, index) => ({ id: `in_${index}`, conversation_id: 'conv_ctx_a', sender_id: 'user', is_mine: false, text: `inbound ${index}`, created_at: `2026-09-19T10:${String(index).padStart(2, '0')}:00Z`, direction: 'inbound' })),
+  ];
+  const scopedSupabase = {
+    from: () => ({
+      select: () => ({
+        eq: (_column, conversationId) => {
+          const scoped = rows.filter((row) => row.conversation_id === conversationId);
+          return {
+            or: () => ({ order: () => ({ limit: async () => ({ data: scoped.filter((row) => row.is_mine).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 1), error: null }) }) }),
+            in: async (_idColumn, ids) => ({ data: scoped.filter((row) => ids.includes(row.id)), error: null }),
+          };
+        },
+      }),
+    }),
+  };
+  const claimed = [
+    { id: 'claimed_now', conversationId: 'conv_ctx_a', sender: 'pretendente', direction: 'inbound', timestamp: '2026-09-20T10:00:00Z', createdAt: '2026-09-20T10:00:00Z', type: 'text', text: 'resposta atual', replyToMessageId: 'old_reply_1', status: 'claimed' },
+    { id: 'claimed_foreign', conversationId: 'conv_ctx_a', sender: 'pretendente', direction: 'inbound', timestamp: '2026-09-20T10:01:00Z', createdAt: '2026-09-20T10:01:00Z', type: 'text', text: 'outra resposta', replyToMessageId: 'foreign_reply', status: 'claimed' },
+  ];
+  const mandatory = await orchMod.loadMandatoryBrainContextCandidates({ supabase: scopedSupabase, conversationId: 'conv_ctx_a', claimedMessages: claimed });
+  assert(mandatory.some((message) => message.id === 'old_reply_1'), 'Reply antigo da mesma conversa foi buscado explicitamente');
+  assert(!mandatory.some((message) => message.id === 'foreign_reply'), 'Reply target da conversa B não vazou');
+  assert(mandatory.some((message) => message.sender === 'larissa'), 'Último outbound da Larissa foi recuperado fora do conjunto recente');
+  const overflow = orchMod.buildBudgetedRecentContext({
+    messages: [...mandatory, ...claimed.map((message) => ({ ...message, text: 'obrigatória '.repeat(800) }))],
+    claimedMessageIds: claimed.map((message) => message.id),
+    tokenBudget: 1500,
+  });
+  assert(overflow.messages.some((message) => message.id === 'old_reply_1'), 'Reply target obrigatório permanece acima do budget');
+  assert(overflow.budgetOverflowRequired === true, 'Mandatory context acima do budget sinaliza overflow');
+}
+
 console.log('\n======================================================================');
 console.log('RESULTADO DA BATERIA DE TESTES DO CONVERSATION BRAIN:');
 console.log(`  Total de Verificações: ${totalAssertions}`);
