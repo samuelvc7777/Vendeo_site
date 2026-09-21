@@ -759,7 +759,7 @@ test('6. Modo Experimental: executa novo agente e envia mensagem via runtime/Met
         nextPhase: 'conexao_inicial',
         checkpoint: 'chk_rapport_estabelecido',
         summary: 'Conversa inicial fluindo',
-        suggestedResponse: 'Tudo ótimo também! O que você faz de bom?',
+        suggestedResponse: 'Oii, tô bem sim, e vc?',
         requiredTools: [],
         reasoning: 'Gerar interesse e engajamento',
       }),
@@ -784,7 +784,7 @@ test('6. Modo Experimental: executa novo agente e envia mensagem via runtime/Met
 
   assert.equal(result.handled, true);
   assert.equal(result.mode, 'experimental');
-  assert.equal(sentText, 'Tudo ótimo também, O que você faz de bom?');
+  assert.equal(sentText, 'Oii, tô bem sim, e vc?');
 
   const updatedData = supabase.getConversationData();
   const orchState = updatedData.stage_completed_rules.orchestration;
@@ -2268,7 +2268,7 @@ test('37. Stale Lock (>25s) e Zombie Cycle: Ciclo B assume lock e Ciclo A é pre
           targetSubagent: 'conexao_inicial',
           action: 'reply',
           checkpoint: 'chk_saudacao_feita',
-          suggestedResponse: 'Olá, resposta legítima do Ciclo B',
+          suggestedResponse: 'Tô bem sim, e vc?',
           nextPhase: 'conexao_inicial',
           summary: 'ok',
         }),
@@ -2301,7 +2301,7 @@ test('37. Stale Lock (>25s) e Zombie Cycle: Ciclo B assume lock e Ciclo A é pre
   // Verifica que o estado persistido no banco de dados pertence ao Ciclo B
   const convFinal = supabase.getConversationData();
   const lastDecision = convFinal.stage_completed_rules.orchestration.lastDecision;
-  assert.equal(lastDecision.suggestedResponse, 'Olá, resposta legítima do Ciclo B', 'Estado de B não pode ser sobrescrito por A');
+  assert.equal(lastDecision.suggestedResponse, 'Tô bem sim, e vc?', 'Estado de B não pode ser sobrescrito por A');
 });
 
 // =========================================================================
@@ -3912,7 +3912,7 @@ test('58. Fronteira Irreversível Gate 4 (Caso B): Balão 1 enviado, nova msg ch
 
   const metaCalls = [];
   const initialMsgs = [
-    { id: 'm_multi_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Boa tarde!', created_at: '2026-09-18T10:00:00Z' },
+    { id: 'm_multi_1', sender_id: 'them', is_mine: false, direction: 'inbound', text: 'Me conta melhor sobre isso', created_at: '2026-09-18T10:00:00Z' },
   ];
 
   const supabase = createMockSupabase(
@@ -3934,7 +3934,7 @@ test('58. Fronteira Irreversível Gate 4 (Caso B): Balão 1 enviado, nova msg ch
         content: JSON.stringify({
           action: 'reply',
           checkpoint: 'chk_saudacao_feita',
-          suggestedResponse: 'Boa tarde, tudo bem?\n\nComo posso te ajudar hoje?',
+          suggestedResponse: 'Eu começo te contando o principal\n\nDepois vc me fala o que achou?',
           nextPhase: 'conexao_inicial',
           summary: 'Resposta em 2 balões',
         }),
@@ -3960,7 +3960,7 @@ test('58. Fronteira Irreversível Gate 4 (Caso B): Balão 1 enviado, nova msg ch
   assert.equal(res.handled, true, 'Caso B considera o turno parcialmente entregue como handled=true');
   assert.equal(res.sentToMeta, true, 'sentToMeta=true pois Balão 1 já foi entregue');
   assert.equal(metaCalls.length, 1, 'Exatamente 1 balão deve ter sido enviado à Meta (Balão 2 foi cancelado)');
-  assert.match(metaCalls[0], /tudo bem\?/i);
+  assert.match(metaCalls[0], /contando o principal/i);
 
   const conv = supabase.getConversationData();
   const orch = conv.stage_completed_rules.orchestration;
@@ -4746,7 +4746,7 @@ test('74. Contexto suficiente: subagente responde normalmente sem chamar tool de
         content: JSON.stringify({
           action: 'reply',
           checkpoint: 'chk_saudacao_feita',
-          suggestedResponse: 'Oi tudo bem por aqui também!',
+          suggestedResponse: 'Oii, tô bem sim, e vc?',
           nextPhase: 'conexao_inicial',
           summary: 'Resposta direta sem tool',
         }),
@@ -8720,5 +8720,3 @@ test('186. Teste BK: Saneamento do fallback legado LARISSA_PERSONA_FACTS em mem�
   assert.equal(fact.found, true);
   assert.equal(fact.value, 'strogonoff');
 });
-
-

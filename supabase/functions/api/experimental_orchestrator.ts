@@ -33,6 +33,7 @@ export { LARISSA_CONVERSATION_STYLE };
 import {
   LARISSA_CHAT_STYLE_V2,
   LARISSA_COMPACT_SUBAGENT_PROMPT,
+  LARISSA_CONVERSATION_EXAMPLES_V1,
   computeDynamicEmojiBudget,
   extractRecentStyleState,
   type RecentStyleState,
@@ -42,9 +43,16 @@ import {
   type StyleLintResult,
   type EmojiBudgetResult,
 } from "./LarissaChatStyle.ts";
+import {
+  buildTurnContract,
+  runConversationQualityGate,
+  safeHighConfidenceFallback,
+  type TurnContract,
+} from "./ConversationQualityGate.ts";
 export {
   LARISSA_CHAT_STYLE_V2,
   LARISSA_COMPACT_SUBAGENT_PROMPT,
+  LARISSA_CONVERSATION_EXAMPLES_V1,
   computeDynamicEmojiBudget,
   extractRecentStyleState,
   type RecentStyleState,
@@ -54,6 +62,8 @@ export {
   type StyleLintResult,
   type EmojiBudgetResult,
 };
+export { buildTurnContract, runConversationQualityGate, safeHighConfidenceFallback };
+export type { TurnContract };
 
 /**
  * Configurações e limites orçamentários centrais do Conversation Brain e ContextBuilder.
@@ -274,6 +284,7 @@ export interface MissionPackage {
   }>;
   preferAudio?: boolean;
   selectedAudioId?: string | null;
+  turnContract?: TurnContract;
 }
 
 export async function searchPersonaMemoryForBrain(
@@ -311,6 +322,22 @@ export function authorizeMissionAudioSelection(
     }] : [],
     preferAudio: Boolean(authorized && requestedMission?.preferAudio),
   };
+}
+
+export function enforceAuthorizedAudioDecision(
+  decision: Pick<SubagentDecision, "action" | "audioId">,
+  mission: Pick<MissionPackage, "selectedAudioId" | "candidateAudios">
+): { allowed: boolean; audioId?: string; reason?: string } {
+  const requestedAudioId = decision.audioId || null;
+  const authorizedId = mission.selectedAudioId || null;
+  const existsInAuthorizedCandidates = Boolean(
+    authorizedId && mission.candidateAudios?.some((candidate) => candidate.audioId === authorizedId)
+  );
+  if (decision.action !== "send_audio" && !requestedAudioId) return { allowed: true };
+  if (!requestedAudioId || !authorizedId || requestedAudioId !== authorizedId || !existsInAuthorizedCandidates) {
+    return { allowed: false, reason: "executor_audio_id_not_authorized" };
+  }
+  return { allowed: true, audioId: authorizedId };
 }
 
 export interface ConversationBrainPlan {
@@ -2654,6 +2681,9 @@ Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mens
 1. Para objectiveDecision: "already_satisfied", somente o objetivo atual (${currentObjective?.id || "nenhum"}) pode ser indicado, acompanhado de evidenceMessageId obrigatório da mensagem inbound atual. Objetivos futuros NUNCA podem ser marcados.
 2. Não invente fatos e não misture conversas de outros usuários. Escopo estrito desta conversa: ${conversationId}.
 3. O subagente executor NÃO fará pesquisas amplas. Todo contexto necessário deve ser resumido em missionPackage.relevantMemoryContext.
+4. REGRA ABSOLUTA: perguntas diretas do pretendente têm prioridade sobre checkpoint. Identifique-as no turnContract e determine mustAnswerFirst antes de considerar objetivo.
+5. Se responder uma pergunta direta e, quando natural, apenas devolvê-la já completa o turno, NÃO invente follow-up genérico. Objetivos podem esperar.
+6. Brain define intenção semântica, nunca a frase final. Use answerIntent, requiredFacts e responseShape; não forneça exactText.
 
 Responda ESTRITAMENTE em JSON puro:
 
@@ -2689,7 +2719,18 @@ Quando estiver pronto para delegar ao subagente executor:
     "relevantMemoryContext": "fatos essenciais que o subagente precisa saber para este turno",
     "liveStateContext": "resumo do tom e do momento da conversa",
     "preferAudio": false,
-    "selectedAudioId": "id retornado por cofre_audio_search ou null"
+    "selectedAudioId": "id retornado por cofre_audio_search ou null",
+    "turnContract": {
+      "directQuestions": [{ "id": "q1", "text": "pergunta literal", "mustAnswer": true, "answerIntent": "intenção sem frase pronta", "requiredFacts": ["fato recuperado, se necessário"] }],
+      "mustAnswerFirst": true,
+      "reactionTarget": "conteúdo ao qual reagir ou null",
+      "newQuestionBudget": 0,
+      "responseShape": "answer_only" | "answer_and_reciprocate" | "react_only" | "react_and_question" | "free_conversation",
+      "avoidEchoPhrases": ["frase que não deve ser papagaiada"],
+      "avoidTopics": ["checkpoint adiado"],
+      "maxBalloons": 1,
+      "preferNoEmoji": true
+    }
   }
 }`;
 }
@@ -2735,10 +2776,12 @@ export function buildSubagentExecutorPrompt(params: {
       ? `OBJETIVO JÁ SATISFEITO: O pretendente já informou o que precisávamos. Apenas reaja com carinho e naturalidade, sem perguntar isso de novo.`
       : `CONVERSA LIVRE E LEVE: Apenas converse com carinho, mantendo a conversa humana e espontânea.`;
 
-  return `Você é a Larissa (${subagentName.toUpperCase()}), 23 anos, moça meiga e afetuosa de São João del-Rei/MG.
+  return `Você materializa a voz da Larissa no papel conversacional ${subagentName.toUpperCase()}.
 SUA MISSÃO NESTA ETAPA: ${mission}
 
 ${LARISSA_COMPACT_SUBAGENT_PROMPT}
+
+${LARISSA_CONVERSATION_EXAMPLES_V1}
 
 ${LARISSA_CHAT_STYLE_V2}
 ${emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${emojiBudgetSnippet}\n` : ""}
@@ -2753,6 +2796,9 @@ ${missionPackage.relevantMemoryContext || "Nenhum fato extra necessário."}
 ### ESTADO DA CONVERSA
 ${missionPackage.liveStateContext || "Interação em andamento."}
 
+### CONTRATO SEMÂNTICO DO TURNO
+${JSON.stringify(missionPackage.turnContract || {}, null, 2)}
+
 ${candidateAudiosSnippet ? `\n### ÁUDIO DO COFRE SUGERIDO (SE ADERENTE)\n${candidateAudiosSnippet}\n` : ""}
 
 ### MENSAGENS RECENTES
@@ -2764,9 +2810,11 @@ ${formattedRecentMsgs}
    - É expressamente proibido usar ponto de exclamação (!)
    - É expressamente proibido usar reticências (...), dois pontos (:), ponto e vírgula (;) ou travessão (—).
 2. Não pergunte nada que já esteja nos fatos conhecidos.
-3. Responda com balões curtos e naturais de WhatsApp/Instagram (1 a 2 balões).
+3. Respeite maxBalloons e newQuestionBudget do contrato. Pergunta nova não é obrigatória.
 4. Se o pretendente fez uma pergunta, RESPONDA antes de qualquer coisa.
-5. Se houver áudio aderente sugerido e for natural enviar, responda com action: "send_audio" e "audioId".
+5. Se houver áudio autorizado e for natural enviar, use SOMENTE missionPackage.selectedAudioId. Nunca escolha outro ID.
+6. Reação pessoal vem antes de checkpoint. Não ecoe a fala dele como pergunta.
+7. Emoji budget é teto, não meta. Se preferNoEmoji=true, responda sem emoji.
 
 Responda ESTRITAMENTE em JSON puro:
 {
@@ -6004,10 +6052,6 @@ async function callModelOrOpenAi(
       kieKey = (cfgSecret?.app_secret || "").trim();
     } catch (_err) {}
   }
-  if (!kieKey) {
-    kieKey = "467f4240bdb260cfed28f392c08d6771";
-  }
-
   if (kieKey) {
     try {
       console.log("[Orchestrator] Acionando contingência Kie.ai Codex...");
@@ -7145,6 +7189,10 @@ export async function runExperimentalOrchestration(
           ? requestedDirective
           : "pursue";
       const audioSelection = authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
+      const turnContract = buildTurnContract(
+        canonicalClaimed.map((message) => message.text),
+        brainPlan.missionPackage?.turnContract
+      );
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
         subagentId: responsibleSubagent,
@@ -7162,6 +7210,7 @@ export async function runExperimentalOrchestration(
         selectedAudioId: audioSelection.selectedAudioId,
         candidateAudios: audioSelection.candidateAudios,
         preferAudio: audioSelection.preferAudio,
+        turnContract,
       };
 
       // Subagente selecionado (definição do catálogo ou canônico)
@@ -7278,6 +7327,24 @@ export async function runExperimentalOrchestration(
       currentCycle.trace.push(`brain_used_contact_memory: ${brainUsedContactMemory}`);
       currentCycle.trace.push(`brain_used_audio: ${brainUsedAudio}`);
 
+      // O executor só pode usar o áudio previamente autorizado pelo Brain/backend.
+      const audioIntegrity = enforceAuthorizedAudioDecision(finalSubDecision, missionPkg);
+      if (!audioIntegrity.allowed) {
+        currentCycle.trace.push(`executor_audio_rejected: ${audioIntegrity.reason}`);
+        finalSubDecision = {
+          ...finalSubDecision,
+          action: "wait",
+          audioId: undefined,
+          audioUrl: undefined,
+          responses: [],
+          suggestedResponse: "",
+          requiredTools: [],
+          reasoning: "Executor tentou usar áudio não autorizado pelo Brain",
+        };
+      } else if (audioIntegrity.audioId) {
+        finalSubDecision.audioId = audioIntegrity.audioId;
+      }
+
       // ----------------------------------------------------------------------
       // STYLE LINT DETERMINÍSTICO & RETRY DE ESTILO (Máximo 1)
       // ----------------------------------------------------------------------
@@ -7291,9 +7358,10 @@ export async function runExperimentalOrchestration(
         let candidateBalloons = (finalSubDecision.responses && finalSubDecision.responses.length > 0)
           ? finalSubDecision.responses
           : splitIntoBalloons(finalSubDecision.suggestedResponse);
+        const effectiveEmojiBudget = turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget;
 
         let lintResult = runStyleLint(candidateBalloons, {
-          emojiBudget: emojiBudgetInfo.budget,
+          emojiBudget: effectiveEmojiBudget,
           recentEmojis: emojiBudgetInfo.recentEmojis,
           recentReactions: recentStyleState.recent_reactions,
           lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
@@ -7336,7 +7404,7 @@ Responda ESTRITAMENTE em JSON puro:
 
               // Passa pelo lint em modo defensivo (isRetry: true)
               lintResult = runStyleLint(candidateBalloons, {
-                emojiBudget: emojiBudgetInfo.budget,
+                emojiBudget: effectiveEmojiBudget,
                 recentEmojis: emojiBudgetInfo.recentEmojis,
                 recentReactions: recentStyleState.recent_reactions,
                 lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
@@ -7348,7 +7416,7 @@ Responda ESTRITAMENTE em JSON puro:
               currentCycle.trace.push("style_lint_retry_completed");
             } else {
               lintResult = runStyleLint(candidateBalloons, {
-                emojiBudget: emojiBudgetInfo.budget,
+                emojiBudget: effectiveEmojiBudget,
                 recentEmojis: emojiBudgetInfo.recentEmojis,
                 recentReactions: recentStyleState.recent_reactions,
                 lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
@@ -7360,7 +7428,7 @@ Responda ESTRITAMENTE em JSON puro:
           } catch (retryErr: any) {
             currentCycle.trace.push(`style_lint_retry_err: ${retryErr.message || String(retryErr)}`);
             lintResult = runStyleLint(candidateBalloons, {
-              emojiBudget: emojiBudgetInfo.budget,
+              emojiBudget: effectiveEmojiBudget,
               recentEmojis: emojiBudgetInfo.recentEmojis,
               recentReactions: recentStyleState.recent_reactions,
               lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
@@ -7374,6 +7442,85 @@ Responda ESTRITAMENTE em JSON puro:
           finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
           currentCycle.trace.push("style_lint_passed_first_try");
         }
+
+        // ------------------------------------------------------------------
+        // CONVERSATION QUALITY GATE & RETRY SEMÂNTICO (Máximo 1)
+        // ------------------------------------------------------------------
+        const inboundTexts = canonicalClaimed.map((message) => message.text).filter(Boolean);
+        let qualityResult = runConversationQualityGate({
+          inboundMessages: inboundTexts,
+          candidateBalloons: finalSubDecision.responses || [],
+          turnContract,
+        });
+        let qualityRetried = false;
+
+        if (!qualityResult.passed) {
+          qualityRetried = true;
+          const issueCodes = qualityResult.issues.map((issue) => issue.code);
+          currentCycle.trace.push(`conversation_quality_retry_issues: ${issueCodes.join(",")}`);
+          const qualityRetryPrompt = `${executorPrompt}
+
+### QUALITY RETRY ÚNICO
+A resposta anterior falhou semanticamente por: ${issueCodes.join(", ")}.
+Fala do pretendente: ${JSON.stringify(inboundTexts.join(" "))}
+Contrato obrigatório: ${JSON.stringify(turnContract)}
+
+Reescreva a mesma missão. Responda primeiro à pergunta direta, acrescente reação real, não ecoe a fala, não introduza tópico adiado e respeite o limite de perguntas e balões.
+Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
+          try {
+            const retryRes = await callModelOrOpenAi(qualityRetryPrompt, { runtime, supabase, model: params.model });
+            totalTokens += retryRes.tokens;
+            finalGenerationTokens += retryRes.outputTokens;
+            const retryJson = extractJsonFromText(retryRes.content);
+            if (retryJson) {
+              const retriedDecision = validateSubagentDecision(retryJson, currentPhase);
+              const retriedBalloons = retriedDecision.responses?.length
+                ? retriedDecision.responses
+                : splitIntoBalloons(retriedDecision.suggestedResponse);
+              const retryLint = runStyleLint(retriedBalloons, {
+                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              finalSubDecision.responses = retryLint.cleanedBalloons;
+              finalSubDecision.suggestedResponse = retryLint.cleanedBalloons.join("\n\n");
+              qualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: retryLint.cleanedBalloons,
+                turnContract,
+              });
+            }
+          } catch (qualityRetryErr: any) {
+            currentCycle.trace.push(`conversation_quality_retry_err: ${qualityRetryErr.message || String(qualityRetryErr)}`);
+          }
+
+          if (!qualityResult.passed) {
+            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
+            if (fallback) {
+              finalSubDecision.responses = fallback;
+              finalSubDecision.suggestedResponse = fallback.join("\n\n");
+              qualityResult = runConversationQualityGate({ inboundMessages: inboundTexts, candidateBalloons: fallback, turnContract });
+              currentCycle.trace.push("conversation_quality_safe_fallback_used");
+            } else {
+              finalSubDecision.action = "wait";
+              finalSubDecision.responses = [];
+              finalSubDecision.suggestedResponse = "";
+              finalSubDecision.requiredTools = [];
+              currentCycle.trace.push("conversation_quality_blocked_dispatch");
+            }
+          }
+        }
+
+        currentCycle.trace.push(`conversation_quality_passed=${qualityResult.passed}`);
+        currentCycle.trace.push(`conversation_quality_retry=${qualityRetried}`);
+        currentCycle.trace.push(`conversation_quality_issues=${JSON.stringify(qualityResult.issues.map((issue) => issue.code))}`);
+        currentCycle.trace.push(`direct_questions_detected=${qualityResult.directQuestionsDetected}`);
+        currentCycle.trace.push(`direct_questions_answered=${qualityResult.directQuestionsAnswered}`);
+        currentCycle.trace.push(`parrot_score=${qualityResult.parrotScore.toFixed(3)}`);
+        currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
+        currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
       }
     }
 

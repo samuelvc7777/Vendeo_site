@@ -74,6 +74,15 @@ function loadOrchestratorHelpers() {
     if (id.includes('LarissaChatStyle')) {
       return styleMod;
     }
+    if (id.includes('ConversationQualityGate')) {
+      const qualityCode = fs.readFileSync('supabase/functions/api/ConversationQualityGate.ts', 'utf8');
+      const qualityJs = ts.transpileModule(qualityCode, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+      }).outputText;
+      const qualityMod = { exports: {} };
+      vm.runInNewContext(qualityJs, { module: qualityMod, exports: qualityMod.exports, Set, String, Array, Math, Number, RegExp });
+      return qualityMod.exports;
+    }
     if (id.includes('LarissaConversationStyle')) {
       return { LARISSA_CONVERSATION_STYLE: '' };
     }
@@ -671,6 +680,9 @@ console.log('\n🔹 CENÁRIO 19: selectedAudioId é validado contra candidatos d
   assert(selected.candidateAudios.length === 1 && selected.candidateAudios[0].audioId === 'audio_2', 'Executor recebe somente o candidato selecionado');
   assert(fake.candidateAudios.length === 0 && fake.preferAudio === false, 'ID inexistente é rejeitado');
   assert(missing.selectedAudioId === null && missing.preferAudio === false, 'preferAudio sem ID válido é normalizado para false');
+  assert(orchMod.enforceAuthorizedAudioDecision({ action: 'send_audio', audioId: 'audio_2' }, selected).allowed, 'Executor pode usar exatamente o áudio autorizado');
+  assert(!orchMod.enforceAuthorizedAudioDecision({ action: 'send_audio', audioId: 'audio_999' }, selected).allowed, 'Executor não pode trocar o áudio autorizado');
+  assert(!orchMod.enforceAuthorizedAudioDecision({ action: 'send_audio', audioId: 'audio_1' }, missing).allowed, 'Executor não pode inventar áudio sem busca/autorização');
 }
 
 console.log('\n🔹 CENÁRIO 20: Persistência não promove fact_reveal comum a Landmark');

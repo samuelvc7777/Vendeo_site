@@ -42,6 +42,9 @@ function loadTsModule(filePath) {
       if (dep.includes("LarissaChatStyle")) {
         return loadTsModule("supabase/functions/api/LarissaChatStyle.ts");
       }
+      if (dep.includes("ConversationQualityGate")) {
+        return loadTsModule("supabase/functions/api/ConversationQualityGate.ts");
+      }
       if (dep.includes("conversation_episodic_memory")) {
         return loadTsModule("supabase/functions/api/conversation_episodic_memory.ts");
       }
@@ -1504,7 +1507,7 @@ async function runTests() {
     };
 
     const messagesInDb = [
-      { id: "msg_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 10000).toISOString() },
+      { id: "msg_prev", text: "sou de Barbacena e trabalho de engenheiro", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 10000).toISOString() },
     ];
 
     const mockSupabase = {
@@ -2796,7 +2799,7 @@ async function runTests() {
             order: () => ({
               limit: () => Promise.resolve({
                 data: table === "instagram_messages" ? [
-                  { id: "msg_in_55_prev", text: "oi Larissa", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
+                  { id: "msg_in_55_prev", text: "sou de Barbacena", sender: "pretendente", is_mine: false, created_at: new Date(Date.now() - 5000).toISOString() }
                 ] : [],
                 error: null,
               }),
@@ -2848,9 +2851,9 @@ async function runTests() {
         return {
           content: JSON.stringify({
             action: "reply",
-            suggestedResponse: "Oi! Tudo bem?\nComo foi seu dia por aí?",
+            suggestedResponse: "Barbacena é pertinho daqui\nVc gosta de morar aí?",
             checkpoint: "chk_saudacao_feita",
-            responses: ["Oi! Tudo bem?", "Como foi seu dia por aí?"],
+            responses: ["Barbacena é pertinho daqui", "Vc gosta de morar aí?"],
           }),
           tokens: 50,
         };

@@ -40,6 +40,9 @@ function loadTsModule(filePath) {
       if (dep.includes("LarissaChatStyle")) {
         return loadTsModule("supabase/functions/api/LarissaChatStyle.ts");
       }
+      if (dep.includes("ConversationQualityGate")) {
+        return loadTsModule("supabase/functions/api/ConversationQualityGate.ts");
+      }
       if (dep.includes("conversation_episodic_memory")) {
         return loadTsModule("supabase/functions/api/conversation_episodic_memory.ts");
       }
