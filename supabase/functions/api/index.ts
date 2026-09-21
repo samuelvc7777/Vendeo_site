@@ -1049,63 +1049,136 @@ serve(async (req: Request) => {
                 // Se a conversa estiver em modo EXPERIMENTAL, executa o novo orquestrador naquele chat
                 if (orchMode === "experimental") {
                   if (!isPaused) {
-                    console.log(`[Orchestrator] Executando em modo EXPERIMENTAL para conversa ${conversationId}`);
-                    const expPromise = (async () => {
-                      const res = await runExperimentalOrchestration({
+                    const delayMinutes =
+                      typeof apConfig?.responseDelayMinutes === "number"
+                        ? apConfig.responseDelayMinutes
+                        : typeof convRules?.orchestration?.responseDelayMinutes === "number"
+                        ? convRules.orchestration.responseDelayMinutes
+                        : 0;
+
+                    const hasActiveCycle = Boolean(
+                      convRules?.orchestration?.activeCycle?.cycleToken &&
+                      convRules?.orchestration?.activeCycle?.expiresAt &&
+                      new Date(convRules.orchestration.activeCycle.expiresAt).getTime() > Date.now()
+                    );
+
+                    const quietPeriodMs = Math.round(delayMinutes * 60 * 1000);
+
+                    if (hasActiveCycle) {
+                      // 1. request_experimental_cycle_preemption
+                      // 2. ciclo atual perde autoridade
+                      // 3. não pode mandar mais balões
+                      // 4. nova mensagem fica pending
+                      // 5. novo ai_debounce_until deve ser: now + responseDelayMinutes
+                      const newDebounceUntil = new Date(Date.now() + (quietPeriodMs || 2500)).toISOString();
+                      console.log(
+                        `[Orchestrator] Concorrência/Ciclo ativo detectado em ${conversationId}. Sinalizando preempção atômica e novo debounce de ${delayMinutes}m (${newDebounceUntil}).`
+                      );
+                      await requestExperimentalCyclePreemptionAtomic({
                         supabase,
                         conversationId,
-                        newMessage: {
-                          id: messageId,
-                          text: text || "",
-                          timestamp: timestamp || new Date().toISOString(),
-                          sender: senderId || "them",
-                        },
+                        messageId: messageId || null,
+                        debounceUntil: newDebounceUntil,
                       });
+                      await publishAutoPilotState(supabase, conversationId, {
+                        status: "scheduled",
+                        activity: activity(
+                          "scheduled",
+                          `Ciclo preemptado por nova mensagem. Novo quiet period (${delayMinutes}m)...`,
+                          "Aguardando período de silêncio para responder com o contexto atualizado.",
+                          {
+                            mode: "experimental",
+                            scheduledAt: newDebounceUntil,
+                            quietPeriodMinutes: delayMinutes,
+                          }
+                        ),
+                        scheduledResponseAt: newDebounceUntil,
+                      });
+                    } else if (delayMinutes > 0) {
+                      // DEBOUNCE = período de silêncio (quiet period) desde a ÚLTIMA inbound
+                      const scheduledUntil = new Date(Date.now() + quietPeriodMs).toISOString();
+                      console.log(
+                        `[Orchestrator] Inbound recebida em ${conversationId}. Agendando quiet period de ${delayMinutes}m (ai_debounce_until = ${scheduledUntil}).`
+                      );
+                      await supabase
+                        .from("instagram_conversations")
+                        .update({
+                          ai_debounce_until: scheduledUntil,
+                        })
+                        .eq("id", conversationId);
 
-                      // Em caso de concorrência com ciclo ativo, sinaliza preempção atômica no PostgreSQL
-                      // sem NUNCA usar read-modify-write de snapshot JS (elimina 100% de TOCTOU pós-commit).
-                      if (!res.handled && res.error === "Lock ativo concorrente") {
-                        console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Sinalizando preempção atômica e debounce de 2.5s.`);
-                        await requestExperimentalCyclePreemptionAtomic({
+                      await publishAutoPilotState(supabase, conversationId, {
+                        status: "scheduled",
+                        activity: activity(
+                          "scheduled",
+                          `Aguardando quiet period (${delayMinutes}m)...`,
+                          "Respeitando o tempo de silêncio configurado após a mensagem inbound.",
+                          {
+                            mode: "experimental",
+                            scheduledAt: scheduledUntil,
+                            quietPeriodMinutes: delayMinutes,
+                          }
+                        ),
+                        scheduledResponseAt: scheduledUntil,
+                      });
+                    } else {
+                      // responseDelayMinutes = 0: pode iniciar imediatamente
+                      console.log(`[Orchestrator] responseDelayMinutes=0. Executando imediatamente em modo EXPERIMENTAL para conversa ${conversationId}`);
+                      const expPromise = (async () => {
+                        const res = await runExperimentalOrchestration({
                           supabase,
                           conversationId,
-                          messageId: messageId || null,
-                          debounceUntil: new Date(Date.now() + 2500).toISOString(),
-                        });
-                      }
-
-                      // BLOQUEIO EXPLÍCITO DO FALLBACK LEGADO:
-                      // Respeita estritamente o sinal blockLegacyFallback ou flags de sucesso/envio/duplicata,
-                      // SEM depender de matching de string no erro!
-                      if (res.blockLegacyFallback === true || res.sentToMeta || res.handled || res.skippedDuplicate) {
-                        console.log(
-                          `[Orchestrator] Fallback legado BLOQUEADO explicitamente para ${conversationId} (blockLegacyFallback=${res.blockLegacyFallback}, handled=${res.handled}, sentToMeta=${res.sentToMeta})`
-                        );
-                        return;
-                      }
-
-                      if (!res.handled && res.error) {
-                        console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) com fallback legado liberado. Acionando legado.`);
-                        await runCloudAutoPilot({
-                          supabase,
-                          conversationId,
-                          triggerMessageId: messageId,
-                          triggerTimestamp: timestamp,
-                          triggerText: text,
-                          skipDebounce: true,
-                          runtime: {
-                            apiBase: API_BASE,
-                            transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                            ...cloudAutopilotSupport,
+                          newMessage: {
+                            id: messageId,
+                            text: text || "",
+                            timestamp: timestamp || new Date().toISOString(),
+                            sender: senderId || "them",
                           },
                         });
-                      }
-                    })();
 
-                    if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                      (globalThis as any).EdgeRuntime.waitUntil(expPromise);
-                    } else {
-                      void expPromise;
+                        // Em caso de concorrência com ciclo ativo, sinaliza preempção atômica no PostgreSQL
+                        if (!res.handled && res.error === "Lock ativo concorrente") {
+                          const newDebounceUntil = new Date(Date.now() + 2500).toISOString();
+                          console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Sinalizando preempção atômica.`);
+                          await requestExperimentalCyclePreemptionAtomic({
+                            supabase,
+                            conversationId,
+                            messageId: messageId || null,
+                            debounceUntil: newDebounceUntil,
+                          });
+                        }
+
+                        // BLOQUEIO EXPLÍCITO DO FALLBACK LEGADO
+                        if (res.blockLegacyFallback === true || res.sentToMeta || res.handled || res.skippedDuplicate) {
+                          console.log(
+                            `[Orchestrator] Fallback legado BLOQUEADO explicitamente para ${conversationId} (blockLegacyFallback=${res.blockLegacyFallback}, handled=${res.handled}, sentToMeta=${res.sentToMeta})`
+                          );
+                          return;
+                        }
+
+                        if (!res.handled && res.error) {
+                          console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) com fallback legado liberado. Acionando legado.`);
+                          await runCloudAutoPilot({
+                            supabase,
+                            conversationId,
+                            triggerMessageId: messageId,
+                            triggerTimestamp: timestamp,
+                            triggerText: text,
+                            skipDebounce: true,
+                            runtime: {
+                              apiBase: API_BASE,
+                              transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
+                              ...cloudAutopilotSupport,
+                            },
+                          });
+                        }
+                      })();
+
+                      if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                        (globalThis as any).EdgeRuntime.waitUntil(expPromise);
+                      } else {
+                        void expPromise;
+                      }
                     }
                   }
                 } else if (orchMode === "legacy") {

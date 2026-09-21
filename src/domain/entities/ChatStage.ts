@@ -20,9 +20,13 @@ export interface StageObjective {
   allowedSubagents?: string[];
   /** Subagente prioritário de referência (opcional) */
   primarySubagent?: string;
+  /** Política de conclusão: "conversation_evidence" (padrão conversacional) ou "fact_only" (auto-completa se já souber o fato) */
+  completionPolicy?: "conversation_evidence" | "fact_only";
   createdAt?: string;
   updatedAt?: string;
 }
+
+export type ObjectiveCompletionPolicy = "conversation_evidence" | "fact_only";
 
 // Type alias para compatibilidade com código existente
 export type ConversationGoal = StageObjective;

@@ -120,6 +120,11 @@ async function runTests() {
     claimOutboxEntryAtomic,
     prepareExperimentalOutboxEntryAtomic,
     releaseExperimentalCycleAtomic,
+    searchPersonaAudios,
+    searchConversationEpisodicMemory,
+    saveConversationEpisodes,
+    executeEpisodeWriter,
+    extractEpisodesFromPretendenteMessage,
   } = orchestratorModule;
 
   let passed = 0;
@@ -4792,8 +4797,389 @@ async function runTests() {
     assert.equal(convRow.stage_completed_rules.preempt_requested, false, "preempt_requested deve estar limpo após o commit");
   });
 
+  // ---------------------------------------------------------------------------
+  // TESTE 77: DEBOUNCE REAL COM responseDelayMinutes E PREEMPÇÃO ATÔMICA
+  // ---------------------------------------------------------------------------
+  await runTest(77, "Debounce Real com responseDelayMinutes e Preempção Atômica", async () => {
+    const delayMinutes = 2;
+    const quietPeriodMs = delayMinutes * 60 * 1000;
+    const now = Date.now();
+    const scheduledUntil = new Date(now + quietPeriodMs).toISOString();
+
+    let preemptionCalls = 0;
+    const mockSupabase = {
+      rpc: async (fn, params) => {
+        if (fn === "request_experimental_cycle_preemption") {
+          preemptionCalls++;
+          assert.equal(params.p_conversation_id, "conv_test_77");
+          assert.ok(new Date(params.p_debounce_until).getTime() >= now + quietPeriodMs - 500);
+          return { data: { success: true, inboundRevision: 3, activeCycleToken: "token_1" }, error: null };
+        }
+        return { data: null, error: null };
+      },
+    };
+
+    const res = await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_77",
+      messageId: "msg_inbound_2",
+      debounceUntil: scheduledUntil,
+    });
+
+    assert.equal(res.success, true);
+    assert.equal(res.inboundRevision, 3);
+    assert.equal(preemptionCalls, 1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TESTE 78: DETECÇÃO DETERMINÍSTICA DE owner_collision E owner_missing
+  // ---------------------------------------------------------------------------
+  await runTest(78, "Detecção Determinística de owner_collision e owner_missing", async () => {
+    const memoryProvider = new MockMemoryProvider();
+
+    // 1. owner_collision: dois subagentes reivindicam a mesma etapa
+    const supabaseCollision = {
+      from: (table) => {
+        if (table === "subagent_definitions") {
+          return {
+            select: () => ({
+              order: () => Promise.resolve({
+                data: [
+                  { id: "sub_1", enabled: true, stage_ids: ["stage_custom_1"] },
+                  { id: "sub_2", enabled: true, stage_ids: ["stage_custom_1"] },
+                ],
+                error: null,
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => ({
+            order: () => Promise.resolve({
+              data: [{ id: "stage_custom_1", name: "Custom Stage 1", order: 1, goals: [] }],
+              error: null,
+            }),
+          }),
+        };
+      },
+    };
+
+    let collisionThrown = false;
+    try {
+      await resolveStageChecklistGoals({
+        supabase: supabaseCollision,
+        conversationId: "conv_test_78a",
+        stageNameOrId: "stage_custom_1",
+        memoryProvider,
+      });
+    } catch (err) {
+      collisionThrown = true;
+      assert.ok(err.message.includes("owner_collision"), `Esperado owner_collision, obtido: ${err.message}`);
+    }
+    assert.ok(collisionThrown, "Deve lançar owner_collision quando múltiplos subagentes disputam a mesma etapa");
+
+    // 2. owner_missing: subagentes existem mas nenhum atende o stage_custom_unclaimed
+    const supabaseMissing = {
+      from: (table) => {
+        if (table === "subagent_definitions") {
+          return {
+            select: () => ({
+              order: () => Promise.resolve({
+                data: [
+                  { id: "sub_a", enabled: true, stage_ids: ["stage_alpha"] },
+                ],
+                error: null,
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => ({
+            order: () => Promise.resolve({
+              data: [{ id: "stage_custom_unclaimed", name: "Custom Unclaimed", order: 1, goals: [] }],
+              error: null,
+            }),
+          }),
+        };
+      },
+    };
+
+    let missingThrown = false;
+    try {
+      await resolveStageChecklistGoals({
+        supabase: supabaseMissing,
+        conversationId: "conv_test_78b",
+        stageNameOrId: "stage_custom_unclaimed",
+        memoryProvider,
+      });
+    } catch (err) {
+      missingThrown = true;
+      assert.ok(err.message.includes("owner_missing"), `Esperado owner_missing, obtido: ${err.message}`);
+    }
+    assert.ok(missingThrown, "Deve lançar owner_missing quando nenhum subagente ativo atende a etapa");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TESTE 79: DIFERENCIAÇÃO ESTRITA DE completionPolicy (conversation_evidence vs fact_only)
+  // ---------------------------------------------------------------------------
+  await runTest(79, "Diferenciação estrita de completionPolicy (conversation_evidence vs fact_only)", async () => {
+    // Stage com 2 objetivos: um fact_only e outro conversation_evidence
+    const customGoals = [
+      {
+        id: "goal_fact_city",
+        stageId: "stage_test_policy",
+        label: "Cidade do pretendente",
+        memoryEntity: "self",
+        memoryField: "city",
+        kind: "fact",
+        completionPolicy: "fact_only",
+        required: true,
+        order: 1,
+      },
+      {
+        id: "goal_evidence_reciprocity",
+        stageId: "stage_test_policy",
+        label: "Reciprocidade real no diálogo",
+        memoryEntity: "self",
+        memoryField: "reciprocity",
+        kind: "conversation_state",
+        completionPolicy: "conversation_evidence",
+        required: true,
+        order: 2,
+      },
+    ];
+
+    const currentPhase = "stage_test_policy";
+
+    // 1. Cenário 1: ContactMemory possui ambos os fatos gravados, mas a conversa NÃO forneceu evidenceMessageId no turno
+    const memoryWithBoth = {
+      self: {
+        city: { value: "Barbacena" },
+        reciprocity: { value: true },
+      },
+    };
+
+    // Subagente tenta propor conclusão sem evidenceMessageId válida pertencente às claimedMessages
+    const progressionWithoutEvidence = await processDeterministicStageProgression({
+      conversationId: "conv_test_policy_1",
+      currentPhase,
+      decision: {
+        action: "reply",
+        suggestedResponse: "Que legal!",
+        objectiveCompletion: {
+          objectiveId: "goal_evidence_reciprocity",
+          evidenceMessageId: "msg_fake_not_inbound",
+          extractedValue: true,
+        },
+      },
+      stageGoals: customGoals,
+      contactMemory: memoryWithBoth,
+      claimedMessages: [{ id: "msg_real_inbound_1", text: "Olá!" }],
+      stageRules: { completed_goals: [] },
+    });
+
+    // goal_evidence_reciprocity foi rejeitado porque evidenceMessageId não está em claimedMessages
+    assert.ok(!progressionWithoutEvidence.updatedCompletedGoals.includes("goal_evidence_reciprocity"), "goal_evidence_reciprocity deve ser rejeitado sem evidência claimed");
+    assert.equal(progressionWithoutEvidence.stageAdvanced, false, "Etapa não pode avançar sem a evidência conversacional exigida");
+
+    // 2. Cenário 2: Subagente fornece evidência válida pertencente às claimedMessages
+    const progressionWithEvidence = await processDeterministicStageProgression({
+      conversationId: "conv_test_policy_2",
+      currentPhase,
+      decision: {
+        action: "reply",
+        suggestedResponse: "Que legal!",
+        objectiveCompletion: {
+          objectiveId: "goal_evidence_reciprocity",
+          evidenceMessageId: "msg_real_inbound_1",
+          extractedValue: true,
+        },
+      },
+      stageGoals: customGoals,
+      contactMemory: memoryWithBoth,
+      claimedMessages: [{ id: "msg_real_inbound_1", text: "Adorei conversar com você" }],
+      stageRules: { completed_goals: [] },
+    });
+
+    assert.ok(progressionWithEvidence.updatedCompletedGoals.includes("goal_evidence_reciprocity"), "goal_evidence_reciprocity deve ser concluído com evidência válida");
+    assert.ok(progressionWithEvidence.updatedCompletedGoals.includes("goal_fact_city"), "goal_fact_city é concluído por fato da memória");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TESTE 80: MEMÓRIA DE LONGO PRAZO E DETECÇÃO DURÁVEL (Carro Amarelo)
+  // ---------------------------------------------------------------------------
+  await runTest(80, "Memória de Longo Prazo e Detecção Durável (Carro Amarelo)", async () => {
+    let insertedRows = [];
+    const mockSupabase = {
+      from: (table) => {
+        if (table === "conversation_episodic_memory") {
+          return {
+            upsert: (rows) => {
+              insertedRows.push(...(Array.isArray(rows) ? rows : [rows]));
+              return {
+                select: () => Promise.resolve({ data: insertedRows, error: null }),
+              };
+            },
+            select: () => ({
+              eq: (col, val) => ({
+                order: () => ({
+                  limit: () => Promise.resolve({ data: insertedRows, error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => Promise.resolve({ data: [], error: null }),
+        };
+      },
+    };
+
+    const convId = "conv_carro_amarelo_test";
+    const pretendenteMsg = {
+      id: "msg_carro_1",
+      sender_id: "pretendente",
+      text: "tenho um carro amarelo antigo que cuido muito bem, é o meu xodó",
+      created_at: new Date().toISOString(),
+      is_mine: false,
+    };
+
+    // Extrai e grava episódio
+    const episodes = extractEpisodesFromPretendenteMessage(pretendenteMsg.text, pretendenteMsg.id);
+    for (const ep of episodes) {
+      ep.conversation_id = convId;
+    }
+    assert.ok(episodes.length > 0, "Deve extrair episódio de veículo/preferência pessoal");
+    assert.equal(episodes[0].actor, "pretendente");
+
+    await saveConversationEpisodes({
+      supabase: mockSupabase,
+      conversationId: convId,
+      episodes,
+    });
+    assert.ok(insertedRows.length > 0, "Episódio deve ter sido persistido no banco");
+
+    // Pesquisa episódica de longo prazo por termo "carro"
+    const searchResCarro = await searchConversationEpisodicMemory({
+      conversationId: convId,
+      query: "carro",
+      supabase: mockSupabase,
+    });
+
+    assert.ok(searchResCarro.length > 0, "Busca por 'carro' deve encontrar o episódio do carro amarelo");
+    const carContent = searchResCarro[0].content || searchResCarro[0].original_text || searchResCarro[0].summary;
+    assert.ok(carContent.includes("carro amarelo"), "Conteúdo do episódio deve conter 'carro amarelo'");
+    const relScore = searchResCarro[0].relevanceScore ?? searchResCarro[0].relevance;
+    assert.ok(relScore > 0, "Score de relevância deve ser positivo");
+
+    // Pesquisa por termo "amarelo"
+    const searchResAmarelo = await searchConversationEpisodicMemory({
+      conversationId: convId,
+      query: "amarelo",
+      supabase: mockSupabase,
+    });
+    assert.ok(searchResAmarelo.length > 0, "Busca por 'amarelo' deve encontrar o episódio");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TESTE 81: COFRE DE ÁUDIOS: EXCLUSÃO SEM TRANSCRIÇÃO E REPLAY EXPLÍCITO
+  // ---------------------------------------------------------------------------
+  await runTest(81, "Cofre de Áudios: Exclusão sem transcrição e Replay Explícito", async () => {
+    const mockAudios = [
+      {
+        id: "aud_valido",
+        title: "Rotina de Enfermagem",
+        transcript: "Oi, trabalho no hospital no plantão de 12 por 36 e estudo enfermagem.",
+        usage_instruction: "Quando ele perguntar sobre o que ela faz ou faculdade",
+        audio_url: "https://audios.vendeo.com/rotina.mp3",
+        enabled: true,
+      },
+      {
+        id: "aud_sem_transcricao",
+        title: "Áudio Mudo ou Incompleto",
+        transcript: "",
+        usage_instruction: "Não deve ser usado nunca",
+        audio_url: "https://audios.vendeo.com/invalido.mp3",
+        enabled: true,
+      },
+      {
+        id: "aud_null_transcript",
+        title: "Áudio Null",
+        transcript: null,
+        usage_instruction: "Não deve ser usado",
+        audio_url: "https://audios.vendeo.com/null.mp3",
+        enabled: true,
+      },
+    ];
+
+    const mockSupabase = {
+      from: (table) => {
+        if (table === "persona_audios") {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: () => Promise.resolve({ data: mockAudios, error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === "instagram_conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: () => Promise.resolve({
+                  data: {
+                    stage_completed_rules: {
+                      orchestration: {
+                        deliveredAudios: ["aud_valido"],
+                      },
+                    },
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => Promise.resolve({ data: [], error: null }),
+        };
+      },
+    };
+
+    // 1. Busca normal: áudios sem transcrição NUNCA aparecem
+    const matchesNormal = await searchPersonaAudios({
+      supabase: mockSupabase,
+      conversationId: "conv_audio_test",
+      intent: "o que você estuda?",
+      query: "estudo faculdade",
+    });
+
+    assert.ok(!matchesNormal.some((a) => a.id === "aud_sem_transcricao"), "Áudio sem transcrição deve ser excluído da busca");
+    assert.ok(!matchesNormal.some((a) => a.id === "aud_null_transcript"), "Áudio com transcript null deve ser excluído da busca");
+
+    // Como já foi entregue em deliveredAudios, already_sent deve ser true
+    const audValidoNormal = matchesNormal.find((a) => a.id === "aud_valido");
+    assert.ok(audValidoNormal, "aud_valido com transcrição deve ser localizado");
+    const alreadySentNormal = audValidoNormal.already_sent ?? audValidoNormal.alreadySentInConversation;
+    assert.equal(alreadySentNormal, true, "Deve indicar already_sent=true em busca normal");
+
+    // 2. Busca com pedido explícito de replay: "manda de novo o áudio"
+    const matchesReplay = await searchPersonaAudios({
+      supabase: mockSupabase,
+      conversationId: "conv_audio_test",
+      intent: "manda de novo o áudio por favor",
+      query: "manda de novo",
+    });
+
+    const audValidoReplay = matchesReplay.find((a) => a.id === "aud_valido");
+    assert.ok(audValidoReplay, "aud_valido deve ser localizado no replay");
+    const alreadySentReplay = audValidoReplay.already_sent ?? audValidoReplay.alreadySentInConversation;
+    assert.equal(alreadySentReplay, false, "already_sent deve ser false quando pretendente pede replay explícito");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/76 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/81 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

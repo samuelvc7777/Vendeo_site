@@ -30,13 +30,13 @@ updated_at: "2026-09-15T18:27:57.369+00:00"
 
 ## 🗺️ Navegação do Pretendente
 
-| Documento | Descrição |
-| :--- | :--- |
-| [[01 - Sobre 💎 AUTHENTIC 💎]] | 🧠 **Fatos Conhecidos** da ContactMemory (idade, trabalho, gostos, pessoas) |
-| [[02 - Conversa com 💎 AUTHENTIC 💎]] | 💬 **Histórico & Dinâmica** (mensagens recentes, ritmo e tom) |
-| [[03 - Objetivos de 💎 AUTHENTIC 💎]] | 🎯 **Bússola & Metas** (checklist da etapa e critérios cumpridos) |
-| [[04 - Episódios de 💎 AUTHENTIC 💎]] | 📜 **Memória Episódica** (perguntas feitas, respostas e autorevelações) |
-| [[05 - Metadados de 💎 AUTHENTIC 💎]] | ⚙️ **Dados Técnicos** (payload de orquestração e checkpoints) |
+| Documento                             | Descrição                                                                   |
+| :------------------------------------ | :-------------------------------------------------------------------------- |
+| [[01 - Sobre 💎 AUTHENTIC 💎]]        | 🧠 **Fatos Conhecidos** da ContactMemory (idade, trabalho, gostos, pessoas) |
+| [[02 - Conversa com 💎 AUTHENTIC 💎]] | 💬 **Histórico & Dinâmica** (mensagens recentes, ritmo e tom)               |
+| [[03 - Objetivos de 💎 AUTHENTIC 💎]] | 🎯 **Bússola & Metas** (checklist da etapa e critérios cumpridos)           |
+| [[04 - Episódios de 💎 AUTHENTIC 💎]] | 📜 **Memória Episódica** (perguntas feitas, respostas e autorevelações)     |
+| [[05 - Metadados de 💎 AUTHENTIC 💎]] | ⚙️ **Dados Técnicos** (payload de orquestração e checkpoints)               |
 
 ---
 *Gerado automaticamente pelo Vendeo Memory Sync (Espelho Humano do Obsidian)*

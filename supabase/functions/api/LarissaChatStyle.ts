@@ -8,12 +8,15 @@ export const LARISSA_CHAT_STYLE_V2 = `=== FORMA DE DIGITAR & LINGUAGEM DE CELULA
 1. LINGUAGEM DE SMARTPHONE: Português coloquial real do dia a dia. Use: vc, tô, tá, pra, tbm, né, ué. NUNCA use "cê". NUNCA use "trampando", "trampo" ou "trampar" (use trabalho ou serviço).
 2. UAI RARO: "uai" é muito raro e opcional (máx 1 a cada 15 turnos). Nunca use como bordão ou muleta.
 3. HIERARQUIA DE RISADAS: Apenas "kkk" ou "kkkk" quando houver graça real. Proibido: hahaha, rs, rsrs, hehe. Proibido kkk em: graças a Deus, bênção, cansaço, problema, desabafo ou assunto sério. Maioria das falas sem risada.
-4. PONTUAÇÃO DE CELULAR: PROIBIDO terminar balão com ponto final (.). Preserve "?" em perguntas. Proibida pontuação formal de redação. A maioria das falas termina solta com a palavra ou risada.
-5. ESTRUTURA DOS BALÕES (responses: []):
+4. PONTUAÇÃO DE CELULAR: PROIBIDO terminar balão com ponto final (.). Preserve "?" em perguntas. Proibida pontuação formal de redação corporativa ou escolar. A maioria das falas termina solta com a palavra ou risada.
+   - PONTUAÇÃO PERMITIDA: vírgula (,), interrogação (?) e exclamação meiga (!).
+   - PONTUAÇÃO PROIBIDA: ponto final (.) no final dos balões, reticências excessivas (... ou …), ponto e vírgula (;), dois pontos (:), travessão (— ou –).
+5. MAIÚSCULA EM TODO BALÃO: Cada balão deve começar com seu primeiro caractere alfabético em maiúsculo (ex: "Nossa que legal", "🥰 Que bom").
+6. ESTRUTURA DOS BALÕES (responses: []):
    - Mensagem simples: 1 a 2 balões curtos.
    - Mensagem maior: 2 a 4 balões rápidos e proporcionais.
-   - Densidade: 3 a 18 palavras por balão. Evite textão em bloco único.
-6. ZERO SUJEIRA: Proibido markdown (negrito, itálico), prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
+   - Densidade: 3 a 18 palavras por balão. Evite textão em bloco único. Máximo 1 nova pergunta por turno.
+7. ZERO SUJEIRA: Proibido markdown (negrito, itálico), prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
 
 export const LARISSA_COMPACT_SUBAGENT_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
 Você conduz uma conversa natural como Larissa (23 anos, moça meiga de Minas Gerais).
@@ -246,8 +249,70 @@ export interface StyleLintOptions {
 }
 
 /**
+ * Converte o primeiro caractere alfabético de uma string em maiúsculo,
+ * preservando emojis, espaços ou símbolos iniciais.
+ */
+export function capitalizeFirstLetter(text: string): string {
+  if (!text || typeof text !== "string") return "";
+  const match = text.match(/\p{L}/u);
+  if (!match || match.index === undefined) return text;
+  const idx = match.index;
+  return text.slice(0, idx) + text.charAt(idx).toUpperCase() + text.slice(idx + 1);
+}
+
+/**
+ * Normalizador determinístico de pontuação da Larissa:
+ * - PONTUAÇÃO PERMITIDA: apenas vírgula (,), interrogação (?) e exclamação meiga (!)
+ * - PONTUAÇÃO PROIBIDA: ponto final (.) no final dos balões, reticências (... ou …), ponto e vírgula (;), dois pontos (:), travessão (— ou –)
+ * - Preserva pontos numéricos (ex: 250.000, 1.5)
+ * - Garante que todo balão comece com caractere alfabético maiúsculo.
+ */
+export function sanitizeChatPunctuation(rawText: string): string {
+  if (!rawText || typeof rawText !== "string") return "";
+  let text = rawText.trim();
+
+  // Preservar tags especiais de áudio intactas (ex: "[audio:https://...]")
+  if (text.startsWith("[audio:") && text.endsWith("]")) {
+    return text;
+  }
+
+  // 1. Reticências (... ou …): converte para vírgula se estiver no meio da frase conectando orações, ou remove se no fim
+  text = text.replace(/\.{2,}|…/g, (match, offset, fullStr) => {
+    const after = fullStr.slice(offset + match.length).trim();
+    return after.length > 0 && !/^[,?!]/.test(after) ? ", " : " ";
+  });
+
+  // 2. Dois pontos, ponto-e-vírgula e travessões: convertem para vírgula
+  text = text.replace(/[:;—–]/g, ", ");
+
+  // 3. Exclamações repetidas (!!+): normaliza para exclamação única
+  text = text.replace(/!{2,}/g, "!");
+
+  // 4. Ponto final (.): converte para vírgula no meio ou remove se no fim, PRESERVANDO pontos numéricos entre dígitos (ex: 250.000 ou 1.5)
+  text = text.replace(/(?<=\d)\.(?=\d)|(\.+)/g, (match, p1, offset, fullStr) => {
+    if (!p1) {
+      // Ponto único entre dígitos: preserva intacto
+      return match;
+    }
+    const after = fullStr.slice(offset + match.length).trim();
+    return after.length > 0 && !/^[,?!]/.test(after) ? ", " : " ";
+  });
+
+  // 5. Normaliza vírgulas repetidas ou adjacentes a interrogação/exclamação
+  text = text.replace(/\s*,\s*,+/g, ", ");
+  text = text.replace(/\s*,\s*([?!])/g, "$1");
+  text = text.replace(/\s+/g, " ").trim();
+  text = text.replace(/[,.]\s*$/, "").trim(); // Não termina balão com vírgula ou ponto solto
+
+  // 6. Garante maiúscula no primeiro caractere alfabético
+  text = capitalizeFirstLetter(text);
+
+  return text;
+}
+
+/**
  * Style Lint determinístico da Larissa:
- * 1. Aplica correções mecânicas seguras (cê -> vc, hahaha -> kkk, remoção de ponto final final, etc.)
+ * 1. Aplica correções mecânicas seguras (pontuação estrita, cê -> vc, hahaha -> kkk, maiúsculas, etc.)
  * 2. Detecta violações que demandam retry (trampando, estouro de emojis, textão, formalismo, etc.)
  * 3. Se for retry final (isRetry: true), aplica saneamento defensivo para não quebrar o envio.
  */
@@ -326,14 +391,15 @@ export function runStyleLint(
       issues.push({ type: "mechanical", rule: "RS_ISOLADO", message: '"rs" isolado normalizado para "kkk".' });
     }
 
-    // Ponto final SOMENTE no final do balão (preservando ?, !, ...)
-    if (/\.$/.test(text) && !/\.\.\.$/.test(text)) {
-      text = text.replace(/\.+$/, "");
+    // Normalização mecânica de pontuação estrita (, e ?) e maiúscula inicial
+    const punctuated = sanitizeChatPunctuation(text);
+    if (punctuated !== text) {
       issues.push({
         type: "mechanical",
-        rule: "PONTO_FINAL_FINAL",
-        message: "Ponto final no fim do balão removido.",
+        rule: "PONTUACAO_NORMALIZADA",
+        message: 'Pontuação formal/proibida (. ! ... ; : —) normalizada para pontuação de celular (, e ?).',
       });
+      text = punctuated;
     }
 
     // Contabiliza emojis
@@ -527,6 +593,8 @@ export function runStyleLint(
     requiresRetry,
     retryReason,
     issues,
-    cleanedBalloons: cleaned.filter(Boolean),
+    cleanedBalloons: cleaned
+      .filter(Boolean)
+      .map((b) => capitalizeFirstLetter(sanitizeChatPunctuation(b))),
   };
 }

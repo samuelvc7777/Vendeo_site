@@ -74,10 +74,12 @@ export interface EpisodicSearchResult {
   event_type: EpisodeEventType;
   topic: string | null;
   summary: string;
+  content?: string;
   source_message_id?: string | null;
   original_text?: string | null;
   created_at: string;
   relevance: number;
+  relevanceScore?: number;
 }
 
 function stripAccents(s: string): string {
@@ -432,7 +434,7 @@ export function extractEpisodesFromPretendenteMessage(
 
   // 2. Fatos sobre Cidade / Residência
   const cityMatch = clean.match(
-    /(?:moro em|sou de|vivo em|resido em|fico em)\s+([a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ\s]{2,60}?)(?=(?:\s+e\s+(?:voc[eê]|vc)\b|[,\.!\?]|(?:\s+mas\b)|\s*$))/i
+    /(?:moro em|sou de|vivo em|resido em|fico em|estou em|aqui em)\s+([a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ\s]{2,60}?)(?=(?:\s+e\s+(?:voc[eê]|vc)\b|[,\.!\?]|(?:\s+mas\b)|\s*$))/i
   );
   if (cityMatch) {
     const city = cityMatch[1].trim();
@@ -483,7 +485,35 @@ export function extractEpisodesFromPretendenteMessage(
     });
   }
 
-  // 5. Perguntas feitas pelo pretendente à Larissa
+  // 5. Veículos, Bens e Detalhes Marcantes (ex: carro, moto, fusca, amarok)
+  if (/\b(carro|ve[ií]culo|moto|motocicleta|fusca|amarok|caminhonete|gol|civic|corolla)\b/i.test(cleanNorm)) {
+    episodes.push({
+      conversation_id: "",
+      actor: "pretendente",
+      event_type: "fact_reveal",
+      topic: "vehicle",
+      summary: `O pretendente revelou detalhe sobre veículo/carro: "${clean}".`,
+      original_text: clean,
+      source_message_id: messageId,
+      semantic_keys: ["pretendente.vehicle", "pretendente.property"],
+    });
+  }
+
+  // 6. Família e Histórias Pessoais (pai, mãe, irmão, família)
+  if (/\b(pai|m[aã]e|irm[aã]o?|fam[ií]lia|pais)\b/i.test(cleanNorm)) {
+    episodes.push({
+      conversation_id: "",
+      actor: "pretendente",
+      event_type: "fact_reveal",
+      topic: "family",
+      summary: `O pretendente compartilhou menção familiar: "${clean}".`,
+      original_text: clean,
+      source_message_id: messageId,
+      semantic_keys: ["pretendente.family"],
+    });
+  }
+
+  // 7. Perguntas feitas pelo pretendente à Larissa
   if (clean.includes("?")) {
     episodes.push({
       conversation_id: "",
@@ -801,6 +831,12 @@ export async function searchConversationEpisodicMemory(params: {
     historia: { topics: ["stories", "education"], keys: ["stories", "education"] },
     cafe: { topics: ["routine"], keys: ["routine", "drinks.likes_coffee"] },
     medo: { topics: ["fears"], keys: ["fears"] },
+    veiculo: { topics: ["vehicle"], keys: ["car", "vehicle"] },
+    carro: { topics: ["vehicle"], keys: ["car", "vehicle"] },
+    moto: { topics: ["vehicle"], keys: ["motorcycle", "vehicle"] },
+    pai: { topics: ["family"], keys: ["family", "father"] },
+    mae: { topics: ["family"], keys: ["family", "mother"] },
+    familia: { topics: ["family"], keys: ["family"] },
   };
 
   const targetTopics = new Set<string>();
@@ -893,10 +929,13 @@ export async function searchConversationEpisodicMemory(params: {
       }
     }
 
-    // 3. Correspondência de Termos Relevantes no Resumo
+    // 3. Correspondência de Termos Relevantes no Resumo e Texto Original
+    const epOriginalNorm = stripAccents(ep.original_text || "");
     for (const term of meaningfulTerms) {
       if (epSummaryNorm.includes(term)) {
         score += 8;
+      } else if (epOriginalNorm.includes(term)) {
+        score += 6;
       }
     }
 
@@ -928,16 +967,21 @@ export async function searchConversationEpisodicMemory(params: {
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map(({ ep, score }) => ({
-    actor: ep.actor,
-    event_type: ep.event_type,
-    topic: ep.topic || null,
-    summary: ep.summary,
-    source_message_id: ep.source_message_id || null,
-    original_text: ep.original_text || null,
-    created_at: ep.created_at || new Date().toISOString(),
-    relevance: Number(Math.min(score / 35, 0.99).toFixed(2)),
-  }));
+  return scored.slice(0, limit).map(({ ep, score }) => {
+    const rel = Number(Math.min(score / 35, 0.99).toFixed(2));
+    return {
+      actor: ep.actor,
+      event_type: ep.event_type,
+      topic: ep.topic || null,
+      summary: ep.summary,
+      content: ep.original_text || ep.summary,
+      source_message_id: ep.source_message_id || null,
+      original_text: ep.original_text || null,
+      created_at: ep.created_at || new Date().toISOString(),
+      relevance: rel,
+      relevanceScore: rel,
+    };
+  });
 }
 
 // ============================================================================

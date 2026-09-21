@@ -18,7 +18,7 @@ import {
   searchConversationEpisodicMemory,
   validateAntiRepeatGate,
 } from "./conversation_episodic_memory.ts";
-export { validateAntiRepeatGate };
+export { validateAntiRepeatGate, searchConversationEpisodicMemory, saveConversationEpisodes, executeEpisodeWriter, extractEpisodesFromPretendenteMessage };
 import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
 import {
@@ -111,6 +111,16 @@ export interface ConversationRoutingDecision {
   reason: string;
 }
 
+export interface MemoryCandidate {
+  entity: string;
+  kind?: "episodic" | "fact";
+  key: string;
+  value: any;
+  summary?: string;
+  tags?: string[];
+  evidenceMessageId: string;
+}
+
 export interface SubagentDecision {
   action: OrchestrationAction;
   checkpoint: string;
@@ -127,6 +137,7 @@ export interface SubagentDecision {
     evidenceMessageId?: string;
     value?: any;
   };
+  memoryCandidates?: MemoryCandidate[];
 }
 
 export interface OrchestratorDecision {
@@ -147,6 +158,7 @@ export interface OrchestratorDecision {
     evidenceMessageId?: string;
     value?: any;
   };
+  memoryCandidates?: MemoryCandidate[];
 }
 
 export type MessageProcessingStatus =
@@ -504,6 +516,7 @@ export interface SubagentInput {
   goalsSnippet?: string;
   styleStateSnippet?: string;
   softFocusSnippet?: string;
+  audioCandidatesSnippet?: string;
 }
 
 // Mantido para compatibilidade retroativa
@@ -761,6 +774,23 @@ export function validateSubagentDecision(
     };
   }
 
+  let memoryCandidates: MemoryCandidate[] | undefined;
+  const rawMemCand = obj.memoryCandidates || obj.memory_candidates;
+  if (Array.isArray(rawMemCand) && rawMemCand.length > 0) {
+    memoryCandidates = rawMemCand
+      .filter((c: any) => c && typeof c === "object" && (c.key || c.summary || c.value))
+      .slice(0, 3)
+      .map((c: any) => ({
+        entity: String(c.entity || "self").trim().toLowerCase(),
+        kind: c.kind === "fact" ? ("fact" as const) : ("episodic" as const),
+        key: String(c.key || "detail").trim(),
+        value: c.value !== undefined ? c.value : String(c.summary || ""),
+        summary: c.summary ? String(c.summary).trim() : undefined,
+        tags: Array.isArray(c.tags) ? c.tags.map(String) : [],
+        evidenceMessageId: String(c.evidenceMessageId || c.evidence_message_id || "").trim(),
+      }));
+  }
+
   return {
     action,
     checkpoint,
@@ -773,6 +803,7 @@ export function validateSubagentDecision(
     audioId: rawAudioId,
     audioUrl: typeof obj.audioUrl === "string" ? obj.audioUrl.trim() : undefined,
     objectiveCompletion,
+    memoryCandidates,
   };
 }
 
@@ -2229,11 +2260,13 @@ ${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnip
 ${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
 ${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
 ${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
+${input.audioCandidatesSnippet ? `\n### ÁUDIOS DO COFRE PRÉ-SELECIONADOS\n${input.audioCandidatesSnippet}\n` : ""}
 - Jamais chame o pretendente de Larissa.
 - REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
 - PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, É TERMINANTEMENTE PROIBIDO chamar ferramentas. Responda DIRETO em texto com action: "reply".
 - REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente gostos para agradar o pretendente. Se a memória indicar 'false' ou desinteresse, assuma o fato com sinceridade e bom humor.
 - RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
+- DETECÇÃO DE MEMÓRIAS RICAS (memoryCandidates): Se o pretendente revelar fatos duráveis ou detalhes marcantes (ex: cidade, profissão, gostos específicos, veículos, histórias de família), proponha em "memoryCandidates" com evidenceMessageId obrigatório da mensagem dele.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
@@ -2268,7 +2301,18 @@ Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de racio
     "balão 2 leve (se necessário)"
   ],
   "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
-  "nextPhase": "conexao_inicial" | "descoberta"
+  "nextPhase": "conexao_inicial" | "descoberta",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "kind": "episodic",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "tags": ["tag1"],
+      "evidenceMessageId": "id_da_mensagem"
+    }
+  ]
 }`;
 }
 
@@ -2287,6 +2331,8 @@ export interface SemanticGoalDefinition {
   allowedSubagents?: string[];
   /** Subagente prioritário de referência (opcional) */
   primarySubagent?: string;
+  /** Política de conclusão: "conversation_evidence" ou "fact_only" */
+  completionPolicy?: "conversation_evidence" | "fact_only";
 }
 
 export interface ResolvedStageGoal {
@@ -2299,6 +2345,7 @@ export interface ResolvedStageGoal {
   allowedSubagents?: string[];
   primarySubagent?: string;
   description?: string;
+  completionPolicy?: "conversation_evidence" | "fact_only";
 }
 
 export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
@@ -2624,29 +2671,40 @@ export async function resolveStageChecklistGoals(params: {
       ? "stage_1_conexao"
       : targetStageQuery.includes("compatibilidade") || targetStageQuery === "stage_3_compatibilidade"
       ? "stage_3_compatibilidade"
-      : "stage_2_descoberta"
+      : targetStageQuery.includes("descoberta") || targetStageQuery.includes("desc") || targetStageQuery === "stage_2_descoberta"
+      ? "stage_2_descoberta"
+      : targetStageQuery
   );
 
   // Determinação determinística do subagente responsável pela etapa (1:1 no fluxo principal)
   let responsibleSubagent = "";
   if (subagentsList.length > 0) {
-    const matchedSub = subagentsList.find(
+    const matchingSubs = subagentsList.filter(
       (sub: any) =>
         sub.enabled !== false &&
         Array.isArray(sub.stage_ids) &&
         sub.stage_ids.includes(resolvedStageId)
     );
-    if (matchedSub) {
-      responsibleSubagent = matchedSub.id;
+    if (matchingSubs.length > 1) {
+      throw new Error(`owner_collision: Multiple active subagents claim stage ${resolvedStageId}: ${matchingSubs.map((s: any) => s.id).join(", ")}`);
+    } else if (matchingSubs.length === 1) {
+      responsibleSubagent = matchingSubs[0].id;
     }
   }
 
   if (!responsibleSubagent) {
-    if (resolvedStageId === "stage_1_conexao" || targetStageQuery.includes("conex")) {
+    const stageNameLower = (matchedStage?.name || "").toLowerCase();
+    if (resolvedStageId === "stage_1_conexao" || targetStageQuery.includes("conex") || stageNameLower.includes("conex")) {
       responsibleSubagent = "conexao_inicial";
-    } else if (resolvedStageId === "stage_3_compatibilidade" || targetStageQuery.includes("compat")) {
+    } else if (resolvedStageId === "stage_2_descoberta" || targetStageQuery.includes("descoberta") || targetStageQuery.includes("desc") || stageNameLower.includes("descoberta") || stageNameLower.includes("desc")) {
+      responsibleSubagent = "descoberta";
+    } else if (resolvedStageId === "stage_3_compatibilidade" || targetStageQuery.includes("compat") || stageNameLower.includes("compat")) {
       responsibleSubagent = "compatibilidade";
+    } else if (subagentsList.length > 0) {
+      // Se for etapa customizada sem dono e há subagentes definidos no banco: erro determinístico owner_missing
+      throw new Error(`owner_missing: No active subagent claims stage ${resolvedStageId}`);
     } else {
+      // Fallback gracioso para testes unitários isolados sem subagentes cadastrados
       responsibleSubagent = "descoberta";
     }
   }
@@ -2666,6 +2724,7 @@ export async function resolveStageChecklistGoals(params: {
       enabled: o.enabled !== false,
       allowedSubagents: o.allowedSubagents || [responsibleSubagent],
       primarySubagent: o.primarySubagent || responsibleSubagent,
+      completionPolicy: o.completionPolicy,
     }));
   } else if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
     rawGoals = matchedStage.goals.map((g: any) => ({
@@ -2677,6 +2736,7 @@ export async function resolveStageChecklistGoals(params: {
       enabled: g.enabled !== false,
       allowedSubagents: g.allowedSubagents || [responsibleSubagent],
       primarySubagent: g.primarySubagent || responsibleSubagent,
+      completionPolicy: g.completionPolicy,
     }));
   } else if (resolvedStageId === "stage_1_conexao") {
     rawGoals = DEFAULT_CONEXAO_GOALS;
@@ -2707,6 +2767,7 @@ export async function resolveStageChecklistGoals(params: {
       allowedSubagents: goal.allowedSubagents || [responsibleSubagent],
       primarySubagent: goal.primarySubagent || responsibleSubagent,
       description: goal.description,
+      completionPolicy: goal.completionPolicy,
     };
 
     if (isStateGoal) {
@@ -2754,6 +2815,7 @@ export async function resolveStageChecklistGoals(params: {
     const entity = (goal.memoryEntity || "self").trim().toLowerCase();
     const field = (goal.memoryField || "").trim().toLowerCase();
     const factRes = await memoryProvider.getFact(conversationId, entity, field);
+    const policy = goal.completionPolicy || "conversation_evidence";
 
     if (factRes.found && factRes.value !== undefined && factRes.value !== null && factRes.value !== "") {
       resolvedGoals.push({
@@ -2956,6 +3018,8 @@ export async function processDeterministicStageProgression(params: {
   currentCycle?: any;
   memoryProvider?: MemoryProvider;
   episodicMemory?: any[];
+  contactMemory?: any;
+  stageGoals?: any[];
 }): Promise<{
   updatedCompletedGoals: string[];
   updatedObjectiveProgress: Record<string, any>;
@@ -2978,6 +3042,8 @@ export async function processDeterministicStageProgression(params: {
     currentCycle,
     memoryProvider,
     episodicMemory = [],
+    contactMemory = null,
+    stageGoals = null,
   } = params;
 
   const updatedCompletedGoals: string[] = [
@@ -3048,40 +3114,104 @@ export async function processDeterministicStageProgression(params: {
     }
   }
 
-  if (currentStageIndex === -1) {
-    currentStageIndex = 0;
+  let currentStage: any = null;
+  if (currentStageIndex !== -1) {
+    currentStage = stagesList[currentStageIndex];
+  } else {
+    // Preserva a identidade de custom stages desconhecidos em vez de rebaixar cegamente para stage 0
+    if (
+      candidateStageId &&
+      candidateStageId !== "conexao_inicial" &&
+      candidateStageId !== "descoberta" &&
+      candidateStageId !== "compatibilidade"
+    ) {
+      currentStage = {
+        id: candidateStageId,
+        name: candidateStageId,
+        stage_order: 999,
+        goals: [],
+      };
+    } else {
+      currentStageIndex = 0;
+      currentStage = stagesList[0];
+    }
   }
-
-  const currentStage = stagesList[currentStageIndex];
 
   // Resolve o subagente responsável atual da etapa
   let currentResponsibleSubagent = "";
   if (subagentsList.length > 0) {
-    const matchedSub = subagentsList.find(
+    const matchingSubs = subagentsList.filter(
       (sub: any) =>
         sub.enabled !== false &&
         Array.isArray(sub.stage_ids) &&
         sub.stage_ids.includes(currentStage.id)
     );
-    if (matchedSub) {
-      currentResponsibleSubagent = matchedSub.id;
+    if (matchingSubs.length > 1) {
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(`owner_collision: stage=${currentStage.id} has multiple active subagents (${matchingSubs.map((s: any) => s.id).join(", ")})`);
+      }
+      throw new Error(`owner_collision: Multiple active subagents claim stage ${currentStage.id}: ${matchingSubs.map((s: any) => s.id).join(", ")}`);
+    } else if (matchingSubs.length === 1) {
+      currentResponsibleSubagent = matchingSubs[0].id;
     }
   }
+
   if (!currentResponsibleSubagent) {
     if (currentStage.id === "stage_1_conexao" || currentStage.name?.toLowerCase().includes("conex")) {
       currentResponsibleSubagent = "conexao_inicial";
+    } else if (currentStage.id === "stage_2_descoberta" || currentStage.name?.toLowerCase().includes("descoberta")) {
+      currentResponsibleSubagent = "descoberta";
     } else if (currentStage.id === "stage_3_compatibilidade" || currentStage.name?.toLowerCase().includes("compat")) {
       currentResponsibleSubagent = "compatibilidade";
+    } else if (subagentsList.length > 0) {
+      // Custom stage sem dono: erro determinístico owner_missing
+      if (currentCycle?.trace) {
+        currentCycle.trace.push(`owner_missing: custom stage=${currentStage.id} has no responsible subagent`);
+      }
+      throw new Error(`owner_missing: No active subagent claims custom stage ${currentStage.id}`);
     } else {
       currentResponsibleSubagent = "descoberta";
     }
   }
 
-  // 3. Obtém os objetivos da etapa atual e o currentObjective (ordenados estritamente por order ASC)
-  const rawGoals: any[] = currentStage?.goals || currentStage?.objectives || [];
+  // 3. Obtém os objetivos da etapa atual e reconcilia fatos conhecidos da memória
+  const rawGoals: any[] = (Array.isArray(stageGoals) && stageGoals.length > 0)
+    ? stageGoals
+    : (currentStage?.goals || currentStage?.objectives || []);
   const activeGoals: any[] = rawGoals
     .filter((g: any) => g.enabled !== false)
     .sort((a: any, b: any) => Number(a.order ?? 0) - Number(b.order ?? 0));
+
+  // Reconciliação prévia com ContactMemory para que fatos já conhecidos não bloqueiem currentObjective
+  if (contactMemory && typeof contactMemory === "object") {
+    for (const g of activeGoals) {
+      const entity = g.memoryEntity || "self";
+      const field = g.memoryField;
+      if (field && contactMemory[entity]?.[field]) {
+        const val = contactMemory[entity][field];
+        const factValue = typeof val === "object" && val !== null ? val.value : val;
+        if (factValue !== undefined && factValue !== null && factValue !== "") {
+          const policy = g.completionPolicy;
+          if (policy !== "conversation_evidence") {
+            if (!updatedCompletedGoals.includes(g.id)) {
+              updatedCompletedGoals.push(g.id);
+            }
+            if (!updatedObjectiveProgress[g.id]) {
+              updatedObjectiveProgress[g.id] = {
+                conversationId,
+                stageId: currentStage.id,
+                objectiveId: g.id,
+                status: "completed",
+                value: factValue,
+                completedAt: new Date().toISOString(),
+                source: "memory_fact_sync",
+              };
+            }
+          }
+        }
+      }
+    }
+  }
 
   const currentObjective = activeGoals.find((g: any) => !updatedCompletedGoals.includes(g.id)) || null;
 
@@ -3178,26 +3308,32 @@ export async function processDeterministicStageProgression(params: {
         episodicMemory,
       });
 
-      // Sincroniza fatos da memória com completed_goals e objective_progress
+      // Sincroniza fatos da memória com completed_goals e objective_progress respeitando completionPolicy
       for (const g of resolved.goals) {
         if (g.status === "completed") {
-          if (!updatedCompletedGoals.includes(g.id)) {
-            updatedCompletedGoals.push(g.id);
-          }
-          if (!updatedObjectiveProgress[g.id]) {
-            updatedObjectiveProgress[g.id] = {
-              conversationId,
-              stageId: currentStage.id,
-              objectiveId: g.id,
-              status: "completed",
-              value: g.value !== undefined && g.value !== null ? g.value : true,
-              completedAt: new Date().toISOString(),
-              source: "memory_fact_sync",
-            };
+          const goalDef = activeGoals.find((ag: any) => ag.id === g.id);
+          const policy = goalDef?.completionPolicy || (g as any).completionPolicy;
+          // Se for explicitamente conversation_evidence, não conclui checkpoint de workflow sem evidência no turno
+          const requiresConversationEvidence = policy === "conversation_evidence";
+          if (!requiresConversationEvidence || updatedCompletedGoals.includes(g.id)) {
+            if (!updatedCompletedGoals.includes(g.id)) {
+              updatedCompletedGoals.push(g.id);
+            }
+            if (!updatedObjectiveProgress[g.id]) {
+              updatedObjectiveProgress[g.id] = {
+                conversationId,
+                stageId: currentStage.id,
+                objectiveId: g.id,
+                status: "completed",
+                value: g.value !== undefined && g.value !== null ? g.value : true,
+                completedAt: new Date().toISOString(),
+                source: "memory_fact_sync",
+              };
+            }
           }
         }
       }
-      stageComplete = resolved.stageComplete;
+      stageComplete = activeGoals.length > 0 && activeGoals.every((g: any) => updatedCompletedGoals.includes(g.id));
     } catch (err) {
       stageComplete = activeGoals.length > 0 && activeGoals.every((g: any) => updatedCompletedGoals.includes(g.id));
     }
@@ -3221,14 +3357,19 @@ export async function processDeterministicStageProgression(params: {
 
       // Resolve subagente responsável da próxima etapa
       let nextResponsibleSub = "";
-      const matchedNextSub = subagentsList.find(
+      const matchingNextSubs = subagentsList.filter(
         (sub: any) =>
           sub.enabled !== false &&
           Array.isArray(sub.stage_ids) &&
           sub.stage_ids.includes(nextStage.id)
       );
-      if (matchedNextSub) {
-        nextResponsibleSub = matchedNextSub.id;
+      if (matchingNextSubs.length > 1) {
+        if (currentCycle?.trace) {
+          currentCycle.trace.push(`owner_collision: next stage=${nextStage.id} has multiple active subagents`);
+        }
+        throw new Error(`owner_collision: Multiple active subagents claim next stage ${nextStage.id}`);
+      } else if (matchingNextSubs.length === 1) {
+        nextResponsibleSub = matchingNextSubs[0].id;
       } else {
         if (nextStage.id === "stage_1_conexao" || nextStage.name?.toLowerCase().includes("conex")) {
           nextResponsibleSub = "conexao_inicial";
@@ -3237,7 +3378,11 @@ export async function processDeterministicStageProgression(params: {
         } else if (nextStage.id === "stage_3_compatibilidade" || nextStage.name?.toLowerCase().includes("compat")) {
           nextResponsibleSub = "compatibilidade";
         } else {
-          nextResponsibleSub = nextStage.id;
+          // Custom stage sem dono: erro determinístico owner_missing
+          if (currentCycle?.trace) {
+            currentCycle.trace.push(`owner_missing: custom next stage=${nextStage.id} has no responsible subagent`);
+          }
+          throw new Error(`owner_missing: No active subagent claims custom next stage ${nextStage.id}`);
         }
       }
 
@@ -3740,9 +3885,10 @@ export async function searchPersonaAudios(params: {
   supabase: any;
   conversationId: string;
   intent: string;
+  query?: string;
   stageId?: string;
-}): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean }>> {
-  const { supabase, conversationId, intent, stageId } = params;
+}): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean; already_sent?: boolean }>> {
+  const { supabase, conversationId, intent, query, stageId } = params;
   let audios: PersonaAudioAsset[] = [];
 
   try {
@@ -3795,6 +3941,11 @@ export async function searchPersonaAudios(params: {
     if (Array.isArray(convHist)) {
       convHist.forEach((h: any) => sentAudioIds.add(h.audioId || h.id));
     }
+
+    const deliveredAudios = convRow?.stage_completed_rules?.orchestration?.deliveredAudios || [];
+    if (Array.isArray(deliveredAudios)) {
+      deliveredAudios.forEach((id: any) => sentAudioIds.add(typeof id === "string" ? id : id?.id));
+    }
   } catch {}
 
   if ((supabase as any)?.__mockAudioHistory) {
@@ -3814,7 +3965,7 @@ export async function searchPersonaAudios(params: {
     "isso", "aqui", "tudo", "bem", "mais"
   ]);
 
-  const rawTerms = (intent || "")
+  const rawTerms = `${intent || ""} ${query || ""}`
     .toLowerCase()
     .replace(/[.,;!?]/g, " ")
     .split(/\s+/)
@@ -3822,8 +3973,11 @@ export async function searchPersonaAudios(params: {
 
   const queryTerms = rawTerms.filter((t) => t.length >= 3 && !AUDIO_STOPWORDS.has(t));
 
+  const isExplicitReplay = /\b(?:manda\s+(?:de\s+novo|novamente|aquele)|toca\s+(?:de\s+novo|novamente)|re[-]?(?:envia|manda)|ouve\s+de\s+novo|manda\s+o\s+audio\s+de\s+novo)\b/i.test(`${intent || ""} ${query || ""}`);
+
   const matched = audios
     .filter((a) => a.enabled !== false)
+    .filter((a) => a.transcript && a.transcript.trim().length > 0) // Excluir da seleção automática qualquer áudio sem transcrição
     .filter((a) => {
       if (stageId && a.stageId && a.stageId !== stageId) {
         return false;
@@ -3838,11 +3992,23 @@ export async function searchPersonaAudios(params: {
           matchScore += 1;
         }
       }
-      const alreadySent = sentAudioIds.has(a.id);
+
+      // Em pedido de replay explícito ("manda de novo o áudio"):
+      // O áudio previamente enviado é o candidato primário a ser reenviado
+      if (isExplicitReplay) {
+        if (sentAudioIds.has(a.id)) {
+          matchScore += 10;
+        } else if (queryTerms.every((t) => ["manda", "novo", "audio", "favor", "novamente", "toca", "reenvia", "re"].includes(t))) {
+          matchScore += 1;
+        }
+      }
+
+      const alreadySent = isExplicitReplay ? false : sentAudioIds.has(a.id);
       return {
         ...a,
         matchScore,
         alreadySentInConversation: alreadySent,
+        already_sent: alreadySent,
       };
     })
     .filter((a) => queryTerms.length === 0 || a.matchScore > 0)
@@ -3893,13 +4059,20 @@ export async function recordAudioDeliveryHistory(params: {
 
 export interface CofreAudioCandidate {
   audio_id: string;
+  title: string;
   summary: string;
+  full_transcript: string;
+  transcript: string;
+  usage_instruction: string;
   when_to_use: string;
+  duration?: number;
+  already_sent?: boolean;
+  match_score?: number;
 }
 
 /**
  * Busca pontual e seletiva no Cofre de Áudios da Larissa.
- * Retorna NO MÁXIMO 3 candidatos mais relevantes no formato compacto para não inflar tokens.
+ * Retorna NO MÁXIMO 3 candidatos mais relevantes com objeto completo e transcrição integral.
  */
 export async function searchCofreAudios(params: {
   supabase: any;
@@ -3916,13 +4089,23 @@ export async function searchCofreAudios(params: {
     intent: combinedIntent,
   });
 
-  const available = rawMatches.filter((a) => !a.alreadySentInConversation);
+  const isExplicitReplay = /\b(?:manda\s+(?:de\s+novo|novamente|aquele)|toca\s+(?:de\s+novo|novamente)|re[-]?(?:envia|manda)|ouve\s+de\s+novo|manda\s+o\s+audio\s+de\s+novo)\b/i.test(combinedIntent);
+  const available = isExplicitReplay ? rawMatches : rawMatches.filter((a) => !a.alreadySentInConversation);
 
-  return available.slice(0, Math.min(limit, 3)).map((a) => ({
-    audio_id: a.id,
-    summary: a.transcript ? (a.transcript.length > 120 ? a.transcript.slice(0, 117) + "..." : a.transcript) : a.title,
-    when_to_use: a.usageInstruction || a.title,
-  }));
+  return available.slice(0, Math.min(limit, 3)).map((a) => {
+    const fullTranscript = a.transcript || a.title || "";
+    return {
+      audio_id: a.id,
+      title: a.title || "",
+      summary: fullTranscript,
+      full_transcript: fullTranscript,
+      transcript: fullTranscript,
+      usage_instruction: a.usageInstruction || a.title || "",
+      when_to_use: a.usageInstruction || a.title || "",
+      duration: a.duration,
+      already_sent: a.alreadySentInConversation,
+    };
+  });
 }
 
 export interface SpontaneousObjectiveMatch {
@@ -4190,6 +4373,7 @@ ${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnip
 ${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
 ${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
 ${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
+${input.audioCandidatesSnippet ? `\n### ÁUDIOS DO COFRE PRÉ-SELECIONADOS\n${input.audioCandidatesSnippet}\n` : ""}
 - Aplique a Regra da Reciprocidade: conte algo breve sobre você (estuda enfermagem, mora em São João del Rei, trabalha com vendas em casa).
 - REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
 - PRESERVAÇÃO DE TÓPICO ESPECÍFICO EM PERGUNTAS: Se perguntarem se você gosta de algo específico (música, filme, bebida, comida), consulte sobre ESSE item específico com persona_get_fact ou persona_search.
@@ -4198,6 +4382,7 @@ ${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocus
 - PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
 - Se ele já revelou algo (ex: trabalho, cidade, filhos, estado civil), NUNCA pergunte sobre isso novamente. Aprofunde ou converse com o que ele trouxe.
 - BÚSSOLA DE ORIENTAÇÃO: NUNCA UM INTERROGATÓRIO. NÃO INSISTA. Máximo 1 pergunta leve por turno. Se o pretendente mudou de assunto, acompanhe o fluxo dele com afeto e escuta atenta.
+- DETECÇÃO DE MEMÓRIAS RICAS (memoryCandidates): Se o pretendente revelar fatos duráveis ou detalhes marcantes (ex: trabalho, cidade, veículos especiais como carro/moto, família, sonhos), proponha em "memoryCandidates" com evidenceMessageId obrigatório da mensagem dele.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
@@ -4233,7 +4418,18 @@ Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de racio
     "balão 2 afetuoso (se necessário)"
   ],
   "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
-  "nextPhase": "descoberta"
+  "nextPhase": "descoberta",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "kind": "episodic",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "tags": ["tag1"],
+      "evidenceMessageId": "id_da_mensagem"
+    }
+  ]
 }`;
 }
 
@@ -4279,11 +4475,13 @@ ${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnip
 ${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
 ${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
 ${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
+${input.audioCandidatesSnippet ? `\n### ÁUDIOS DO COFRE PRÉ-SELECIONADOS\n${input.audioCandidatesSnippet}\n` : ""}
 - Jamais chame o pretendente de Larissa.
 - REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
 - PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
 - REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente gostos para agradar o homem. Se a memória indicar 'false' ou desinteresse, assuma com sinceridade e bom humor mineiro.
 - RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
+- DETECÇÃO DE MEMÓRIAS RICAS (memoryCandidates): Se o pretendente revelar detalhes duráveis (veículos, sonhos, família, trabalho, cidade), proponha em "memoryCandidates" com evidenceMessageId obrigatório da mensagem dele.
 
 ### CONTEXTO DA CONVERSA
 ${contextBlock}
@@ -4318,7 +4516,18 @@ Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de racio
     "balão 2 leve (se necessário)"
   ],
   "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
-  "nextPhase": "${input.currentPhase}"
+  "nextPhase": "${input.currentPhase}",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "kind": "episodic",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "tags": ["tag1"],
+      "evidenceMessageId": "id_da_mensagem"
+    }
+  ]
 }`;
 }
 
@@ -4488,7 +4697,10 @@ export class InMemoryMemoryProvider implements MemoryProvider {
  * Provedor Oficial de Nuvem via Supabase (JSONB persistente em stage_completed_rules.orchestration.memory)
  */
 export class SupabaseMemoryProvider implements MemoryProvider {
-  constructor(private supabase: any) {}
+  private supabase: any;
+  constructor(supabase: any) {
+    this.supabase = supabase;
+  }
 
   private async getStore(contactId: string): Promise<{ store: ContactMemoryStore; stageRules: any }> {
     try {
@@ -5375,10 +5587,12 @@ export interface RunOrchestrationParams {
   correlationId?: string;
   model?: string;
   memoryProvider?: MemoryProvider;
+  responseDelayMinutes?: number;
   runtime?: {
     sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
     callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }>;
     memoryProvider?: MemoryProvider;
+    _fastTest?: boolean;
   };
 }
 
@@ -5424,6 +5638,15 @@ export async function runExperimentalOrchestration(
   }
 
   const stageRules = convRow?.stage_completed_rules || {};
+
+  // Debounce Real (Quiet Period): Respeita responseDelayMinutes da conversa/configuração
+  const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
+    ? params.responseDelayMinutes
+    : Number(stageRules?.responseDelayMinutes ?? 1);
+  const quietPeriodMs = Math.max(responseDelayMinutes, 0) * 60 * 1000;
+  const computedDebounceUntil = quietPeriodMs > 0
+    ? new Date(Date.now() + quietPeriodMs).toISOString()
+    : new Date(Date.now() + 2500).toISOString();
   const orchState: ConversationOrchestrationState = stageRules.orchestration || {
     version: 1,
     mode: "legacy",
@@ -5797,7 +6020,7 @@ export async function runExperimentalOrchestration(
         conversationId,
         cycleToken: correlationId,
         processingStatus: "idle",
-        debounceUntil: new Date(Date.now() + 2500).toISOString(),
+        debounceUntil: computedDebounceUntil,
         revertMessageIds: claimedMessageIds,
         cycleRecord: currentCycle,
         outboxMap: outboxMap,
@@ -6137,6 +6360,30 @@ Se ele fez uma pergunta ou desabafou, responda e acolha PRIMEIRO. Perguntas NÃO
         : `[CHECKPOINT ATUAL OBRIGATÓRIO]
 Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas converse com naturalidade, acolhimento e leveza.`;
 
+      // Pré-seleção automática compacta de áudio do Cofre (Fase 9)
+      let audioCandidatesSnippet = "";
+      try {
+        const inboundsText = (claimedMessages || [])
+          .map((m: any) => m.text || m.content || "")
+          .filter(Boolean)
+          .join(" ");
+        if (inboundsText.trim().length > 0) {
+          const matchedCofre = await searchCofreAudios({
+            supabase,
+            conversationId,
+            query: inboundsText,
+            limit: 3,
+          });
+          if (matchedCofre && matchedCofre.length > 0) {
+            audioCandidatesSnippet = `Áudios do Cofre altamente aderentes ao que ele disse:\n` +
+              matchedCofre
+                .map((c) => `- audio_id: "${c.audio_id}" (título: ${c.title})\n  instrução: "${c.when_to_use}"\n  transcrição: "${c.full_transcript}"`)
+                .join("\n\n") +
+              `\nSe algum áudio responder diretamente com naturalidade, priorize action: "send_audio" com "audioId" SEM texto espelho redundante.`;
+          }
+        }
+      } catch (_cofreErr) {}
+
       subagentPrompt = buildSubagentPrompt({
         subagentId: targetSubagent,
         subagentName: subagentDef.name,
@@ -6150,6 +6397,7 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
         goalsSnippet,
         styleStateSnippet,
         softFocusSnippet,
+        audioCandidatesSnippet: audioCandidatesSnippet || undefined,
       });
 
       await publishAutoPilotState(supabase, conversationId, {
@@ -6603,6 +6851,21 @@ Responda ESTRITAMENTE em JSON puro:
       );
     }
 
+    const validatedMemoryCandidates: MemoryCandidate[] = [];
+    if (finalSubDecision.memoryCandidates && Array.isArray(finalSubDecision.memoryCandidates)) {
+      for (const cand of finalSubDecision.memoryCandidates) {
+        const isClaimedEvidence = claimedMessages.some(
+          (m: any) => String(m.id) === String(cand.evidenceMessageId)
+        );
+        if (isClaimedEvidence) {
+          validatedMemoryCandidates.push(cand);
+          currentCycle.trace.push(`memory_candidate_accepted: ${cand.key}=${cand.value}`);
+        } else {
+          currentCycle.trace.push(`memory_candidate_rejected_invalid_evidence: ${cand.key}`);
+        }
+      }
+    }
+
     const decision: OrchestratorDecision = {
       action: finalSubDecision.action,
       currentPhase,
@@ -6617,6 +6880,7 @@ Responda ESTRITAMENTE em JSON puro:
       audioId: finalSubDecision.audioId,
       audioUrl: finalSubDecision.audioUrl,
       objectiveCompletion: finalSubDecision.objectiveCompletion,
+      memoryCandidates: validatedMemoryCandidates,
     };
     currentCycle.decision = decision;
 
@@ -6962,7 +7226,7 @@ Responda ESTRITAMENTE em JSON puro:
                 conversationId,
                 cycleToken: correlationId,
                 processingStatus: "sent",
-                debounceUntil: new Date(Date.now() + 2500).toISOString(),
+                debounceUntil: computedDebounceUntil,
                 markProcessedIds: claimedMessageIds,
                 cycleRecord: currentCycle,
                 outboxMap: outboxMap,
@@ -7328,6 +7592,21 @@ Responda ESTRITAMENTE em JSON puro:
           };
         }
 
+        // Integração de memoryCandidates validados do subagente com evidência comprovada
+        for (const cand of validatedMemoryCandidates) {
+          const normEnt = (cand.entity || "self").toLowerCase().trim();
+          const normFld = (cand.key || "").toLowerCase().trim();
+          if (!confirmedTurnEntities[normEnt]) confirmedTurnEntities[normEnt] = {};
+          confirmedTurnEntities[normEnt][normFld] = {
+            entity: normEnt,
+            field: normFld,
+            value: cand.value,
+            confidence: 1.0,
+            sourceMessageId: cand.evidenceMessageId,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+
         const mergedEntities: Record<string, Record<string, MemoryFact>> = {};
 
         const allEntitySources = [
@@ -7352,9 +7631,23 @@ Responda ESTRITAMENTE em JSON puro:
           }
         }
 
+        const snippetsToMerge = [
+          ...(latestMemoryFromDb?.snippets || orchState.memory?.snippets || []),
+        ];
+        for (const cand of validatedMemoryCandidates) {
+          const snipText = cand.summary || `${cand.key}: ${cand.value}`;
+          if (snipText && !snippetsToMerge.some((s: any) => s.snippet === snipText)) {
+            snippetsToMerge.push({
+              snippet: snipText,
+              entity: cand.entity || "self",
+              sourceMessageId: cand.evidenceMessageId,
+            });
+          }
+        }
+
         const mergedMemory: ContactMemoryStore = {
           entities: mergedEntities,
-          snippets: latestMemoryFromDb?.snippets || orchState.memory?.snippets || [],
+          snippets: snippetsToMerge,
         };
 
         const finalPhaseForExp = stageProgression.nextPhase || currentPhase;
@@ -7464,6 +7757,34 @@ Responda ESTRITAMENTE em JSON puro:
             });
           } catch (epErr: any) {
             console.warn("[EpisodeWriter] Erro fail-safe ao persistir episódios da conversa:", epErr);
+          }
+
+          // Gravação determinística de episódios da conversa a partir dos memoryCandidates pós-CAS
+          if (validatedMemoryCandidates.length > 0) {
+            try {
+              const candidateEpisodes: ConversationEpisode[] = validatedMemoryCandidates.map((cand) => {
+                const evMsg = (claimedMessages || []).find((m: any) => String(m.id) === String(cand.evidenceMessageId));
+                return {
+                  conversation_id: conversationId,
+                  actor: "pretendente" as const,
+                  event_type: cand.kind === "fact" ? ("fact_reveal" as const) : ("preference_reveal" as const),
+                  topic: cand.key,
+                  summary: cand.summary || `${cand.key}: ${cand.value}`,
+                  original_text: evMsg?.text || null,
+                  source_message_id: cand.evidenceMessageId,
+                  semantic_keys: cand.tags && cand.tags.length > 0 ? cand.tags : [cand.key],
+                  metadata: { value: cand.value, key: cand.key, entity: cand.entity },
+                };
+              });
+              await saveConversationEpisodes({
+                supabase,
+                conversationId,
+                episodes: candidateEpisodes,
+              });
+              currentCycle.trace.push(`memory_candidates_saved_to_episodes: ${candidateEpisodes.length}`);
+            } catch (candErr: any) {
+              console.warn("[Orchestrator] Erro ao persistir candidateEpisodes:", candErr);
+            }
           }
         }
       }
