@@ -343,6 +343,33 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
         };
         return { data: { success: true, activeCycleToken: p_cycle_token }, error: null };
       }
+      if (fnName === 'claim_experimental_cycle_messages') {
+        const { p_cycle_token, p_message_ids } = params;
+        const rules = convData.stage_completed_rules || {};
+        const activeToken = rules.active_cycle_token;
+        if (!activeToken || activeToken !== p_cycle_token) {
+          return { data: { success: false, reason: 'cycle_token_mismatch', activeToken: activeToken || null }, error: null };
+        }
+        if (rules.preempt_requested === true) {
+          return { data: { success: false, reason: 'cycle_preempted' }, error: null };
+        }
+        const orch = rules.orchestration || {};
+        const ledger = { ...(orch.messageLedger || {}) };
+        if (p_message_ids && Array.isArray(p_message_ids)) {
+          for (const mid of p_message_ids) {
+            if (mid) ledger[mid] = 'claimed';
+          }
+        }
+        convData.stage_completed_rules = {
+          ...rules,
+          orchestration: {
+            ...orch,
+            messageLedger: ledger,
+            lastProcessingStatus: 'processing',
+          },
+        };
+        return { data: { success: true }, error: null };
+      }
       if (fnName === 'prepare_experimental_outbox_entry') {
         const { p_cycle_token, p_outbox_entry } = params;
         const rules = convData.stage_completed_rules || {};
@@ -364,7 +391,7 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
         return { data: { success: true, outboxKey: p_outbox_entry?.id }, error: null };
       }
       if (fnName === 'release_experimental_cycle_if_owned') {
-        const { p_cycle_token, p_processing_status, p_debounce_until, p_revert_message_ids, p_mark_processed_ids, p_last_error, p_cycle_record, p_outbox_map } = params;
+        const { p_cycle_token, p_processing_status, p_debounce_until, p_revert_message_ids, p_mark_processed_ids, p_last_error, p_cycle_record, p_outbox_map, p_clear_cancel_flag } = params;
         const rules = convData.stage_completed_rules || {};
         if (!rules.active_cycle_token || rules.active_cycle_token !== p_cycle_token) {
           return { data: { released: false, reason: 'token_mismatch', activeToken: rules.active_cycle_token ?? null }, error: null };
@@ -383,6 +410,20 @@ function createMockSupabase(initialConversationData = {}, initialMessages = []) 
         const outbox = p_outbox_map
           ? { ...(orch.outbox || {}), ...p_outbox_map }
           : orch.outbox;
+
+        if (p_cycle_record?.decision) {
+          orch.lastDecision = p_cycle_record.decision;
+          if (p_cycle_record.decision.checkpoint) {
+            orch.checkpoint = p_cycle_record.decision.checkpoint;
+          }
+        }
+        if (p_cycle_record?.shadowSimulation) {
+          orch.shadowSimulation = p_cycle_record.shadowSimulation;
+        }
+
+        if (p_clear_cancel_flag === true) {
+          rules.cancel_current_cycle = null;
+        }
 
         convData.stage_completed_rules = {
           ...rules,
@@ -3444,13 +3485,36 @@ test('53. Webhook Real Fim-a-Fim: falha de infraestrutura na RPC do Postgres blo
       send: async () => ({}),
       subscribe: () => ({}),
     }),
-    rpc: async (fnName) => {
+    rpc: async (fnName, params) => {
       if (fnName === 'claim_outbox_entry') {
         // SIMULA FALHA CRÍTICA DE INFRAESTRUTURA NA RPC DO POSTGRES
         return {
           data: null,
           error: { message: 'connection to server was lost', code: '08006' },
         };
+      }
+      if (fnName === 'claim_experimental_cycle') {
+        return { data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null };
+      }
+      if (fnName === 'claim_experimental_cycle_messages') {
+        if (!convState.stage_completed_rules.orchestration.messageLedger) {
+          convState.stage_completed_rules.orchestration.messageLedger = {};
+        }
+        for (const mid of (params?.p_message_ids || [])) {
+          convState.stage_completed_rules.orchestration.messageLedger[mid] = 'claimed';
+        }
+        return { data: { success: true }, error: null };
+      }
+      if (fnName === 'prepare_experimental_outbox_entry') {
+        return { data: { success: true, outboxKey: params?.p_outbox_entry?.id }, error: null };
+      }
+      if (fnName === 'release_experimental_cycle_if_owned') {
+        if (params?.p_revert_message_ids) {
+          for (const mid of params.p_revert_message_ids) {
+            convState.stage_completed_rules.orchestration.messageLedger[mid] = 'pending';
+          }
+        }
+        return { data: { released: true }, error: null };
       }
       return { data: null, error: null };
     },

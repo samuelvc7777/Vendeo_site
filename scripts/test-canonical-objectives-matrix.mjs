@@ -115,6 +115,7 @@ async function runTests() {
     commitExperimentalCycleAtomic,
     requestExperimentalCyclePreemptionAtomic,
     claimExperimentalCycleAtomic,
+    claimExperimentalCycleMessagesAtomic,
     claimOutboxEntryAtomic,
     prepareExperimentalOutboxEntryAtomic,
     releaseExperimentalCycleAtomic,
@@ -1243,6 +1244,25 @@ async function runTests() {
     };
 
     const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
+        if (fn === "claim_experimental_cycle_messages") {
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        if (fn === "release_experimental_cycle_if_owned") {
+          conversationRow.stage_completed_rules.active_cycle_token = null;
+          if (params?.p_cycle_record?.shadowSimulation) {
+            conversationRow.stage_completed_rules.orchestration.shadowSimulation = params.p_cycle_record.shadowSimulation;
+          }
+          conversationRow.stage_completed_rules.orchestration.lastProcessingStatus = params?.p_processing_status || "shadow_logged";
+          updatedRules = conversationRow.stage_completed_rules;
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
       from: (table) => ({
         select: () => ({
           eq: (col, val) => ({
@@ -1728,6 +1748,47 @@ async function runTests() {
     };
 
     const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow50.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
+        if (fn === "claim_experimental_cycle_messages") {
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        if (fn === "prepare_experimental_outbox_entry") {
+          return Promise.resolve({ data: { success: true, outboxKey: params?.p_outbox_entry?.id }, error: null });
+        }
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({
+            data: {
+              success: true,
+              reason: "claimed",
+              entry: { id: params?.p_outbox_id, status: "sending", claimedBy: params?.p_claim_token },
+            },
+            error: null,
+          });
+        }
+        if (fn === "commit_experimental_cycle_if_owned") {
+          conversationRow50.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          savedStageRules = conversationRow50.stage_completed_rules;
+          return Promise.resolve({ data: { committed: true, reason: "committed" }, error: null });
+        }
+        if (fn === "release_experimental_cycle_if_owned") {
+          conversationRow50.stage_completed_rules.active_cycle_token = null;
+          if (params?.p_cycle_record) {
+            const orch = conversationRow50.stage_completed_rules.orchestration || {};
+            orch.recentCycles = [params.p_cycle_record, ...(orch.recentCycles || [])].slice(0, 5);
+          }
+          savedStageRules = conversationRow50.stage_completed_rules;
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
       from: (table) => ({
         select: () => ({
           eq: () => ({
@@ -1845,6 +1906,24 @@ async function runTests() {
     };
 
     const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
+        if (fn === "claim_experimental_cycle_messages") {
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        if (fn === "prepare_experimental_outbox_entry") {
+          return Promise.resolve({ data: { success: true, outboxKey: params?.p_outbox_entry?.id }, error: null });
+        }
+        if (fn === "release_experimental_cycle_if_owned") {
+          conversationRow.stage_completed_rules.active_cycle_token = null;
+          savedStageRules = conversationRow.stage_completed_rules;
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: { success: true }, error: null });
+      },
       from: (table) => ({
         select: (cols) => ({
           eq: (col, val) => ({
@@ -1993,6 +2072,11 @@ async function runTests() {
 
     const mockSupabase = {
       rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          conversationRow.stage_completed_rules.active_cycle_at = new Date().toISOString();
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
         if (fn === "claim_outbox_entry") {
           return Promise.resolve({
             data: {
@@ -2163,6 +2247,11 @@ async function runTests() {
 
     const mockSupabase = {
       rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          conversationRow.stage_completed_rules.active_cycle_at = new Date().toISOString();
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
         if (fn === "claim_outbox_entry") {
           return Promise.resolve({
             data: {
@@ -2428,6 +2517,11 @@ async function runTests() {
 
     const mockSupabase = {
       rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          conversationRow.stage_completed_rules.active_cycle_at = new Date().toISOString();
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
         if (fn === "claim_outbox_entry") {
           return Promise.resolve({
             data: {
@@ -2639,6 +2733,11 @@ async function runTests() {
 
     const mockSupabase = {
       rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          conversationRow.stage_completed_rules.active_cycle_at = new Date().toISOString();
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
         if (fn === "claim_outbox_entry") {
           return Promise.resolve({
             data: {
@@ -2839,6 +2938,11 @@ async function runTests() {
 
     const mockSupabase = {
       rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle") {
+          conversationRow.stage_completed_rules.active_cycle_token = params?.p_cycle_token;
+          conversationRow.stage_completed_rules.active_cycle_at = new Date().toISOString();
+          return Promise.resolve({ data: { success: true, activeCycleToken: params?.p_cycle_token }, error: null });
+        }
         if (fn === "claim_outbox_entry") {
           return Promise.resolve({
             data: {
@@ -3846,8 +3950,366 @@ async function runTests() {
     assert.ok(orch.recentCycles[0].trace.includes("remaining_bubbles_superseded: new_message_during_dispatch"));
   });
 
+  // 67. Fail-Closed ao falhar RPC claim_experimental_cycle_messages
+  await runTest(67, "Fail-Closed: Falha na RPC claim_experimental_cycle_messages aborta o ciclo sem prosseguir", async () => {
+    let rpcCalled = false;
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({
+              data: {
+                id: "conv_67",
+                stage_completed_rules: {
+                  active_cycle_token: "cycle_other_token",
+                  orchestration: { messageLedger: {} }
+                }
+              },
+              error: null
+            })
+          })
+        })
+      }),
+      rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle_messages") {
+          rpcCalled = true;
+          return Promise.resolve({
+            data: { success: false, reason: "cycle_token_mismatch", activeToken: "cycle_other_token" },
+            error: null
+          });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      }
+    };
+
+    const res = await claimExperimentalCycleMessagesAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_67",
+      cycleToken: "cycle_my_token",
+      messageIds: ["msg_1", "msg_2"]
+    });
+
+    assert.equal(rpcCalled, true, "RPC deve ser chamada");
+    assert.equal(res.success, false, "Deve falhar com fail-closed");
+    assert.equal(res.reason, "cycle_token_mismatch");
+  });
+
+  // 68. claim_experimental_cycle_messages atualiza pontualmente messageLedger e lastProcessingStatus
+  await runTest(68, "claim_experimental_cycle_messages atualiza atomicamente ledger para claimed e status para processing", async () => {
+    let convRow = {
+      id: "conv_68",
+      stage_completed_rules: {
+        active_cycle_token: "cycle_token_68",
+        completed_goals: ["goal_1"],
+        orchestration: {
+          messageLedger: { "msg_old": "processed" },
+          lastProcessingStatus: "idle"
+        }
+      }
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "claim_experimental_cycle_messages") {
+          const rules = convRow.stage_completed_rules;
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { success: false, reason: "cycle_token_mismatch" }, error: null });
+          }
+          const orch = rules.orchestration || {};
+          const ledger = { ...(orch.messageLedger || {}) };
+          for (const mid of params.p_message_ids) {
+            ledger[mid] = "claimed";
+          }
+          convRow.stage_completed_rules = {
+            ...rules,
+            orchestration: {
+              ...orch,
+              messageLedger: ledger,
+              lastProcessingStatus: "processing"
+            }
+          };
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      }
+    };
+
+    const res = await claimExperimentalCycleMessagesAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_68",
+      cycleToken: "cycle_token_68",
+      messageIds: ["msg_new_1", "msg_new_2"]
+    });
+
+    assert.equal(res.success, true);
+    const rules = convRow.stage_completed_rules;
+    assert.equal(rules.completed_goals[0], "goal_1", "completed_goals intacto");
+    assert.equal(rules.orchestration.lastProcessingStatus, "processing");
+    assert.equal(rules.orchestration.messageLedger.msg_old, "processed");
+    assert.equal(rules.orchestration.messageLedger.msg_new_1, "claimed");
+    assert.equal(rules.orchestration.messageLedger.msg_new_2, "claimed");
+  });
+
+  // 69. FAIL-CLOSED estrito: ausência de RPC ou erro de RPC retorna infra_failure e NUNCA faz fallback RMW
+  await runTest(69, "FAIL-CLOSED estrito: falha de RPC retorna infra_failure sem executar RMW em JS", async () => {
+    let updateCalled = false;
+    const brokenSupabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: { stage_completed_rules: {} }, error: null })
+          })
+        }),
+        update: () => {
+          updateCalled = true;
+          return { eq: () => Promise.resolve({ error: null }) };
+        }
+      }),
+      rpc: () => Promise.resolve({ data: null, error: { message: "database offline" } })
+    };
+
+    const claimRes = await claimExperimentalCycleAtomic({
+      supabase: brokenSupabase,
+      conversationId: "conv_69",
+      cycleToken: "token_69"
+    });
+    assert.equal(claimRes.success, false);
+    assert.equal(claimRes.reason, "infra_failure");
+
+    const claimMsgsRes = await claimExperimentalCycleMessagesAtomic({
+      supabase: brokenSupabase,
+      conversationId: "conv_69",
+      cycleToken: "token_69",
+      messageIds: ["m1"]
+    });
+    assert.equal(claimMsgsRes.success, false);
+    assert.equal(claimMsgsRes.reason, "infra_failure");
+
+    const prepareRes = await prepareExperimentalOutboxEntryAtomic({
+      supabase: brokenSupabase,
+      conversationId: "conv_69",
+      cycleToken: "token_69",
+      outboxEntry: { id: "out_69" }
+    });
+    assert.equal(prepareRes.success, false);
+    assert.equal(prepareRes.reason, "infra_failure");
+
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase: brokenSupabase,
+      conversationId: "conv_69",
+      cycleToken: "token_69",
+      processingStatus: "idle"
+    });
+    assert.equal(releaseRes.released, false);
+    assert.equal(releaseRes.reason, "infra_failure");
+
+    const commitRes = await commitExperimentalCycleAtomic({
+      supabase: brokenSupabase,
+      conversationId: "conv_69",
+      correlationId: "token_69",
+      newStageCompletedRules: {}
+    });
+    assert.equal(commitRes.committed, false);
+    assert.equal(commitRes.reason, "infra_failure");
+
+    assert.equal(updateCalled, false, "NENHUM fallback RMW deve ter chamado update!");
+  });
+
+  // 70. Cancelamento manual com clearCancelFlag atômico
+  await runTest(70, "Cancelamento manual usa release_experimental_cycle_if_owned com clearCancelFlag sem sobrescrever snapshot antigo", async () => {
+    let convRow = {
+      id: "conv_70",
+      stage_completed_rules: {
+        active_cycle_token: "cycle_cancel_70",
+        cancel_current_cycle: true,
+        completed_goals: ["goal_realtime_preserved"],
+        orchestration: {
+          lastProcessingStatus: "processing"
+        }
+      }
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "release_experimental_cycle_if_owned") {
+          const rules = convRow.stage_completed_rules;
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { released: false, reason: "token_mismatch" }, error: null });
+          }
+          if (params.p_clear_cancel_flag === true) {
+            rules.cancel_current_cycle = null;
+          }
+          rules.active_cycle_token = null;
+          rules.orchestration.lastProcessingStatus = params.p_processing_status || "idle";
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      }
+    };
+
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_70",
+      cycleToken: "cycle_cancel_70",
+      processingStatus: "idle",
+      clearCancelFlag: true
+    });
+
+    assert.equal(releaseRes.released, true);
+    assert.equal(convRow.stage_completed_rules.active_cycle_token, null);
+    assert.equal(convRow.stage_completed_rules.cancel_current_cycle, null);
+    assert.equal(convRow.stage_completed_rules.completed_goals[0], "goal_realtime_preserved");
+    assert.equal(convRow.stage_completed_rules.orchestration.lastProcessingStatus, "idle");
+  });
+
+  // 71. Modo Shadow não altera progresso autoritativo (completed_goals, memory, objective_progress)
+  await runTest(71, "Modo Shadow: simulação não muta completed_goals nem memory autoritativos e usa release atômico", async () => {
+    let convRow = {
+      id: "conv_shadow_71",
+      stage_completed_rules: {
+        active_cycle_token: "cycle_shadow_71",
+        completed_goals: ["goal_auth_1"],
+        objective_progress: { "goal_auth_1": { completed: true } },
+        orchestration: {
+          memory: { entities: { self: { name: { value: "Larissa" } } } },
+          messageLedger: { "msg_sh": "claimed" },
+          lastProcessingStatus: "processing",
+          recentCycles: []
+        }
+      }
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "release_experimental_cycle_if_owned") {
+          const rules = convRow.stage_completed_rules;
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { released: false, reason: "token_mismatch" }, error: null });
+          }
+          const orch = rules.orchestration || {};
+          const ledger = { ...(orch.messageLedger || {}) };
+          if (params.p_mark_processed_ids) {
+            for (const mid of params.p_mark_processed_ids) {
+              ledger[mid] = "processed";
+            }
+          }
+          const recentCycles = params.p_cycle_record
+            ? [params.p_cycle_record, ...(orch.recentCycles || [])].slice(0, 5)
+            : orch.recentCycles;
+
+          convRow.stage_completed_rules = {
+            ...rules,
+            active_cycle_token: null,
+            orchestration: {
+              ...orch,
+              messageLedger: ledger,
+              lastProcessingStatus: params.p_processing_status || "shadow_logged",
+              recentCycles: recentCycles || []
+            }
+          };
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      }
+    };
+
+    const shadowCycle = {
+      cycleId: "cycle_shadow_71",
+      status: "completed",
+      shadowSimulation: { simulatedObjectives: ["goal_simulated_only"] }
+    };
+
+    const releaseRes = await releaseExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_shadow_71",
+      cycleToken: "cycle_shadow_71",
+      processingStatus: "shadow_logged",
+      markProcessedIds: ["msg_sh"],
+      cycleRecord: shadowCycle
+    });
+
+    assert.equal(releaseRes.released, true);
+    const rules = convRow.stage_completed_rules;
+    assert.equal(rules.active_cycle_token, null);
+    assert.deepEqual(rules.completed_goals, ["goal_auth_1"], "completed_goals deve estar intacto");
+    assert.deepEqual(rules.objective_progress, { "goal_auth_1": { completed: true } }, "objective_progress intacto");
+    assert.equal(rules.orchestration.memory.entities.self.name.value, "Larissa", "Memória autoritativa intacta");
+    assert.equal(rules.orchestration.lastProcessingStatus, "shadow_logged");
+    assert.equal(rules.orchestration.messageLedger.msg_sh, "processed");
+    assert.equal(rules.orchestration.recentCycles[0].cycleId, "cycle_shadow_71");
+  });
+
+  // 72. Persistência de fatos 100% via CAS atômico sem loop writeFact pós-CAS
+  await runTest(72, "Zero loop pós-CAS: fatos de memória residem 100% no commit_experimental_cycle_if_owned", async () => {
+    let writeFactCalled = false;
+    const dummyMemoryProvider = {
+      writeFact: async () => {
+        writeFactCalled = true;
+        return { success: true };
+      },
+      saveFact: async () => {
+        writeFactCalled = true;
+        return { success: true };
+      }
+    };
+
+    let convRow = {
+      id: "conv_cas_72",
+      stage_completed_rules: {
+        active_cycle_token: "token_cas_72",
+        preempt_requested: false,
+        orchestration: {
+          memory: { entities: {} }
+        }
+      }
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        if (fn === "commit_experimental_cycle_if_owned") {
+          const rules = convRow.stage_completed_rules;
+          if (rules.active_cycle_token !== params.p_cycle_token || rules.preempt_requested) {
+            return Promise.resolve({ data: { committed: false, reason: "lost_lock" }, error: null });
+          }
+          convRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false
+          };
+          return Promise.resolve({ data: { committed: true, reason: "committed" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      }
+    };
+
+    const finalRules = {
+      ...convRow.stage_completed_rules,
+      orchestration: {
+        ...convRow.stage_completed_rules.orchestration,
+        memory: {
+          entities: {
+            self: {
+              cidade: { field: "cidade", value: "Curitiba", confidence: 1.0 }
+            }
+          }
+        }
+      }
+    };
+
+    const casResult = await commitExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_cas_72",
+      correlationId: "token_cas_72",
+      newStageCompletedRules: finalRules
+    });
+
+    assert.equal(casResult.committed, true);
+    assert.equal(convRow.stage_completed_rules.orchestration.memory.entities.self.cidade.value, "Curitiba");
+    assert.equal(writeFactCalled, false, "Nenhum loop writeFact não-atômico deve ser chamado pós-CAS");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/66 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/72 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

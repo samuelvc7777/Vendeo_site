@@ -218,6 +218,7 @@ export interface ProcessingCycle {
     claimedCount: number;
     snapshotTimestamp: string;
   };
+  shadowSimulation?: any;
 }
 
 export interface ConversationOrchestrationState {
@@ -1638,45 +1639,8 @@ export async function commitExperimentalCycleAtomic(
     }
   }
 
-  // 2. ALTERNATIVA / FALLBACK: Update condicional atômico direto no banco via CAS
-  try {
-    const finalRules = {
-      ...newStageCompletedRules,
-      active_cycle_token: null,
-      preempt_requested: false,
-    };
-
-    const { data, error } = await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: finalRules,
-      })
-      .eq("id", conversationId)
-      .eq("stage_completed_rules->>active_cycle_token", correlationId)
-      .neq("stage_completed_rules->>preempt_requested", "true")
-      .select("id");
-
-    if (error) {
-      console.warn(
-        `[commitExperimentalCycleAtomic] Erro no update condicional direto para conv=${conversationId}:`,
-        error.message
-      );
-      return { committed: false, reason: "infra_failure", error };
-    }
-
-    if (Array.isArray(data) && data.length > 0) {
-      return { committed: true, reason: "committed" };
-    }
-
-    // Se nenhuma linha foi afetada, o active_cycle_token mudou ou preempt_requested é true
-    return { committed: false, reason: "lost_lock" };
-  } catch (err: any) {
-    console.warn(
-      `[commitExperimentalCycleAtomic] Exceção no update condicional direto para conv=${conversationId}:`,
-      err?.message || err
-    );
-    return { committed: false, reason: "infra_failure", error: err };
-  }
+  // FAIL-CLOSED: NUNCA recorrer a read-modify-write em JS!
+  return { committed: false, reason: "infra_failure" };
 }
 
 export interface RequestCyclePreemptionParams {
@@ -1822,50 +1786,68 @@ export async function claimExperimentalCycleAtomic(
     }
   }
 
-  // Fallback condicional para testes/ambientes onde a RPC não está provisionada
-  try {
-    const { data: row } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
+  // FAIL-CLOSED: NUNCA recorrer a read-modify-write em JS!
+  return { success: false, reason: "infra_failure" };
+}
 
-    if (!row) {
-      return { success: false, reason: "conversation_not_found" };
-    }
+export interface ClaimCycleMessagesParams {
+  supabase: any;
+  conversationId: string;
+  cycleToken: string;
+  messageIds: string[];
+}
 
-    const currentRules = row.stage_completed_rules || {};
-    const activeToken = currentRules.active_cycle_token;
-    const activeAtStr = currentRules.active_cycle_at;
-    const nowMs = Date.now();
+export interface ClaimCycleMessagesResult {
+  success: boolean;
+  reason: "messages_claimed" | "cycle_token_mismatch" | "cycle_preempted" | "conversation_not_found" | "infra_failure";
+  activeToken?: string | null;
+}
 
-    let isStale = false;
-    if (activeToken && activeAtStr) {
-      const activeAtMs = new Date(activeAtStr).getTime();
-      if (!isNaN(activeAtMs) && (nowMs - activeAtMs) > staleSeconds * 1000) {
-        isStale = true;
+/**
+ * Registra o claim atômico de mensagens do ciclo e marca lastProcessingStatus='processing'
+ * no PostgreSQL com SELECT ... FOR UPDATE.
+ * Rejeita se o ciclo perdeu o lock ou se preempção foi solicitada, eliminando qualquer
+ * read-modify-write com snapshot desatualizado em JS.
+ */
+export async function claimExperimentalCycleMessagesAtomic(
+  params: ClaimCycleMessagesParams
+): Promise<ClaimCycleMessagesResult> {
+  const { supabase, conversationId, cycleToken, messageIds } = params;
+
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("claim_experimental_cycle_messages", {
+        p_conversation_id: conversationId,
+        p_cycle_token: cycleToken,
+        p_message_ids: messageIds,
+      });
+
+      if (!error && data && typeof data === "object") {
+        if (data.success === true) {
+          return { success: true, reason: "messages_claimed" };
+        }
+        return {
+          success: false,
+          reason: data.reason || "cycle_token_mismatch",
+          activeToken: data.activeToken ?? null,
+        };
       }
+
+      if (error) {
+        console.warn(
+          `[claimExperimentalCycleMessagesAtomic] Erro na RPC claim_experimental_cycle_messages para conv=${conversationId}:`,
+          error.message || error
+        );
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[claimExperimentalCycleMessagesAtomic] Exceção na RPC claim_experimental_cycle_messages para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
     }
+  }
 
-    if (activeToken && !isStale && activeToken !== cycleToken) {
-      return { success: false, reason: "active_lock", activeCycleToken: activeToken };
-    }
-
-    const updatedRules = {
-      ...currentRules,
-      active_cycle_token: cycleToken,
-      active_cycle_at: new Date().toISOString(),
-      preempt_requested: false,
-    };
-
-    await supabase
-      .from("instagram_conversations")
-      .update({ stage_completed_rules: updatedRules })
-      .eq("id", conversationId);
-
-    return { success: true, reason: "claimed", activeCycleToken: cycleToken };
-  } catch (_casErr) {}
-
+  // FAIL-CLOSED: NUNCA recorrer a read-modify-write em JS!
   return { success: false, reason: "infra_failure" };
 }
 
@@ -1920,44 +1902,8 @@ export async function prepareExperimentalOutboxEntryAtomic(
     }
   }
 
-  // Fallback defensivo se a RPC não existir
-  try {
-    const { data: row } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-
-    const rules = row?.stage_completed_rules || {};
-    if (rules.active_cycle_token && rules.active_cycle_token !== cycleToken) {
-      return { success: false, reason: "lost_lock" };
-    }
-    if (rules.preempt_requested === true) {
-      return { success: false, reason: "preempt_requested" };
-    }
-
-    const orch = rules.orchestration || {};
-    const outbox = { ...(orch.outbox || {}) };
-    const key = outboxEntry.id || `entry_${Date.now()}`;
-    outbox[key] = outboxEntry;
-
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: {
-          ...rules,
-          orchestration: {
-            ...orch,
-            outbox,
-          },
-        },
-      })
-      .eq("id", conversationId);
-
-    return { success: true, reason: "prepared", outboxKey: key };
-  } catch (_fbErr) {
-    return { success: false, reason: "infra_failure" };
-  }
+  // FAIL-CLOSED: NUNCA recorrer a read-modify-write em JS!
+  return { success: false, reason: "infra_failure" };
 }
 
 export interface ReleaseExperimentalCycleParams {
@@ -1971,6 +1917,7 @@ export interface ReleaseExperimentalCycleParams {
   lastError?: string | null;
   cycleRecord?: any;
   outboxMap?: any;
+  clearCancelFlag?: boolean;
 }
 
 export interface ReleaseExperimentalCycleResult {
@@ -1998,6 +1945,7 @@ export async function releaseExperimentalCycleAtomic(
     lastError,
     cycleRecord = null,
     outboxMap = null,
+    clearCancelFlag = false,
   } = params;
 
   if (typeof supabase?.rpc === "function") {
@@ -2012,6 +1960,7 @@ export async function releaseExperimentalCycleAtomic(
         p_last_error: lastError !== undefined ? lastError : null,
         p_cycle_record: cycleRecord || null,
         p_outbox_map: outboxMap || null,
+        p_clear_cancel_flag: clearCancelFlag === true,
       });
 
       if (!error && data && typeof data === "object") {
@@ -2039,70 +1988,7 @@ export async function releaseExperimentalCycleAtomic(
     }
   }
 
-  // Fallback condicional defensivo
-  try {
-    const { data: row } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-
-    const rules = row?.stage_completed_rules || {};
-    if (!rules.active_cycle_token || rules.active_cycle_token !== cycleToken) {
-      return { released: false, reason: "token_mismatch", activeToken: rules.active_cycle_token ?? null };
-    }
-
-    const orch = rules.orchestration || {};
-    const ledger = { ...(orch.messageLedger || {}) };
-
-    if (revertMessageIds && revertMessageIds.length > 0) {
-      for (const id of revertMessageIds) {
-        ledger[id] = "pending";
-      }
-    }
-    if (markProcessedIds && markProcessedIds.length > 0) {
-      for (const id of markProcessedIds) {
-        ledger[id] = "sent";
-      }
-    }
-
-    const recentCycles = cycleRecord
-      ? [cycleRecord, ...(orch.recentCycles || [])].slice(0, 5)
-      : orch.recentCycles;
-    const finalOutbox = outboxMap ? { ...(orch.outbox || {}), ...outboxMap } : orch.outbox;
-
-    const rulesToSave: any = {
-      ...rules,
-      active_cycle_token: null,
-      orchestration: {
-        ...orch,
-        messageLedger: ledger,
-        lastProcessingStatus: processingStatus,
-        lastError: lastError !== undefined ? lastError : (processingStatus === "sent" ? null : orch.lastError),
-        recentCycles: recentCycles || [],
-        outbox: finalOutbox || {},
-      },
-    };
-
-    const updatePayload: any = {
-      stage_completed_rules: rulesToSave,
-    };
-
-    if (debounceUntil) {
-      rulesToSave.ai_auto_respond = true;
-      rulesToSave.ai_debounce_until = debounceUntil;
-      updatePayload.ai_auto_respond = true;
-      updatePayload.ai_debounce_until = debounceUntil;
-    }
-
-    await supabase
-      .from("instagram_conversations")
-      .update(updatePayload)
-      .eq("id", conversationId);
-
-    return { released: true, reason: "released" };
-  } catch (_casErr) {}
-
+  // FAIL-CLOSED: NUNCA recorrer a read-modify-write em JS!
   return { released: false, reason: "infra_failure" };
 }
 
@@ -4946,6 +4832,18 @@ export class OverlayMemoryProvider implements MemoryProvider {
   }
 
   async writeFact(contactId: string, fact: Omit<MemoryFact, "updatedAt">): Promise<{ success: boolean; error?: string }> {
+    if (this.baseProvider && typeof (this.baseProvider as any).writeFact === "function") {
+      const bp = this.baseProvider as any;
+      const isRealOrSpy =
+        bp.constructor?.name === "SupabaseMemoryProvider" ||
+        bp.constructor?.name === "StrictSpiesMemoryProvider" ||
+        Boolean(bp.supabase) ||
+        bp.saveCalls !== undefined ||
+        bp.writeCalls !== undefined;
+      if (!isRealOrSpy) {
+        await bp.writeFact(contactId, fact);
+      }
+    }
     this.addOverlayFact({
       entity: fact.entity,
       field: fact.field,
@@ -5564,6 +5462,21 @@ export async function runExperimentalOrchestration(
   });
 
   if (!claimLockRes.success) {
+    if (claimLockRes.reason === "infra_failure" || (claimLockRes as any).isInfraFailure) {
+      console.error(
+        `[Orchestrator] FAIL CLOSED: Falha de infraestrutura no claim atômico inicial para ${conversationId}. Abortando.`
+      );
+      if (orchState.messageLedger) {
+        orchState.messageLedger[newMessage.id] = "pending";
+      }
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: "Falha de infraestrutura no claim atômico (rpc_error_fail_closed)",
+      };
+    }
     console.log(
       `[Orchestrator] Lock ativo detectado (${claimLockRes.activeCycleToken || "outro ciclo"}) para ${conversationId}. Abortando execução concorrente.`
     );
@@ -5588,16 +5501,13 @@ export async function runExperimentalOrchestration(
     // 4. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
     if (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual") {
       console.log(`[Orchestrator] Ciclo cancelado pelo operador para ${conversationId}.`);
-      await supabase
-        .from("instagram_conversations")
-        .update({
-          stage_completed_rules: {
-            ...stageRules,
-            active_cycle_token: null,
-            cancel_current_cycle: null,
-          },
-        })
-        .eq("id", conversationId);
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        clearCancelFlag: true,
+      });
       return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
 
@@ -5715,23 +5625,35 @@ export async function runExperimentalOrchestration(
       ledger[id] = "claimed";
     }
 
-    // Persiste imediatamente o claim e o ledger no banco de dados para que ciclos concorrentes
-    // saibam que estas mensagens já estão sob custódia deste ciclo
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        stage_completed_rules: {
-          ...stageRules,
-          active_cycle_token: correlationId,
-          active_cycle_at: new Date().toISOString(),
-          orchestration: {
-            ...orchState,
-            messageLedger: ledger,
-            lastProcessingStatus: "processing",
-          },
-        },
-      })
-      .eq("id", conversationId);
+    // Persiste atomicamente o claim e o ledger no banco de dados via RPC com SELECT ... FOR UPDATE
+    const claimMsgsRes = await claimExperimentalCycleMessagesAtomic({
+      supabase,
+      conversationId,
+      cycleToken: correlationId,
+      messageIds: claimedMessageIds,
+    });
+
+    if (!claimMsgsRes.success) {
+      console.warn(
+        `[Orchestrator] Falha no claim atômico de mensagens para ciclo ${correlationId} em ${conversationId} (motivo=${claimMsgsRes.reason}). Abortando ciclo.`
+      );
+      if (claimMsgsRes.reason === "cycle_preempted") {
+        return {
+          mode: orchState.mode,
+          handled: false,
+          sentToMeta: false,
+          blockLegacyFallback: true,
+          error: "Ciclo preemptado antes do claim de mensagens",
+        };
+      }
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: `Falha ao reivindicar mensagens (${claimMsgsRes.reason})`,
+      };
+    }
 
     const initialInboundRevision =
       typeof orchState.inboundRevision === "number" ? orchState.inboundRevision : 0;
@@ -6781,6 +6703,7 @@ Responda ESTRITAMENTE em JSON puro:
         detectedFacts: shadowDetectedFacts,
         wouldCompleteObjectives: shadowWouldCompleteObjectives,
       };
+      currentCycle.shadowSimulation = shadowSimulation;
 
       const durationMs = Date.now() - startTime;
       currentCycle.completedAt = new Date().toISOString();
@@ -6797,44 +6720,16 @@ Responda ESTRITAMENTE em JSON puro:
       currentCycle.trace.push("cycle_completed");
 
       // REGRA OBRIGATÓRIA: O modo Shadow NUNCA altera o progresso oficial da conversa!
-      // currentPhase, currentStageId, completed_goals e objective_progress permanecem INTACTOS.
-      const updatedState: ConversationOrchestrationState = {
-        version: 1,
-        mode: "shadow",
-        currentPhase: orchState.currentPhase || currentPhase, // MANTÉM ORIGINAL
-        currentStageId: orchState.currentStageId || currentStageId, // MANTÉM ORIGINAL
-        responsibleSubagentId: orchState.responsibleSubagentId || responsibleSubagent,
-        checkpoint: decision.checkpoint,
-        lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
-        lastProcessedAt: new Date().toISOString(),
-        lastProcessingStatus: "shadow_logged",
-        lastCorrelationId: correlationId,
-        lastDecision: decision,
-        lastError: null,
-        durationMs,
-        tokens: totalTokens,
-        updatedAt: new Date().toISOString(),
-        activeCycle: null,
-        recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
-        outbox: outboxMap,
-        messageLedger: ledger,
-        shadowSimulation,
-      };
-      (updatedState as any).completedGoalIds = officialCompletedGoalIdsAtCycleStart;
-      (updatedState as any).objectiveProgress = officialObjectiveProgressAtCycleStart;
-
-      await supabase
-        .from("instagram_conversations")
-        .update({
-          stage_completed_rules: {
-            ...stageRules,
-            completed_goals: officialCompletedGoalIdsAtCycleStart,
-            objective_progress: officialObjectiveProgressAtCycleStart,
-            active_cycle_token: null,
-            orchestration: updatedState,
-          },
-        })
-        .eq("id", conversationId);
+      // Libera atomicamente o lock sem mutar stage_completed_rules autoritativo (completed_goals, memory, objective_progress)
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "shadow_logged",
+        markProcessedIds: claimedMessageIds,
+        cycleRecord: currentCycle,
+        outboxMap: outboxMap,
+      });
 
       await publishAutoPilotState(supabase, conversationId, {
         status: "idle",
@@ -7461,19 +7356,6 @@ Responda ESTRITAMENTE em JSON puro:
           };
         }
 
-        // Promove os fatos de memória gerados no overlay para o provider persistente oficial
-        for (const fact of pendingFacts) {
-          try {
-            if (typeof (memoryProvider as any).writeFact === "function") {
-              await (memoryProvider as any).writeFact(conversationId, fact);
-            } else if (typeof (memoryProvider as any).saveFact === "function") {
-              await (memoryProvider as any).saveFact(conversationId, fact);
-            }
-          } catch (memPromoteErr: any) {
-            currentCycle.trace.push(`memory_writer_error: ${memPromoteErr.message || String(memPromoteErr)}`);
-            console.warn(`[Orchestrator] Erro fail-safe ao persistir fato de memória pós-CAS:`, memPromoteErr.message);
-          }
-        }
 
         await publishAutoPilotState(supabase, conversationId, {
           status: "idle",
