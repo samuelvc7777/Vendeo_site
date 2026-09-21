@@ -81,9 +81,13 @@ class InMemorySupabaseMock {
           }
           const inserted = [];
           for (const item of payloads) {
-            const conflictKey = `${item.conversation_id}::${item.source_message_id}::${item.event_type}`;
+            const conflictKey = item.episode_fingerprint
+              ? `${item.conversation_id}::${item.episode_fingerprint}`
+              : `${item.conversation_id}::${item.source_message_id}::${item.event_type}::${item.topic || ""}`;
             const existingIdx = self.table.findIndex(
-              (t) => `${t.conversation_id}::${t.source_message_id}::${t.event_type}` === conflictKey
+              (t) => (t.episode_fingerprint
+                ? `${t.conversation_id}::${t.episode_fingerprint}`
+                : `${t.conversation_id}::${t.source_message_id}::${t.event_type}::${t.topic || ""}`) === conflictKey
             );
 
             if (existingIdx >= 0) {

@@ -20,6 +20,8 @@
 
 export type EpisodeActor = "larissa" | "pretendente";
 
+export type EpisodeMemoryClass = "landmark" | "speech_act";
+
 export type EpisodeEventType =
   | "question"
   | "answer"
@@ -46,6 +48,7 @@ export interface ConversationEpisode {
   created_at?: string;
   metadata?: Record<string, any>;
   episode_fingerprint?: string | null;
+  memory_class?: EpisodeMemoryClass;
 }
 
 /**
@@ -337,6 +340,16 @@ export function extractEpisodesFromLarissaMessage(
     });
   }
 
+  for (const ep of episodes) {
+    if (ep.event_type === "self_disclosure") {
+      ep.memory_class = "landmark";
+      ep.metadata = { ...(ep.metadata || {}), memory_class: "landmark", importance: 0.85 };
+    } else {
+      ep.memory_class = "speech_act";
+      ep.metadata = { ...(ep.metadata || {}), memory_class: "speech_act", importance: 0.5 };
+    }
+  }
+
   return episodes;
 }
 
@@ -385,10 +398,11 @@ export function extractEpisodesFromPretendenteMessage(
 
   // A. Padrão direto: "trabalho como/com/na área de..."
   const profMatch = clean.match(
-    /(?:trabalho como|trabalho com|trabalho na [aá]rea de|trabalho de|trabalho no|trabalho na|atuo como|atuo com)\s+([a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ0-9\s\/\-]{2,60}?)(?=[,\.!\?]|(?:\s+e\s+(?:sou|voc[eê]|vc)\b)|\s*$)/i
+    /(?:trabalho como|trabalho com|trabalho na [aá]rea de|trabalho de|trabalho no|trabalho na|atuo como|atuo com)\s+([a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ0-9\s\/\-]{2,60})(?=[,\.!\?]|(?:\s+e\s+(?:sou|voc[eê]|vc)\b)|\s*$)/i
   );
   if (profMatch) {
-    const candidate = profMatch[1].trim();
+    let candidate = profMatch[1].trim();
+    candidate = candidate.replace(/\s+(?:em\s+home\s+office|home\s+office|remoto|presencial).*$/i, "").trim();
     if (!isExcludedFromJob(candidate)) {
       jobCaptured = candidate;
     }
@@ -403,7 +417,7 @@ export function extractEpisodesFromPretendenteMessage(
       const candidate = souMatch[1].trim();
       if (!isExcludedFromJob(candidate)) {
         if (
-          /\b(desenvolvedor|programador|engenheiro|designer|m[eé]dico|advogado|professor|aut[oô]nomo|empres[aá]rio|dentista|enfermeiro|ti|software|analista|consultor|vendedor|motorista|arquiteto|banc[aá]rio|policial|bombeiro|veterin[aá]rio|contador|psic[oó]logo|fisioterapeuta|administrador|t[eé]cnico|minerador|mineracao|operador|mecanico|eletricista|pedreiro|cozinheiro|barbeiro|cabeleireiro)\b/i.test(candidate)
+          /\b(desenvolvedor|programador|engenheiro|designer|m[eé]dico|advogado|professor|aut[oô]nomo|empres[aá]rio|dentista|enfermeiro|ti|software|desenvolvimento|analista|consultor|vendedor|motorista|arquiteto|banc[aá]rio|policial|bombeiro|veterin[aá]rio|contador|psic[oó]logo|fisioterapeuta|administrador|t[eé]cnico|minerador|mineracao|operador|mecanico|eletricista|pedreiro|cozinheiro|barbeiro|cabeleireiro)\b/i.test(candidate)
         ) {
           jobCaptured = candidate;
         }
@@ -412,8 +426,8 @@ export function extractEpisodesFromPretendenteMessage(
   }
 
   // C. Fallback para palavras-chave de profissões expressas
-  if (!jobCaptured && /\b(desenvolvedor|programador|engenheiro|designer|m[eé]dico|advogado|professor|aut[oô]nomo|empres[aá]rio|dentista|enfermeiro|ti|software|analista|consultor|motorista|arquiteto|banc[aá]rio|contador|minerador|mineracao)\b/i.test(cleanNorm)) {
-    const jobTermMatch = clean.match(/\b(desenvolvedor(?:\s+de\s+software|\s+web)?|programador|engenheiro(?:\s+civil|\s+de\s+software|\s+mecânico)?|designer(?:\s+gráfico)?|médico|advogado|professor|autônomo|empresário|dentista|enfermeiro|motorista|arquiteto|contador|minerador|mineração)\b/i);
+  if (!jobCaptured && /\b(desenvolvedor|programador|engenheiro|designer|m[eé]dico|advogado|professor|aut[oô]nomo|empres[aá]rio|dentista|enfermeiro|ti|software|desenvolvimento|analista|consultor|motorista|arquiteto|banc[aá]rio|contador|minerador|mineracao)\b/i.test(cleanNorm)) {
+    const jobTermMatch = clean.match(/\b(desenvolvimento\s+de\s+software|desenvolvedor(?:\s+de\s+software|\s+web)?|programador|engenheiro(?:\s+civil|\s+de\s+software|\s+mecânico)?|designer(?:\s+gráfico)?|médico|advogado|professor|autônomo|empresário|dentista|enfermeiro|motorista|arquiteto|contador|minerador|mineração)\b/i);
     if (jobTermMatch) {
       jobCaptured = jobTermMatch[1].trim();
     }
@@ -527,6 +541,16 @@ export function extractEpisodesFromPretendenteMessage(
     });
   }
 
+  for (const ep of episodes) {
+    if (ep.event_type === "fact_reveal") {
+      ep.memory_class = "landmark";
+      ep.metadata = { ...(ep.metadata || {}), memory_class: "landmark", importance: 0.9 };
+    } else {
+      ep.memory_class = "speech_act";
+      ep.metadata = { ...(ep.metadata || {}), memory_class: "speech_act", importance: 0.5 };
+    }
+  }
+
   return episodes;
 }
 
@@ -615,10 +639,13 @@ export function createAudioDeliveredEpisode(params: {
     original_text: params.transcript || null,
     source_message_id: params.providerMessageId || null,
     semantic_keys: semanticKeys,
+    memory_class: "landmark",
     metadata: {
       audio_id: params.audioId,
       theme: detectedTheme,
       transcript_used: Boolean(params.transcript),
+      memory_class: "landmark",
+      importance: 0.85,
     },
   };
 }
@@ -659,7 +686,15 @@ export async function saveConversationEpisodes(params: {
       source_message_ids: ep.source_message_ids || null,
       original_text: ep.original_text || null,
       semantic_keys: ep.semantic_keys || [],
-      metadata: ep.metadata || {},
+      metadata: {
+        ...(ep.metadata || {}),
+        memory_class:
+          ep.memory_class ||
+          ep.metadata?.memory_class ||
+          (ep.event_type === "fact_reveal" || ep.event_type === "self_disclosure" || ep.event_type === "audio_sent"
+            ? "landmark"
+            : "speech_act"),
+      },
       created_at: ep.created_at || new Date().toISOString(),
       episode_fingerprint: fingerprint,
     };
@@ -778,8 +813,9 @@ export async function searchConversationEpisodicMemory(params: {
   limit?: number;
   now?: Date | string;
   cachedEpisodes?: ConversationEpisode[];
+  memoryClass?: EpisodeMemoryClass | "all";
 }): Promise<EpisodicSearchResult[]> {
-  const { supabase, conversationId, query, cachedEpisodes } = params;
+  const { supabase, conversationId, query, cachedEpisodes, memoryClass } = params;
   const limit = Math.min(Math.max(typeof params.limit === "number" ? params.limit : 5, 1), 10);
   const cleanQuery = (query || "").trim();
   if (!cleanQuery || !conversationId) return [];
@@ -900,6 +936,21 @@ export async function searchConversationEpisodicMemory(params: {
     const epTopic = (ep.topic || "").toLowerCase();
     const epSummaryNorm = stripAccents(ep.summary || "");
     const epKeys = (ep.semantic_keys || []).map((k) => k.toLowerCase());
+
+    const epClass: EpisodeMemoryClass =
+      ep.memory_class ||
+      ep.metadata?.memory_class ||
+      (ep.event_type === "fact_reveal" || ep.event_type === "self_disclosure" || ep.event_type === "audio_sent"
+        ? "landmark"
+        : "speech_act");
+
+    if (memoryClass && memoryClass !== "all" && epClass !== memoryClass) {
+      continue;
+    }
+
+    if (epClass === "landmark") {
+      score += 5;
+    }
 
     // Regra de Isolamento de Áudio Semântico:
     // Se a query busca um tema substantivo específico (ex: "filhos", "curso"),
@@ -1134,4 +1185,222 @@ export async function validateAntiRepeatGate(params: {
     logs,
   };
 }
+
+// ============================================================================
+// BUSCA NO HISTÓRICO BRUTO DA CONVERSA (RAW CONVERSATION HISTORY SEARCH)
+// ============================================================================
+
+export interface RawConversationHistoryContextMessage {
+  messageId: string;
+  sender: "larissa" | "pretendente";
+  text: string;
+  createdAt: string;
+}
+
+export interface RawConversationHistorySearchResult {
+  messageId: string;
+  sender: "larissa" | "pretendente";
+  text: string;
+  audioTranscript?: string | null;
+  createdAt: string;
+  contextWindow: RawConversationHistoryContextMessage[];
+  matchScore: number;
+  highlight?: string;
+}
+
+/**
+ * Busca textual e semântica no histórico bruto de mensagens da conversa (Nível 6).
+ * Escopo estrito e intransponível por conversation_id.
+ * Recupera contexto local de até 3 mensagens (anterior, hit, seguinte) por resultado.
+ */
+export async function searchRawConversationHistory(params: {
+  supabase: any;
+  conversationId: string;
+  query: string;
+  keywords?: string[];
+  limit?: number;
+}): Promise<RawConversationHistorySearchResult[]> {
+  const { supabase, conversationId, query, keywords = [] } = params;
+  const limit = Math.min(Math.max(typeof params.limit === "number" ? params.limit : 3, 1), 6);
+
+  if (!supabase || !conversationId) return [];
+
+  const cleanQuery = (query || "").trim();
+  const allTerms = [
+    cleanQuery,
+    ...keywords.map((k) => (k || "").trim()).filter(Boolean),
+  ].filter(Boolean);
+
+  if (allTerms.length === 0) return [];
+
+  const normQuery = stripAccents(cleanQuery);
+  const queryTokens = normQuery
+    .replace(/[^\w\s]/gi, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 2);
+
+  const normalizedKeywords = keywords
+    .map((k) => stripAccents(k || "").replace(/[^\w\s]/gi, " ").trim())
+    .filter((k) => k.length >= 2);
+
+  try {
+    // 1. Carrega histórico de mensagens da conversa em ordem cronológica
+    const { data: rows, error } = await supabase
+      .from("instagram_messages")
+      .select("id, conversation_id, sender_id, is_mine, is_from_me, text, message, audio_transcript, created_at, timestamp, direction")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true })
+      .limit(500);
+
+    if (error || !Array.isArray(rows) || rows.length === 0) {
+      return [];
+    }
+
+    // 2. Avalia e pontua cada mensagem
+    interface ScoredHit {
+      index: number;
+      row: any;
+      score: number;
+      highlight: string;
+    }
+
+    const scoredHits: ScoredHit[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rawText = (row.text || row.message || "").trim();
+      const rawTranscript = (row.audio_transcript || "").trim();
+      const combinedText = `${rawText} ${rawTranscript}`.trim();
+      if (!combinedText) continue;
+
+      const normCombined = stripAccents(combinedText);
+      let score = 0;
+      let matchedTerm = "";
+
+      // Frase exata da query
+      if (normQuery.length >= 3 && normCombined.includes(normQuery)) {
+        score += 50;
+        matchedTerm = cleanQuery;
+      }
+
+      // Keywords
+      for (const kw of normalizedKeywords) {
+        if (normCombined.includes(kw)) {
+          score += 25;
+          if (!matchedTerm) matchedTerm = kw;
+        }
+      }
+
+      // Tokens individuais
+      for (const token of queryTokens) {
+        if (normCombined.includes(token)) {
+          score += 10;
+          if (!matchedTerm) matchedTerm = token;
+        }
+      }
+
+      // Boost especial se estiver no audio_transcript
+      if (rawTranscript && stripAccents(rawTranscript).includes(normQuery)) {
+        score += 20;
+      }
+
+      if (score > 0) {
+        scoredHits.push({
+          index: i,
+          row,
+          score,
+          highlight: matchedTerm || cleanQuery,
+        });
+      }
+    }
+
+    if (scoredHits.length === 0) return [];
+
+    // Ordena hits por score decrescente (maior relevância primeiro)
+    scoredHits.sort((a, b) => b.score - a.score);
+
+    // 3. Monta janelas contextuais (3 mensagens: anterior, encontrada, seguinte) com deduplicação
+    const selectedHits: RawConversationHistorySearchResult[] = [];
+    const usedIndices = new Set<number>();
+
+    const resolveSender = (r: any): "larissa" | "pretendente" => {
+      const isMine = Boolean(
+        r.is_mine ||
+        r.is_from_me ||
+        r.sender_id === "me" ||
+        r.sender_id === "larissa" ||
+        r.direction === "outbound"
+      );
+      return isMine ? "larissa" : "pretendente";
+    };
+
+    for (const hit of scoredHits) {
+      if (selectedHits.length >= limit) break;
+
+      // Se a mensagem encontrada já estiver no miolo de uma janela usada, evita repetição duplicada exata
+      if (usedIndices.has(hit.index)) {
+        continue;
+      }
+
+      const hitRow = hit.row;
+      const hitSender = resolveSender(hitRow);
+      const hitText = (hitRow.text || hitRow.message || "").trim();
+      const hitTranscript = hitRow.audio_transcript ? String(hitRow.audio_transcript).trim() : null;
+
+      const contextWindow: RawConversationHistoryContextMessage[] = [];
+
+      // Mensagem anterior
+      if (hit.index > 0) {
+        const prevRow = rows[hit.index - 1];
+        contextWindow.push({
+          messageId: String(prevRow.id),
+          sender: resolveSender(prevRow),
+          text: (prevRow.text || prevRow.message || prevRow.audio_transcript || "").trim(),
+          createdAt: prevRow.created_at || prevRow.timestamp || "",
+        });
+      }
+
+      // Mensagem encontrada
+      contextWindow.push({
+        messageId: String(hitRow.id),
+        sender: hitSender,
+        text: (hitText || hitTranscript || "").trim(),
+        createdAt: hitRow.created_at || hitRow.timestamp || "",
+      });
+
+      // Mensagem seguinte
+      if (hit.index < rows.length - 1) {
+        const nextRow = rows[hit.index + 1];
+        contextWindow.push({
+          messageId: String(nextRow.id),
+          sender: resolveSender(nextRow),
+          text: (nextRow.text || nextRow.message || nextRow.audio_transcript || "").trim(),
+          createdAt: nextRow.created_at || nextRow.timestamp || "",
+        });
+      }
+
+      // Marca índices como usados para deduplicação
+      usedIndices.add(hit.index);
+      if (hit.index > 0) usedIndices.add(hit.index - 1);
+      if (hit.index < rows.length - 1) usedIndices.add(hit.index + 1);
+
+      selectedHits.push({
+        messageId: String(hitRow.id),
+        sender: hitSender,
+        text: hitText,
+        audioTranscript: hitTranscript,
+        createdAt: hitRow.created_at || hitRow.timestamp || "",
+        contextWindow,
+        matchScore: Number((hit.score / 50).toFixed(2)),
+        highlight: hit.highlight,
+      });
+    }
+
+    return selectedHits;
+  } catch (err: any) {
+    console.warn(`[searchRawConversationHistory] Falha na busca bruta (${conversationId}):`, err.message || err);
+    return [];
+  }
+}
+
 

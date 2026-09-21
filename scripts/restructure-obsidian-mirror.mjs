@@ -22,7 +22,9 @@ import {
   isVendeoManaged,
   atomicWriteFileIfChanged,
   fetchRemoteMemories,
-  fetchRemotePersona
+  fetchRemotePersona,
+  fetchRemoteConversationHistory,
+  fetchRemoteConversationEpisodes
 } from './obsidian-memory-sync.mjs';
 
 export {
@@ -33,7 +35,9 @@ export {
   isVendeoManaged,
   atomicWriteFileIfChanged,
   fetchRemoteMemories,
-  fetchRemotePersona
+  fetchRemotePersona,
+  fetchRemoteConversationHistory,
+  fetchRemoteConversationEpisodes
 };
 
 loadEnv();
@@ -221,13 +225,21 @@ export function generateConversationMarkdown(contact, recentMessages = []) {
   if (Array.isArray(recentMessages) && recentMessages.length > 0) {
     messagesSection = recentMessages
       .map((m) => {
-        const isMine = m.is_mine || m.direction === 'outbound';
+        const isMine = Boolean(m.is_mine || m.isFromMe || m.sender === 'larissa' || m.direction === 'outbound');
         const sender = isMine ? '🌸 Larissa' : `👤 ${name}`;
-        const time = m.created_at || m.timestamp ? new Date(m.created_at || m.timestamp).toLocaleString('pt-BR') : '';
-        const isAudio = m.type === 'audio' || !!m.audio_transcript;
-        const text = m.text || m.audio_transcript || (isAudio ? '[Áudio enviado]' : '[Mensagem sem texto]');
-        const audioBadge = isAudio ? ' 🎙️ *(Áudio)*' : '';
-        return `> **${sender}** (${time})${audioBadge}:\n> ${text}\n`;
+        const time = m.created_at || m.createdAt || m.timestamp ? new Date(m.created_at || m.createdAt || m.timestamp).toLocaleString('pt-BR') : '';
+        const transcript = m.audioTranscript || m.audio_transcript;
+        const isAudio = m.type === 'audio' || Boolean(transcript || m.audioUrl || m.audio_url);
+        
+        let text = m.text || m.message || '';
+        if (transcript) {
+          text = `🎙️ *(Áudio)*: "${transcript}"`;
+        } else if (isAudio && !text) {
+          text = '🎙️ *(Áudio enviado)*';
+        } else if (!text) {
+          text = '[Mensagem sem texto]';
+        }
+        return `> **${sender}** (${time}):\n> ${text}\n`;
       })
       .join('\n');
   }
@@ -248,7 +260,7 @@ updated_at: "${updatedAt}"
 
 ## 📊 Dinâmica da Conversa
 - **Interlocutor:** **${name}** (\`${contact.username ? '@' + contact.username : cId}\`)
-- **Status da Fase:** \`${contact.currentPhase || 'conexao_inicial'}\`
+- **Status da Fase:** \`${contact.currentStageId || contact.currentPhase || 'conexao_inicial'}\`
 - **Último Registro:** ${new Date(updatedAt).toLocaleString('pt-BR')}
 
 ---
@@ -266,31 +278,42 @@ export function generateObjectivesMarkdown(contact) {
   const cId = contact.contactId || contact.id;
   const name = getCleanName(contact);
   const safeName = sanitizePathSegment(name);
-  const phase = contact.currentPhase || 'conexao_inicial';
-  const stageName = phase === 'conexao_inicial' ? 'Conexão Inicial' : 'Descoberta';
+  const phase = contact.currentStageId || contact.currentPhase || 'conexao_inicial';
+  const stageName = phase === 'conexao_inicial' ? 'Conexão Inicial' : phase === 'descoberta' ? 'Descoberta' : phase;
+  const responsibleSubagent = contact.responsibleSubagent || (phase === 'descoberta' ? 'descoberta' : 'conexao_inicial');
   const updatedAt = contact.updatedAt || '2026-09-18T00:00:00.000Z';
 
-  const goals = Array.isArray(contact.checklist?.goals) ? contact.checklist.goals : [];
+  const goals = Array.isArray(contact.objectives) && contact.objectives.length > 0
+    ? contact.objectives
+    : Array.isArray(contact.checklist?.goals)
+    ? contact.checklist.goals
+    : [];
+
   let goalsSection = '';
   if (goals.length > 0) {
     goalsSection = goals
       .map((g) => {
         const isDone = g.status === 'completed';
+        const isCurrent = Boolean(g.isCurrent || g.status === 'in_progress');
         const box = isDone ? '[x]' : '[ ]';
+        const prefix = isCurrent ? '➡️ ' : '';
+        const suffix = isCurrent ? ' *(Em andamento pelo Brain)*' : '';
         const valStr = isDone && g.value !== undefined && g.value !== null && g.value !== true
           ? `: **${g.value}**`
           : '';
-        return `- ${box} **${g.label}**${valStr}`;
+        return `- ${box} ${prefix}**${g.label || g.title || g.id}**${valStr}${suffix}`;
       })
       .join('\n');
   } else {
     goalsSection = `
-- [ ] **Idade**
-- [ ] **Cidade**
-- [ ] **Profissão**
-- [ ] **Relacionamento / Filhos**
+- [ ] **Acolhimento Inicial**
+- [ ] **Identificar Abertura**
 `;
   }
+
+  const currentObjLine = contact.currentObjective
+    ? `- **Objetivo Atual em Foco:** ➡️ **${contact.currentObjective.label || contact.currentObjective.title || contact.currentObjective.id}**\n`
+    : '';
 
   return `---
 vendeo_managed: true
@@ -308,6 +331,8 @@ updated_at: "${updatedAt}"
 ---
 
 ## 🧭 Bússola da Etapa: ${stageName}
+- **Subagente Responsável:** \`${responsibleSubagent}\`
+${currentObjLine}
 *Os objetivos servem como orientação temática para a Larissa e **não** devem ser usados como roteiro mecânico de interrogatório.*
 
 ${goalsSection}
@@ -323,29 +348,45 @@ ${goalsSection}
 /**
  * Formata: 04 - Episódios de <Nome>.md (EpisodicMemory)
  */
-export function generateEpisodesMarkdown(contact, episodes = []) {
+export function generateEpisodesMarkdown(contact, episodesInput = []) {
   const cId = contact.contactId || contact.id;
   const name = getCleanName(contact);
   const safeName = sanitizePathSegment(name);
   const updatedAt = contact.updatedAt || '2026-09-18T00:00:00.000Z';
 
-  let episodesSection = '';
-  if (Array.isArray(episodes) && episodes.length > 0) {
-    episodesSection = episodes
-      .map((ep) => {
-        const actorLabel = ep.actor === 'larissa' ? '🌸 Larissa' : `👤 ${name}`;
-        const time = ep.created_at ? new Date(ep.created_at).toLocaleString('pt-BR') : '';
-        const topic = ep.topic ? ` \`#${ep.topic}\`` : '';
-        return `- **${actorLabel}** (${ep.event_type}${topic}) — ${time}:\n  - *${ep.summary}*`;
-      })
-      .join('\n');
-  } else {
-    episodesSection = `
-_Nenhum episódio estruturado registrado na tabela de memória episódica ainda._
+  let rawList = [];
+  let landmarks = [];
+  let speechActs = [];
 
-> **Nota Arquitetural:** Os próximos turnos confirmados registrarão automaticamente perguntas da Larissa, respostas do pretendente e áudios enviados para garantir **anti-repetição sob demanda**.
-`;
+  if (episodesInput && typeof episodesInput === 'object' && !Array.isArray(episodesInput)) {
+    landmarks = Array.isArray(episodesInput.landmarks) ? episodesInput.landmarks : [];
+    speechActs = Array.isArray(episodesInput.speechActs) ? episodesInput.speechActs : [];
+    rawList = Array.isArray(episodesInput.episodes) ? episodesInput.episodes : [...landmarks, ...speechActs];
+  } else if (Array.isArray(episodesInput)) {
+    rawList = episodesInput;
+    for (const ep of rawList) {
+      const isLandmark = ep.memoryClass === 'landmark' || ep.memory_class === 'landmark' ||
+        ['life_event', 'preference', 'boundary', 'landmark'].includes(ep.event_type || ep.eventType);
+      if (isLandmark) landmarks.push(ep);
+      else speechActs.push(ep);
+    }
   }
+
+  const formatEpisodeItem = (ep) => {
+    const actorLabel = (ep.actor === 'larissa' || ep.is_from_me) ? '🌸 Larissa' : `👤 ${name}`;
+    const time = ep.created_at || ep.createdAt ? new Date(ep.created_at || ep.createdAt).toLocaleString('pt-BR') : '';
+    const eventType = ep.event_type || ep.eventType || 'message';
+    const scoreStr = typeof ep.relevance_score === 'number' ? ` \`score: ${ep.relevance_score}\`` : '';
+    return `- **${actorLabel}** (${eventType}${scoreStr}) — ${time}:\n  - *${ep.summary || ep.details || ''}*`;
+  };
+
+  const landmarksSection = landmarks.length > 0
+    ? landmarks.map(formatEpisodeItem).join('\n')
+    : '_Nenhum marco narrativo (landmark) registrado ainda._';
+
+  const speechActsSection = speechActs.length > 0
+    ? speechActs.map(formatEpisodeItem).join('\n')
+    : '_Nenhum ato de fala recente registrado ainda._';
 
   return `---
 vendeo_managed: true
@@ -361,14 +402,22 @@ updated_at: "${updatedAt}"
 
 ---
 
-## ⚡ Atos de Fala & Memória Episódica (Anti-Repetição)
+## 🏛️ Marcos Narrativos (Landmarks)
+*Fatos estruturantes da história de vida, preferências marcantes e limites declarados.*
 
-${episodesSection}
+${landmarksSection}
+
+---
+
+## ⚡ Atos de Fala Recentes (Speech Acts)
+*Perguntas feitas, reações imediatas e saudações dos turnos recentes.*
+
+${speechActsSection}
 `;
 }
 
 /**
- * Formata: 05 - Metadados de <Nome>.md (Orquestração Técnica)
+ * Formata: 05 - Metadados de <Nome>.md (Orquestração Técnica & LiveState)
  */
 export function generateMetadataMarkdown(contact) {
   const cId = contact.contactId || contact.id;
@@ -376,14 +425,47 @@ export function generateMetadataMarkdown(contact) {
   const safeName = sanitizePathSegment(name);
   const updatedAt = contact.updatedAt || '2026-09-18T00:00:00.000Z';
 
+  const ls = contact.liveState;
+  let liveStateVisual = '';
+  if (ls && typeof ls === 'object') {
+    const secTopics = Array.isArray(ls.secondaryTopics) && ls.secondaryTopics.length > 0
+      ? ls.secondaryTopics.join(', ')
+      : 'Nenhum';
+    const openLoops = Array.isArray(ls.openLoops) && ls.openLoops.length > 0
+      ? ls.openLoops.join(', ')
+      : 'Nenhum';
+    const avoid = Array.isArray(ls.avoidRepeating) && ls.avoidRepeating.length > 0
+      ? ls.avoidRepeating.join(', ')
+      : 'Nenhum';
+
+    liveStateVisual = `
+- **Tom Emocional do Pretendente:** \`${ls.lastUserEmotionalTone || 'neutro'}\`
+- **Tópico Atual da Interação:** \`${ls.currentTopic || 'geral'}\`
+- **Pergunta Pendente dele a Responder:** ${ls.unresolvedQuestion ? `"${ls.unresolvedQuestion}"` : '_Nenhuma_'}
+- **Último Ato de Fala da Larissa:** ${ls.lastLarissaSpeechAct ? `\`${ls.lastLarissaSpeechAct}\`` : '_Nenhum_'}
+- **Marcos Recentes (Resumo):** ${ls.recentLandmarksSummary ? `_${ls.recentLandmarksSummary}_` : '_Nenhum_'}
+- **Tópicos Secundários Abertos:** ${secTopics}
+- **Open Loops:** ${openLoops}
+- **Evitar Repetir Agora:** ${avoid}
+- **Contador de Turnos:** \`#${ls.turnCount || 0}\`
+- **Última Atualização do LiveState:** ${ls.updatedAt ? new Date(ls.updatedAt).toLocaleString('pt-BR') : 'Recente'}
+`;
+  } else {
+    liveStateVisual = `\n_Nenhum snapshot operacional de LiveState gravado ainda (será persistido atomicamente no primeiro turno ativo pelo Conversation Brain)._\n`;
+  }
+
   const metaPayload = {
     id: cId,
     fullName: contact.fullName,
     username: contact.username,
     currentPhase: contact.currentPhase,
+    currentStageId: contact.currentStageId,
+    responsibleSubagent: contact.responsibleSubagent,
     checkpoint: contact.checkpoint,
     updatedAt: contact.updatedAt,
-    checklist: contact.checklist,
+    liveState: contact.liveState || null,
+    currentObjective: contact.currentObjective || null,
+    objectives: contact.objectives || contact.checklist?.goals || [],
     memory: contact.memory,
   };
 
@@ -400,6 +482,12 @@ updated_at: "${updatedAt}"
 > [[00 - ${safeName}|⬅️ Voltar ao Hub de ${name}]] | [[INDEX|Índice Geral]]
 
 ---
+
+## 🟢 Estado Vivo da Conversa
+${liveStateVisual}
+---
+
+## ⚙️ Dados Técnicos de Orquestração
 
 \`\`\`json
 ${JSON.stringify(metaPayload, null, 2)}
@@ -639,12 +727,26 @@ export async function runRestructure(options = {}) {
     const folderName = formatPretendenteFolderName(c);
     const contactDir = path.join(pretendentesDir, folderName);
 
+    // Carrega mensagens reais e episódios classificados se disponíveis
+    let recentMessages = c.recentMessages || [];
+    let episodes = c.episodes || { landmarks: [], speechActs: [] };
+    if (supabaseUrl && token) {
+      try {
+        const [msgs, eps] = await Promise.all([
+          fetchRemoteConversationHistory(supabaseUrl, token, c.id),
+          fetchRemoteConversationEpisodes(supabaseUrl, token, c.id),
+        ]);
+        if (Array.isArray(msgs) && msgs.length > 0) recentMessages = msgs;
+        if (eps && (eps.landmarks?.length > 0 || eps.speechActs?.length > 0 || eps.episodes?.length > 0)) episodes = eps;
+      } catch {}
+    }
+
     const filesToWrite = [
       { file: `00 - ${safeName}.md`, content: generateHubMarkdown(c) },
       { file: `01 - Sobre ${safeName}.md`, content: generateAboutMarkdown(c) },
-      { file: `02 - Conversa com ${safeName}.md`, content: generateConversationMarkdown(c) },
+      { file: `02 - Conversa com ${safeName}.md`, content: generateConversationMarkdown(c, recentMessages) },
       { file: `03 - Objetivos de ${safeName}.md`, content: generateObjectivesMarkdown(c) },
-      { file: `04 - Episódios de ${safeName}.md`, content: generateEpisodesMarkdown(c) },
+      { file: `04 - Episódios de ${safeName}.md`, content: generateEpisodesMarkdown(c, episodes) },
       { file: `05 - Metadados de ${safeName}.md`, content: generateMetadataMarkdown(c) },
     ];
 

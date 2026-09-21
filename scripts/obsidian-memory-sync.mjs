@@ -671,6 +671,56 @@ export async function fetchRemoteMemories(supabaseUrl, token, contactId = null) 
 }
 
 /**
+ * Busca histórico paginado de conversa com mensagens e transcrições de áudio
+ */
+export async function fetchRemoteConversationHistory(supabaseUrl, token, conversationId, limit = 50) {
+  if (!conversationId) return [];
+  const baseUrl = supabaseUrl.replace(/\/$/, '');
+  const endpoint = `${baseUrl}/functions/v1/api/internal/conversation-history-export?conversation_id=${encodeURIComponent(conversationId)}&limit=${limit}`;
+  try {
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+      },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.messages) ? data.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Busca episódios classificados (landmarks e speech acts)
+ */
+export async function fetchRemoteConversationEpisodes(supabaseUrl, token, conversationId, limit = 100) {
+  if (!conversationId) return { landmarks: [], speechActs: [], episodes: [] };
+  const baseUrl = supabaseUrl.replace(/\/$/, '');
+  const endpoint = `${baseUrl}/functions/v1/api/internal/conversation-episodes-export?conversation_id=${encodeURIComponent(conversationId)}&limit=${limit}`;
+  try {
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+      },
+    });
+    if (!res.ok) return { landmarks: [], speechActs: [], episodes: [] };
+    const data = await res.json();
+    return {
+      landmarks: Array.isArray(data.landmarks) ? data.landmarks : [],
+      speechActs: Array.isArray(data.speechActs) ? data.speechActs : [],
+      episodes: Array.isArray(data.episodes) ? data.episodes : [],
+    };
+  } catch {
+    return { landmarks: [], speechActs: [], episodes: [] };
+  }
+}
+
+/**
  * Execução Principal do Sincronizador
  */
 export async function runSync(options = {}) {

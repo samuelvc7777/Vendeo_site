@@ -1384,13 +1384,11 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
-    // 1.5 INTERNAL: MEMORY EXPORT (OBSIDIAN SYNC)
+    // 1.5 INTERNAL: MEMORY & CONVERSATION EXPORT (OBSIDIAN SYNC)
     // ==========================================
-    if (path === "/internal/memory-export" && req.method === "GET") {
-      // 1. Autenticação estrita e exclusiva via OBSIDIAN_SYNC_TOKEN
+    const checkObsidianSyncAuth = (req: Request): Response | null => {
       const expectedToken = (Deno.env.get("OBSIDIAN_SYNC_TOKEN") || "").trim();
       if (!expectedToken) {
-        // Fail-closed absoluto se o segredo não estiver configurado na Edge Function
         return new Response(
           JSON.stringify({ error: "Configuração indisponível: OBSIDIAN_SYNC_TOKEN não configurado no servidor." }),
           { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -1407,7 +1405,6 @@ serve(async (req: Request) => {
         );
       }
 
-      // Comparação de bytes em tempo constante para proteção contra timing attacks
       const encoder = new TextEncoder();
       const aBuf = encoder.encode(token);
       const bBuf = encoder.encode(expectedToken);
@@ -1426,11 +1423,16 @@ serve(async (req: Request) => {
           { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+      return null;
+    };
 
-      // 2. Validação estrita de contact_id / conversation_id contra injeções PostgREST
+    if (path === "/internal/memory-export" && req.method === "GET") {
+      const authErr = checkObsidianSyncAuth(req);
+      if (authErr) return authErr;
+
+      // Validação estrita de contact_id / conversation_id
       const targetContactId = url.searchParams.get("contact_id") || url.searchParams.get("conversation_id");
       if (targetContactId) {
-        // IDs legítimos do Instagram / Vendeo são alfanuméricos com underscores e hífens
         const isValidId = /^[a-zA-Z0-9_-]{1,64}$/.test(targetContactId);
         if (!isValidId) {
           return new Response(
@@ -1440,7 +1442,6 @@ serve(async (req: Request) => {
         }
       }
 
-      // 3. Paginação determinística para exportações em massa
       const limitParam = parseInt(url.searchParams.get("limit") || "100", 10);
       const offsetParam = parseInt(url.searchParams.get("offset") || "0", 10);
       const limit = Math.min(Math.max(isNaN(limitParam) ? 100 : limitParam, 1), 200);
@@ -1464,33 +1465,62 @@ serve(async (req: Request) => {
         );
       }
 
-      // 4. Sanitização e mapeamento: apenas memória e metadados de orquestração
-      // ZERO tokens da Meta, ZERO secrets, ZERO histórico bruto de mensagens
-      const DEFAULT_GOALS = [
-        { id: "goal_age", label: "Idade", memoryEntity: "self", memoryField: "age" },
-        { id: "goal_city", label: "Cidade", memoryEntity: "self", memoryField: "city" },
-        { id: "goal_job", label: "Profissão", memoryEntity: "self", memoryField: "job" },
-        { id: "goal_relationship", label: "Relacionamento / Filhos", memoryEntity: "self", memoryField: "relationship_status" },
-      ];
+      const STAGE_DEFAULT_OBJECTIVES: Record<string, Array<{ id: string; label: string; memoryEntity?: string; memoryField?: string }>> = {
+        conexao_inicial: [
+          { id: "obj_conexao_acolhimento", label: "Acolher o pretendente e responder saudações" },
+          { id: "obj_conexao_abertura", label: "Identificar disposição e clima da conversa" },
+        ],
+        descoberta: [
+          { id: "goal_age", label: "Idade", memoryEntity: "self", memoryField: "age" },
+          { id: "goal_city", label: "Cidade", memoryEntity: "self", memoryField: "city" },
+          { id: "goal_job", label: "Profissão", memoryEntity: "self", memoryField: "job" },
+          { id: "goal_relationship", label: "Relacionamento / Filhos", memoryEntity: "self", memoryField: "relationship_status" },
+        ],
+        compatibilidade: [
+          { id: "obj_afinidades", label: "Afinidades e gostos pessoais", memoryEntity: "self", memoryField: "interests" },
+          { id: "obj_rotina", label: "Rotina e estilo de vida", memoryEntity: "self", memoryField: "routine" },
+          { id: "obj_planos", label: "Planos e expectativas futuras", memoryEntity: "self", memoryField: "future_plans" },
+        ],
+      };
 
       const contacts = (convs || []).map((conv: any) => {
-        const orch = conv.stage_completed_rules?.orchestration || {};
+        const stageRules = conv.stage_completed_rules || {};
+        const orch = stageRules.orchestration || {};
         const mem = orch.memory || {};
-        const completedGoalIds = (orch as any).completedGoalIds || conv.stage_completed_rules?.completed_goals || [];
         const entities = mem.entities || {};
+        const currentStageId = String(orch.currentStageId || orch.currentPhase || "conexao_inicial").trim();
+        const responsibleSubagent = String(orch.responsibleSubagent || (currentStageId === "descoberta" ? "descoberta" : currentStageId === "compatibilidade" ? "compatibilidade" : "conexao_inicial")).trim();
+        const currentObjective = orch.currentObjective || null;
+        const objectiveProgress = orch.objectiveProgress || {};
+        const liveState = orch.liveState || null;
+        const completedGoalIds = Array.isArray(orch.completedGoalIds)
+          ? orch.completedGoalIds
+          : Array.isArray(stageRules.completed_goals)
+          ? stageRules.completed_goals
+          : [];
 
-        const resolvedGoals = DEFAULT_GOALS.map((g) => {
-          const entity = entities[g.memoryEntity] || {};
-          let fact = entity[g.memoryField];
+        // Recupera os objetivos da etapa ativa (customizados da conversa ou defaults canônicos)
+        const customStageObjectives = Array.isArray(orch.stageObjectives) && orch.stageObjectives.length > 0
+          ? orch.stageObjectives
+          : Array.isArray(stageRules.stage_objectives) && stageRules.stage_objectives.length > 0
+          ? stageRules.stage_objectives
+          : (STAGE_DEFAULT_OBJECTIVES[currentStageId] || STAGE_DEFAULT_OBJECTIVES.descoberta);
+
+        const resolvedGoals = customStageObjectives.map((g: any) => {
+          const entityKey = g.memoryEntity || "self";
+          const entity = entities[entityKey] || {};
+          let fact = g.memoryField ? entity[g.memoryField] : undefined;
           if (!fact && g.memoryField === "job") fact = entity.profession;
           const hasFact = fact !== undefined && fact !== null && (fact.value !== undefined ? fact.value !== null : true);
           const isExplicit = completedGoalIds.includes(g.id);
           const isDone = hasFact || isExplicit;
+          const isCurrent = currentObjective ? (currentObjective.id === g.id) : false;
           const val = hasFact ? (fact.value !== undefined ? fact.value : fact) : null;
           return {
             id: g.id,
-            label: g.label,
-            status: isDone ? "completed" : "pending",
+            label: g.label || g.title || g.id,
+            status: isDone ? "completed" : isCurrent ? "in_progress" : "pending",
+            isCurrent,
             value: isDone ? val : null,
           };
         });
@@ -1502,14 +1532,20 @@ serve(async (req: Request) => {
           username: String(conv.username || ""),
           updatedAt: conv.updated_at || new Date(0).toISOString(),
           currentPhase: orch.currentPhase || "conexao_inicial",
+          currentStageId,
+          responsibleSubagent,
+          currentObjective,
+          objectiveProgress,
+          liveState,
           checkpoint: orch.checkpoint || "",
           memory: {
             entities: mem.entities || {},
             snippets: Array.isArray(mem.snippets) ? mem.snippets : [],
             lastUpdated: mem.lastUpdated || "",
           },
+          objectives: resolvedGoals,
           checklist: {
-            stage: orch.currentPhase === "conexao_inicial" ? "Conexão Inicial" : "Descoberta",
+            stage: currentStageId === "conexao_inicial" ? "Conexão Inicial" : currentStageId === "descoberta" ? "Descoberta" : currentStageId,
             goals: resolvedGoals,
           },
         };
@@ -1545,6 +1581,156 @@ serve(async (req: Request) => {
           hasMore: targetContactId ? false : contacts.length === limit,
           contacts,
           persona: personaData,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ==========================================
+    // 1.6 INTERNAL: CONVERSATION HISTORY EXPORT (SCOPED & PAGINATED)
+    // ==========================================
+    if (path === "/internal/conversation-history-export" && req.method === "GET") {
+      const authErr = checkObsidianSyncAuth(req);
+      if (authErr) return authErr;
+
+      const conversationId = (url.searchParams.get("conversation_id") || url.searchParams.get("contact_id") || "").trim();
+      if (!conversationId || !/^[a-zA-Z0-9_-]{1,64}$/.test(conversationId)) {
+        return new Response(
+          JSON.stringify({ error: "Bad Request: conversation_id obrigatório e válido." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const limitParam = parseInt(url.searchParams.get("limit") || "50", 10);
+      const limit = Math.min(Math.max(isNaN(limitParam) ? 50 : limitParam, 1), 100);
+      const before = (url.searchParams.get("before") || "").trim();
+
+      let query = supabase
+        .from("instagram_messages")
+        .select("id, conversation_id, sender_id, is_from_me, message, text, audio_url, media_type, media_url, audio_transcript, created_at")
+        .eq("conversation_id", conversationId);
+
+      if (before) {
+        query = query.lt("created_at", before);
+      }
+
+      query = query.order("created_at", { ascending: false }).limit(limit + 1);
+
+      const { data: msgs, error: msgErr } = await query;
+      if (msgErr) {
+        return new Response(
+          JSON.stringify({ error: msgErr.message || "Erro ao consultar histórico." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const list = msgs || [];
+      const hasMore = list.length > limit;
+      const sliced = hasMore ? list.slice(0, limit) : list;
+      const nextBefore = sliced.length > 0 ? sliced[sliced.length - 1].created_at : null;
+
+      const formatted = sliced.map((m: any) => {
+        const isFromMe = Boolean(m.is_from_me || m.sender_id === "me" || m.sender_id === "larissa");
+        return {
+          id: String(m.id || ""),
+          conversationId: String(m.conversation_id || conversationId),
+          sender: isFromMe ? "larissa" : "pretendente",
+          isFromMe,
+          text: String(m.text || m.message || "").trim(),
+          audioUrl: m.audio_url || (m.media_type === "audio" ? m.media_url : null) || null,
+          audioTranscript: m.audio_transcript || null,
+          createdAt: m.created_at || new Date().toISOString(),
+        };
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          conversationId,
+          total: formatted.length,
+          limit,
+          hasMore,
+          nextBefore,
+          messages: formatted,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ==========================================
+    // 1.7 INTERNAL: CONVERSATION EPISODES EXPORT (SCOPED & CLASSIFIED)
+    // ==========================================
+    if (path === "/internal/conversation-episodes-export" && req.method === "GET") {
+      const authErr = checkObsidianSyncAuth(req);
+      if (authErr) return authErr;
+
+      const conversationId = (url.searchParams.get("conversation_id") || url.searchParams.get("contact_id") || "").trim();
+      if (!conversationId || !/^[a-zA-Z0-9_-]{1,64}$/.test(conversationId)) {
+        return new Response(
+          JSON.stringify({ error: "Bad Request: conversation_id obrigatório e válido." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const limitParam = parseInt(url.searchParams.get("limit") || "100", 10);
+      const limit = Math.min(Math.max(isNaN(limitParam) ? 100 : limitParam, 1), 200);
+      const before = (url.searchParams.get("before") || "").trim();
+
+      let query = supabase
+        .from("conversation_episodic_memory")
+        .select("id, conversation_id, actor, event_type, memory_class, summary, details, emotional_tone, relevance_score, message_id, created_at")
+        .eq("conversation_id", conversationId);
+
+      if (before) {
+        query = query.lt("created_at", before);
+      }
+
+      query = query.order("created_at", { ascending: false }).limit(limit);
+
+      const { data: eps, error: epErr } = await query;
+      if (epErr) {
+        return new Response(
+          JSON.stringify({ error: epErr.message || "Erro ao consultar episódios." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const list = eps || [];
+      const landmarks: any[] = [];
+      const speechActs: any[] = [];
+
+      for (const e of list) {
+        const item = {
+          id: String(e.id || ""),
+          conversationId: String(e.conversation_id || conversationId),
+          actor: e.actor || "desconhecido",
+          eventType: e.event_type || "message",
+          memoryClass: e.memory_class || (e.event_type === "life_event" || e.event_type === "preference" || e.event_type === "boundary" || e.event_type === "landmark" ? "landmark" : "speech_act"),
+          summary: e.summary || "",
+          details: e.details || null,
+          emotionalTone: e.emotional_tone || "neutro",
+          relevanceScore: typeof e.relevance_score === "number" ? e.relevance_score : 1.0,
+          messageId: e.message_id || null,
+          createdAt: e.created_at || new Date().toISOString(),
+        };
+
+        if (item.memoryClass === "landmark") {
+          landmarks.push(item);
+        } else {
+          speechActs.push(item);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          conversationId,
+          total: list.length,
+          totalLandmarks: landmarks.length,
+          totalSpeechActs: speechActs.length,
+          landmarks,
+          speechActs,
+          episodes: list,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

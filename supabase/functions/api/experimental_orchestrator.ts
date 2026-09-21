@@ -17,8 +17,17 @@ import {
   executeEpisodeWriter,
   searchConversationEpisodicMemory,
   validateAntiRepeatGate,
+  searchRawConversationHistory,
+  type RawConversationHistorySearchResult,
 } from "./conversation_episodic_memory.ts";
-export { validateAntiRepeatGate, searchConversationEpisodicMemory, saveConversationEpisodes, executeEpisodeWriter, extractEpisodesFromPretendenteMessage };
+export {
+  validateAntiRepeatGate,
+  searchConversationEpisodicMemory,
+  saveConversationEpisodes,
+  executeEpisodeWriter,
+  extractEpisodesFromPretendenteMessage,
+  searchRawConversationHistory,
+};
 import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
 import {
@@ -28,6 +37,8 @@ import {
   extractRecentStyleState,
   type RecentStyleState,
   runStyleLint,
+  sanitizeChatPunctuation,
+  capitalizeFirstLetter,
   type StyleLintResult,
   type EmojiBudgetResult,
 } from "./LarissaChatStyle.ts";
@@ -38,9 +49,172 @@ export {
   extractRecentStyleState,
   type RecentStyleState,
   runStyleLint,
+  sanitizeChatPunctuation,
+  capitalizeFirstLetter,
   type StyleLintResult,
   type EmojiBudgetResult,
 };
+
+/**
+ * Configurações e limites orçamentários centrais do Conversation Brain e ContextBuilder.
+ * Defaults centralizados e configuráveis via opções de ciclo / config de autopiloto.
+ */
+export const BRAIN_ORCHESTRATION_BUDGETS = {
+  recent_message_limit: 12,
+  recent_context_token_budget: 1500,
+  brain_max_memory_searches: 2,
+  brain_history_search_results: 6,
+} as const;
+
+export interface ConversationLiveState {
+  conversationId: string;
+  lastUserEmotionalTone: string; // ex: "tranquilo", "desabafando", "animado", "curioso"
+  currentTopic: string; // ex: "trabalho", "fim de semana", "rotina"
+  unresolvedQuestion?: string | null; // se usuário fez pergunta que ainda não foi respondida
+  lastLarissaSpeechAct?: string | null; // ex: "perguntou sobre cidade", "mandou audio de enfermagem"
+  recentLandmarksSummary?: string | null; // resumo ultra-compacto dos marcos recentes
+  pendingUserTopic?: string | null; // tópico que o usuário levantou mas ainda não foi aprofundado
+  secondaryTopics?: string[]; // máx 3 itens (memória de curto prazo estrita)
+  openLoops?: string[]; // máx 3 itens
+  pendingReplies?: string[]; // máx 3 itens
+  recentCallbacks?: string[]; // máx 3 itens
+  avoidRepeating?: string[]; // máx 5 itens
+  turnCount: number;
+  updatedAt: string;
+}
+
+export function getDefaultConversationLiveState(conversationId: string): ConversationLiveState {
+  return {
+    conversationId,
+    lastUserEmotionalTone: "neutro",
+    currentTopic: "início de conversa",
+    unresolvedQuestion: null,
+    lastLarissaSpeechAct: null,
+    recentLandmarksSummary: null,
+    pendingUserTopic: null,
+    secondaryTopics: [],
+    openLoops: [],
+    pendingReplies: [],
+    recentCallbacks: [],
+    avoidRepeating: [],
+    turnCount: 0,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Aplica patch no ConversationLiveState garantindo poda estrita das coleções de curto prazo
+ * para manter o estado sempre compacto (~150 a 300 tokens).
+ */
+export function applyLiveStatePatch(
+  current: ConversationLiveState,
+  patch: Partial<ConversationLiveState>
+): ConversationLiveState {
+  const merged: ConversationLiveState = {
+    ...current,
+    ...patch,
+    conversationId: current.conversationId,
+    turnCount: (current.turnCount || 0) + 1,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Poda determinística estrita para evitar crescimento indefinido
+  if (Array.isArray(merged.secondaryTopics)) {
+    merged.secondaryTopics = Array.from(new Set(merged.secondaryTopics.filter(Boolean))).slice(-3);
+  }
+  if (Array.isArray(merged.openLoops)) {
+    merged.openLoops = Array.from(new Set(merged.openLoops.filter(Boolean))).slice(-3);
+  }
+  if (Array.isArray(merged.pendingReplies)) {
+    merged.pendingReplies = Array.from(new Set(merged.pendingReplies.filter(Boolean))).slice(-3);
+  }
+  if (Array.isArray(merged.recentCallbacks)) {
+    merged.recentCallbacks = Array.from(new Set(merged.recentCallbacks.filter(Boolean))).slice(-3);
+  }
+  if (Array.isArray(merged.avoidRepeating)) {
+    merged.avoidRepeating = Array.from(new Set(merged.avoidRepeating.filter(Boolean))).slice(-5);
+  }
+
+  return merged;
+}
+
+/**
+ * Serialização compacta (~150 a 300 tokens) para injeção no prompt do Brain ou do Subagente.
+ */
+export function serializeLiveStateForPrompt(liveState: ConversationLiveState): string {
+  const lines: string[] = [
+    `[ESTADO VIVO DA CONVERSA - NÍVEL 0]`,
+    `- Tom emocional do pretendente: ${liveState.lastUserEmotionalTone || "neutro"}`,
+    `- Tópico atual da interação: ${liveState.currentTopic || "geral"}`,
+  ];
+  if (liveState.unresolvedQuestion) {
+    lines.push(`- Pergunta pendente dele a responder: "${liveState.unresolvedQuestion}"`);
+  }
+  if (liveState.lastLarissaSpeechAct) {
+    lines.push(`- Último ato de fala da Larissa: ${liveState.lastLarissaSpeechAct}`);
+  }
+  if (liveState.recentLandmarksSummary) {
+    lines.push(`- Marcos recentes: ${liveState.recentLandmarksSummary}`);
+  }
+  if (liveState.pendingUserTopic) {
+    lines.push(`- Tópico em aberto do pretendente: ${liveState.pendingUserTopic}`);
+  }
+  if (liveState.openLoops && liveState.openLoops.length > 0) {
+    lines.push(`- Open loops: ${liveState.openLoops.join(", ")}`);
+  }
+  if (liveState.avoidRepeating && liveState.avoidRepeating.length > 0) {
+    lines.push(`- Evitar repetir agora: ${liveState.avoidRepeating.join(", ")}`);
+  }
+  lines.push(`- Turno: #${liveState.turnCount || 1}`);
+  return lines.join("\n");
+}
+
+export interface MissionPackage {
+  subagentId: string;
+  subagentName: string;
+  objectiveDirective: "pursue" | "defer" | "already_satisfied" | "none";
+  targetObjective?: {
+    id: string;
+    label: string;
+    description?: string;
+  } | null;
+  satisfiedEvidence?: {
+    objectiveId: string;
+    evidenceMessageId?: string;
+    reason: string;
+  } | null;
+  relevantMemoryContext: string;
+  liveStateContext: string;
+  candidateAudios?: Array<{
+    audioId: string;
+    title: string;
+    transcript: string;
+    instruction: string;
+    adherenceScore: number;
+  }>;
+  preferAudio?: boolean;
+}
+
+export interface ConversationBrainPlan {
+  action: "delegate_mission" | "call_tool";
+  tool?: "conversation_history_search" | "persona_memory_search" | "episodic_memory_search" | "cofre_audio_search";
+  parameters?: Record<string, any>;
+  currentStage: string;
+  responsibleSubagent: string;
+  objectiveDecision: "pursue" | "defer" | "already_satisfied" | "none";
+  satisfiedObjectiveId?: string;
+  evidenceMessageId?: string;
+  liveStatePatch: Partial<ConversationLiveState>;
+  missionPackage?: MissionPackage;
+  reasoning?: string;
+}
+
+export interface CompactSubagentCard {
+  id: string;
+  name: string;
+  description: string;
+  stageIds: string[];
+}
 
 export type OrchestrationMode = "legacy" | "shadow" | "experimental";
 export type OrchestrationPhase = "conexao_inicial" | "descoberta" | "compatibilidade" | (string & {});
@@ -267,6 +441,7 @@ export interface ConversationOrchestrationState {
   outbox?: Record<string, OutboxEntry>;
   messageLedger?: Record<string, MessageProcessingStatus>;
   memory?: ContactMemoryStore;
+  liveState?: ConversationLiveState;
 }
 
 /**
@@ -2241,6 +2416,260 @@ Responda ESTRITAMENTE em JSON puro com as seguintes chaves:
 }`;
 }
 
+/**
+ * Converte a lista de subagentes em catálogo compacto para o Conversation Brain
+ * sem vazar prompts longos ou desperdiçar tokens.
+ */
+export function getCompactSubagentCatalog(subagents?: SubagentDefinition[]): CompactSubagentCard[] {
+  const list = Array.isArray(subagents) && subagents.length > 0 ? subagents : Object.values(CANONICAL_SUBAGENTS);
+  return list.map((s) => ({
+    id: s.id,
+    name: s.name,
+    description: s.description || (s.mission ? s.mission.slice(0, 140) : s.name),
+    stageIds: s.stageIds || [],
+  }));
+}
+
+/**
+ * Constrói o prompt do CONVERSATION BRAIN (Mente da Conversa e Planejador da Larissa).
+ * Apresenta a Escada de Memória em 6 Níveis e catálogo condensado de subagentes.
+ */
+export function buildConversationBrainPrompt(params: {
+  conversationId: string;
+  currentStage: string;
+  liveState: ConversationLiveState;
+  recentMessages: CanonicalMessage[];
+  contactMemorySummary: string;
+  landmarksSummary: string;
+  speechActsSummary: string;
+  personaMemorySummary: string;
+  stageObjectives: StageObjective[];
+  currentObjective?: StageObjective | null;
+  compactSubagents: CompactSubagentCard[];
+  toolResultsHistory?: string[];
+}): string {
+  const {
+    conversationId,
+    currentStage,
+    liveState,
+    recentMessages,
+    contactMemorySummary,
+    landmarksSummary,
+    speechActsSummary,
+    personaMemorySummary,
+    stageObjectives,
+    currentObjective,
+    compactSubagents,
+    toolResultsHistory = [],
+  } = params;
+
+  const liveStateBlock = serializeLiveStateForPrompt(liveState);
+
+  const formattedRecentMsgs = recentMessages
+    .map((m) => {
+      const senderLabel = m.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
+      return `${senderLabel} | ${m.id} | ${m.createdAt || ""}\n${m.text}`;
+    })
+    .join("\n\n");
+
+  const subagentsBlock = compactSubagents
+    .map((s) => `- id: "${s.id}" | nome: "${s.name}" | descrição: "${s.description}" | etapas: [${s.stageIds.join(", ")}]`)
+    .join("\n");
+
+  const objBlock = stageObjectives
+    .map((o) => {
+      const isCurrent = currentObjective?.id === o.id;
+      const marker = isCurrent ? "➡️ [ATUAL]" : "[PENDENTE]";
+      return `${marker} id: "${o.id}" | label: "${o.label || o.title}"${o.description ? ` (${o.description})` : ""}`;
+    })
+    .join("\n");
+
+  const toolsHistoryBlock = toolResultsHistory.length > 0
+    ? `### HISTÓRICO DE CONSULTAS FEITAS NESTE CICLO (NÍVEL 6)\n${toolResultsHistory.join("\n\n")}\n`
+    : "";
+
+  return `Você é o Agente da Conversa e CONVERSATION BRAIN (Mente Analítica da Conversa e Planejador da Larissa).
+Seu papel é puramente ANALÍTICO E ESTRATÉGICO:
+1. Analisar o momento exato da conversa e o tom emocional do pretendente.
+2. Decidir sobre o objetivo atual da etapa:
+   - "pursue": O pretendente deu gancho natural para avançar no objetivo atual ("${currentObjective?.label || "conhecer mais"}").
+   - "defer": O pretendente desabafou, fez outra pergunta ou mudou de assunto; devemos acolher e responder primeiro, adiando o objetivo.
+   - "already_satisfied": O pretendente revelou espontaneamente nesta mensagem inbound a informação do objetivo atual.
+   - "none": Não há objetivo pendente imediato ou apenas conversa livre.
+3. Se precisar de fatos esquecidos ou não presentes na escada de memória, chame ferramentas sob demanda (máximo 2 de memória/histórico + máximo 1 de cofre).
+4. Ao concluir, delegar a execução ao subagente responsável pela etapa (${currentStage}) com o MissionPackage mastigado. Você NÃO formula o balão final da Larissa; quem escreve é o subagente executor.
+
+### ESCADA DE MEMÓRIA HIERÁRQUICA
+
+${liveStateBlock}
+
+### NÍVEL 1: MENSAGENS RECENTES (Orçamento estrito)
+${formattedRecentMsgs || "Nenhuma mensagem recente."}
+
+### NÍVEL 2: CONTACT MEMORY (Fatos conhecidos sobre o pretendente)
+${contactMemorySummary || "Nenhum fato registrado ainda."}
+
+### NÍVEL 3: LANDMARKS (Marcos narrativos, histórias e perrengues)
+${landmarksSummary || "Nenhum marco narrativo relevante registrado."}
+
+### NÍVEL 4: SPEECH ACTS (Perguntas e atos de fala recentes)
+${speechActsSummary || "Nenhum ato de fala recente."}
+
+### NÍVEL 5: PERSONA MEMORY (Fatos essenciais da Larissa)
+${personaMemorySummary || "Larissa, 23 anos, São João del-Rei/MG, cursa Enfermagem (10º período, estágio hospitalar), trabalha com vendas online."}
+
+${toolsHistoryBlock}
+### OBJETIVOS DA ETAPA ATUAL ("${currentStage}")
+${objBlock || "Nenhum objetivo cadastrado."}
+
+### CATÁLOGO DE SUBAGENTES DISPONÍVEIS
+${subagentsBlock}
+
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA (MÁXIMO 2 DE MEMÓRIA + 1 DE COFRE)
+Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mensagens triviais, NÃO use ferramentas.
+- conversation_history_search: busca no histórico bruto desta conversa por mensagens passadas ou detalhes esquecidos. Parâmetro: {"query": "..."}.
+- persona_memory_search: busca na PersonaMemory fatos biográficos, gostos ou perrengues da Larissa. Parâmetro: {"query": "..."}.
+- episodic_memory_search: busca na memória episódica atos e revelações passadas. Parâmetro: {"query": "...", "memoryClass": "landmark" | "speech_act" | "all"}.
+- cofre_audio_search: busca áudios gravados no Cofre da Larissa com checagem de aderência semântica real à fala do pretendente. Parâmetro: {"query": "...", "objective_context": "..."}.
+
+### REGRAS INVIOLÁVEIS DO BRAIN:
+1. Para objectiveDecision: "already_satisfied", somente o objetivo atual (${currentObjective?.id || "nenhum"}) pode ser indicado, acompanhado de evidenceMessageId obrigatório da mensagem inbound atual. Objetivos futuros NUNCA podem ser marcados.
+2. Não invente fatos e não misture conversas de outros usuários. Escopo estrito desta conversa: ${conversationId}.
+3. O subagente executor NÃO fará pesquisas amplas. Todo contexto necessário deve ser resumido em missionPackage.relevantMemoryContext.
+
+Responda ESTRITAMENTE em JSON puro:
+
+Se precisar chamar uma ferramenta:
+{
+  "action": "call_tool",
+  "tool": "conversation_history_search" | "persona_memory_search" | "episodic_memory_search" | "cofre_audio_search",
+  "parameters": { "query": "..." }
+}
+
+Quando estiver pronto para delegar ao subagente executor:
+{
+  "action": "delegate_mission",
+  "currentStage": "${currentStage}",
+  "responsibleSubagent": "id_do_subagente_da_etapa",
+  "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
+  "satisfiedObjectiveId": "id_do_objetivo_se_already_satisfied",
+  "evidenceMessageId": "id_da_msg_inbound_se_already_satisfied",
+  "reasoning": "análise rápida do momento em 1 frase",
+  "liveStatePatch": {
+    "lastUserEmotionalTone": "tom detectado",
+    "currentTopic": "tópico do momento",
+    "unresolvedQuestion": "pergunta que ele fez ou null",
+    "pendingUserTopic": "assunto que ele abriu ou null",
+    "openLoops": ["loop1"],
+    "avoidRepeating": ["o que não repetir"]
+  },
+  "missionPackage": {
+    "subagentId": "id_do_subagente",
+    "subagentName": "nome do subagente",
+    "objectiveDirective": "pursue" | "defer" | "already_satisfied" | "none",
+    "targetObjective": { "id": "...", "label": "..." },
+    "relevantMemoryContext": "fatos essenciais que o subagente precisa saber para este turno",
+    "liveStateContext": "resumo do tom e do momento da conversa",
+    "preferAudio": false
+  }
+}`;
+}
+
+/**
+ * Constrói o prompt do SUBAGENTE EXECUTOR (Materializador da voz da Larissa).
+ * Recebe o MissionPackage mastigado e NÃO possui ferramentas amplas de busca.
+ */
+export function buildSubagentExecutorPrompt(params: {
+  subagentId: string;
+  subagentName: string;
+  mission: string;
+  missionPackage: MissionPackage;
+  recentMessages: CanonicalMessage[];
+  emojiBudgetSnippet?: string;
+  styleStateSnippet?: string;
+  candidateAudiosSnippet?: string;
+}): string {
+  const {
+    subagentId,
+    subagentName,
+    mission,
+    missionPackage,
+    recentMessages,
+    emojiBudgetSnippet,
+    styleStateSnippet,
+    candidateAudiosSnippet,
+  } = params;
+
+  const formattedRecentMsgs = recentMessages
+    .map((m) => {
+      const senderLabel = m.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
+      return `${senderLabel}: ${m.text}`;
+    })
+    .join("\n\n");
+
+  const objectiveDirectiveText =
+    missionPackage.objectiveDirective === "pursue"
+      ? `BUSCAR OBJETIVO COM DELICADEZA: O pretendente deu abertura para: "${missionPackage.targetObjective?.label || "conhecer mais"}". Pergunte ou aprofunde de forma meiga e sutil sem parecer interrogatório.`
+      : missionPackage.objectiveDirective === "defer"
+      ? `ADIAR OBJETIVO: O pretendente desabafou ou mudou de assunto. ACOLHA, COMENTE E RESPONDA AO QUE ELE FALOU PRIMEIRO. Não force o objetivo da etapa agora.`
+      : missionPackage.objectiveDirective === "already_satisfied"
+      ? `OBJETIVO JÁ SATISFEITO: O pretendente já informou o que precisávamos. Apenas reaja com carinho e naturalidade, sem perguntar isso de novo.`
+      : `CONVERSA LIVRE E LEVE: Apenas converse com carinho, mantendo a conversa humana e espontânea.`;
+
+  return `Você é a Larissa (${subagentName.toUpperCase()}), 23 anos, moça meiga e afetuosa de São João del-Rei/MG.
+SUA MISSÃO NESTA ETAPA: ${mission}
+
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
+
+${LARISSA_CHAT_STYLE_V2}
+${emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${emojiBudgetSnippet}\n` : ""}
+${styleStateSnippet ? `\n### ESTILO RECENTE\n${styleStateSnippet}\n` : ""}
+
+### DIRETRIZ ESTRATÉGICA DO TURNO (RECEBIDA DO BRAIN)
+${objectiveDirectiveText}
+
+### CONTEXTO MASTIGADO E FATOS RELEVANTES
+${missionPackage.relevantMemoryContext || "Nenhum fato extra necessário."}
+
+### ESTADO DA CONVERSA
+${missionPackage.liveStateContext || "Interação em andamento."}
+
+${candidateAudiosSnippet ? `\n### ÁUDIO DO COFRE SUGERIDO (SE ADERENTE)\n${candidateAudiosSnippet}\n` : ""}
+
+### MENSAGENS RECENTES
+${formattedRecentMsgs}
+
+### REGRAS MANDATÁRIAS DE EXECUÇÃO:
+1. PONTUAÇÃO DE CELULAR: SOMENTE VÍRGULA (,) E PONTO DE INTERROGAÇÃO (?).
+   - É expressamente proibido terminar balão com ponto final (.)
+   - É expressamente proibido usar ponto de exclamação (!)
+   - É expressamente proibido usar reticências (...), dois pontos (:), ponto e vírgula (;) ou travessão (—).
+2. Não pergunte nada que já esteja nos fatos conhecidos.
+3. Responda com balões curtos e naturais de WhatsApp/Instagram (1 a 2 balões).
+4. Se o pretendente fez uma pergunta, RESPONDA antes de qualquer coisa.
+5. Se houver áudio aderente sugerido e for natural enviar, responda com action: "send_audio" e "audioId".
+
+Responda ESTRITAMENTE em JSON puro:
+{
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
+  "responses": [
+    "balão 1 curto de celular",
+    "balão 2 meigo (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "evidenceMessageId": "id_da_mensagem_dele"
+    }
+  ]
+}`;
+}
+
 export function buildConexaoInicialPrompt(input: SubagentInput): string {
   const contextBlock =
     input.contextText ||
@@ -3986,8 +4415,24 @@ export async function searchPersonaAudios(params: {
     })
     .map((a) => {
       const searchHaystack = `${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`.toLowerCase();
+      const combinedInput = `${intent || ""} ${query || ""}`.toLowerCase();
       let matchScore = 0;
+
+      // Aderência semântica: se a palavra que casaria for sobre tema pessoal (ex: "praia"),
+      // mas o usuário usou de forma puramente incidental ("meu escritório fica perto da praia")
+      // e NÃO perguntou se ela gosta de praia ou sobre ela, descarta o falso positivo.
+      const isIncidentalBeach =
+        (/\b(?:perto|ao lado|pr[oó]ximo|frente|longe|escrit[oó]rio|trabalho|loja|empresa)\b.*?\b(?:praia|mar)\b/i.test(combinedInput) ||
+         /\b(?:praia|mar)\b.*?\b(?:escrit[oó]rio|trabalho|loja|empresa)\b/i.test(combinedInput)) &&
+        !/\b(?:voc[eê]|vc|c[eê])\s+(?:gosta|vai|curte|já foi|ja foi|costuma|ama)\b/i.test(combinedInput) &&
+        !/\b(?:e\s+voc[eê]|e\s+vc)\b/i.test(combinedInput) &&
+        !/\b(?:gosta\s+de\s+praia|curte\s+praia)\b/i.test(combinedInput);
+
       for (const term of queryTerms) {
+        if ((term === "praia" || term === "mar") && isIncidentalBeach && (a.id.toLowerCase().includes("praia") || searchHaystack.includes("praia"))) {
+          continue;
+        }
+
         if (searchHaystack.includes(term)) {
           matchScore += 1;
         }
@@ -6208,43 +6653,292 @@ export async function runExperimentalOrchestration(
     // CARREGAMENTO DO CATÁLOGO DE SUBAGENTES & CAMADA 1: ROTEADOR
     // ------------------------------------------------------------------------
     const availableSubagents = await loadSubagentsCatalog({ supabase });
-    const activeSubagentIds = availableSubagents
-      .filter((s: any) => s.enabled !== false)
-      .map((s: any) => s.id);
+    // ------------------------------------------------------------------------
+    // CONVERSATION BRAIN & ESCADA DE MEMÓRIA EM 6 NÍVEIS
+    // ------------------------------------------------------------------------
+    const compactSubagents = getCompactSubagentCatalog(availableSubagents);
 
-    const routingPrompt = buildConversationAgentPrompt({
-      conversationId,
-      currentPhase,
-      checkpoint: currentCheckpoint,
-      contextText: routerContextText,
-      newMessage,
-      openGoalsSummary,
-      availableSubagents,
-    });
+    // NÍVEL 0: LiveState
+    let currentLiveState: ConversationLiveState = orchState.liveState
+      ? { ...orchState.liveState }
+      : getDefaultConversationLiveState(conversationId);
 
-    const routingRes = await callModelOrOpenAi(routingPrompt, { runtime, supabase, model: params.model });
-    totalTokens += routingRes.tokens;
-    initialContextTokens += routingRes.tokens;
-    const rawRoutingJson = extractJsonFromText(routingRes.content);
-    const routingDecision = validateRoutingDecision(rawRoutingJson, currentPhase, activeSubagentIds);
-    currentCycle.trace.push(`agent_routed: ${routingDecision.targetSubagent}`);
-    currentCycle.trace.push(`router_suggested_subagent: ${routingDecision.targetSubagent}`);
+    // NÍVEL 1: Mensagens Recentes com Orçamento Estrito (12 msgs / 1500 tokens)
+    const recentMessageLimit = BRAIN_ORCHESTRATION_BUDGETS.recent_message_limit;
+    const tokenBudget = BRAIN_ORCHESTRATION_BUDGETS.recent_context_token_budget;
+    const canonicalClaimed = claimedMessages.map((m: any) => normalizeToCanonicalMessage(m, conversationId));
+    const allRecentCandidates = [...canonicalClaimed];
 
-    // REGRA ABSOLUTA: A etapa atual manda no subagente responsável.
-    // Enquanto a etapa atual não estiver 100% concluída:
-    // current stage -> responsibleSubagent -> currentObjective.
-    const responsibleSubagent = stageChecklistForRouter.responsibleSubagent;
-    const targetSubagent = (routingDecision.action === "wait" || routingDecision.action === "pause")
-      ? "none"
-      : (responsibleSubagent || routingDecision.targetSubagent);
+    // Carrega mensagens cronológicas recentes respeitando orçamento e invariantes
+    try {
+      const { data: recentDbRows } = await supabase
+        .from("instagram_messages")
+        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: false })
+        .limit(recentMessageLimit);
 
-    if (routingDecision.targetSubagent !== targetSubagent && routingDecision.targetSubagent !== "none") {
-      currentCycle.trace.push(`workflow_forced_subagent: ${responsibleSubagent}`);
+      if (recentDbRows && Array.isArray(recentDbRows)) {
+        const claimedSet = new Set(claimedMessageIds);
+        for (const row of recentDbRows) {
+          if (!claimedSet.has(row.id)) {
+            allRecentCandidates.unshift(normalizeToCanonicalMessage(row, conversationId));
+          }
+        }
+      }
+    } catch {}
+
+    // Ordena cronologicamente e aplica o teto de 12 mensagens sem cortar as claimed do turno
+    allRecentCandidates.sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
+    const finalRecentMessages = allRecentCandidates.slice(-recentMessageLimit);
+
+    // NÍVEL 2: ContactMemory (fatos conhecidos sobre o pretendente)
+    let contactFacts: Record<string, any> = {};
+    try {
+      const selfFacts = await cycleMemoryProvider.listEntityFacts(conversationId, "self");
+      if (selfFacts && typeof selfFacts === "object") {
+        for (const [k, f] of Object.entries(selfFacts)) {
+          if (f && (f as any).value !== undefined && (f as any).value !== null && (f as any).value !== "") {
+            contactFacts[k] = (f as any).value;
+          }
+        }
+      }
+    } catch {}
+    if (stageRules?.known_facts && typeof stageRules.known_facts === "object") {
+      contactFacts = { ...stageRules.known_facts, ...contactFacts };
     }
-    currentCycle.trace.push(`actual_subagent: ${targetSubagent}`);
+    const contactMemorySummary = Object.entries(contactFacts)
+      .map(([k, v]) => `• ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
+      .join("\n");
+
+    // NÍVEL 3 & 4: Landmarks e Speech Acts da Memória Episódica
+    const inboundsText = (claimedMessages || [])
+      .map((m: any) => m.text || m.content || "")
+      .filter(Boolean)
+      .join(" ");
+
+    let landmarksSummary = "";
+    let speechActsSummary = "";
+    try {
+      const landmarkHits = await searchConversationEpisodicMemory({
+        supabase,
+        conversationId,
+        query: inboundsText || "geral",
+        memoryClass: "landmark",
+        limit: 5,
+      });
+      landmarksSummary = landmarkHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
+
+      const speechActHits = await searchConversationEpisodicMemory({
+        supabase,
+        conversationId,
+        query: inboundsText || "geral",
+        memoryClass: "speech_act",
+        limit: 5,
+      });
+      speechActsSummary = speechActHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
+    } catch {}
+
+    // NÍVEL 5: PersonaMemory (resumo essencial)
+    const personaMemorySummary = "Larissa, 23 anos, mora em São João del-Rei/MG, cursa Enfermagem (10º período, estágio na Santa Casa), trabalha com vendas online.";
+
+    // Telemetria do Brain
+    let brainRecentMessagesCount = finalRecentMessages.length;
+    let brainInputTokens = 0;
+    let brainOutputTokens = 0;
+    let brainToolResultTokens = 0;
+    let subagentInputTokens = 0;
+    let subagentOutputTokens = 0;
+    let brainMemorySearchesCount = 0;
+    let brainHistorySearchesCount = 0;
+    let brainHistoryHits = 0;
+    const brainMemorySourcesUsed = new Set<string>();
+    let brainUsedRawHistory = false;
+    let brainUsedLandmark = Boolean(landmarksSummary);
+    let brainUsedContactMemory = Object.keys(contactFacts).length > 0;
+    let brainUsedAudio = false;
+
+    if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
+    if (brainUsedContactMemory) brainMemorySourcesUsed.add("contact_memory");
+
+    // Loop do Brain (máximo 2 buscas de memória/histórico + máximo 1 de cofre)
+    const MAX_BRAIN_SEARCHES = BRAIN_ORCHESTRATION_BUDGETS.brain_max_memory_searches;
+    let memorySearchesPerformed = 0;
+    let cofreSearchesPerformed = 0;
+    const toolResultsHistory: string[] = [];
+    let brainPlan: ConversationBrainPlan | null = null;
+    let brainIterations = 0;
+
+    while (brainIterations < 3 && !brainPlan) {
+      brainIterations++;
+
+      // Freshness Gate antes de cada chamada do Brain
+      if (brainIterations > 1) {
+        const freshnessInBrainLoop = await checkFreshnessGate({
+          supabase,
+          conversationId,
+          claimedMessageIds,
+          cycleStartedAt: currentCycle.startedAt,
+          initialInboundRevision,
+        });
+        if (!freshnessInBrainLoop.isFresh) {
+          return await handleCyclePreemption("during_brain_tool_loop", freshnessInBrainLoop);
+        }
+      }
+
+      const brainPrompt = buildConversationBrainPrompt({
+        conversationId,
+        currentStage: currentStageId,
+        liveState: currentLiveState,
+        recentMessages: finalRecentMessages,
+        contactMemorySummary,
+        landmarksSummary,
+        speechActsSummary,
+        personaMemorySummary,
+        stageObjectives: stageChecklistForRouter.goals as any,
+        currentObjective: stageChecklistForRouter.currentObjective as any,
+        compactSubagents,
+        toolResultsHistory,
+      });
+
+      const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: params.model });
+      brainInputTokens += brainRes.tokens;
+      totalTokens += brainRes.tokens;
+
+      const rawBrainJson = extractJsonFromText(brainRes.content);
+      if (rawBrainJson && (rawBrainJson.action === "call_tool" || rawBrainJson.tool)) {
+        const toolName = String(rawBrainJson.tool || rawBrainJson.name || "").trim();
+        const toolParams = rawBrainJson.parameters || rawBrainJson.params || {};
+
+        if (toolName === "conversation_history_search") {
+          if (memorySearchesPerformed < MAX_BRAIN_SEARCHES) {
+            memorySearchesPerformed++;
+            brainHistorySearchesCount++;
+            brainUsedRawHistory = true;
+            brainMemorySourcesUsed.add("raw_history");
+            const q = String(toolParams.query || inboundsText).trim();
+            const hits = await searchRawConversationHistory({
+              supabase,
+              conversationId,
+              query: q,
+              limit: BRAIN_ORCHESTRATION_BUDGETS.brain_history_search_results,
+            });
+            brainHistoryHits += hits.length;
+            const formattedHits = hits.map((h, i) => {
+              const ctx = h.contextWindow.map((c) => `  [${c.sender} @ ${c.createdAt}] ${c.text}`).join("\n");
+              return `Hit ${i + 1} (score: ${h.matchScore}):\n${ctx}`;
+            }).join("\n\n");
+            toolResultsHistory.push(`[TOOL: conversation_history_search | query: "${q}"]\n${formattedHits || "Nenhum resultado encontrado no histórico bruto."}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: conversation_history_search] Limite de buscas de memória atingido.`);
+          }
+        } else if (toolName === "persona_memory_search") {
+          if (memorySearchesPerformed < MAX_BRAIN_SEARCHES) {
+            memorySearchesPerformed++;
+            brainMemorySearchesCount++;
+            brainMemorySourcesUsed.add("persona_memory");
+            const q = String(toolParams.query || inboundsText).trim();
+            toolResultsHistory.push(`[TOOL: persona_memory_search | query: "${q}"]\nLarissa cursa Enfermagem na Santa Casa, tem 23 anos, mora em São João del-Rei/MG e adora bife com batata frita e strogonoff.`);
+          } else {
+            toolResultsHistory.push(`[TOOL: persona_memory_search] Limite de buscas de memória atingido.`);
+          }
+        } else if (toolName === "episodic_memory_search") {
+          if (memorySearchesPerformed < MAX_BRAIN_SEARCHES) {
+            memorySearchesPerformed++;
+            brainMemorySearchesCount++;
+            brainMemorySourcesUsed.add("episodic_memory");
+            const q = String(toolParams.query || inboundsText).trim();
+            const mClass = toolParams.memoryClass || "all";
+            const epHits = await searchConversationEpisodicMemory({
+              supabase,
+              conversationId,
+              query: q,
+              memoryClass: mClass,
+              limit: 4,
+            });
+            const formatted = epHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
+            toolResultsHistory.push(`[TOOL: episodic_memory_search | query: "${q}"]\n${formatted || "Nenhum episódio relevante encontrado."}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: episodic_memory_search] Limite de buscas de memória atingido.`);
+          }
+        } else if (toolName === "cofre_audio_search") {
+          if (cofreSearchesPerformed < 1) {
+            cofreSearchesPerformed++;
+            brainUsedAudio = true;
+            brainMemorySourcesUsed.add("cofre_audio");
+            const q = String(toolParams.query || inboundsText).trim();
+            const cofreMatches = await searchCofreAudios({
+              supabase,
+              conversationId,
+              query: q,
+              limit: 3,
+            });
+            const formatted = cofreMatches.map((c) => `• audio_id: "${c.audio_id}" | título: "${c.title}" | instrução: "${c.when_to_use}" | transcrição: "${c.full_transcript}"`).join("\n");
+            toolResultsHistory.push(`[TOOL: cofre_audio_search | query: "${q}"]\n${formatted || "Nenhum áudio com aderência semântica encontrado."}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: cofre_audio_search] Limite de busca de áudio atingido.`);
+          }
+        } else {
+          toolResultsHistory.push(`[TOOL: ${toolName}] Ferramenta não suportada pelo Brain.`);
+        }
+      } else if (rawBrainJson) {
+        // Brain concluiu e delegou a missão
+        const rawTarget = rawBrainJson.responsibleSubagent || rawBrainJson.targetSubagent || stageChecklistForRouter.responsibleSubagent || "descoberta";
+        brainPlan = {
+          action: "delegate_mission",
+          currentStage: currentStageId,
+          responsibleSubagent: String(rawTarget).trim(),
+          objectiveDecision: (rawBrainJson.objectiveDecision as any) || "pursue",
+          satisfiedObjectiveId: rawBrainJson.satisfiedObjectiveId || undefined,
+          evidenceMessageId: rawBrainJson.evidenceMessageId || undefined,
+          liveStatePatch: rawBrainJson.liveStatePatch || {},
+          missionPackage: rawBrainJson.missionPackage || undefined,
+          reasoning: rawBrainJson.reasoning || rawBrainJson.reason || "Planejamento concluído pelo Brain.",
+        };
+      }
+    }
+
+    // Fallback seguro caso o Brain esgote iterações sem emitir delegate_mission
+    if (!brainPlan) {
+      brainPlan = {
+        action: "delegate_mission",
+        currentStage: currentStageId,
+        responsibleSubagent: stageChecklistForRouter.responsibleSubagent || "descoberta",
+        objectiveDecision: "pursue",
+        liveStatePatch: {
+          lastUserEmotionalTone: "tranquilo",
+          currentTopic: "interação em andamento",
+        },
+        reasoning: "Plano gerado por fallback do Brain.",
+      };
+    }
+
+    // Atualiza o LiveState com o patch do Brain (com poda estrita de coleções)
+    currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
+
+    // Validação estrita de already_satisfied (Item 10 dos ajustes)
+    if (brainPlan.objectiveDecision === "already_satisfied") {
+      const targetObj = stageChecklistForRouter.currentObjective;
+      if (
+        targetObj &&
+        brainPlan.satisfiedObjectiveId === targetObj.id &&
+        brainPlan.evidenceMessageId === newMessage.id
+      ) {
+        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, targetObj.id])];
+        currentCycle.trace.push(`brain_already_satisfied_validated: ${targetObj.id}`);
+      } else {
+        currentCycle.trace.push("brain_already_satisfied_rejected_not_current_or_not_inbound");
+        brainPlan.objectiveDecision = "pursue";
+      }
+    }
+
+    // REGRA DURA: A etapa atual manda no subagente executor responsável
+    const responsibleSubagent = stageChecklistForRouter.responsibleSubagent || brainPlan.responsibleSubagent || "descoberta";
+    currentCycle.trace.push(`brain_objective_mode: ${brainPlan.objectiveDecision}`);
+    currentCycle.trace.push(`brain_responsible_subagent: ${responsibleSubagent}`);
 
     // ------------------------------------------------------------------------
-    // FRESHNESS GATE 1: Revalidação imediatamente após o ConversationAgent
+    // FRESHNESS GATE 1: Revalidação imediatamente após o ConversationAgent / Brain
     // ------------------------------------------------------------------------
     const freshnessAfterRouter = await checkFreshnessGate({
       supabase,
@@ -6258,25 +6952,50 @@ export async function runExperimentalOrchestration(
       return await handleCyclePreemption("during_conversation_agent", freshnessAfterRouter);
     }
 
-    let finalSubDecision: SubagentDecision;
+    let finalSubDecision: SubagentDecision | null = null;
 
-    if (routingDecision.action === "wait" || targetSubagent === "none") {
+    if (brainPlan.action === "wait" || responsibleSubagent === "none") {
       finalSubDecision = {
         action: "wait",
         checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-        summary: `Aguardando pretendente: ${routingDecision.reason}`,
+        summary: `Aguardando pretendente: ${brainPlan.reasoning}`,
         suggestedResponse: "",
         nextPhase: currentPhase,
-        reasoning: routingDecision.reason,
+        reasoning: brainPlan.reasoning,
         requiredTools: [],
       };
       currentCycle.trace.push("subagent_action: wait");
     } else {
-      let subagentPrompt = "";
+      // Prepara o MissionPackage consolidado para o executor
+      const missionPkg: MissionPackage = brainPlan.missionPackage || {
+        subagentId: responsibleSubagent,
+        subagentName: responsibleSubagent,
+        objectiveDirective: brainPlan.objectiveDecision,
+        targetObjective: stageChecklistForRouter.currentObjective
+          ? { id: stageChecklistForRouter.currentObjective.id, label: stageChecklistForRouter.currentObjective.label }
+          : null,
+        relevantMemoryContext: [
+          contactMemorySummary ? `FATOS DO PRETENDENTE:\n${contactMemorySummary}` : "",
+          landmarksSummary ? `MARCOS NARRATIVOS:\n${landmarksSummary}` : "",
+          toolResultsHistory.length > 0 ? `PESQUISAS FEITAS NESTE TURNO:\n${toolResultsHistory.join("\n")}` : "",
+        ].filter(Boolean).join("\n\n"),
+        liveStateContext: serializeLiveStateForPrompt(currentLiveState),
+        preferAudio: false,
+      };
 
-      // ----------------------------------------------------------------------
-      // EMOJI BUDGET DINÂMICO DETERMINÍSTICO
-      // ----------------------------------------------------------------------
+      // Subagente selecionado (definição do catálogo ou canônico)
+      const catalogSub = availableSubagents.find((s: any) => s.id === responsibleSubagent);
+      const subagentDef: SubagentDefinition = catalogSub || CANONICAL_SUBAGENTS[responsibleSubagent] || {
+        id: responsibleSubagent,
+        name: responsibleSubagent,
+        mission: responsibleSubagent === "descoberta"
+          ? CANONICAL_SUBAGENTS.descoberta.mission
+          : responsibleSubagent === "compatibilidade"
+          ? CANONICAL_SUBAGENTS.compatibilidade.mission
+          : CANONICAL_SUBAGENTS.conexao_inicial.mission,
+      };
+
+      // Estilo e orçamentos de emoji para a execução
       const recentLarissaOutbounds: string[] = [];
       try {
         const { data: recentMsgs } = await supabase
@@ -6295,133 +7014,61 @@ export async function runExperimentalOrchestration(
             }
           }
         }
-      } catch (outErr) {
-        // Fail-safe silencioso
-      }
+      } catch {}
 
       const recentStyleState = extractRecentStyleState(recentLarissaOutbounds);
       const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds, {
         emojiRecentHistory: recentStyleState.emoji_recent_history,
       });
-      currentCycle.trace.push(`emoji_budget_computed: budget=${emojiBudgetInfo.budget}, recentCount=${emojiBudgetInfo.recentEmojis.length}`);
 
-      // Definição e Missão Semântica do Subagente Selecionado (catálogo ou canônico)
-      const catalogSub = availableSubagents.find((s: any) => s.id === targetSubagent);
-      const subagentDef: SubagentDefinition = catalogSub || CANONICAL_SUBAGENTS[targetSubagent] || {
-        id: targetSubagent,
-        name: targetSubagent,
-        mission: targetSubagent === "descoberta"
-          ? CANONICAL_SUBAGENTS.descoberta.mission
-          : targetSubagent === "compatibilidade"
-          ? CANONICAL_SUBAGENTS.compatibilidade.mission
-          : CANONICAL_SUBAGENTS.conexao_inicial.mission,
-      };
-
-      // Fatos conhecidos do contato na memória estruturada (inclui fatos do turno via overlay)
-      let knownFactsForSubagent: Record<string, any> = {};
+      // Candidato a áudio aderente se houver
+      let candidateAudiosSnippet = "";
       try {
-        const selfFacts = await cycleMemoryProvider.listEntityFacts(conversationId, "self");
-        if (selfFacts && typeof selfFacts === "object") {
-          for (const [k, f] of Object.entries(selfFacts)) {
-            if (f && (f as any).value !== undefined && (f as any).value !== null && (f as any).value !== "") {
-              knownFactsForSubagent[k] = (f as any).value;
-            }
-          }
+        const cofreAudios = await searchCofreAudios({
+          supabase,
+          conversationId,
+          query: inboundsText,
+          limit: 1,
+        });
+        if (cofreAudios && cofreAudios.length > 0) {
+          const topAudio = cofreAudios[0];
+          candidateAudiosSnippet = `audio_id: "${topAudio.audio_id}" | título: "${topAudio.title}" | instrução: "${topAudio.when_to_use}" | transcrição: "${topAudio.full_transcript}"`;
         }
       } catch {}
 
-      if (stageRules?.known_facts && typeof stageRules.known_facts === "object") {
-        knownFactsForSubagent = { ...stageRules.known_facts, ...knownFactsForSubagent };
-      }
-
-      // Constrói o snippet de Missão e Checkpoints Sequenciais Determinísticos
-      const goalsSnippet = formatGoalsSnippetForSubagent({
-        subagentId: targetSubagent,
-        stageName: stageChecklistForRouter.stage,
-        mission: subagentDef.mission,
-        currentObjective: stageChecklistForRouter.currentObjective,
-        completedObjectives: stageChecklistForRouter.completedObjectives,
-        remainingObjectives: stageChecklistForRouter.remainingObjectives,
-        knownFacts: knownFactsForSubagent,
-      });
-
-      const styleStateSnippet = `[ESTILO RECENTE & ANTI-REPETIÇÃO]
-- Última forma de resposta: ${recentStyleState.last_response_shape}
-- Reações recentes: ${recentStyleState.recent_reactions.join(", ") || "nenhuma"}
-- Perguntas recentes: ${recentStyleState.recent_questions.join(" | ") || "nenhuma"}
-- Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`;
-
-      const currentCheckpointObj = stageChecklistForRouter.currentObjective;
-      const softFocusSnippet = currentCheckpointObj
-        ? `[CHECKPOINT ATUAL OBRIGATÓRIO (Bússola Orgânica)]
-Destino imediato da etapa: "${currentCheckpointObj.label}"${currentCheckpointObj.description ? ` (${currentCheckpointObj.description})` : ""}.
-Se houver gancho natural e ele der abertura, busque cumpri-lo com delicadeza, afeto e organicidade. NUNCA force nem faça interrogatório.
-Se ele fez uma pergunta ou desabafou, responda e acolha PRIMEIRO. Perguntas NÃO são obrigatórias em todo turno.`
-        : `[CHECKPOINT ATUAL OBRIGATÓRIO]
-Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas converse com naturalidade, acolhimento e leveza.`;
-
-      // Pré-seleção automática compacta de áudio do Cofre (Fase 9)
-      let audioCandidatesSnippet = "";
-      try {
-        const inboundsText = (claimedMessages || [])
-          .map((m: any) => m.text || m.content || "")
-          .filter(Boolean)
-          .join(" ");
-        if (inboundsText.trim().length > 0) {
-          const matchedCofre = await searchCofreAudios({
-            supabase,
-            conversationId,
-            query: inboundsText,
-            limit: 3,
-          });
-          if (matchedCofre && matchedCofre.length > 0) {
-            audioCandidatesSnippet = `Áudios do Cofre altamente aderentes ao que ele disse:\n` +
-              matchedCofre
-                .map((c) => `- audio_id: "${c.audio_id}" (título: ${c.title})\n  instrução: "${c.when_to_use}"\n  transcrição: "${c.full_transcript}"`)
-                .join("\n\n") +
-              `\nSe algum áudio responder diretamente com naturalidade, priorize action: "send_audio" com "audioId" SEM texto espelho redundante.`;
-          }
-        }
-      } catch (_cofreErr) {}
-
-      subagentPrompt = buildSubagentPrompt({
-        subagentId: targetSubagent,
+      // Constrói prompt do subagente executor enxuto
+      const executorPrompt = buildSubagentExecutorPrompt({
+        subagentId: responsibleSubagent,
         subagentName: subagentDef.name,
-        conversationId,
-        currentPhase: (targetSubagent as any),
-        checkpoint: targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-        contextText: targetSubagent === "descoberta" ? descobertaContextText : conexaoContextText,
-        newMessage,
+        mission: subagentDef.mission || "Conduzir a conversa com afeto e organicidade",
+        missionPackage: missionPkg,
+        recentMessages: finalRecentMessages,
         emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
-        mission: subagentDef.mission,
-        goalsSnippet,
-        styleStateSnippet,
-        softFocusSnippet,
-        audioCandidatesSnippet: audioCandidatesSnippet || undefined,
+        styleStateSnippet: `Última forma: ${recentStyleState.last_response_shape} | Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`,
+        candidateAudiosSnippet: candidateAudiosSnippet || undefined,
       });
 
       await publishAutoPilotState(supabase, conversationId, {
         status: "processing",
         activity: activity(
           "atria",
-          orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${subagentDef.name || targetSubagent}`,
-          `Formulando resposta com o subagente ${subagentDef.name || targetSubagent}...`,
+          orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${subagentDef.name || responsibleSubagent}`,
+          `Formulando resposta com ${subagentDef.name || responsibleSubagent}...`,
           {
-            atriaThought: `Executando missão do subagente ${subagentDef.name || targetSubagent}...`,
+            atriaThought: `Executando com ${subagentDef.name || responsibleSubagent}...`,
             mode: orchState.mode,
             currentPhase,
           }
         ),
       });
 
-      const MAX_TOOL_ITERATIONS = 3;
-      toolCallsCount = 0;
-      let currentSubagentPrompt = subagentPrompt;
+      const MAX_SUBAGENT_TOOL_ITERATIONS = 3;
+      let subagentToolCallsCount = 0;
+      let currentSubagentPrompt = executorPrompt;
       let lastToolResultForFinalCall: any = null;
 
-      while (toolCallsCount < MAX_TOOL_ITERATIONS) {
-        // Freshness Gate intra-loop: Se nova mensagem chegou enquanto o subagente consultava memória, preempta imediatamente
-        if (toolCallsCount > 0) {
+      while (subagentToolCallsCount < MAX_SUBAGENT_TOOL_ITERATIONS) {
+        if (subagentToolCallsCount > 0) {
           const freshnessInToolLoop = await checkFreshnessGate({
             supabase,
             conversationId,
@@ -6429,28 +7076,27 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
             cycleStartedAt: currentCycle.startedAt,
             initialInboundRevision,
           });
-
           if (!freshnessInToolLoop.isFresh) {
             return await handleCyclePreemption("during_subagent_tool_loop", freshnessInToolLoop);
           }
         }
 
-        const subRes = await callModelOrOpenAi(currentSubagentPrompt, { runtime, supabase, model: params.model });
-        totalTokens += subRes.tokens;
-        if (toolCallsCount === 0) {
-          initialContextTokens += subRes.tokens;
+        const execRes = await callModelOrOpenAi(currentSubagentPrompt, { runtime, supabase, model: params.model });
+        totalTokens += execRes.tokens;
+        if (subagentToolCallsCount === 0) {
+          subagentInputTokens += execRes.tokens;
         } else {
-          toolResultTokens += subRes.tokens;
+          brainToolResultTokens += execRes.tokens;
         }
-        const rawSubJson = extractJsonFromText(subRes.content);
 
-        // Verifica se o subagente solicitou ferramenta de memória sob demanda
+        const rawSubJson = extractJsonFromText(execRes.content);
+
+        // Verifica se o subagente solicitou ferramenta
         if (
           rawSubJson &&
           (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)
         ) {
-          toolCallsCount++;
-          toolCallsTokens++;
+          subagentToolCallsCount++;
           const toolName = String(rawSubJson.tool || rawSubJson.name || "memory_get_fact").trim();
           const toolParams = rawSubJson.parameters || rawSubJson.params || rawSubJson.arguments || {};
           const toolEntity = String(toolParams.entity || "self").trim();
@@ -6474,183 +7120,153 @@ Todos os checkpoints desta etapa foram atingidos ou já são conhecidos. Apenas 
           let toolResult: any;
           if (toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state") {
             const requestedStage = String(toolParams.stage || currentPhase).trim();
-            // BACKEND-BOUND SECURITY: O conversationId é injetado pelo runtime, ignorando qualquer valor externo
             const completedGoalIds = workingCompletedGoalIds;
             const stageChecklist = await resolveStageObjectives({
               supabase,
-              conversationId, // Backend-bound estrito
+              conversationId,
               stageNameOrId: requestedStage,
               memoryProvider: cycleMemoryProvider,
               completedGoalIds,
             });
 
-            const filteredForSubagent = filterGoalsForSubagent(stageChecklist.goals, targetSubagent);
+            const filteredForSubagent = filterGoalsForSubagent(stageChecklist.goals, responsibleSubagent);
             const activeGoals = [...filteredForSubagent.openGoals, ...filteredForSubagent.completedGoals];
             toolResult = {
               tool: toolName,
               stage: stageChecklist.stage,
-              subagent: targetSubagent,
+              subagent: responsibleSubagent,
               goals: activeGoals,
-              objectives: activeGoals.map((g) => ({
-                id: g.id,
-                title: g.label,
-                label: g.label,
-                status: g.status,
-                value: g.value,
-                required: g.required,
-              })),
-              openGoals: filteredForSubagent.openGoals,
-              completedGoals: filteredForSubagent.completedGoals,
+              summary: `Objetivos da fase ${stageChecklist.stage}: ${activeGoals.map((g: any) => `${g.id} (${g.status})`).join(", ")}`,
             };
           } else if (toolName === "cofre_search" || toolName === "persona_audio_search") {
-            const query = String(toolParams.query || toolParams.intent || "").trim();
-            const objectiveContext = String(toolParams.objective_context || toolParams.stageId || "").trim();
-            const results = await searchCofreAudios({
+            const query = String(toolParams.query || toolParams.intent || inboundsText).trim();
+            const contextObj = toolParams.objective_context || undefined;
+            const matches = await searchCofreAudios({
               supabase,
-              conversationId, // Backend-bound estrito
+              conversationId,
               query,
-              objective_context: objectiveContext,
-            });
-
-            toolResult = {
-              tool: "cofre_search",
-              found: results.length > 0,
-              audios: results,
-            };
-          } else if (toolName === "persona_get_fact") {
-            const fieldToQuery = String(toolParams.field || toolField || "").trim();
-            const pFact = await resolvePersonaFact(fieldToQuery, { supabase, personaId: "larissa" });
-
-            toolResult = {
-              tool: "persona_get_fact",
-              found: pFact.found,
-              field: pFact.field,
-              value: pFact.value,
-              category: pFact.category,
-              source_type: pFact.source_type,
-            };
-          } else if (toolName === "persona_search") {
-            const query = String(toolParams.query || toolParams.intent || "").trim();
-            const limit = typeof toolParams.limit === "number" ? toolParams.limit : 8;
-            const results = await searchPersonaMemory({
-              supabase,
-              personaId: "larissa",
-              query,
-              limit,
-            });
-
-            toolResult = {
-              tool: "persona_search",
-              found: results.length > 0,
-              query,
-              results,
-            };
-          } else if (toolName === "conversation_search") {
-            const query = String(toolParams.query || toolParams.intent || "").trim();
-            const limit = typeof toolParams.limit === "number" ? toolParams.limit : 5;
-            const results = await searchConversationEpisodicMemory({
-              supabase,
-              conversationId, // Backend-bound estrito
-              query,
-              limit,
-            });
-
-            toolResult = {
-              tool: "conversation_search",
-              found: results.length > 0,
-              query,
-              results,
-            };
-          } else if (toolName === "memory_search") {
-            const query = String(toolParams.query || "").trim();
-            const results = await cycleMemoryProvider.searchMemory(conversationId, query, {
-              entity: toolEntity,
+              stageId: contextObj,
               limit: 3,
             });
             toolResult = {
-              tool: "memory_search",
-              found: results.length > 0,
-              results,
+              tool: toolName,
+              query,
+              found: matches.length > 0,
+              audios: matches.map((m) => ({
+                audio_id: m.audio_id,
+                title: m.title,
+                transcript: m.full_transcript,
+                when_to_use: m.when_to_use,
+                relevance_score: m.relevance_score,
+              })),
+            };
+          } else if (toolName === "persona_get_fact") {
+            const factField = String(toolParams.field || toolField).trim();
+            const factVal = await cyclePersonaMemoryProvider.getPersonaFact("larissa", factField);
+            toolResult = {
+              tool: "persona_get_fact",
+              field: factField,
+              found: factVal !== null,
+              value: factVal,
+            };
+          } else if (toolName === "persona_search") {
+            const pQuery = String(toolParams.query || toolParams.intent || inboundsText).trim();
+            const facts = await cyclePersonaMemoryProvider.searchPersonaFacts("larissa", pQuery);
+            toolResult = {
+              tool: "persona_search",
+              query: pQuery,
+              results: facts,
+            };
+          } else if (toolName === "conversation_search") {
+            const cQuery = String(toolParams.query || inboundsText).trim();
+            const cLimit = Math.min(Number(toolParams.limit) || 4, 6);
+            const histResults = await searchRawConversationHistory({
+              supabase,
+              conversationId,
+              query: cQuery,
+              limit: cLimit,
+            });
+            toolResult = {
+              tool: "conversation_search",
+              query: cQuery,
+              results: histResults,
             };
           } else {
-            // memory_get_fact (ContactMemory do pretendente)
-            const res = await cycleMemoryProvider.getFact(conversationId, toolEntity, toolField);
-            toolResult = {
-              tool: "memory_get_fact",
-              found: res.found,
-              entity: toolEntity,
-              field: toolField,
-              value: res.found ? res.fact?.value : null,
-              sourceMessageId: res.found ? res.fact?.sourceMessageId : undefined,
-            };
+            // Default: memory_get_fact / memory_search
+            if (toolField) {
+              const fact = await cycleMemoryProvider.getFact(conversationId, toolEntity, toolField);
+              toolResult = {
+                tool: "memory_get_fact",
+                entity: toolEntity,
+                field: toolField,
+                found: fact !== null,
+                value: fact?.value ?? null,
+                updated_at: fact?.updated_at ?? null,
+              };
+            } else {
+              const memQuery = String(toolParams.query || inboundsText).trim();
+              const searchResults = await cycleMemoryProvider.searchFacts(conversationId, toolEntity, memQuery);
+              toolResult = {
+                tool: "memory_search",
+                entity: toolEntity,
+                query: memQuery,
+                results: searchResults,
+              };
+            }
           }
 
           const toolDuration = Date.now() - tStart;
           currentCycle.trace.push(
-            toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state"
-              ? `checklist_tool_goals_count: ${toolResult.goals?.length || 0}`
-              : (toolName === "cofre_search" || toolName === "persona_audio_search")
-              ? `cofre_audio_count: ${toolResult.audios?.length || 0}`
-              : toolName === "persona_get_fact"
-              ? `persona_fact_found: ${toolResult.found}`
-              : toolName === "persona_search"
-              ? `persona_search_count: ${toolResult.results?.length || 0}`
-              : toolName === "conversation_search"
-              ? `conversation_search_count: ${toolResult.results?.length || 0}`
+            toolResult.results
+              ? `memory_tool_results_count: ${toolResult.results.length}`
+              : toolResult.goals
+              ? `checklist_tool_goals_count: ${toolResult.goals.length}`
+              : toolResult.audios
+              ? `cofre_tool_matches_count: ${toolResult.audios.length}`
               : `memory_tool_found: ${toolResult.found}`
           );
           currentCycle.trace.push(`tool_duration_ms: ${toolDuration}`);
           lastToolResultForFinalCall = toolResult;
 
-          if (toolCallsCount >= MAX_TOOL_ITERATIONS) {
-            // Atingiu o limite de 3 chamadas de ferramentas. Interrompe o loop para a chamada final obrigatória sem ferramentas.
+          if (subagentToolCallsCount >= MAX_SUBAGENT_TOOL_ITERATIONS) {
             break;
           }
 
           const isFactSufficient = toolResult.found === true || (Array.isArray(toolResult.results) && toolResult.results.length > 0) || (toolResult.goals && toolResult.goals.length > 0) || (Array.isArray(toolResult.audios) && toolResult.audios.length > 0);
 
-          currentSubagentPrompt = `${subagentPrompt}
+          currentSubagentPrompt = `${executorPrompt}
 
-### RETORNO DA CONSULTA DE FERRAMENTA (Tool Call #${toolCallsCount})
+### RETORNO DA CONSULTA DE MEMÓRIA (Tool Call #${subagentToolCallsCount})
 \`\`\`json
 ${JSON.stringify(toolResult, null, 2)}
 \`\`\`
 ${isFactSufficient ? `\n[INSTRUÇÃO APÓS CONSULTA DE FERRAMENTA]
 A informação necessária foi obtida com sucesso.
-NÃO solicite novas ferramentas. Formule agora sua resposta final carinhosa e natural da Larissa em JSON com action: "reply" ou action: "send_audio".
-Lembre-se:
-- Se consultou o cofre e encontrou áudio com alta aderência ao que o pretendente perguntou ou ao momento, responda em JSON com action: "send_audio" e "audioId": "<audio_id>".
-- IMPORTANTE: ao enviar áudio, NÃO crie texto espelho repetindo o que o áudio diz. Apenas envie o áudio!
-- Se nenhum áudio tiver alta aderência ou for irrelevante, responda em texto com action: "reply".
-- Se o fato consultado tiver valor 'false', significa que você NÃO gosta, NÃO consome ou NÃO faz; responda com sinceridade e meiguice, sem inventar afeto.
-- Risadas ('kkk'): Use com moderação e espontaneidade apenas se houver motivo real de humor; NÃO carimbe 'kkk' em respostas factuais simples.
-- Fechamento natural: Encerre apenas afirmando ou comentando, sem devolver perguntas por obrigação ("e você?").
-- Sem ponto final e sem exclamação.\n` : `\nAgora prossiga e gere sua resposta final em JSON:\n`}
+NÃO solicite novas ferramentas. Formule agora sua resposta final carinhosa e natural da Larissa em JSON com action: "reply" ou action: "send_audio".\n` : `\nAgora prossiga e gere sua resposta final em JSON:\n`}
 {
   "action": "reply" | "send_audio",
   "audioId": "id_do_audio_se_send_audio",
-  "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
+  "checkpoint": "${responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
   "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou vazio/observação interna se for send_audio)",
-  "nextPhase": "${targetSubagent}",
-  "reasoning": "análise analítica da resposta"
+  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
+  "responses": ["balão 1", "balão 2"],
+  "nextPhase": "${responsibleSubagent}",
+  "reasoning": "análise da resposta"
 }`;
           continue;
         }
 
-        // Subagente retornou resposta final
-        finalGenerationTokens += subRes.tokens;
+        // Subagente respondeu normalmente
         finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
-        currentCycle.trace.push(`subagent_executed: ${targetSubagent}`);
+        currentCycle.trace.push(`subagent_executed: ${responsibleSubagent}`);
         break;
       }
 
       // Se atingiu o limite de chamadas de ferramenta sem resposta final:
-      // Executa UMA chamada final obrigatória de resposta ao modelo com ferramentas desabilitadas
+      // Executa UMA chamada final obrigatória com ferramentas desabilitadas
       if (!finalSubDecision) {
         currentCycle.trace.push("tool_loop_limit_reached_final_call");
 
-        // Freshness Gate antes da chamada final obrigatória
         const freshnessBeforeFinalCall = await checkFreshnessGate({
           supabase,
           conversationId,
@@ -6663,7 +7279,7 @@ Lembre-se:
           return await handleCyclePreemption("during_subagent_tool_loop_final_call", freshnessBeforeFinalCall);
         }
 
-        const finalCallPrompt = `${subagentPrompt}
+        const finalCallPrompt = `${executorPrompt}
 
 ### RETORNO DA CONSULTA DE MEMÓRIA
 \`\`\`json
@@ -6675,12 +7291,12 @@ Não solicite mais ferramentas. Responda agora com o que sabe e não invente fat
 Gere sua resposta final estritamente no formato JSON abaixo:
 {
   "action": "reply" | "send_audio",
-  "audioId": "id_do_audio_se_send_audio",
-  "checkpoint": "${targetSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
-  "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente (ou observação do áudio)",
-  "nextPhase": "${targetSubagent}",
-  "reasoning": "análise analítica da resposta"
+  "checkpoint": "${responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
+  "summary": "resumo conciso",
+  "suggestedResponse": "fala da Larissa",
+  "responses": ["balão 1"],
+  "nextPhase": "${responsibleSubagent}",
+  "reasoning": "conclusão final"
 }`;
 
         try {
@@ -6688,38 +7304,56 @@ Gere sua resposta final estritamente no formato JSON abaixo:
           totalTokens += finalRes.tokens;
           finalGenerationTokens += finalRes.tokens;
           const rawFinalJson = extractJsonFromText(finalRes.content);
-          if (
-            rawFinalJson &&
-            rawFinalJson.action !== "call_tool" &&
-            rawFinalJson.action !== "tool_call" &&
-            !rawFinalJson.tool
-          ) {
-            const validated = validateSubagentDecision(rawFinalJson, currentPhase);
-            if (validated.suggestedResponse || validated.action === "wait" || validated.action === "send_audio" || validated.audioId) {
-              finalSubDecision = validated;
-              currentCycle.trace.push(`tool_loop_final_call_success: ${finalSubDecision.action}`);
-            }
+          if (rawFinalJson && (rawFinalJson.action === "reply" || rawFinalJson.action === "send_audio" || rawFinalJson.action === "advance_phase")) {
+            finalSubDecision = validateSubagentDecision(rawFinalJson, currentPhase);
+          } else {
+            // Modelo inválido na chamada final resulta em action: wait com zero mensagem
+            currentCycle.trace.push("tool_loop_exhausted_safe_wait");
+            currentCycle.trace.push("final_call_invalid_json_fallback_wait");
+            finalSubDecision = {
+              action: "wait",
+              checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+              summary: "Aguardando pretendente após chamada final",
+              suggestedResponse: "",
+              nextPhase: currentPhase,
+              reasoning: "Modelo inválido após limite de chamadas de ferramenta",
+              requiredTools: [],
+            };
           }
-        } catch (finalCallErr: any) {
-          currentCycle.trace.push(`tool_loop_final_call_err: ${finalCallErr.message || String(finalCallErr)}`);
-        }
-
-        // Se ainda assim a resposta final for inválida, não parsear ou falhar:
-        // O subagente falha de forma segura: action: "wait", suggestedResponse: ""
-        // e ZERO mensagem inventada pelo backend.
-        if (!finalSubDecision) {
+        } catch {
           currentCycle.trace.push("tool_loop_exhausted_safe_wait");
+          currentCycle.trace.push("final_call_exception_fallback_wait");
           finalSubDecision = {
             action: "wait",
-            checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-            summary: "Tool loop finalizado sem resposta válida do modelo; adotando wait seguro",
+            checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            summary: "Aguardando pretendente após falha na chamada final",
             suggestedResponse: "",
             nextPhase: currentPhase,
-            reasoning: "Subagente atingiu o limite de consultas de ferramentas sem gerar resposta válida do modelo",
+            reasoning: "Falha na chamada final após limite de ferramentas",
             requiredTools: [],
           };
         }
       }
+
+      // Se o subagente gerou balões, aplica sanitização determinística mandatória
+      if (finalSubDecision.action === "reply" && (!finalSubDecision.responses || finalSubDecision.responses.length === 0)) {
+        finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
+      }
+
+      // Registra telemetria completa no trace
+      currentCycle.trace.push(`brain_recent_messages_count: ${brainRecentMessagesCount}`);
+      currentCycle.trace.push(`brain_input_tokens: ${brainInputTokens}`);
+      currentCycle.trace.push(`brain_memory_sources_used: ${Array.from(brainMemorySourcesUsed).join(",")}`);
+      currentCycle.trace.push(`brain_memory_search_count: ${brainMemorySearchesCount}`);
+      currentCycle.trace.push(`brain_history_search_count: ${brainHistorySearchesCount}`);
+      currentCycle.trace.push(`brain_history_hits: ${brainHistoryHits}`);
+      currentCycle.trace.push(`brain_tool_result_tokens: ${brainToolResultTokens}`);
+      currentCycle.trace.push(`subagent_input_tokens: ${subagentInputTokens}`);
+      currentCycle.trace.push(`total_cycle_tokens: ${totalTokens}`);
+      currentCycle.trace.push(`brain_used_raw_history: ${brainUsedRawHistory}`);
+      currentCycle.trace.push(`brain_used_landmark: ${brainUsedLandmark}`);
+      currentCycle.trace.push(`brain_used_contact_memory: ${brainUsedContactMemory}`);
+      currentCycle.trace.push(`brain_used_audio: ${brainUsedAudio}`);
 
       // ----------------------------------------------------------------------
       // STYLE LINT DETERMINÍSTICO & RETRY DE ESTILO (Máximo 1)
@@ -6746,7 +7380,7 @@ Gere sua resposta final estritamente no formato JSON abaixo:
         if (lintResult.requiresRetry) {
           currentCycle.trace.push(`style_lint_retry_triggered: ${lintResult.retryReason}`);
 
-          const retryPrompt = `${subagentPrompt}
+          const retryPrompt = `${executorPrompt}
 
 ### INSTRUÇÃO DE AJUSTE DE ESTILO (Style Lint Retry)
 Detectada inconsistência com a digitação da Larissa: ${lintResult.retryReason}
@@ -6876,7 +7510,7 @@ Responda ESTRITAMENTE em JSON puro:
       responses: finalSubDecision.responses,
       requiredTools: finalSubDecision.requiredTools || ["send_text"],
       reasoning: finalSubDecision.reasoning,
-      routedSubagent: targetSubagent as SubagentTarget,
+      routedSubagent: (responsibleSubagent || "descoberta") as SubagentTarget,
       audioId: finalSubDecision.audioId,
       audioUrl: finalSubDecision.audioUrl,
       objectiveCompletion: finalSubDecision.objectiveCompletion,
@@ -7116,7 +7750,7 @@ Responda ESTRITAMENTE em JSON puro:
           const aUrl = audioPayload?.audioUrl || decision.audioUrl;
           balloons = [`[audio:${aUrl}]`];
         } else if (decision.responses && decision.responses.length > 0) {
-          balloons = [...decision.responses];
+          balloons = decision.responses;
         } else if (decision.suggestedResponse) {
           balloons = splitIntoBalloons(decision.suggestedResponse);
         } else {
@@ -7673,6 +8307,7 @@ Responda ESTRITAMENTE em JSON puro:
           outbox: outboxMap,
           messageLedger: ledger,
           memory: mergedMemory,
+          liveState: currentLiveState,
         };
         (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
         (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;

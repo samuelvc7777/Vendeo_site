@@ -8,15 +8,11 @@ export const LARISSA_CHAT_STYLE_V2 = `=== FORMA DE DIGITAR & LINGUAGEM DE CELULA
 1. LINGUAGEM DE SMARTPHONE: Português coloquial real do dia a dia. Use: vc, tô, tá, pra, tbm, né, ué. NUNCA use "cê". NUNCA use "trampando", "trampo" ou "trampar" (use trabalho ou serviço).
 2. UAI RARO: "uai" é muito raro e opcional (máx 1 a cada 15 turnos). Nunca use como bordão ou muleta.
 3. HIERARQUIA DE RISADAS: Apenas "kkk" ou "kkkk" quando houver graça real. Proibido: hahaha, rs, rsrs, hehe. Proibido kkk em: graças a Deus, bênção, cansaço, problema, desabafo ou assunto sério. Maioria das falas sem risada.
-4. PONTUAÇÃO DE CELULAR: PROIBIDO terminar balão com ponto final (.). Preserve "?" em perguntas. Proibida pontuação formal de redação corporativa ou escolar. A maioria das falas termina solta com a palavra ou risada.
-   - PONTUAÇÃO PERMITIDA: vírgula (,), interrogação (?) e exclamação meiga (!).
-   - PONTUAÇÃO PROIBIDA: ponto final (.) no final dos balões, reticências excessivas (... ou …), ponto e vírgula (;), dois pontos (:), travessão (— ou –).
-5. MAIÚSCULA EM TODO BALÃO: Cada balão deve começar com seu primeiro caractere alfabético em maiúsculo (ex: "Nossa que legal", "🥰 Que bom").
-6. ESTRUTURA DOS BALÕES (responses: []):
+4. PONTUAÇÃO DE CELULAR: PROIBIDO terminar balão com ponto final (.). Preserve "?" em perguntas reais. Proibida pontuação formal (. ! ... ; : —). A maioria das falas termina solta com a palavra ou risada.
+5. ESTRUTURA DOS BALÕES (responses: []):
    - Mensagem simples: 1 a 2 balões curtos.
-   - Mensagem maior: 2 a 4 balões rápidos e proporcionais.
-   - Densidade: 3 a 18 palavras por balão. Evite textão em bloco único. Máximo 1 nova pergunta por turno.
-7. ZERO SUJEIRA: Proibido markdown (negrito, itálico), prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
+   - Mensagem maior: 2 a 4 balões rápidos e proporcionais (3 a 18 palavras por balão). Evite textão em bloco único.
+6. ZERO SUJEIRA: Proibido markdown, prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
 
 export const LARISSA_COMPACT_SUBAGENT_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
 Você conduz uma conversa natural como Larissa (23 anos, moça meiga de Minas Gerais).
@@ -262,9 +258,9 @@ export function capitalizeFirstLetter(text: string): string {
 
 /**
  * Normalizador determinístico de pontuação da Larissa:
- * - PONTUAÇÃO PERMITIDA: apenas vírgula (,), interrogação (?) e exclamação meiga (!)
- * - PONTUAÇÃO PROIBIDA: ponto final (.) no final dos balões, reticências (... ou …), ponto e vírgula (;), dois pontos (:), travessão (— ou –)
- * - Preserva pontos numéricos (ex: 250.000, 1.5)
+ * - PONTUAÇÃO PERMITIDA: SOMENTE vírgula (,) e interrogação (?)
+ * - PONTUAÇÃO PROIBIDA: ponto final (.), ponto de exclamação (!), reticências (... ou …), ponto e vírgula (;), dois pontos (:), travessão (— ou –)
+ * - Preserva pontos numéricos entre dígitos (ex: 250.000, 1.5)
  * - Garante que todo balão comece com caractere alfabético maiúsculo.
  */
 export function sanitizeChatPunctuation(rawText: string): string {
@@ -279,32 +275,39 @@ export function sanitizeChatPunctuation(rawText: string): string {
   // 1. Reticências (... ou …): converte para vírgula se estiver no meio da frase conectando orações, ou remove se no fim
   text = text.replace(/\.{2,}|…/g, (match, offset, fullStr) => {
     const after = fullStr.slice(offset + match.length).trim();
-    return after.length > 0 && !/^[,?!]/.test(after) ? ", " : " ";
+    return after.length > 0 && !/^[,?]/.test(after) ? ", " : " ";
   });
 
   // 2. Dois pontos, ponto-e-vírgula e travessões: convertem para vírgula
   text = text.replace(/[:;—–]/g, ", ");
 
-  // 3. Exclamações repetidas (!!+): normaliza para exclamação única
-  text = text.replace(/!{2,}/g, "!");
+  // 3. Exclamações (!): PROIBIDAS no padrão final da Larissa
+  // Se estiver no meio conectando orações: converte para vírgula. Se no final ou antes de pontuação: remove.
+  text = text.replace(/!+/g, (match, offset, fullStr) => {
+    const after = fullStr.slice(offset + match.length).trim();
+    return after.length > 0 && !/^[,?]/.test(after) ? ", " : " ";
+  });
 
-  // 4. Ponto final (.): converte para vírgula no meio ou remove se no fim, PRESERVANDO pontos numéricos entre dígitos (ex: 250.000 ou 1.5)
+  // 4. Interrogações compostas (?! ou !? ou ??+): normaliza para interrogação única
+  text = text.replace(/[?!]*\?[?!]*/g, "?");
+
+  // 5. Ponto final (.): converte para vírgula no meio ou remove se no fim, PRESERVANDO pontos numéricos entre dígitos (ex: 250.000 ou 1.5)
   text = text.replace(/(?<=\d)\.(?=\d)|(\.+)/g, (match, p1, offset, fullStr) => {
     if (!p1) {
       // Ponto único entre dígitos: preserva intacto
       return match;
     }
     const after = fullStr.slice(offset + match.length).trim();
-    return after.length > 0 && !/^[,?!]/.test(after) ? ", " : " ";
+    return after.length > 0 && !/^[,?]/.test(after) ? ", " : " ";
   });
 
-  // 5. Normaliza vírgulas repetidas ou adjacentes a interrogação/exclamação
+  // 6. Normaliza vírgulas repetidas ou adjacentes a interrogação
   text = text.replace(/\s*,\s*,+/g, ", ");
-  text = text.replace(/\s*,\s*([?!])/g, "$1");
+  text = text.replace(/\s*,\s*\?/g, "?");
   text = text.replace(/\s+/g, " ").trim();
   text = text.replace(/[,.]\s*$/, "").trim(); // Não termina balão com vírgula ou ponto solto
 
-  // 6. Garante maiúscula no primeiro caractere alfabético
+  // 7. Garante maiúscula no primeiro caractere alfabético
   text = capitalizeFirstLetter(text);
 
   return text;
@@ -391,15 +394,14 @@ export function runStyleLint(
       issues.push({ type: "mechanical", rule: "RS_ISOLADO", message: '"rs" isolado normalizado para "kkk".' });
     }
 
-    // Normalização mecânica de pontuação estrita (, e ?) e maiúscula inicial
-    const punctuated = sanitizeChatPunctuation(text);
-    if (punctuated !== text) {
+    // Ponto final SOMENTE no final do balão (preservando ?, !, ...)
+    if (/\.$/.test(text) && !/\.\.\.$/.test(text)) {
+      text = text.replace(/\.+$/, "");
       issues.push({
         type: "mechanical",
-        rule: "PONTUACAO_NORMALIZADA",
-        message: 'Pontuação formal/proibida (. ! ... ; : —) normalizada para pontuação de celular (, e ?).',
+        rule: "PONTO_FINAL_FINAL",
+        message: "Ponto final no fim do balão removido.",
       });
-      text = punctuated;
     }
 
     // Contabiliza emojis
@@ -593,8 +595,6 @@ export function runStyleLint(
     requiresRetry,
     retryReason,
     issues,
-    cleanedBalloons: cleaned
-      .filter(Boolean)
-      .map((b) => capitalizeFirstLetter(sanitizeChatPunctuation(b))),
+    cleanedBalloons: cleaned.filter(Boolean),
   };
 }
