@@ -114,6 +114,7 @@ async function runTests() {
     createOverlayMemoryProvider,
     commitExperimentalCycleAtomic,
     requestExperimentalCyclePreemptionAtomic,
+    ackCyclePreemptionAtomic,
     claimExperimentalCycleAtomic,
     claimExperimentalCycleMessagesAtomic,
     claimOutboxEntryAtomic,
@@ -4308,8 +4309,491 @@ async function runTests() {
     assert.equal(writeFactCalled, false, "Nenhum loop writeFact não-atômico deve ser chamado pós-CAS");
   });
 
+  // TESTE 73: HANDOFF NORMAL APÓS PREEMPÇÃO (Primitive Real)
+  await runTest(73, "HANDOFF NORMAL APÓS PREEMPÇÃO: Ciclo B adquire lock, faz ACK da preempção herdada e claima mensagens com sucesso", async () => {
+    let convRow = {
+      id: "conv_test_73",
+      stage_completed_rules: {
+        active_cycle_token: "cycle_a",
+        preempt_requested: false,
+        orchestration: {
+          inboundRevision: 5,
+          messageLedger: {},
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        const rules = convRow.stage_completed_rules;
+        const orch = rules.orchestration || {};
+
+        if (fn === "request_experimental_cycle_preemption") {
+          rules.preempt_requested = true;
+          orch.inboundRevision = (orch.inboundRevision || 0) + 1;
+          if (params.p_message_id) {
+            orch.messageLedger = orch.messageLedger || {};
+            orch.messageLedger[params.p_message_id] = "pending";
+          }
+          rules.orchestration = orch;
+          return Promise.resolve({
+            data: { success: true, newInboundRevision: orch.inboundRevision },
+            error: null,
+          });
+        }
+
+        if (fn === "release_experimental_cycle_if_owned") {
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { released: false, reason: "token_mismatch" }, error: null });
+          }
+          rules.active_cycle_token = null;
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+
+        if (fn === "claim_experimental_cycle") {
+          if (rules.active_cycle_token !== null) {
+            return Promise.resolve({ data: { success: false, reason: "lock_active" }, error: null });
+          }
+          rules.active_cycle_token = params.p_cycle_token;
+          return Promise.resolve({ data: { success: true, reason: "acquired" }, error: null });
+        }
+
+        if (fn === "ack_experimental_cycle_preemption") {
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { acknowledged: false, reason: "cycle_token_mismatch" }, error: null });
+          }
+          const curRev = orch.inboundRevision || 0;
+          if (curRev === params.p_expected_inbound_revision) {
+            rules.preempt_requested = false;
+            orch.preemptRequested = false;
+            return Promise.resolve({ data: { acknowledged: true, currentRevision: curRev, reason: "preemption_acknowledged" }, error: null });
+          }
+          if (curRev > params.p_expected_inbound_revision) {
+            return Promise.resolve({ data: { acknowledged: false, currentRevision: curRev, reason: "newer_revision_detected" }, error: null });
+          }
+          return Promise.resolve({ data: { acknowledged: false, reason: "unexpected_revision_state" }, error: null });
+        }
+
+        if (fn === "claim_experimental_cycle_messages") {
+          if (rules.active_cycle_token !== params.p_cycle_token) {
+            return Promise.resolve({ data: { success: false, reason: "cycle_token_mismatch" }, error: null });
+          }
+          if (rules.preempt_requested) {
+            return Promise.resolve({ data: { success: false, reason: "cycle_preempted" }, error: null });
+          }
+          orch.messageLedger = orch.messageLedger || {};
+          for (const mid of params.p_message_ids || []) {
+            orch.messageLedger[mid] = "claimed";
+          }
+          orch.lastProcessingStatus = "processing";
+          return Promise.resolve({ data: { success: true, reason: "messages_claimed" }, error: null });
+        }
+
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // 1. Webhook recebe msg_b: request_experimental_cycle_preemption
+    const reqRes = await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_73",
+      messageId: "msg_b",
+    });
+    assert.equal(reqRes.success, true);
+    assert.equal(convRow.stage_completed_rules.preempt_requested, true);
+    assert.equal(convRow.stage_completed_rules.orchestration.inboundRevision, 6);
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_b, "pending");
+
+    // 2. Ciclo A libera o ciclo
+    const relRes = await releaseExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_73",
+      cycleToken: "cycle_a",
+    });
+    assert.equal(relRes.released, true);
+    assert.equal(convRow.stage_completed_rules.active_cycle_token, null);
+    assert.equal(convRow.stage_completed_rules.preempt_requested, true, "preempt_requested continua true após release de A");
+
+    // 3. Ciclo B lê snapshot (revision=6) e faz claim_experimental_cycle
+    const snapshotRevision = convRow.stage_completed_rules.orchestration.inboundRevision;
+    assert.equal(snapshotRevision, 6);
+
+    const claimRes = await claimExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_73",
+      cycleToken: "cycle_b",
+    });
+    assert.equal(claimRes.success, true);
+    assert.equal(convRow.stage_completed_rules.active_cycle_token, "cycle_b");
+
+    // 4. Ciclo B chama ACK IMEDIATAMENTE com expectedRevision=6
+    const ackRes = await ackCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_73",
+      correlationId: "cycle_b",
+      expectedInboundRevision: 6,
+    });
+    assert.equal(ackRes.acknowledged, true);
+    assert.equal(convRow.stage_completed_rules.preempt_requested, false, "preempt_requested foi limpo no ACK");
+    assert.equal(convRow.stage_completed_rules.orchestration.preemptRequested, false);
+    assert.equal(convRow.stage_completed_rules.orchestration.inboundRevision, 6);
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_b, "pending");
+
+    // 5. Ciclo B agora chama claim_experimental_cycle_messages
+    const claimMsgRes = await claimExperimentalCycleMessagesAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_73",
+      cycleToken: "cycle_b",
+      messageIds: ["msg_b"],
+    });
+    assert.equal(claimMsgRes.success, true);
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_b, "claimed");
+  });
+
+  // TESTE 74: NOVA INBOUND ANTES DO ACK
+  await runTest(74, "NOVA INBOUND ANTES DO ACK: Inbound mais nova detectada no ACK aborta sem limpar flags de preempção", async () => {
+    let convRow = {
+      id: "conv_test_74",
+      stage_completed_rules: {
+        active_cycle_token: null,
+        preempt_requested: true,
+        orchestration: {
+          inboundRevision: 6,
+          messageLedger: { msg_b: "pending" },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        const rules = convRow.stage_completed_rules;
+        const orch = rules.orchestration || {};
+
+        if (fn === "claim_experimental_cycle") {
+          rules.active_cycle_token = params.p_cycle_token;
+          return Promise.resolve({ data: { success: true, reason: "acquired" }, error: null });
+        }
+
+        if (fn === "request_experimental_cycle_preemption") {
+          rules.preempt_requested = true;
+          orch.inboundRevision = (orch.inboundRevision || 0) + 1;
+          if (params.p_message_id) {
+            orch.messageLedger = orch.messageLedger || {};
+            orch.messageLedger[params.p_message_id] = "pending";
+          }
+          rules.orchestration = orch;
+          return Promise.resolve({ data: { success: true, newInboundRevision: orch.inboundRevision }, error: null });
+        }
+
+        if (fn === "ack_experimental_cycle_preemption") {
+          const curRev = orch.inboundRevision || 0;
+          if (curRev > params.p_expected_inbound_revision) {
+            return Promise.resolve({
+              data: {
+                acknowledged: false,
+                currentRevision: curRev,
+                expectedRevision: params.p_expected_inbound_revision,
+                reason: "newer_revision_detected",
+              },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: { acknowledged: true, currentRevision: curRev }, error: null });
+        }
+
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // B leu snapshot com revision=6
+    const snapshotRevision = 6;
+
+    // B adquire cycle_b
+    const claimRes = await claimExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_74",
+      cycleToken: "cycle_b",
+    });
+    assert.equal(claimRes.success, true);
+
+    // ANTES do ACK, chega msg_c!
+    await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_74",
+      messageId: "msg_c",
+    });
+    assert.equal(convRow.stage_completed_rules.orchestration.inboundRevision, 7);
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_c, "pending");
+
+    // B chama ACK com expectedRevision=6
+    const ackRes = await ackCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_74",
+      correlationId: "cycle_b",
+      expectedInboundRevision: snapshotRevision,
+    });
+
+    assert.equal(ackRes.acknowledged, false);
+    assert.equal(ackRes.reason, "newer_revision_detected");
+    assert.equal(convRow.stage_completed_rules.preempt_requested, true, "preempt_requested continua true");
+    assert.equal(convRow.stage_completed_rules.orchestration.inboundRevision, 7, "inboundRevision permanece 7");
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_c, "pending", "msg_c continua pending");
+  });
+
+  // TESTE 75: NOVA INBOUND ENTRE ACK E CLAIM MESSAGES
+  await runTest(75, "NOVA INBOUND ENTRE ACK E CLAIM MESSAGES: Mensagem que chega após ACK bloqueia claim_experimental_cycle_messages", async () => {
+    let convRow = {
+      id: "conv_test_75",
+      stage_completed_rules: {
+        active_cycle_token: null,
+        preempt_requested: true,
+        orchestration: {
+          inboundRevision: 6,
+          messageLedger: { msg_b: "pending" },
+        },
+      },
+    };
+
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        const rules = convRow.stage_completed_rules;
+        const orch = rules.orchestration || {};
+
+        if (fn === "claim_experimental_cycle") {
+          rules.active_cycle_token = params.p_cycle_token;
+          return Promise.resolve({ data: { success: true, reason: "acquired" }, error: null });
+        }
+
+        if (fn === "ack_experimental_cycle_preemption") {
+          rules.preempt_requested = false;
+          orch.preemptRequested = false;
+          return Promise.resolve({ data: { acknowledged: true, currentRevision: orch.inboundRevision, reason: "preemption_acknowledged" }, error: null });
+        }
+
+        if (fn === "request_experimental_cycle_preemption") {
+          rules.preempt_requested = true;
+          orch.inboundRevision = (orch.inboundRevision || 0) + 1;
+          if (params.p_message_id) {
+            orch.messageLedger = orch.messageLedger || {};
+            orch.messageLedger[params.p_message_id] = "pending";
+          }
+          rules.orchestration = orch;
+          return Promise.resolve({ data: { success: true, newInboundRevision: orch.inboundRevision }, error: null });
+        }
+
+        if (fn === "claim_experimental_cycle_messages") {
+          if (rules.preempt_requested) {
+            return Promise.resolve({ data: { success: false, reason: "cycle_preempted" }, error: null });
+          }
+          return Promise.resolve({ data: { success: true, reason: "messages_claimed" }, error: null });
+        }
+
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+    };
+
+    // 1. Claim cycle_b
+    await claimExperimentalCycleAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_75",
+      cycleToken: "cycle_b",
+    });
+
+    // 2. ACK com sucesso
+    const ackRes = await ackCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_75",
+      correlationId: "cycle_b",
+      expectedInboundRevision: 6,
+    });
+    assert.equal(ackRes.acknowledged, true);
+    assert.equal(convRow.stage_completed_rules.preempt_requested, false);
+
+    // 3. ANTES de claim_experimental_cycle_messages, chega msg_c!
+    await requestExperimentalCyclePreemptionAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_75",
+      messageId: "msg_c",
+    });
+    assert.equal(convRow.stage_completed_rules.preempt_requested, true);
+    assert.equal(convRow.stage_completed_rules.orchestration.inboundRevision, 7);
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_c, "pending");
+
+    // 4. B tenta claimar mensagens
+    const claimMsgRes = await claimExperimentalCycleMessagesAtomic({
+      supabase: mockSupabase,
+      conversationId: "conv_test_75",
+      cycleToken: "cycle_b",
+      messageIds: ["msg_b"],
+    });
+
+    assert.equal(claimMsgRes.success, false);
+    assert.equal(claimMsgRes.reason, "cycle_preempted");
+    assert.equal(convRow.stage_completed_rules.preempt_requested, true, "preempt_requested continua true");
+    assert.equal(convRow.stage_completed_rules.orchestration.inboundRevision, 7);
+    assert.equal(convRow.stage_completed_rules.orchestration.messageLedger.msg_c, "pending");
+  });
+
+  // TESTE 76: NÃO EXISTE LOOP DE PREEMPÇÃO
+  await runTest(76, "NÃO EXISTE LOOP DE PREEMPÇÃO: Ciclo B assume preempção herdada, conclui turno e não re-preempta ciclos futuros", async () => {
+    let convRow = {
+      id: "conv_test_76",
+      is_restricted: false,
+      stage_completed_rules: {
+        active_cycle_token: null,
+        preempt_requested: true,
+        orchestration: {
+          version: 1,
+          mode: "experimental",
+          currentPhase: "conexao_inicial",
+          currentStageId: "stage_1_conexao",
+          responsibleSubagentId: "conexao_inicial",
+          checkpoint: "chk_saudacao_feita",
+          completedGoalIds: ["goal_initial_reciprocity"],
+          objectiveProgress: {
+            goal_initial_reciprocity: { status: "completed", value: true },
+          },
+          inboundRevision: 6,
+          messageLedger: { msg_b: "pending" },
+          outbox: {},
+        },
+      },
+    };
+
+    let metaCalls = 0;
+    const mockSupabase = {
+      rpc: (fn, params) => {
+        const rules = convRow.stage_completed_rules;
+        const orch = rules.orchestration || {};
+
+        if (fn === "claim_experimental_cycle") {
+          rules.active_cycle_token = params.p_cycle_token;
+          return Promise.resolve({ data: { success: true, reason: "acquired" }, error: null });
+        }
+
+        if (fn === "ack_experimental_cycle_preemption") {
+          const curRev = orch.inboundRevision || 0;
+          if (curRev === params.p_expected_inbound_revision) {
+            rules.preempt_requested = false;
+            orch.preemptRequested = false;
+            return Promise.resolve({ data: { acknowledged: true, currentRevision: curRev, reason: "preemption_acknowledged" }, error: null });
+          }
+          return Promise.resolve({ data: { acknowledged: false, reason: "revision_mismatch" }, error: null });
+        }
+
+        if (fn === "claim_experimental_cycle_messages") {
+          if (rules.preempt_requested) {
+            return Promise.resolve({ data: { success: false, reason: "cycle_preempted" }, error: null });
+          }
+          orch.messageLedger = orch.messageLedger || {};
+          for (const mid of params.p_message_ids || []) {
+            orch.messageLedger[mid] = "claimed";
+          }
+          orch.lastProcessingStatus = "processing";
+          return Promise.resolve({ data: { success: true, reason: "messages_claimed" }, error: null });
+        }
+
+        if (fn === "prepare_experimental_outbox_entry") {
+          return Promise.resolve({ data: { prepared: true, reason: "prepared" }, error: null });
+        }
+
+        if (fn === "claim_outbox_entry") {
+          return Promise.resolve({ data: { success: true, claimed: true, reason: "claimed" }, error: null });
+        }
+
+        if (fn === "commit_experimental_cycle_if_owned") {
+          convRow.stage_completed_rules = {
+            ...params.p_new_stage_completed_rules,
+            active_cycle_token: null,
+            preempt_requested: false,
+          };
+          return Promise.resolve({ data: { committed: true, reason: "committed" }, error: null });
+        }
+
+        if (fn === "release_experimental_cycle_if_owned") {
+          rules.active_cycle_token = null;
+          return Promise.resolve({ data: { released: true, reason: "released" }, error: null });
+        }
+
+        return Promise.resolve({ data: null, error: "unknown_rpc" });
+      },
+      from: (table) => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: table === "instagram_conversations" ? convRow : null,
+              error: null,
+            }),
+            order: () => ({
+              range: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_b", text: "oi Larissa tudo bem?", sender_id: "pretendente", is_mine: false, created_at: new Date().toISOString() }
+                ] : [],
+                error: null,
+              }),
+              limit: () => Promise.resolve({
+                data: table === "instagram_messages" ? [
+                  { id: "msg_b", text: "oi Larissa tudo bem?", sender_id: "pretendente", is_mine: false, created_at: new Date().toISOString() }
+                ] : [],
+                error: null,
+              }),
+            }),
+          }),
+          order: () => Promise.resolve({
+            data: table === "subagents_catalog"
+              ? [{ id: "conexao_inicial", enabled: true }]
+              : table === "chat_stages"
+              ? CANONICAL_CHAT_STAGES_MATRIX
+              : [],
+            error: null,
+          }),
+        }),
+        upsert: () => ({
+          select: () => Promise.resolve({ data: [{ id: "ep_76" }], error: null }),
+        }),
+        update: () => ({
+          eq: () => Promise.resolve({ data: null, error: null }),
+        }),
+      }),
+    };
+
+    const runtime = {
+      _fastTest: true,
+      callModel: async () => ({
+        content: JSON.stringify({
+          action: "reply",
+          suggestedResponse: "Oi! Tudo ótimo por aqui e com vc?",
+          checkpoint: "chk_saudacao_feita",
+        }),
+        tokens: 30,
+      }),
+      sendMetaTextMessage: async () => {
+        metaCalls++;
+        return { message_id: "meta_mid_76" };
+      },
+    };
+
+    const res = await runExperimentalOrchestration({
+      supabase: mockSupabase,
+      conversationId: "conv_test_76",
+      correlationId: "cycle_b_76",
+      newMessage: {
+        id: "msg_b",
+        text: "oi Larissa tudo bem?",
+        sender: "pretendente",
+        timestamp: new Date().toISOString(),
+      },
+      runtime,
+    });
+
+    assert.equal(res.handled, true, "Ciclo B deve processar com sucesso após consumir preempção herdada");
+    assert.equal(res.sentToMeta, true, "Mensagem enviada com sucesso à Meta");
+    assert.equal(metaCalls, 1, "Exatamente 1 envio à Meta");
+    assert.equal(convRow.stage_completed_rules.preempt_requested, false, "preempt_requested deve estar limpo após o commit");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🎉 TODOS OS ${passed}/72 TESTES FORAM APROVADOS COM SUCESSO!`);
+  console.log(`🎉 TODOS OS ${passed}/76 TESTES FORAM APROVADOS COM SUCESSO!`);
   console.log("================================================================================\n");
 }
 

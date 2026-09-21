@@ -1470,11 +1470,15 @@ export async function ackCyclePreemptionAtomic(
       };
     }
 
+    const isAck =
+      data.acknowledged !== undefined
+        ? Boolean(data.acknowledged)
+        : Boolean(data.success);
     return {
-      acknowledged: Boolean(data.acknowledged),
+      acknowledged: isAck,
       currentRevision: data.currentRevision,
       expectedRevision: data.expectedRevision,
-      reason: data.reason || "unknown",
+      reason: data.reason || (isAck ? "preemption_acknowledged" : "unknown"),
     };
   } catch (err: any) {
     console.warn(
@@ -5498,6 +5502,104 @@ export async function runExperimentalOrchestration(
   const activeLockAt = stageRules.active_cycle_at ? Date.parse(stageRules.active_cycle_at) : 0;
 
   try {
+    const initialInboundRevision =
+      typeof orchState.inboundRevision === "number"
+        ? orchState.inboundRevision
+        : typeof stageRules.inbound_revision === "number"
+        ? stageRules.inbound_revision
+        : 0;
+
+    currentCycle = {
+      cycleId: correlationId,
+      conversationId,
+      claimedMessageIds: [],
+      startedAt: new Date().toISOString(),
+      status: "in_progress",
+      agentVersions: {
+        router: "1.2.0",
+        subagent: "1.2.0",
+        prompt: "1.2.0",
+      },
+      inputWatermark: {
+        revision: initialInboundRevision,
+        claimedCount: 0,
+        snapshotTimestamp: new Date().toISOString(),
+      },
+      trace: [
+        `cycle_started: ${correlationId}`,
+        `input_watermark: rev=${initialInboundRevision}`,
+      ],
+    };
+
+    // ACK ATÔMICO REVISION-AWARE DE PREEMPÇÃO HERDADA:
+    // O NOVO owner precisa reconhecer a preempção herdada ANTES de tentar claimar as mensagens!
+    const ackRes = await ackCyclePreemptionAtomic({
+      supabase,
+      conversationId,
+      correlationId,
+      expectedInboundRevision: initialInboundRevision,
+    });
+
+    if (ackRes.acknowledged) {
+      stageRules.preempt_requested = false;
+      orchState.preemptRequested = false;
+      currentCycle.trace.push(`preemption_acknowledged: rev=${initialInboundRevision}`);
+    } else if (ackRes.reason === "newer_revision_detected") {
+      console.warn(
+        `[Orchestrator] Nova inbound detectada antes do ACK de preempção para ciclo ${correlationId} em ${conversationId} (current=${ackRes.currentRevision}, expected=${initialInboundRevision}). Abortando sem limpar preempção.`
+      );
+      currentCycle.status = "superseded";
+      currentCycle.trace.push(
+        `preemption_ack_failed_newer_revision: current=${ackRes.currentRevision}, expected=${initialInboundRevision}`
+      );
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        debounceUntil: new Date(Date.now() + 2500).toISOString(),
+        cycleRecord: currentCycle,
+      });
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: "Ciclo preemptado por nova mensagem inbound recebida antes do ACK (newer_revision_detected)",
+      };
+    } else if (ackRes.reason === "cycle_token_mismatch") {
+      console.warn(
+        `[Orchestrator] Ciclo ${correlationId} perdeu ownership para outro ciclo antes do ACK em ${conversationId}. Abortando sem modificar estado.`
+      );
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: "Ciclo preemptado por perda de custódia inicial (cycle_token_mismatch)",
+      };
+    } else {
+      // Fail closed: qualquer falha na RPC ou estado inesperado aborta com segurança
+      console.error(
+        `[Orchestrator] FAIL CLOSED: Falha na RPC ack_experimental_cycle_preemption para ${conversationId} (motivo=${ackRes.reason}). Abortando.`
+      );
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        lastError: `Falha ao reconhecer preempção: ${ackRes.reason}`,
+        cycleRecord: currentCycle,
+      });
+      return {
+        mode: orchState.mode,
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: `Falha de infraestrutura ao reconhecer preempção (fail_closed: ${ackRes.reason})`,
+      };
+    }
+
     // 4. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
     if (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual") {
       console.log(`[Orchestrator] Ciclo cancelado pelo operador para ${conversationId}.`);
@@ -5507,6 +5609,7 @@ export async function runExperimentalOrchestration(
         cycleToken: correlationId,
         processingStatus: "idle",
         clearCancelFlag: true,
+        cycleRecord: currentCycle,
       });
       return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
@@ -5558,9 +5661,6 @@ export async function runExperimentalOrchestration(
           if (!isProcessed) {
             collectedPendingRaw.push({ ...msg, status: "pending" });
           }
-          // Nota: Não interrompe ao encontrar mensagem processada. O ledger é a fonte
-          // da verdade e todas as pendentes da conversa devem ser coletadas, mesmo que
-          // existam inbounds intercaladas ou processadas anteriormente.
         }
       }
 
@@ -5609,6 +5709,13 @@ export async function runExperimentalOrchestration(
 
     if (pendingMessages.length === 0) {
       console.log(`[Orchestrator] Nenhuma mensagem pendente para ${conversationId}. Abortando por idempotência.`);
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        cycleRecord: currentCycle,
+      });
       return { mode: orchState.mode, handled: true, skippedDuplicate: true, blockLegacyFallback: true };
     }
 
@@ -5637,6 +5744,16 @@ export async function runExperimentalOrchestration(
       console.warn(
         `[Orchestrator] Falha no claim atômico de mensagens para ciclo ${correlationId} em ${conversationId} (motivo=${claimMsgsRes.reason}). Abortando ciclo.`
       );
+      currentCycle.status = "superseded";
+      currentCycle.trace.push(`claim_messages_failed: ${claimMsgsRes.reason}`);
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        lastError: `Falha no claim de mensagens: ${claimMsgsRes.reason}`,
+        cycleRecord: currentCycle,
+      });
       if (claimMsgsRes.reason === "cycle_preempted") {
         return {
           mode: orchState.mode,
@@ -5655,31 +5772,10 @@ export async function runExperimentalOrchestration(
       };
     }
 
-    const initialInboundRevision =
-      typeof orchState.inboundRevision === "number" ? orchState.inboundRevision : 0;
-
-    currentCycle = {
-      cycleId: correlationId,
-      conversationId,
-      claimedMessageIds,
-      startedAt: new Date().toISOString(),
-      status: "in_progress",
-      agentVersions: {
-        router: "1.2.0",
-        subagent: "1.2.0",
-        prompt: "1.2.0",
-      },
-      inputWatermark: {
-        revision: initialInboundRevision,
-        claimedCount: claimedMessageIds.length,
-        snapshotTimestamp: new Date().toISOString(),
-      },
-      trace: [
-        `cycle_started: ${correlationId}`,
-        `input_watermark: rev=${initialInboundRevision}, count=${claimedMessageIds.length}`,
-        `messages_claimed: ${claimedMessageIds.length}`,
-      ],
-    };
+    currentCycle.claimedMessageIds = claimedMessageIds;
+    currentCycle.inputWatermark.claimedCount = claimedMessageIds.length;
+    currentCycle.trace.push(`input_watermark: rev=${initialInboundRevision}, count=${claimedMessageIds.length}`);
+    currentCycle.trace.push(`messages_claimed: ${claimedMessageIds.length}`);
 
     // Helper atômico de preempção segura contra ciclos zumbis e concorrência
     async function handleCyclePreemption(
@@ -5736,41 +5832,6 @@ export async function runExperimentalOrchestration(
         sentToMeta: false,
         blockLegacyFallback: true,
         error: `Ciclo preemptado por nova mensagem inbound (${reasonLabel})`,
-      };
-    }
-
-    // ACK ATÔMICO REVISION-AWARE DE PREEMPÇÃO:
-    // Reconhece atomicamente a preempção do ciclo anterior e limpa as flags preempt_requested
-    // SOMENTE se nenhuma nova mensagem tiver chegado após o snapshot (inboundRevision bate).
-    const ackRes = await ackCyclePreemptionAtomic({
-      supabase,
-      conversationId,
-      correlationId,
-      expectedInboundRevision: initialInboundRevision,
-    });
-
-    if (ackRes.acknowledged) {
-      stageRules.preempt_requested = false;
-      orchState.preemptRequested = false;
-      currentCycle.trace.push(`preemption_acknowledged: rev=${initialInboundRevision}`);
-    } else if (ackRes.reason === "newer_revision_detected") {
-      const newerCount = (ackRes.currentRevision || initialInboundRevision + 1) - initialInboundRevision;
-      return await handleCyclePreemption("during_cycle_initialization", {
-        isFresh: false,
-        newerInboundCount: newerCount,
-        newerInboundIds: [],
-        reason: "newer_revision_detected",
-      });
-    } else if (ackRes.reason === "cycle_token_mismatch") {
-      console.warn(
-        `[Orchestrator] Ciclo ${correlationId} perdeu a custódia antes do início em ${conversationId}. Abortando.`
-      );
-      return {
-        mode: orchState.mode,
-        handled: false,
-        sentToMeta: false,
-        blockLegacyFallback: true,
-        error: `Ciclo preemptado por perda de custódia inicial`,
       };
     }
 
@@ -6652,12 +6713,15 @@ Responda ESTRITAMENTE em JSON puro:
     currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
     // Persiste imediatamente a Outbox com status 'pending' no banco via patch atômico no PostgreSQL
-    await prepareExperimentalOutboxEntryAtomic({
-      supabase,
-      conversationId,
-      cycleToken: correlationId,
-      outboxEntry,
-    });
+    // No modo Shadow: NÃO prepara outbox operacional como intenção de envio real
+    if (orchState.mode !== "shadow") {
+      await prepareExperimentalOutboxEntryAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        outboxEntry,
+      });
+    }
 
     // ------------------------------------------------------------------------
     // MODO SHADOW: Registra tudo sem envio externo à Meta
@@ -6728,7 +6792,6 @@ Responda ESTRITAMENTE em JSON puro:
         processingStatus: "shadow_logged",
         markProcessedIds: claimedMessageIds,
         cycleRecord: currentCycle,
-        outboxMap: outboxMap,
       });
 
       await publishAutoPilotState(supabase, conversationId, {

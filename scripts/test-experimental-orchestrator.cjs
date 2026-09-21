@@ -3508,6 +3508,9 @@ test('53. Webhook Real Fim-a-Fim: falha de infraestrutura na RPC do Postgres blo
       if (fnName === 'prepare_experimental_outbox_entry') {
         return { data: { success: true, outboxKey: params?.p_outbox_entry?.id }, error: null };
       }
+      if (fnName === 'ack_experimental_cycle_preemption') {
+        return { data: { acknowledged: true, reason: 'preemption_acknowledged' }, error: null };
+      }
       if (fnName === 'release_experimental_cycle_if_owned') {
         if (params?.p_revert_message_ids) {
           for (const mid of params.p_revert_message_ids) {
