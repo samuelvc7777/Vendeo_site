@@ -8993,7 +8993,7 @@ test('194. Saudação ruim usa fallback validado e despacha exatamente o único 
     supabase, conversationId, correlationId: 'cycle_194',
     newMessage: { id: 'm_194', text: 'Oii, tudo bem?', timestamp: '2026-09-21T12:00:00Z', sender: 'c1' }, runtime,
   });
-  assert.deepEqual(delivered, ['tô bem sim, e vc?']);
+  assert.deepEqual(delivered, ['Tô bem sim, e vc?']);
   assert.equal(JSON.stringify(result.decision.responses), JSON.stringify(delivered));
   assert.equal(result.decision.suggestedResponse, delivered[0]);
   const outbox = supabase.getConversationData().stage_completed_rules.orchestration.outbox;
@@ -9003,3 +9003,64 @@ test('194. Saudação ruim usa fallback validado e despacha exatamente o único 
   assert.ok(trace.includes('conversation_quality_retry=true'));
   assert.ok(trace.includes('final_quality_passed=true'));
 });
+
+test('195. Backend corrige answerKind=freeform incorreto do Brain para current_activity em elipse de trabalho', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const conversationId = 'conv_infer_kind_195';
+  const supabase = createMockSupabase({
+    id: conversationId,
+    stage_completed_rules: { orchestration: { mode: 'experimental', currentPhase: 'conexao_inicial' } },
+  }, [{ id: 'm_195', conversation_id: conversationId, sender_id: 'c1', is_mine: false, text: 'Estou indo trabalhar e você?', created_at: '2026-09-21T12:00:00Z' }]);
+  const delivered = [];
+  const runtime = {
+    _fastTest: true,
+    callModel: async (prompt) => prompt.includes('CONVERSATION BRAIN')
+      ? { content: JSON.stringify({
+          action: 'delegate_mission', responsibleSubagent: 'conexao_inicial', objectiveDecision: 'defer', liveStatePatch: {},
+          missionPackage: {
+            turnContract: {
+              directQuestions: [{ id: 'q1', text: 'e você?', mustAnswer: true, answerKind: 'freeform', answerIntent: 'Pergunta genérica', requiredFacts: [] }],
+              mustAnswerFirst: true, newQuestionBudget: 1, responseShape: 'answer_and_reciprocate', maxBalloons: 2, preferNoEmoji: true
+            }
+          }
+        }), tokens: 20 }
+      : { content: JSON.stringify({ action: 'reply', responses: ['Tô indo pro estágio também', 'Vc trabalha com oq?'], suggestedResponse: 'Tô indo pro estágio também\n\nVc trabalha com oq?', checkpoint: 'chk_saudacao_feita', summary: 'trabalho', nextPhase: 'conexao_inicial' }), tokens: 20 },
+    sendMetaTextMessage: async (_sb, _id, text) => { delivered.push(text); return { success: true, message_id: `meta_${delivered.length}` }; },
+  };
+  const result = await runExperimentalOrchestration({
+    supabase, conversationId, correlationId: 'cycle_195',
+    newMessage: { id: 'm_195', text: 'Estou indo trabalhar e você?', timestamp: '2026-09-21T12:00:00Z', sender: 'c1' }, runtime,
+  });
+  assert.equal(result.decision.action, 'reply');
+  assert.deepEqual(delivered, ['Tô indo pro estágio também', 'Vc trabalha com oq?']);
+  assert.equal(result.decision.responses[0], 'Tô indo pro estágio também');
+  const trace = supabase.getConversationData().stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(trace.includes('final_quality_passed=true'));
+});
+
+test('196. Telemetria de subagente limpa: routedSubagent assume "none" quando ausente e evita descoberta arbitrário', () => {
+  const { load } = createRuntime();
+  const { validateOrchestratorDecision } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  const baseDecision = {
+    action: 'reply',
+    currentPhase: 'conexao_inicial',
+    nextPhase: 'conexao_inicial',
+    checkpoint: 'chk_saudacao_reciproca',
+    summary: 'Aguardando',
+    suggestedResponse: 'Olá!',
+    requiredTools: [],
+    reasoning: 'Sem subagente executado',
+  };
+
+  const parsedNone = validateOrchestratorDecision({ ...baseDecision, routedSubagent: 'none' });
+  assert.equal(parsedNone.routedSubagent, 'none');
+
+  const resolveTelemetrySubagent = (sub) => (sub || 'none');
+  assert.equal(resolveTelemetrySubagent(''), 'none');
+  assert.equal(resolveTelemetrySubagent(undefined), 'none');
+  assert.equal(resolveTelemetrySubagent(null), 'none');
+  assert.notEqual(resolveTelemetrySubagent(''), 'descoberta');
+});
+

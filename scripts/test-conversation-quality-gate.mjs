@@ -77,11 +77,32 @@ assert(gate('tenho 27 anos, e vc?', ['Tenho 23'], { directQuestions: [] }).contr
 assert(gate('gosto de praia, e vc?', ['Eu amo praia'], { directQuestions: [] }).contract.directQuestions[0]?.answerKind === 'preference', 'Elipse herda preference');
 assert(gate('tô bem, e vc?', ['Tô bem também'], { directQuestions: [] }).contract.directQuestions[0]?.answerKind === 'wellbeing', 'Elipse herda wellbeing');
 {
-  const persona = gate('Vc faz estágio de quê?', ['Faço estágio de enfermagem'], {
+  const personaEmptyFacts = gate('Vc faz estágio de quê?', ['Moro em São João'], {
+    directQuestions: [{ id: 'q1', text: 'Vc faz estágio de quê?', mustAnswer: true, answerKind: 'persona_fact', answerIntent: 'Informar estágio', requiredFacts: [] }],
+    newQuestionBudget: 0,
+  });
+  assert(!personaEmptyFacts.result.passed, 'persona_fact sem requiredFacts não aceita frase arbitrária');
+  assert(personaEmptyFacts.result.issues.some((issue) => issue.code === 'DIRECT_QUESTION_UNANSWERED'), 'persona_fact sem fatos comprovados gera DIRECT_QUESTION_UNANSWERED');
+
+  const personaWithFacts = gate('Vc faz estágio de quê?', ['Faço estágio de enfermagem'], {
     directQuestions: [{ id: 'q1', text: 'Vc faz estágio de quê?', mustAnswer: true, answerKind: 'persona_fact', answerIntent: 'Informar estágio', requiredFacts: ['enfermagem'] }],
     newQuestionBudget: 0,
   });
-  assert(persona.result.directQuestionsAnswered === 1 && persona.result.passed, 'persona_fact exige e aceita o fato obrigatório');
+  assert(personaWithFacts.result.directQuestionsAnswered === 1 && personaWithFacts.result.passed, 'persona_fact exige e aceita o fato obrigatório');
+}
+
+// Backend tem autoridade sobre inferência de alta confiança (Brain não pode rebaixar para freeform)
+{
+  const testKindOverride = (inbound, brainKind, expectedKind) => {
+    const res = gate(inbound, ['Tô bem'], {
+      directQuestions: [{ id: 'q1', text: 'e vc?', mustAnswer: true, answerKind: brainKind, answerIntent: 'Teste', requiredFacts: [] }]
+    });
+    return res.contract.directQuestions[0]?.answerKind;
+  };
+  assert(testKindOverride('Estou indo trabalhar e você?', 'freeform', 'current_activity') === 'current_activity', 'Backend impõe current_activity');
+  assert(testKindOverride('tenho 27 anos, e vc?', 'freeform', 'age') === 'age', 'Backend impõe age');
+  assert(testKindOverride('moro em Barbacena, e vc?', 'freeform', 'location') === 'location', 'Backend impõe location');
+  assert(testKindOverride('tô bem, e vc?', 'freeform', 'wellbeing') === 'wellbeing', 'Backend impõe wellbeing');
 }
 
 console.log('\n🧪 Mini sequência semântica');

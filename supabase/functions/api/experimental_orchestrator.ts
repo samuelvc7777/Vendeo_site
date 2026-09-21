@@ -7602,14 +7602,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               `anti_repeat_gate_blocked: pruned=${antiRepeatResult.blockedBalloons.length}, remaining=${finalAfterAntiRepeat.length}`
             );
           }
+          const normalizedAfterAntiRepeat = finalAfterAntiRepeat
+            .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+            .filter(Boolean);
           let finalQualityResult = runConversationQualityGate({
             inboundMessages: inboundTexts,
-            candidateBalloons: finalAfterAntiRepeat,
+            candidateBalloons: normalizedAfterAntiRepeat,
             turnContract,
           });
           currentCycle.trace.push(`post_antirepeat_quality_passed=${finalQualityResult.passed}`);
           currentCycle.trace.push(`post_antirepeat_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
-          let authoritativeBalloons = finalAfterAntiRepeat;
+          let authoritativeBalloons = normalizedAfterAntiRepeat;
           if (!finalQualityResult.passed && !qualityFallbackUsed) {
             const finalFallback = safeHighConfidenceFallback(inboundTexts, turnContract);
             if (finalFallback) {
@@ -7620,13 +7623,16 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
                 isRetry: true,
               });
+              const normalizedFallbackBalloons = finalFallbackLint.cleanedBalloons
+                .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+                .filter(Boolean);
               finalQualityResult = runConversationQualityGate({
                 inboundMessages: inboundTexts,
-                candidateBalloons: finalFallbackLint.cleanedBalloons,
+                candidateBalloons: normalizedFallbackBalloons,
                 turnContract,
               });
               if (finalQualityResult.passed) {
-                authoritativeBalloons = finalFallbackLint.cleanedBalloons;
+                authoritativeBalloons = normalizedFallbackBalloons;
                 qualityFallbackUsed = true;
                 currentCycle.trace.push("post_antirepeat_quality_safe_fallback_used");
               }
@@ -7643,6 +7649,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             finalSubDecision.requiredTools = [];
             currentCycle.trace.push("post_antirepeat_quality_blocked_dispatch");
           } else {
+            authoritativeBalloons = authoritativeBalloons
+              .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+              .filter(Boolean);
             finalSubDecision.responses = authoritativeBalloons;
             finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
           }
@@ -7706,7 +7715,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       responses: finalSubDecision.responses,
       requiredTools: finalSubDecision.requiredTools || ["send_text"],
       reasoning: finalSubDecision.reasoning,
-      routedSubagent: (responsibleSubagent || "descoberta") as SubagentTarget,
+      routedSubagent: (responsibleSubagent || "none") as SubagentTarget,
       audioId: finalSubDecision.audioId,
       audioUrl: finalSubDecision.audioUrl,
       objectiveCompletion: finalSubDecision.objectiveCompletion,

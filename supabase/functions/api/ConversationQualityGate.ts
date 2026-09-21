@@ -143,14 +143,18 @@ export function buildTurnContract(
     ? requestedQuestions.map((question, index) => {
         const text = String(question.text || detectedQuestions[index] || "").trim();
         const requestedKind = String(question.answerKind || "") as DirectAnswerKind;
+        const inferredKind = inferDirectAnswerKind(text, inbound);
+        const answerKind = inferredKind !== "freeform"
+          ? inferredKind
+          : (DIRECT_ANSWER_KINDS.has(requestedKind) ? requestedKind : "freeform");
         return {
-        id: String(question.id || `direct_${index + 1}`),
-        text,
-        mustAnswer: question.mustAnswer !== false,
-        answerIntent: String(question.answerIntent || "Responder diretamente ao que o pretendente perguntou"),
-        answerKind: DIRECT_ANSWER_KINDS.has(requestedKind) ? requestedKind : inferDirectAnswerKind(text, inbound),
-        requiredFacts: Array.isArray(question.requiredFacts) ? question.requiredFacts.map(String) : [],
-      };
+          id: String(question.id || `direct_${index + 1}`),
+          text,
+          mustAnswer: question.mustAnswer !== false,
+          answerIntent: String(question.answerIntent || "Responder diretamente ao que o pretendente perguntou"),
+          answerKind,
+          requiredFacts: Array.isArray(question.requiredFacts) ? question.requiredFacts.map(String) : [],
+        };
       })
     : detectedQuestions.map((text, index) => ({
         id: `direct_${index + 1}`,
@@ -208,7 +212,7 @@ function containsCurrentActivityAnswer(text: string): boolean {
 
 function containsPersonaFactAnswer(text: string, facts: string[]): boolean {
   if (facts.length > 0) return facts.every((fact) => normalize(text).includes(normalize(fact)));
-  return /\b(?:eu sou|sou |faco|estudo|trabalho|moro|tenho|meu|minha)\b/.test(normalize(text));
+  return false;
 }
 
 function containsYesNoAnswer(text: string): boolean {

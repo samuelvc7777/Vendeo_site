@@ -491,7 +491,7 @@ export function runStyleLint(
     }
 
     if (firstBalloon.length > 0) {
-      cleaned[0] = firstBalloon.charAt(0).toLowerCase() + firstBalloon.slice(1);
+      cleaned[0] = sanitizeChatPunctuation(capitalizeFirstLetter(firstBalloon));
     } else if (cleaned.length > 1) {
       cleaned.shift();
     }
