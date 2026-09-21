@@ -9064,3 +9064,113 @@ test('196. Telemetria de subagente limpa: routedSubagent assume "none" quando au
   assert.notEqual(resolveTelemetrySubagent(''), 'descoberta');
 });
 
+test('197. Feature Flag: Modo padrão mantém brainProvider="internal" e modo legacy isolado', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+
+  // Conversa legacy
+  const legacySupabase = createMockSupabase({
+    id: 'conv_legacy_197',
+    stage_completed_rules: { orchestration: { mode: 'legacy' } },
+  }, []);
+  const legacyRes = await runExperimentalOrchestration({
+    supabase: legacySupabase,
+    conversationId: 'conv_legacy_197',
+    correlationId: 'cycle_legacy_197',
+    newMessage: { id: 'm_leg', text: 'Oi', sender: 'c1' },
+    runtime: {},
+  });
+  assert.equal(legacyRes.mode, 'legacy');
+  assert.equal(legacyRes.handled, false);
+});
+
+test('198. OpenAI Agent Brain: Ativação via feature flag despacha turno com Function Tool persona_memory_search', async () => {
+  const { load } = createRuntime();
+  const { runExperimentalOrchestration } = load('supabase/functions/api/experimental_orchestrator.ts');
+  const conversationId = 'conv_openai_brain_198';
+
+  const supabase = createMockSupabase({
+    id: conversationId,
+    stage_completed_rules: {
+      orchestration: {
+        mode: 'experimental',
+        currentPhase: 'descoberta',
+        brainProvider: 'openai_agent',
+      },
+    },
+  }, [
+    { id: 'm_198', conversation_id: conversationId, sender_id: 'c1', is_mine: false, text: 'Eu curto motocross, vou quase todo final de semana', created_at: '2026-09-21T14:00:00Z' }
+  ]);
+
+  let toolRequestedByAgent = false;
+  let deliveredMessages = [];
+
+  const runtime = {
+    _fastTest: true,
+    callOpenAiAgent: async ({ agentId, context, tools, executeTool }) => {
+      // 1. Contexto do Brain enxuto (sem injeção estática prévia de tópicos genéricos)
+      assert.ok(!context.includes('• identidade:'), 'Não deve conter tópicos genéricos pré-injetados');
+      assert.ok(context.includes('motocross'));
+
+      // 2. Invoca a Function Tool real no backend
+      assert.equal(tools[0].function.name, 'persona_memory_search');
+      const toolOutput = await executeTool('persona_memory_search', { query: 'motocross', limit: 4 });
+      toolRequestedByAgent = true;
+
+      // 3. Emite o plano de missão com base no fato encontrado
+      return {
+        tokens: 150,
+        plan: {
+          action: 'delegate_mission',
+          responsibleSubagent: 'descoberta',
+          objectiveDecision: 'pursue',
+          liveStatePatch: { currentTopic: 'motocross' },
+          reasoning: 'Pretendente curte motocross, respondendo autenticamente.',
+          missionPackage: {
+            turnContract: {
+              directQuestions: [],
+              mustAnswerFirst: false,
+              newQuestionBudget: 1,
+              responseShape: 'react_and_explore',
+              maxBalloons: 2,
+              preferNoEmoji: false,
+            }
+          }
+        }
+      };
+    },
+    callModel: async () => ({
+      content: JSON.stringify({
+        action: 'reply',
+        responses: ['Acho muito massa, mas morro de medo haha!', 'Vc pilota há quanto tempo?'],
+        suggestedResponse: 'Acho muito massa, mas morro de medo haha!\n\nVc pilota há quanto tempo?',
+        checkpoint: 'chk_pergunta_sobre_ele',
+        summary: 'motocross',
+        nextPhase: 'descoberta'
+      }),
+      tokens: 30
+    }),
+    sendMetaTextMessage: async (_sb, _id, text) => {
+      deliveredMessages.push(text);
+      return { success: true, message_id: `meta_198_${deliveredMessages.length}` };
+    },
+  };
+
+  const result = await runExperimentalOrchestration({
+    supabase,
+    conversationId,
+    correlationId: 'cycle_198',
+    newMessage: { id: 'm_198', text: 'Eu curto motocross, vou quase todo final de semana', timestamp: '2026-09-21T14:00:00Z', sender: 'c1' },
+    runtime,
+  });
+
+  assert.equal(result.decision.action, 'reply');
+  assert.equal(toolRequestedByAgent, true, 'O Agent Brain deve ter chamado a tool persona_memory_search');
+  assert.equal(deliveredMessages.length, 2);
+  assert.equal(deliveredMessages[0], 'Acho muito massa, mas morro de medo kkk');
+
+  const trace = supabase.getConversationData().stage_completed_rules.orchestration.recentCycles[0].trace;
+  assert.ok(trace.some(t => t.includes('openai_brain_turn_success')), 'Trace deve registrar sucesso do turno do OpenAI Brain');
+});
+
+
