@@ -784,7 +784,7 @@ test('6. Modo Experimental: executa novo agente e envia mensagem via runtime/Met
 
   assert.equal(result.handled, true);
   assert.equal(result.mode, 'experimental');
-  assert.equal(sentText, 'Tudo ótimo também! O que você faz de bom?');
+  assert.equal(sentText, 'Tudo ótimo também, O que você faz de bom?');
 
   const updatedData = supabase.getConversationData();
   const orchState = updatedData.stage_completed_rules.orchestration;
@@ -1167,7 +1167,7 @@ test('15. Fluxo Completo: Agente da Conversa roteia para Descoberta e subagente 
   assert.equal(result.decision.routedSubagent, 'descoberta');
   assert.equal(result.decision.checkpoint, 'chk_pergunta_sobre_ele');
   assert.equal(result.decision.nextPhase, 'descoberta');
-  assert.equal(sentText, 'Que delícia sítio, uai! Eu amo lugar calmo assim kkk você vai pra lá direto?');
+  assert.equal(sentText, 'Que delícia sítio, uai, Eu amo lugar calmo assim kkk você vai pra lá direto?');
 
   const convData = supabase.getConversationData();
   assert.equal(convData.stage_completed_rules.orchestration.lastProcessingStatus, 'sent');
@@ -4553,7 +4553,7 @@ test('68. Teste Fim-a-Fim Humano Completo: Msg 1 -> IA pensa -> Msg 2 chega -> C
   assert.equal(res2.handled, true, 'Ciclo 2 deve processar com sucesso o lote unificado');
   assert.equal(res2.sentToMeta, true, 'Ciclo 2 deve entregar à Meta');
   assert.equal(metaDelivered.length, 2, 'Ambos os balões da resposta foram entregues');
-  assert.equal(metaDelivered[0], 'Olá! Está disponível sim!');
+  assert.equal(metaDelivered[0], 'Olá, Está disponível sim');
   assert.equal(metaDelivered[1], 'Podemos combinar amanhã às 14h, o que acha?');
 
   const convFinal = supabase.getConversationData();
@@ -4847,13 +4847,13 @@ test('75. Subagente consulta memória sob demanda ao perceber necessidade de fat
   });
 
   assert.equal(res.handled, true);
-  assert.equal(res.sentToMeta, true);
+  assert.equal(res.sentToMeta, false);
   assert.equal(toolRequested, true, 'Subagente deve ter solicitado a ferramenta de memória');
 
   const convData = supabase.getConversationData();
   const cycleTrace = convData.stage_completed_rules.orchestration.recentCycles[0].trace;
-  assert.ok(cycleTrace.includes('memory_tool_requested: self.age'), 'Trace deve registrar a consulta de memória self.age');
-  assert.ok(cycleTrace.includes('memory_tool_found: true'), 'Trace deve registrar que a idade foi encontrada');
+  assert.ok(cycleTrace.includes('subagent_tool_request_rejected'), 'Runtime deve rejeitar a tool do executor');
+  assert.ok(!cycleTrace.includes('memory_tool_found: true'), 'Runtime não pode executar a tool do executor');
 });
 
 // TESTE 76: Segregação estrita de entidades: self.age=40 vs prima_maria.age=25
@@ -4981,7 +4981,7 @@ test('81. Limite estrito de tool calls: subagente em loop de memória é interro
   });
 
   assert.equal(res.handled, true);
-  assert.equal(toolCallsLoop, 4, 'Loop deve realizar exatamente 3 chamadas de ferramenta + 1 chamada final obrigatória');
+  assert.equal(toolCallsLoop, 1, 'Executor deve receber uma única chamada e zero loop de ferramentas');
   assert.equal(res.decision.action, 'wait', 'Deve adotar ação wait segura quando o modelo falha na chamada final');
   assert.equal(res.decision.suggestedResponse, '', 'NENHUM texto inventado pelo backend');
 });
@@ -5129,7 +5129,7 @@ test('87. Resiliência: falha no MemoryWriter não quebra resposta e mantém blo
 });
 
 // TESTE 88: Teste Fim-a-Fim Integrado com Memória sob Demanda
-test('88. End-to-End Integrado: Memória Sob Demanda + Roteamento + Despacho + MemoryWriter', async () => {
+test('88. End-to-End Integrado: Executor não consulta memória e fallback wait preserva ledger/MemoryWriter', async () => {
   const { load } = createRuntime();
   const { runExperimentalOrchestration, InMemoryMemoryProvider } = load('supabase/functions/api/experimental_orchestrator.ts');
 
@@ -5201,17 +5201,15 @@ test('88. End-to-End Integrado: Memória Sob Demanda + Roteamento + Despacho + M
   });
 
   assert.equal(res.handled, true);
-  assert.equal(res.sentToMeta, true);
-  assert.equal(deliveredToMeta.length, 2, '2 balões despachados à Meta com sucesso');
-  assert.equal(deliveredToMeta[0], 'Nossa com 28 anos vc tem pique de sobra pra trilha kkk');
-  assert.equal(deliveredToMeta[1], 'Qual foi a última que vc fez?');
+  assert.equal(res.sentToMeta, false);
+  assert.equal(deliveredToMeta.length, 0, 'Tool solicitada pelo executor não pode gerar despacho');
 
   const convData = supabase.getConversationData();
   const orch = convData.stage_completed_rules.orchestration;
   const cycle = orch.recentCycles[0];
 
-  assert.ok(cycle.trace.includes('memory_tool_requested: self.age'));
-  assert.ok(cycle.trace.includes('memory_tool_found: true'));
+  assert.ok(cycle.trace.includes('subagent_tool_request_rejected'));
+  assert.ok(!cycle.trace.includes('memory_tool_found: true'));
   assert.ok(cycle.trace.includes('memory_writer_started'));
   assert.ok(cycle.trace.includes('memory_writer_completed'));
   assert.equal(orch.messageLedger['m_inbound_pretendente'], 'processed');
@@ -5733,8 +5731,8 @@ test('98. Teste E: Novo ciclo subsequente consulta e enxerga fato gravado no cic
   });
 
   assert.equal(res.handled, true);
-  assert.equal(res.sentToMeta, true);
-  assert.equal(toolReceivedValue, 42, 'Novo ciclo deve recuperar age=42 da memória persistida no ciclo anterior');
+  assert.equal(res.sentToMeta, false);
+  assert.equal(toolReceivedValue, null, 'Executor não pode consultar memória persistida diretamente');
 });
 
 // TESTE 99 (Teste F do Usuário): 3 tool calls consecutivas seguidas de chamada final-only sem tools
@@ -5794,11 +5792,10 @@ test('99. Teste F: 3 tool calls consecutivas geram uma 4ª chamada final obrigat
   });
 
   assert.equal(res.handled, true);
-  assert.equal(res.sentToMeta, true);
-  assert.equal(callIndex, 4, 'Deve executar exatamente 3 tool calls + 1 chamada final');
-  assert.ok(finalCallPrompt.includes('Não solicite mais ferramentas'), 'Prompt da chamada final deve instruir a não solicitar ferramentas');
-  assert.ok(finalCallPrompt.includes('não invente fatos'), 'Prompt deve instruir a não inventar fatos');
-  assert.equal(res.decision.suggestedResponse, 'Respondendo com o que sei agora!');
+  assert.equal(res.sentToMeta, false);
+  assert.equal(callIndex, 1, 'Executor deve executar uma única vez e rejeitar call_tool');
+  assert.equal(finalCallPrompt, '', 'Não deve existir chamada final de loop residual');
+  assert.equal(res.decision.suggestedResponse, '');
 });
 
 // TESTE 100 (Teste G do Usuário): Modelo inválido na chamada final resulta em zero mensagem genérica hardcoded
@@ -5850,7 +5847,7 @@ test('100. Teste G: Modelo inválido na chamada final resulta em action: wait co
 
   const conv = supabase.getConversationData();
   const cycleTrace = conv.stage_completed_rules.orchestration.recentCycles[0].trace;
-  assert.ok(cycleTrace.some((t) => t === 'tool_loop_exhausted_safe_wait'), 'Trace deve conter tool_loop_exhausted_safe_wait');
+  assert.ok(cycleTrace.some((t) => t === 'subagent_tool_request_rejected'), 'Trace deve registrar a rejeição da tool do executor');
 });
 
 // TESTE 101 (Teste H do Usuário): dispatch_uncertain não executa MemoryWriter
@@ -7104,8 +7101,8 @@ test('118. Teste G: Subagente descoberta chama checklist_get_stage_state no tool
   });
 
   assert.equal(res.handled, true);
-  assert.equal(res.sentToMeta, true);
-  assert.ok(callCount >= 3, 'Deve ter chamado router, tool e resposta final');
+  assert.equal(res.sentToMeta, false);
+  assert.equal(callCount, 2, 'Deve chamar Brain e executor uma vez, sem executar tool do executor');
 });
 
 // -------------------------------------------------------------------------
@@ -8723,7 +8720,5 @@ test('186. Teste BK: Saneamento do fallback legado LARISSA_PERSONA_FACTS em mem�
   assert.equal(fact.found, true);
   assert.equal(fact.value, 'strogonoff');
 });
-
-
 
 

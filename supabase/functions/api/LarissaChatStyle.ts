@@ -272,6 +272,16 @@ export function sanitizeChatPunctuation(rawText: string): string {
     return text;
   }
 
+  // URLs são dados, não pontuação textual. Protege-as durante o saneamento.
+  const protectedUrls: string[] = [];
+  text = text.replace(/https?:\/\/[^\s\]]+/gi, (url) => {
+    const trailing = url.match(/[.!,:;]+$/)?.[0] || "";
+    const cleanUrl = trailing ? url.slice(0, -trailing.length) : url;
+    const marker = `URLPROTEGIDA${protectedUrls.length}FIM`;
+    protectedUrls.push(cleanUrl);
+    return `${marker}${trailing}`;
+  });
+
   // 1. Reticências (... ou …): converte para vírgula se estiver no meio da frase conectando orações, ou remove se no fim
   text = text.replace(/\.{2,}|…/g, (match, offset, fullStr) => {
     const after = fullStr.slice(offset + match.length).trim();
@@ -309,6 +319,8 @@ export function sanitizeChatPunctuation(rawText: string): string {
 
   // 7. Garante maiúscula no primeiro caractere alfabético
   text = capitalizeFirstLetter(text);
+
+  text = text.replace(/URLPROTEGIDA(\d+)FIM/g, (_match, index) => protectedUrls[Number(index)] || "");
 
   return text;
 }
@@ -421,7 +433,7 @@ export function runStyleLint(
       hasQuestion = true;
     }
 
-    cleaned.push(text);
+    cleaned.push(sanitizeChatPunctuation(text));
   }
 
   // 2. Detecções que exigem RETRY (se não corrigíveis com 100% de segurança)
@@ -578,7 +590,7 @@ export function runStyleLint(
         b = b.replace(/\bkkk+\b/gi, "").trim();
       }
 
-      cleaned[i] = b;
+      cleaned[i] = sanitizeChatPunctuation(b);
     }
 
     // Se mais de 4 balões no retry, compacta mantendo os 4 primeiros

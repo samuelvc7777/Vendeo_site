@@ -44,7 +44,7 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['olha pra cê ver', 'Cê tá doido']);
-  assert.equal(res.cleanedBalloons[0], 'olha pra vc ver');
+  assert.equal(res.cleanedBalloons[0], 'Olha pra vc ver');
   assert.equal(res.cleanedBalloons[1], 'Vc tá doido');
   console.log('✔ Teste 1: "cê" nunca permanece (substituído por "vc")');
 }
@@ -70,7 +70,7 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['hahaha que engraçado']);
-  assert.equal(res.cleanedBalloons[0], 'kkk que engraçado');
+  assert.equal(res.cleanedBalloons[0], 'Kkk que engraçado');
   console.log('✔ Teste 3: hahaha proibido (normalizado para kkk)');
 }
 
@@ -79,7 +79,7 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['sou de são joão rs']);
-  assert.equal(res.cleanedBalloons[0], 'sou de são joão kkk');
+  assert.equal(res.cleanedBalloons[0], 'Sou de são joão kkk');
   console.log('✔ Teste 4: rs proibido (normalizado para kkk)');
 }
 
@@ -88,7 +88,7 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['entendi rsrs']);
-  assert.equal(res.cleanedBalloons[0], 'entendi kkk');
+  assert.equal(res.cleanedBalloons[0], 'Entendi kkk');
   console.log('✔ Teste 5: rsrs proibido (normalizado para kkk)');
 }
 
@@ -97,7 +97,7 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['muito bom hehe']);
-  assert.equal(res.cleanedBalloons[0], 'muito bom kkk');
+  assert.equal(res.cleanedBalloons[0], 'Muito bom kkk');
   console.log('✔ Teste 6: hehe proibido (normalizado para kkk)');
 }
 
@@ -106,7 +106,7 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['vc mora por aqui?']);
-  assert.equal(res.cleanedBalloons[0], 'vc mora por aqui?');
+  assert.equal(res.cleanedBalloons[0], 'Vc mora por aqui?');
   console.log('✔ Teste 7: pergunta mantém "?" intacto');
 }
 
@@ -115,18 +115,18 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['tô no estágio hoje.', 'dia bem corrido.']);
-  assert.equal(res.cleanedBalloons[0], 'tô no estágio hoje');
-  assert.equal(res.cleanedBalloons[1], 'dia bem corrido');
+  assert.equal(res.cleanedBalloons[0], 'Tô no estágio hoje');
+  assert.equal(res.cleanedBalloons[1], 'Dia bem corrido');
   console.log('✔ Teste 8: ponto final no fim do balão é removido');
 }
 
 // ----------------------------------------------------------------------------
-// TESTE 9: "!" preservado quando válido
+// TESTE 9: "!" nunca chega ao balão final
 // ----------------------------------------------------------------------------
 {
   const res = runStyleLint(['sou moça de família!']);
-  assert.equal(res.cleanedBalloons[0], 'sou moça de família!');
-  console.log('✔ Teste 9: "!" preservado quando válido');
+  assert.equal(res.cleanedBalloons[0], 'Sou moça de família');
+  console.log('✔ Teste 9: "!" removido deterministicamente');
 }
 
 // ----------------------------------------------------------------------------

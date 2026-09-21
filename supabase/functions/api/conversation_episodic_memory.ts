@@ -543,8 +543,14 @@ export function extractEpisodesFromPretendenteMessage(
 
   for (const ep of episodes) {
     if (ep.event_type === "fact_reveal") {
-      ep.memory_class = "landmark";
-      ep.metadata = { ...(ep.metadata || {}), memory_class: "landmark", importance: 0.9 };
+      const narrativeEvidence = /\b(?:quando eu|foi (?:especial|inesquecível|marcante)|nunca vou esquecer|por causa (?:dele|dela|disso)|me ensinou|quase |primeir[oa]|perrengue|história|lembro até hoje)\b/i.test(clean)
+        && clean.split(/\s+/).length >= 10;
+      ep.memory_class = narrativeEvidence ? "landmark" : "speech_act";
+      ep.metadata = {
+        ...(ep.metadata || {}),
+        memory_class: ep.memory_class,
+        importance: narrativeEvidence ? 0.9 : 0.5,
+      };
     } else {
       ep.memory_class = "speech_act";
       ep.metadata = { ...(ep.metadata || {}), memory_class: "speech_act", importance: 0.5 };
@@ -1244,15 +1250,26 @@ export async function searchRawConversationHistory(params: {
     .filter((k) => k.length >= 2);
 
   try {
-    // 1. Carrega histórico de mensagens da conversa em ordem cronológica
-    const { data: rows, error } = await supabase
-      .from("instagram_messages")
-      .select("id, conversation_id, sender_id, is_mine, is_from_me, text, message, audio_transcript, created_at, timestamp, direction")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true })
-      .limit(500);
+    // 1. Varre toda a conversa em páginas no backend. Somente os hits compactos
+    // seguem para o modelo; nunca existe um teto invisível nas primeiras 500 mensagens.
+    const rows: any[] = [];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      let queryBuilder = supabase
+        .from("instagram_messages")
+        .select("id, conversation_id, sender_id, is_mine, is_from_me, text, message, audio_transcript, created_at, timestamp, direction")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: true });
+      const pageResult = typeof queryBuilder.range === "function"
+        ? await queryBuilder.range(offset, offset + pageSize - 1)
+        : await queryBuilder.limit(pageSize);
+      const pageRows = pageResult?.data;
+      if (pageResult?.error || !Array.isArray(pageRows)) return [];
+      rows.push(...pageRows);
+      if (pageRows.length < pageSize || typeof queryBuilder.range !== "function") break;
+    }
 
-    if (error || !Array.isArray(rows) || rows.length === 0) {
+    if (rows.length === 0) {
       return [];
     }
 
@@ -1402,5 +1419,3 @@ export async function searchRawConversationHistory(params: {
     return [];
   }
 }
-
-

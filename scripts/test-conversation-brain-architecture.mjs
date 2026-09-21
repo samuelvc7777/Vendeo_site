@@ -128,16 +128,19 @@ function createMockSupabase(messages = [], audios = []) {
       return {
         select: () => ({
           eq: (col, val) => ({
-            order: () => ({
-              limit: () => Promise.resolve({
-                data: val ? messages.filter((m) => m.conversation_id === val) : messages,
+            order: () => {
+              const scoped = val ? messages.filter((m) => m.conversation_id === val) : messages;
+              return {
+              limit: (limit) => Promise.resolve({
+                data: scoped.slice(0, limit),
                 error: null,
               }),
+              range: (from, to) => Promise.resolve({ data: scoped.slice(from, to + 1), error: null }),
               then: (res) => res({
-                data: val ? messages.filter((m) => m.conversation_id === val) : messages,
+                data: scoped,
                 error: null,
               }),
-            }),
+            }},
           }),
         }),
       };
@@ -568,6 +571,73 @@ console.log('\n🔹 CENÁRIO 14: Endpoints de exportação exigem token e isolam
   assert(isValidConvId('17841400000000000') === true, 'ID legítimo aceito');
   assert(isValidConvId('conv-user_123') === true, 'ID com hífen e underscore aceito');
   assert(isValidConvId("'; DROP TABLE messages; --") === false, 'Tentativa de injeção SQL rejeitada');
+}
+
+console.log('\n🔹 CENÁRIO 15: Contexto recente aplica budget sem descartar mensagens obrigatórias');
+{
+  const messages = Array.from({ length: 12 }, (_, index) => ({
+    id: `budget_${index}`,
+    sender: index === 3 ? 'larissa' : 'pretendente',
+    direction: index === 3 ? 'outbound' : 'inbound',
+    text: `${index} ${'mensagem enorme '.repeat(120)}`,
+    createdAt: new Date(Date.UTC(2026, 8, 20, 10, index)).toISOString(),
+  }));
+  const result = orchMod.buildBudgetedRecentContext({
+    messages,
+    claimedMessageIds: ['budget_11'],
+    tokenBudget: 1500,
+    messageLimit: 12,
+  });
+  assert(result.messages.length < 12, 'Budget impede envio cego das 12 mensagens enormes');
+  assert(result.messages.some((m) => m.id === 'budget_11'), 'Mensagem claimed atual é preservada');
+  assert(result.messages.some((m) => m.id === 'budget_3'), 'Último turno da Larissa é preservado');
+  assert(result.budgetOverflowRequired === false, 'Contexto obrigatório cabe no budget neste cenário');
+
+  const overflow = orchMod.buildBudgetedRecentContext({
+    messages: [{ ...messages[11], text: 'obrigatória '.repeat(800) }],
+    claimedMessageIds: ['budget_11'],
+    tokenBudget: 1500,
+  });
+  assert(overflow.messages[0].id === 'budget_11', 'Claimed acima do budget não é descartada');
+  assert(overflow.budgetOverflowRequired === true, 'Overflow obrigatório é sinalizado');
+}
+
+console.log('\n🔹 CENÁRIO 16: Fact reveal simples não vira Landmark automaticamente');
+{
+  for (const [index, text] of ['tenho 27 anos', 'moro em Barbacena', 'trabalho com programação'].entries()) {
+    const episodes = epMod.extractEpisodesFromPretendenteMessage(text, `simple_${index}`);
+    assert(!episodes.some((episode) => episode.memory_class === 'landmark'), `Fato simples não é Landmark: ${text}`);
+  }
+  const narrative = epMod.extractEpisodesFromPretendenteMessage(
+    'meu pai me ensinou programação quando eu era adolescente, foi por causa dele que escolhi essa profissão',
+    'narrative_1'
+  );
+  assert(narrative.some((episode) => episode.memory_class === 'landmark'), 'História marcante com pai e profissão vira Landmark');
+}
+
+console.log('\n🔹 CENÁRIO 17: Raw history encontra hits depois das primeiras 500 mensagens');
+{
+  const longHistory = Array.from({ length: 650 }, (_, index) => ({
+    id: `long_${index}`,
+    conversation_id: 'conv_long_a',
+    sender_id: index % 2 ? 'larissa' : 'user',
+    is_from_me: index % 2 === 1,
+    text: index === 574 ? 'minha cabeça ia fritar com programação' : `mensagem histórica ${index}`,
+    created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+  }));
+  longHistory.push({
+    id: 'foreign_hit', conversation_id: 'conv_long_b', sender_id: 'user', is_from_me: false,
+    text: 'minha cabeça ia fritar com programação', created_at: '2026-01-02T00:00:00Z',
+  });
+  const hits = await epMod.searchRawConversationHistory({
+    supabase: createMockSupabase(longHistory),
+    conversationId: 'conv_long_a',
+    query: 'cabeça ia fritar',
+    limit: 6,
+  });
+  assert(hits.some((hit) => hit.messageId === 'long_574'), 'Hit na posição 575 foi encontrado');
+  assert(!hits.some((hit) => hit.messageId === 'foreign_hit'), 'Busca não vazou conversa B');
+  assert(hits[0].contextWindow.length <= 3, 'Somente janela compacta [prev, hit, next] foi retornada');
 }
 
 console.log('\n======================================================================');

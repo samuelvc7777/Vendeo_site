@@ -66,6 +66,48 @@ export const BRAIN_ORCHESTRATION_BUDGETS = {
   brain_history_search_results: 6,
 } as const;
 
+export function estimateTextTokens(text: string): number {
+  return Math.max(1, Math.ceil((text || "").length / 4));
+}
+
+export function buildBudgetedRecentContext(params: {
+  messages: CanonicalMessage[];
+  claimedMessageIds: string[];
+  tokenBudget?: number;
+  messageLimit?: number;
+}): { messages: CanonicalMessage[]; estimatedTokens: number; budgetOverflowRequired: boolean } {
+  const tokenBudget = params.tokenBudget ?? BRAIN_ORCHESTRATION_BUDGETS.recent_context_token_budget;
+  const messageLimit = params.messageLimit ?? BRAIN_ORCHESTRATION_BUDGETS.recent_message_limit;
+  const timestampOf = (message: CanonicalMessage) => String(
+    message.createdAt || (message as any).created_at || (message as any).timestamp || ""
+  );
+  const chronological = [...params.messages].sort((a, b) => timestampOf(a).localeCompare(timestampOf(b)));
+  const claimed = new Set(params.claimedMessageIds.map(String));
+  const lastLarissa = [...chronological].reverse().find((m) => m.sender === "larissa" || m.direction === "outbound");
+  const replyTargetIds = new Set<string>();
+  for (const message of chronological) {
+    const raw = message as any;
+    const replyId = raw.replyToMessageId || raw.reply_to_message_id || raw.quotedMessageId || raw.quoted_message_id;
+    if (replyId) replyTargetIds.add(String(replyId));
+  }
+  const mandatoryIds = new Set<string>([...claimed, ...replyTargetIds]);
+  if (lastLarissa) mandatoryIds.add(String(lastLarissa.id));
+  const selected = chronological.filter((m) => mandatoryIds.has(String(m.id)));
+  let estimatedTokens = selected.reduce((sum, m) => sum + estimateTextTokens(m.text || ""), 0);
+  const budgetOverflowRequired = estimatedTokens > tokenBudget;
+  const selectedIds = new Set(selected.map((m) => String(m.id)));
+  for (const message of [...chronological].reverse()) {
+    if (selectedIds.has(String(message.id))) continue;
+    const cost = estimateTextTokens(message.text || "");
+    if (selected.length >= messageLimit || estimatedTokens + cost > tokenBudget) continue;
+    selected.push(message);
+    selectedIds.add(String(message.id));
+    estimatedTokens += cost;
+  }
+  selected.sort((a, b) => timestampOf(a).localeCompare(timestampOf(b)));
+  return { messages: selected, estimatedTokens, budgetOverflowRequired };
+}
+
 export interface ConversationLiveState {
   conversationId: string;
   lastUserEmotionalTone: string; // ex: "tranquilo", "desabafando", "animado", "curioso"
@@ -2516,7 +2558,7 @@ ${landmarksSummary || "Nenhum marco narrativo relevante registrado."}
 ${speechActsSummary || "Nenhum ato de fala recente."}
 
 ### NÍVEL 5: PERSONA MEMORY (Fatos essenciais da Larissa)
-${personaMemorySummary || "Larissa, 23 anos, São João del-Rei/MG, cursa Enfermagem (10º período, estágio hospitalar), trabalha com vendas online."}
+${personaMemorySummary || "Nenhum fato encontrado na PersonaMemory."}
 
 ${toolsHistoryBlock}
 ### OBJETIVOS DA ETAPA ATUAL ("${currentStage}")
@@ -3129,12 +3171,9 @@ export async function resolveStageChecklistGoals(params: {
       responsibleSubagent = "descoberta";
     } else if (resolvedStageId === "stage_3_compatibilidade" || targetStageQuery.includes("compat") || stageNameLower.includes("compat")) {
       responsibleSubagent = "compatibilidade";
-    } else if (subagentsList.length > 0) {
-      // Se for etapa customizada sem dono e há subagentes definidos no banco: erro determinístico owner_missing
-      throw new Error(`owner_missing: No active subagent claims stage ${resolvedStageId}`);
     } else {
-      // Fallback gracioso para testes unitários isolados sem subagentes cadastrados
-      responsibleSubagent = "descoberta";
+      // Etapa customizada sem owner oficial sempre falha fechada.
+      throw new Error(`owner_missing: No active subagent claims stage ${resolvedStageId}`);
     }
   }
 
@@ -5770,7 +5809,7 @@ function extractKieResponseText(rawTextOrPayload: any): string {
 }
 
 export interface ModelCallOptions {
-  runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }> };
+  runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number; inputTokens?: number; outputTokens?: number }> };
   supabase: any;
   model?: string;
   temperature?: number;
@@ -5780,10 +5819,14 @@ export interface ModelCallOptions {
 async function callModelOrOpenAi(
   prompt: string,
   options: ModelCallOptions
-): Promise<{ content: string; tokens: number }> {
+): Promise<{ content: string; tokens: number; inputTokens: number; outputTokens: number; tokenMeasurement: "provider" | "estimated" }> {
   if (options.runtime?.callModel) {
     const res = await options.runtime.callModel(prompt);
-    return { content: res.content || (res as any).text || "", tokens: res.tokens || 0 };
+    const content = res.content || (res as any).text || "";
+    const hasSplitUsage = Number.isFinite(res.inputTokens) && Number.isFinite(res.outputTokens);
+    const inputTokens = hasSplitUsage ? Number(res.inputTokens) : estimateTextTokens(prompt);
+    const outputTokens = hasSplitUsage ? Number(res.outputTokens) : estimateTextTokens(content);
+    return { content, tokens: res.tokens || inputTokens + outputTokens, inputTokens, outputTokens, tokenMeasurement: hasSplitUsage ? "provider" : "estimated" };
   }
 
   // 1. Motor Oficial Prioritário: OpenAI (api.openai.com)
@@ -5829,7 +5872,12 @@ async function callModelOrOpenAi(
           const jsonRes = await oaiRes.json();
           const choice = jsonRes.choices?.[0];
           let content = choice?.message?.content || "";
-          const tokens = jsonRes.usage?.total_tokens || Math.ceil((prompt.length + content.length) / 4);
+          const providerInput = jsonRes.usage?.prompt_tokens;
+          const providerOutput = jsonRes.usage?.completion_tokens;
+          const hasSplitUsage = Number.isFinite(providerInput) && Number.isFinite(providerOutput);
+          const inputTokens = hasSplitUsage ? providerInput : estimateTextTokens(prompt);
+          const outputTokens = hasSplitUsage ? providerOutput : estimateTextTokens(content);
+          const tokens = jsonRes.usage?.total_tokens || inputTokens + outputTokens;
 
           if (!content && choice?.message?.reasoning_content) {
             const match = choice.message.reasoning_content.match(/\{[\s\S]*\}/);
@@ -5837,7 +5885,7 @@ async function callModelOrOpenAi(
           }
 
           if (content.trim()) {
-            return { content: content.trim(), tokens };
+            return { content: content.trim(), tokens, inputTokens, outputTokens, tokenMeasurement: hasSplitUsage ? "provider" : "estimated" };
           }
         }
 
@@ -5910,8 +5958,9 @@ async function callModelOrOpenAi(
         const sseText = await kieRes.text();
         const content = extractKieResponseText(sseText);
         if (content.trim()) {
-          const approxTokens = Math.ceil((prompt.length + content.length) / 4);
-          return { content: content.trim(), tokens: approxTokens };
+          const inputTokens = estimateTextTokens(prompt);
+          const outputTokens = estimateTextTokens(content);
+          return { content: content.trim(), tokens: inputTokens + outputTokens, inputTokens, outputTokens, tokenMeasurement: "estimated" };
         }
       }
     } catch (kieErr: any) {
@@ -5954,7 +6003,12 @@ async function callModelOrOpenAi(
         const jsonRes = await atriaRes.json();
         const choice = jsonRes.choices?.[0];
         let content = choice?.message?.content || "";
-        const tokens = jsonRes.usage?.total_tokens || 0;
+        const providerInput = jsonRes.usage?.prompt_tokens;
+        const providerOutput = jsonRes.usage?.completion_tokens;
+        const hasSplitUsage = Number.isFinite(providerInput) && Number.isFinite(providerOutput);
+        const inputTokens = hasSplitUsage ? providerInput : estimateTextTokens(prompt);
+        const outputTokens = hasSplitUsage ? providerOutput : estimateTextTokens(content);
+        const tokens = jsonRes.usage?.total_tokens || inputTokens + outputTokens;
 
         if (!content && choice?.message?.reasoning_content) {
           const match = choice.message.reasoning_content.match(/\{[\s\S]*\}/);
@@ -5962,7 +6016,7 @@ async function callModelOrOpenAi(
         }
 
         if (content) {
-          return { content, tokens };
+          return { content, tokens, inputTokens, outputTokens, tokenMeasurement: hasSplitUsage ? "provider" : "estimated" };
         }
       }
     } catch (atriaErr: any) {
@@ -6003,8 +6057,13 @@ async function callModelOrOpenAi(
       if (groqRes.ok) {
         const jsonRes = await groqRes.json();
         const content = jsonRes.choices?.[0]?.message?.content || "";
-        const tokens = jsonRes.usage?.total_tokens || 0;
-        if (content) return { content, tokens };
+        const providerInput = jsonRes.usage?.prompt_tokens;
+        const providerOutput = jsonRes.usage?.completion_tokens;
+        const hasSplitUsage = Number.isFinite(providerInput) && Number.isFinite(providerOutput);
+        const inputTokens = hasSplitUsage ? providerInput : estimateTextTokens(prompt);
+        const outputTokens = hasSplitUsage ? providerOutput : estimateTextTokens(content);
+        const tokens = jsonRes.usage?.total_tokens || inputTokens + outputTokens;
+        if (content) return { content, tokens, inputTokens, outputTokens, tokenMeasurement: hasSplitUsage ? "provider" : "estimated" };
       }
     } catch (groqErr: any) {
       console.warn("[Orchestrator] Fallback final da Groq também falhou:", groqErr.message);
@@ -6688,9 +6747,15 @@ export async function runExperimentalOrchestration(
       }
     } catch {}
 
-    // Ordena cronologicamente e aplica o teto de 12 mensagens sem cortar as claimed do turno
-    allRecentCandidates.sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
-    const finalRecentMessages = allRecentCandidates.slice(-recentMessageLimit);
+    const budgetedRecentContext = buildBudgetedRecentContext({
+      messages: allRecentCandidates,
+      claimedMessageIds,
+      tokenBudget,
+      messageLimit: recentMessageLimit,
+    });
+    const finalRecentMessages = budgetedRecentContext.messages;
+    currentCycle.trace.push(`brain_recent_context_estimated_tokens: ${budgetedRecentContext.estimatedTokens}`);
+    currentCycle.trace.push(`brain_budget_overflow_required: ${budgetedRecentContext.budgetOverflowRequired}`);
 
     // NÍVEL 2: ContactMemory (fatos conhecidos sobre o pretendente)
     let contactFacts: Record<string, any> = {};
@@ -6739,8 +6804,19 @@ export async function runExperimentalOrchestration(
       speechActsSummary = speechActHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
     } catch {}
 
-    // NÍVEL 5: PersonaMemory (resumo essencial)
-    const personaMemorySummary = "Larissa, 23 anos, mora em São João del-Rei/MG, cursa Enfermagem (10º período, estágio na Santa Casa), trabalha com vendas online.";
+    // NÍVEL 5: projeção compacta da fonte autoritativa PersonaMemory.
+    let personaMemorySummary = "";
+    try {
+      const personaFacts = await cyclePersonaMemoryProvider.searchPersonaFacts(
+        "larissa",
+        "identidade cidade estudo trabalho preferências rotina"
+      );
+      personaMemorySummary = (personaFacts || []).slice(0, 8).map((fact: any) => {
+        const key = fact.key || fact.field || fact.category || "fato";
+        const value = fact.value ?? fact.summary ?? "";
+        return value === "" ? "" : `• ${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`;
+      }).filter(Boolean).join("\n");
+    } catch {}
 
     // Telemetria do Brain
     let brainRecentMessagesCount = finalRecentMessages.length;
@@ -6757,6 +6833,8 @@ export async function runExperimentalOrchestration(
     let brainUsedLandmark = Boolean(landmarksSummary);
     let brainUsedContactMemory = Object.keys(contactFacts).length > 0;
     let brainUsedAudio = false;
+    let brainAudioCandidates: CofreAudioCandidate[] = [];
+    const tokenMeasurements = new Set<"provider" | "estimated">();
 
     if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
     if (brainUsedContactMemory) brainMemorySourcesUsed.add("contact_memory");
@@ -6802,7 +6880,9 @@ export async function runExperimentalOrchestration(
       });
 
       const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: params.model });
-      brainInputTokens += brainRes.tokens;
+      tokenMeasurements.add(brainRes.tokenMeasurement);
+      brainInputTokens += brainRes.inputTokens;
+      brainOutputTokens += brainRes.outputTokens;
       totalTokens += brainRes.tokens;
 
       const rawBrainJson = extractJsonFromText(brainRes.content);
@@ -6873,6 +6953,7 @@ export async function runExperimentalOrchestration(
               query: q,
               limit: 3,
             });
+            brainAudioCandidates = cofreMatches;
             const formatted = cofreMatches.map((c) => `• audio_id: "${c.audio_id}" | título: "${c.title}" | instrução: "${c.when_to_use}" | transcrição: "${c.full_transcript}"`).join("\n");
             toolResultsHistory.push(`[TOOL: cofre_audio_search | query: "${q}"]\n${formatted || "Nenhum áudio com aderência semântica encontrado."}`);
           } else {
@@ -6883,7 +6964,7 @@ export async function runExperimentalOrchestration(
         }
       } else if (rawBrainJson) {
         // Brain concluiu e delegou a missão
-        const rawTarget = rawBrainJson.responsibleSubagent || rawBrainJson.targetSubagent || stageChecklistForRouter.responsibleSubagent || "descoberta";
+        const rawTarget = rawBrainJson.responsibleSubagent || rawBrainJson.targetSubagent || stageChecklistForRouter.responsibleSubagent || "none";
         brainPlan = {
           action: "delegate_mission",
           currentStage: currentStageId,
@@ -6897,13 +6978,14 @@ export async function runExperimentalOrchestration(
         };
       }
     }
+    brainToolResultTokens = estimateTextTokens(toolResultsHistory.join("\n"));
 
     // Fallback seguro caso o Brain esgote iterações sem emitir delegate_mission
     if (!brainPlan) {
       brainPlan = {
         action: "delegate_mission",
         currentStage: currentStageId,
-        responsibleSubagent: stageChecklistForRouter.responsibleSubagent || "descoberta",
+        responsibleSubagent: stageChecklistForRouter.responsibleSubagent || "none",
         objectiveDecision: "pursue",
         liveStatePatch: {
           lastUserEmotionalTone: "tranquilo",
@@ -6922,7 +7004,7 @@ export async function runExperimentalOrchestration(
       if (
         targetObj &&
         brainPlan.satisfiedObjectiveId === targetObj.id &&
-        brainPlan.evidenceMessageId === newMessage.id
+        claimedMessageIds.includes(String(brainPlan.evidenceMessageId || ""))
       ) {
         workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, targetObj.id])];
         currentCycle.trace.push(`brain_already_satisfied_validated: ${targetObj.id}`);
@@ -6933,7 +7015,8 @@ export async function runExperimentalOrchestration(
     }
 
     // REGRA DURA: A etapa atual manda no subagente executor responsável
-    const responsibleSubagent = stageChecklistForRouter.responsibleSubagent || brainPlan.responsibleSubagent || "descoberta";
+    const responsibleSubagent = stageChecklistForRouter.responsibleSubagent || "none";
+    if (responsibleSubagent === "none") currentCycle.trace.push("stage_owner_missing");
     currentCycle.trace.push(`brain_objective_mode: ${brainPlan.objectiveDecision}`);
     currentCycle.trace.push(`brain_responsible_subagent: ${responsibleSubagent}`);
 
@@ -6967,20 +7050,36 @@ export async function runExperimentalOrchestration(
       currentCycle.trace.push("subagent_action: wait");
     } else {
       // Prepara o MissionPackage consolidado para o executor
-      const missionPkg: MissionPackage = brainPlan.missionPackage || {
+      const requestedDirective = brainPlan.objectiveDecision;
+      const normalizedDirective: MissionPackage["objectiveDirective"] =
+        ["pursue", "defer", "already_satisfied", "none"].includes(requestedDirective)
+          ? requestedDirective
+          : "pursue";
+      const requestedAudioId = (brainPlan.missionPackage as any)?.audioCandidate?.audioId
+        || (brainPlan.missionPackage as any)?.audioId;
+      const authorizedAudio = brainAudioCandidates.find((audio) => audio.audio_id === requestedAudioId);
+      const missionPkg: MissionPackage = {
+        ...(brainPlan.missionPackage || {} as MissionPackage),
         subagentId: responsibleSubagent,
         subagentName: responsibleSubagent,
-        objectiveDirective: brainPlan.objectiveDecision,
+        objectiveDirective: normalizedDirective,
         targetObjective: stageChecklistForRouter.currentObjective
           ? { id: stageChecklistForRouter.currentObjective.id, label: stageChecklistForRouter.currentObjective.label }
           : null,
-        relevantMemoryContext: [
+        relevantMemoryContext: (brainPlan.missionPackage?.relevantMemoryContext || [
           contactMemorySummary ? `FATOS DO PRETENDENTE:\n${contactMemorySummary}` : "",
           landmarksSummary ? `MARCOS NARRATIVOS:\n${landmarksSummary}` : "",
           toolResultsHistory.length > 0 ? `PESQUISAS FEITAS NESTE TURNO:\n${toolResultsHistory.join("\n")}` : "",
-        ].filter(Boolean).join("\n\n"),
+        ].filter(Boolean).join("\n\n")),
         liveStateContext: serializeLiveStateForPrompt(currentLiveState),
-        preferAudio: false,
+        candidateAudios: authorizedAudio ? [{
+          audioId: authorizedAudio.audio_id,
+          title: authorizedAudio.title,
+          transcript: authorizedAudio.full_transcript,
+          instruction: authorizedAudio.when_to_use,
+          adherenceScore: authorizedAudio.match_score || 0,
+        }] : [],
+        preferAudio: Boolean(authorizedAudio && brainPlan.missionPackage?.preferAudio),
       };
 
       // Subagente selecionado (definição do catálogo ou canônico)
@@ -7021,20 +7120,9 @@ export async function runExperimentalOrchestration(
         emojiRecentHistory: recentStyleState.emoji_recent_history,
       });
 
-      // Candidato a áudio aderente se houver
-      let candidateAudiosSnippet = "";
-      try {
-        const cofreAudios = await searchCofreAudios({
-          supabase,
-          conversationId,
-          query: inboundsText,
-          limit: 1,
-        });
-        if (cofreAudios && cofreAudios.length > 0) {
-          const topAudio = cofreAudios[0];
-          candidateAudiosSnippet = `audio_id: "${topAudio.audio_id}" | título: "${topAudio.title}" | instrução: "${topAudio.when_to_use}" | transcrição: "${topAudio.full_transcript}"`;
-        }
-      } catch {}
+      const candidateAudiosSnippet = missionPkg.candidateAudios?.map((audio) =>
+        `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
+      ).join("\n") || "";
 
       // Constrói prompt do subagente executor enxuto
       const executorPrompt = buildSubagentExecutorPrompt({
@@ -7062,277 +7150,27 @@ export async function runExperimentalOrchestration(
         ),
       });
 
-      const MAX_SUBAGENT_TOOL_ITERATIONS = 3;
-      let subagentToolCallsCount = 0;
-      let currentSubagentPrompt = executorPrompt;
-      let lastToolResultForFinalCall: any = null;
-
-      while (subagentToolCallsCount < MAX_SUBAGENT_TOOL_ITERATIONS) {
-        if (subagentToolCallsCount > 0) {
-          const freshnessInToolLoop = await checkFreshnessGate({
-            supabase,
-            conversationId,
-            claimedMessageIds,
-            cycleStartedAt: currentCycle.startedAt,
-            initialInboundRevision,
-          });
-          if (!freshnessInToolLoop.isFresh) {
-            return await handleCyclePreemption("during_subagent_tool_loop", freshnessInToolLoop);
-          }
-        }
-
-        const execRes = await callModelOrOpenAi(currentSubagentPrompt, { runtime, supabase, model: params.model });
-        totalTokens += execRes.tokens;
-        if (subagentToolCallsCount === 0) {
-          subagentInputTokens += execRes.tokens;
-        } else {
-          brainToolResultTokens += execRes.tokens;
-        }
-
-        const rawSubJson = extractJsonFromText(execRes.content);
-
-        // Verifica se o subagente solicitou ferramenta
-        if (
-          rawSubJson &&
-          (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)
-        ) {
-          subagentToolCallsCount++;
-          const toolName = String(rawSubJson.tool || rawSubJson.name || "memory_get_fact").trim();
-          const toolParams = rawSubJson.parameters || rawSubJson.params || rawSubJson.arguments || {};
-          const toolEntity = String(toolParams.entity || "self").trim();
-          const toolField = String(toolParams.field || "").trim();
-
-          currentCycle.trace.push(
-            toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state"
-              ? `checklist_tool_requested: ${toolParams.stage || currentPhase}`
-              : (toolName === "cofre_search" || toolName === "persona_audio_search")
-              ? `cofre_search_requested: ${toolParams.query || toolParams.intent || ""}`
-              : toolName === "persona_get_fact"
-              ? `persona_fact_requested: ${toolParams.field || toolField}`
-              : toolName === "persona_search"
-              ? `persona_search_requested: ${toolParams.query || toolParams.intent || ""}`
-              : toolName === "conversation_search"
-              ? `conversation_search_requested: ${toolParams.query || toolParams.intent || ""}`
-              : `memory_tool_requested: ${toolEntity}.${toolField || toolParams.query || toolName}`
-          );
-          const tStart = Date.now();
-
-          let toolResult: any;
-          if (toolName === "stage_objectives_get" || toolName === "checklist_get_stage_state") {
-            const requestedStage = String(toolParams.stage || currentPhase).trim();
-            const completedGoalIds = workingCompletedGoalIds;
-            const stageChecklist = await resolveStageObjectives({
-              supabase,
-              conversationId,
-              stageNameOrId: requestedStage,
-              memoryProvider: cycleMemoryProvider,
-              completedGoalIds,
-            });
-
-            const filteredForSubagent = filterGoalsForSubagent(stageChecklist.goals, responsibleSubagent);
-            const activeGoals = [...filteredForSubagent.openGoals, ...filteredForSubagent.completedGoals];
-            toolResult = {
-              tool: toolName,
-              stage: stageChecklist.stage,
-              subagent: responsibleSubagent,
-              goals: activeGoals,
-              summary: `Objetivos da fase ${stageChecklist.stage}: ${activeGoals.map((g: any) => `${g.id} (${g.status})`).join(", ")}`,
-            };
-          } else if (toolName === "cofre_search" || toolName === "persona_audio_search") {
-            const query = String(toolParams.query || toolParams.intent || inboundsText).trim();
-            const contextObj = toolParams.objective_context || undefined;
-            const matches = await searchCofreAudios({
-              supabase,
-              conversationId,
-              query,
-              stageId: contextObj,
-              limit: 3,
-            });
-            toolResult = {
-              tool: toolName,
-              query,
-              found: matches.length > 0,
-              audios: matches.map((m) => ({
-                audio_id: m.audio_id,
-                title: m.title,
-                transcript: m.full_transcript,
-                when_to_use: m.when_to_use,
-                relevance_score: m.relevance_score,
-              })),
-            };
-          } else if (toolName === "persona_get_fact") {
-            const factField = String(toolParams.field || toolField).trim();
-            const factVal = await cyclePersonaMemoryProvider.getPersonaFact("larissa", factField);
-            toolResult = {
-              tool: "persona_get_fact",
-              field: factField,
-              found: factVal !== null,
-              value: factVal,
-            };
-          } else if (toolName === "persona_search") {
-            const pQuery = String(toolParams.query || toolParams.intent || inboundsText).trim();
-            const facts = await cyclePersonaMemoryProvider.searchPersonaFacts("larissa", pQuery);
-            toolResult = {
-              tool: "persona_search",
-              query: pQuery,
-              results: facts,
-            };
-          } else if (toolName === "conversation_search") {
-            const cQuery = String(toolParams.query || inboundsText).trim();
-            const cLimit = Math.min(Number(toolParams.limit) || 4, 6);
-            const histResults = await searchRawConversationHistory({
-              supabase,
-              conversationId,
-              query: cQuery,
-              limit: cLimit,
-            });
-            toolResult = {
-              tool: "conversation_search",
-              query: cQuery,
-              results: histResults,
-            };
-          } else {
-            // Default: memory_get_fact / memory_search
-            if (toolField) {
-              const fact = await cycleMemoryProvider.getFact(conversationId, toolEntity, toolField);
-              toolResult = {
-                tool: "memory_get_fact",
-                entity: toolEntity,
-                field: toolField,
-                found: fact !== null,
-                value: fact?.value ?? null,
-                updated_at: fact?.updated_at ?? null,
-              };
-            } else {
-              const memQuery = String(toolParams.query || inboundsText).trim();
-              const searchResults = await cycleMemoryProvider.searchFacts(conversationId, toolEntity, memQuery);
-              toolResult = {
-                tool: "memory_search",
-                entity: toolEntity,
-                query: memQuery,
-                results: searchResults,
-              };
-            }
-          }
-
-          const toolDuration = Date.now() - tStart;
-          currentCycle.trace.push(
-            toolResult.results
-              ? `memory_tool_results_count: ${toolResult.results.length}`
-              : toolResult.goals
-              ? `checklist_tool_goals_count: ${toolResult.goals.length}`
-              : toolResult.audios
-              ? `cofre_tool_matches_count: ${toolResult.audios.length}`
-              : `memory_tool_found: ${toolResult.found}`
-          );
-          currentCycle.trace.push(`tool_duration_ms: ${toolDuration}`);
-          lastToolResultForFinalCall = toolResult;
-
-          if (subagentToolCallsCount >= MAX_SUBAGENT_TOOL_ITERATIONS) {
-            break;
-          }
-
-          const isFactSufficient = toolResult.found === true || (Array.isArray(toolResult.results) && toolResult.results.length > 0) || (toolResult.goals && toolResult.goals.length > 0) || (Array.isArray(toolResult.audios) && toolResult.audios.length > 0);
-
-          currentSubagentPrompt = `${executorPrompt}
-
-### RETORNO DA CONSULTA DE MEMÓRIA (Tool Call #${subagentToolCallsCount})
-\`\`\`json
-${JSON.stringify(toolResult, null, 2)}
-\`\`\`
-${isFactSufficient ? `\n[INSTRUÇÃO APÓS CONSULTA DE FERRAMENTA]
-A informação necessária foi obtida com sucesso.
-NÃO solicite novas ferramentas. Formule agora sua resposta final carinhosa e natural da Larissa em JSON com action: "reply" ou action: "send_audio".\n` : `\nAgora prossiga e gere sua resposta final em JSON:\n`}
-{
-  "action": "reply" | "send_audio",
-  "audioId": "id_do_audio_se_send_audio",
-  "checkpoint": "${responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
-  "summary": "resumo conciso do turno",
-  "suggestedResponse": "fala carinhosa da Larissa para o pretendente",
-  "responses": ["balão 1", "balão 2"],
-  "nextPhase": "${responsibleSubagent}",
-  "reasoning": "análise da resposta"
-}`;
-          continue;
-        }
-
-        // Subagente respondeu normalmente
+      const execRes = await callModelOrOpenAi(executorPrompt, { runtime, supabase, model: params.model });
+      tokenMeasurements.add(execRes.tokenMeasurement);
+      totalTokens += execRes.tokens;
+      subagentInputTokens += execRes.inputTokens;
+      subagentOutputTokens += execRes.outputTokens;
+      finalGenerationTokens += execRes.outputTokens;
+      const rawSubJson = extractJsonFromText(execRes.content);
+      if (rawSubJson && (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)) {
+        currentCycle.trace.push("subagent_tool_request_rejected");
+        finalSubDecision = {
+          action: "wait",
+          checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+          summary: "Saída inválida do executor",
+          suggestedResponse: "",
+          nextPhase: currentPhase,
+          reasoning: "Executor tentou solicitar ferramenta, operação proibida no runtime experimental",
+          requiredTools: [],
+        };
+      } else {
         finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
         currentCycle.trace.push(`subagent_executed: ${responsibleSubagent}`);
-        break;
-      }
-
-      // Se atingiu o limite de chamadas de ferramenta sem resposta final:
-      // Executa UMA chamada final obrigatória com ferramentas desabilitadas
-      if (!finalSubDecision) {
-        currentCycle.trace.push("tool_loop_limit_reached_final_call");
-
-        const freshnessBeforeFinalCall = await checkFreshnessGate({
-          supabase,
-          conversationId,
-          claimedMessageIds,
-          cycleStartedAt: currentCycle.startedAt,
-          initialInboundRevision,
-        });
-
-        if (!freshnessBeforeFinalCall.isFresh) {
-          return await handleCyclePreemption("during_subagent_tool_loop_final_call", freshnessBeforeFinalCall);
-        }
-
-        const finalCallPrompt = `${executorPrompt}
-
-### RETORNO DA CONSULTA DE MEMÓRIA
-\`\`\`json
-${JSON.stringify(lastToolResultForFinalCall || {}, null, 2)}
-\`\`\`
-
-AVISO OBRIGATÓRIO:
-Não solicite mais ferramentas. Responda agora com o que sabe e não invente fatos.
-Gere sua resposta final estritamente no formato JSON abaixo:
-{
-  "action": "reply" | "send_audio",
-  "checkpoint": "${responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita"}",
-  "summary": "resumo conciso",
-  "suggestedResponse": "fala da Larissa",
-  "responses": ["balão 1"],
-  "nextPhase": "${responsibleSubagent}",
-  "reasoning": "conclusão final"
-}`;
-
-        try {
-          const finalRes = await callModelOrOpenAi(finalCallPrompt, { runtime, supabase, model: params.model });
-          totalTokens += finalRes.tokens;
-          finalGenerationTokens += finalRes.tokens;
-          const rawFinalJson = extractJsonFromText(finalRes.content);
-          if (rawFinalJson && (rawFinalJson.action === "reply" || rawFinalJson.action === "send_audio" || rawFinalJson.action === "advance_phase")) {
-            finalSubDecision = validateSubagentDecision(rawFinalJson, currentPhase);
-          } else {
-            // Modelo inválido na chamada final resulta em action: wait com zero mensagem
-            currentCycle.trace.push("tool_loop_exhausted_safe_wait");
-            currentCycle.trace.push("final_call_invalid_json_fallback_wait");
-            finalSubDecision = {
-              action: "wait",
-              checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-              summary: "Aguardando pretendente após chamada final",
-              suggestedResponse: "",
-              nextPhase: currentPhase,
-              reasoning: "Modelo inválido após limite de chamadas de ferramenta",
-              requiredTools: [],
-            };
-          }
-        } catch {
-          currentCycle.trace.push("tool_loop_exhausted_safe_wait");
-          currentCycle.trace.push("final_call_exception_fallback_wait");
-          finalSubDecision = {
-            action: "wait",
-            checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-            summary: "Aguardando pretendente após falha na chamada final",
-            suggestedResponse: "",
-            nextPhase: currentPhase,
-            reasoning: "Falha na chamada final após limite de ferramentas",
-            requiredTools: [],
-          };
-        }
       }
 
       // Se o subagente gerou balões, aplica sanitização determinística mandatória
@@ -7343,13 +7181,16 @@ Gere sua resposta final estritamente no formato JSON abaixo:
       // Registra telemetria completa no trace
       currentCycle.trace.push(`brain_recent_messages_count: ${brainRecentMessagesCount}`);
       currentCycle.trace.push(`brain_input_tokens: ${brainInputTokens}`);
+      currentCycle.trace.push(`brain_output_tokens: ${brainOutputTokens}`);
       currentCycle.trace.push(`brain_memory_sources_used: ${Array.from(brainMemorySourcesUsed).join(",")}`);
       currentCycle.trace.push(`brain_memory_search_count: ${brainMemorySearchesCount}`);
       currentCycle.trace.push(`brain_history_search_count: ${brainHistorySearchesCount}`);
       currentCycle.trace.push(`brain_history_hits: ${brainHistoryHits}`);
       currentCycle.trace.push(`brain_tool_result_tokens: ${brainToolResultTokens}`);
       currentCycle.trace.push(`subagent_input_tokens: ${subagentInputTokens}`);
+      currentCycle.trace.push(`subagent_output_tokens: ${subagentOutputTokens}`);
       currentCycle.trace.push(`total_cycle_tokens: ${totalTokens}`);
+      currentCycle.trace.push(`token_measurement: ${tokenMeasurements.size === 1 ? [...tokenMeasurements][0] : "estimated"}`);
       currentCycle.trace.push(`brain_used_raw_history: ${brainUsedRawHistory}`);
       currentCycle.trace.push(`brain_used_landmark: ${brainUsedLandmark}`);
       currentCycle.trace.push(`brain_used_contact_memory: ${brainUsedContactMemory}`);
@@ -7855,7 +7696,7 @@ Responda ESTRITAMENTE em JSON puro:
               (updatedState as any).completedGoalIds = officialCompletedGoalIdsAtCycleStart;
               (updatedState as any).objectiveProgress = officialObjectiveProgressAtCycleStart;
 
-              await releaseExperimentalCycleAtomic({
+              const partialFinalization = await releaseExperimentalCycleAtomic({
                 supabase,
                 conversationId,
                 cycleToken: correlationId,
@@ -7865,6 +7706,18 @@ Responda ESTRITAMENTE em JSON puro:
                 cycleRecord: currentCycle,
                 outboxMap: outboxMap,
               });
+
+              if (!partialFinalization.released) {
+                currentCycle.trace.push(`partial_finalization_failed: ${partialFinalization.reason || "lost_lock"}`);
+                return {
+                  mode: orchState.mode,
+                  handled: false,
+                  sentToMeta: sentBalloonsCount > 0,
+                  blockLegacyFallback: true,
+                  error: "lost_lock_before_partial_finalization",
+                };
+              }
+              currentCycle.trace.push(`partial_finalization_committed: balloons=${sentBalloonsCount}`);
 
               await publishAutoPilotState(supabase, conversationId, {
                 status: "idle",
