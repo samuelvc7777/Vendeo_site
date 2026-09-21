@@ -95,15 +95,21 @@ function jaccard(left: string[], right: string[]): number {
 export function isGreetingOrWellbeing(text: string): boolean {
   const value = normalize(text);
   return isWellbeingQuestion(text)
-    || /^(?:oi+e*|ola)(?:\s|\?|$)/.test(String(text || "").trim().toLowerCase());
+    || /^(?:oi+e*|ola|opa|e ai|bom dia|boa tarde|boa noite)(?:\s|\?|$)/.test(value);
 }
 
 function isWellbeingQuestion(text: string): boolean {
-  return /\b(?:tudo bem|ta bem|como vc ta|como voce ta|tudo certo|ta tudo bem)\b/.test(normalize(text));
+  const norm = normalize(text);
+  return /\b(?:tudo bem|ta bem|como (?:vc|voce|c|ce) ta|tudo certo|ta tudo bem)\b/.test(norm)
+    || /\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/.test(norm)
+    || /\be\s+(?:vc|voce)\s+(?:como\s+ta|ta\s+bem)\b/.test(norm);
 }
 
 function extractQuestions(text: string): string[] {
-  return String(text || "").split(/(?<=\?)/).map((part) => part.trim()).filter((part) => part.includes("?"));
+  return String(text || "")
+    .split(/(?<=\?)/)
+    .map((part) => part.trim())
+    .filter((part) => part.includes("?") && normalize(part).replace(/[^a-z0-9]/g, "").trim().length > 0);
 }
 
 const DIRECT_ANSWER_KINDS = new Set<DirectAnswerKind>([
@@ -116,7 +122,7 @@ function inferDirectAnswerKind(questionText: string, inbound: string): DirectAns
   const combined = `${context} ${question}`;
   const elliptical = /\b(?:e vc|e voce)\b/.test(question) || /\b(?:e vc|e voce)\b/.test(context);
 
-  if (isWellbeingQuestion(questionText) || (elliptical && /\b(?:to|estou|ta|esta)\s+bem\b/.test(context))) return "wellbeing";
+  if (isWellbeingQuestion(questionText) || (elliptical && (/\b(?:to|estou|ta|esta)\s+bem\b/.test(context) || isWellbeingQuestion(context)))) return "wellbeing";
   if (/\b(?:quantos anos|qual (?:a )?sua idade|idade)\b/.test(combined) || (elliptical && /\btenho\s+\d{1,3}\s+anos\b/.test(context))) return "age";
   if (/\b(?:onde (?:vc |voce )?mora|mora onde|qual (?:a )?sua cidade)\b/.test(combined) || (elliptical && /\b(?:moro|sou)\s+(?:em|de)\b/.test(context))) return "location";
   if (/\b(?:ja visitou|ja foi|conhece|vc ja|voce ja)\b/.test(question)) return "yes_no";
@@ -166,9 +172,12 @@ export function buildTurnContract(
       }));
 
   const shape = requested?.responseShape;
+  const hasDirectQuestions = directQuestions.some((question) => question.mustAnswer);
+  const mustAnswerFirst = hasDirectQuestions ? true : (requested?.mustAnswerFirst ?? false);
+
   return {
     directQuestions,
-    mustAnswerFirst: requested?.mustAnswerFirst ?? directQuestions.some((question) => question.mustAnswer),
+    mustAnswerFirst,
     reactionTarget: requested?.reactionTarget ?? (directQuestions.length === 0 ? inbound || null : null),
     newQuestionBudget: requested?.newQuestionBudget === 0 || requested?.newQuestionBudget === 1
       ? requested.newQuestionBudget
@@ -326,6 +335,13 @@ export function runConversationQualityGate(params: {
 
 export function safeHighConfidenceFallback(inboundMessages: string[], turnContract: TurnContract): string[] | null {
   const inbound = inboundMessages.join(" ");
-  if (isGreetingOrWellbeing(inbound) && turnContract.mustAnswerFirst) return ["Oii, tô bem sim, e vc?"];
+  if (isGreetingOrWellbeing(inbound) && turnContract.mustAnswerFirst) {
+    if (/\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/i.test(normalize(inbound))) {
+      return turnContract.newQuestionBudget === 0
+        ? ["Tô bem também!"]
+        : ["Tô bem sim, e vc?"];
+    }
+    return ["Oii, tô bem sim, e vc?"];
+  }
   return null;
 }

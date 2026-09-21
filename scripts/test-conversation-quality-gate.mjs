@@ -116,6 +116,39 @@ assert(gate('Trabalho com programação, vc faz estágio de quê?', ['Programaç
   mustAnswerFirst: true, newQuestionBudget: 1, responseShape: 'answer_and_reciprocate', maxBalloons: 1,
 }).result.passed, 'Reage ao trabalho, responde o estágio e respeita uma pergunta');
 
+console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação isolada');
+{
+  const quailContract = quality.buildTurnContract(['Bem e vc ?', '?']);
+  assert(quailContract.directQuestions.length === 1, 'Interrogação avulsa "?" não gera pergunta direta obrigatória');
+  assert(quailContract.directQuestions[0]?.text === 'Bem e vc ?', 'Pergunta direta identificada corretamente como "Bem e vc ?"');
+  assert(quailContract.directQuestions[0]?.answerKind === 'wellbeing', 'Retribuição "Bem e vc ?" classificada como wellbeing');
+  assert(quality.isGreetingOrWellbeing('Bem e vc ?'), 'isGreetingOrWellbeing reconhece "Bem e vc ?"');
+  assert(quality.isGreetingOrWellbeing('tudo e vc?'), 'isGreetingOrWellbeing reconhece "tudo e vc?"');
+  assert(quality.isGreetingOrWellbeing('otimo e vc?'), 'isGreetingOrWellbeing reconhece "otimo e vc?"');
+  assert(quality.isGreetingOrWellbeing('tranquilo e vc?'), 'isGreetingOrWellbeing reconhece "tranquilo e vc?"');
+
+  const fallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], quailContract);
+  assert(Array.isArray(fallback) && fallback.length === 1, 'safeHighConfidenceFallback gera fallback para "Bem e vc ?"');
+  assert(fallback[0].startsWith('Oii, tô bem sim, e vc?') || fallback[0].startsWith('Tô bem sim, e vc?'), 'Fallback responde com formato canônico de bem-estar');
+
+  const gateResult = quality.runConversationQualityGate({
+    inboundMessages: ['Bem e vc ?', '?'],
+    candidateBalloons: fallback,
+    turnContract: quailContract,
+  });
+  assert(gateResult.passed, 'Fallback para o caso quail é 100% aprovado pelo Quality Gate');
+
+  const zeroBudgetContract = quality.buildTurnContract(['Bem e vc ?', '?'], { newQuestionBudget: 0, responseShape: 'answer_only' });
+  const zeroFallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], zeroBudgetContract);
+  assert(zeroFallback[0] === 'Tô bem também!', 'Fallback com budget zero responde sem nova pergunta');
+  const zeroResult = quality.runConversationQualityGate({
+    inboundMessages: ['Bem e vc ?', '?'],
+    candidateBalloons: zeroFallback,
+    turnContract: zeroBudgetContract,
+  });
+  assert(zeroResult.passed, 'Fallback sem pergunta passa em contrato de budget zero');
+}
+
 const orchestratorSource = fs.readFileSync('supabase/functions/api/experimental_orchestrator.ts', 'utf8');
 const compactPromptSource = fs.readFileSync('supabase/functions/api/LarissaChatStyle.ts', 'utf8');
 assert(orchestratorSource.indexOf('runStyleLint(candidateBalloons') < orchestratorSource.indexOf('runConversationQualityGate({', orchestratorSource.indexOf('runStyleLint(candidateBalloons')), 'Caminho real executa Style Lint antes do Quality Gate');
