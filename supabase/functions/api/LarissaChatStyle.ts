@@ -75,7 +75,7 @@ export const COMMON_REACTION_PATTERNS: Array<{ name: string; regex: RegExp }> = 
   { name: "eu_em", regex: /^(?:eu em[^\w\s]*)/i },
   { name: "blz", regex: /^(?:blz[^\w\s]*|ata[^\w\s]*|entendi[^\w\s]*)/i },
   { name: "adorei", regex: /^(?:adorei+[^\w\s]*|amei+[^\w\s]*)/i },
-  { name: "saudacao", regex: /^(?:boa noite|bom dia|boa tarde|oie?|oi)[^\w\s]*/i },
+  { name: "saudacao", regex: /^(?:boa noite|bom dia|boa tarde|oi+e?)(?=\s|[,.!?;:]|$)[^\w\s]*/i },
 ];
 
 /**

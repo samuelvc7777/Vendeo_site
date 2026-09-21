@@ -1055,7 +1055,7 @@ export const PRIMITIVE_QUESTION_RULES: PrimitiveQuestionRule[] = [
   },
   {
     topic: "work",
-    primitivePattern: /^(?:e\s+)?(?:com\s+o\s+que\s+(?:c|vc|voce|você)\s+trabalha|o\s+que\s+(?:c|vc|voce|você)\s+faz\s+da\s+vida|trabalha\s+com\s+o\s+qu[eê]|qual\s+(?:a\s+)?sua\s+profissa?o|qual\s+seu\s+trabalho|qual\s+seu\s+trampo)\s*[\?!.]*$/i,
+    primitivePattern: /^(?:e\s+)?(?:com\s+o\s+que\s+(?:c|vc|voce|você)\s+trabalha|(?:c|vc|voce|você)\s+trabalha\s+com\s+(?:o\s+que|oq|qu[eê])|o\s+que\s+(?:c|vc|voce|você)\s+faz\s+da\s+vida|trabalha\s+com\s+(?:o\s+qu[eê]|oq)|qual\s+(?:a\s+)?sua\s+profissa?o|qual\s+seu\s+trabalho|qual\s+seu\s+trampo)\s*[\?!.]*$/i,
     deepeningIndicators: /\b(empresa|gosta de|escala|quanto tempo|rotina|faz tempo que|trabalha de home|presencial)\b/i,
   },
   {

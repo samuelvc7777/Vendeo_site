@@ -60,6 +60,30 @@ assert(gate('Tô cansado hoje', ['Nossa então hoje é chegar em casa e apagar m
 assert(!gate('Tô cansado hoje', ['Nossa que puxado, vc tem filhos?'], { newQuestionBudget: 0, responseShape: 'react_only', avoidTopics: ['filhos'], maxBalloons: 1 }).result.passed, 'Checkpoint adiado e pergunta fora do budget falham');
 assert(gate('Oi', ['Oii'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.passed, 'Cumprimento simples não exige segundo balão');
 
+console.log('\n🧪 Tipos semânticos de resposta direta');
+{
+  const activity = gate('Estou indo trabalhar e você?', ['Que correria, vc trabalha com oq?']);
+  assert(activity.contract.directQuestions[0]?.answerKind === 'current_activity', 'Elipse “e você?” herda current_activity da oração anterior');
+  assert(activity.result.directQuestionsAnswered === 0, 'Frase sem atividade da Larissa não conta como resposta');
+  assert(activity.result.issues.some((issue) => issue.code === 'DIRECT_QUESTION_UNANSWERED'), 'Atividade ausente gera DIRECT_QUESTION_UNANSWERED');
+}
+{
+  const activity = gate('Estou indo trabalhar e você?', ['Tô indo pro estágio também']);
+  assert(activity.contract.directQuestions[0]?.answerKind === 'current_activity', 'Contrato mantém current_activity na resposta válida');
+  assert(activity.result.directQuestionsAnswered === 1 && activity.result.passed, 'Primeira pessoa com atividade real responde a pergunta');
+}
+assert(gate('eu moro em Barbacena, e vc?', ['Moro em São João'], { directQuestions: [] }).contract.directQuestions[0]?.answerKind === 'location', 'Elipse herda location');
+assert(gate('tenho 27 anos, e vc?', ['Tenho 23'], { directQuestions: [] }).contract.directQuestions[0]?.answerKind === 'age', 'Elipse herda age');
+assert(gate('gosto de praia, e vc?', ['Eu amo praia'], { directQuestions: [] }).contract.directQuestions[0]?.answerKind === 'preference', 'Elipse herda preference');
+assert(gate('tô bem, e vc?', ['Tô bem também'], { directQuestions: [] }).contract.directQuestions[0]?.answerKind === 'wellbeing', 'Elipse herda wellbeing');
+{
+  const persona = gate('Vc faz estágio de quê?', ['Faço estágio de enfermagem'], {
+    directQuestions: [{ id: 'q1', text: 'Vc faz estágio de quê?', mustAnswer: true, answerKind: 'persona_fact', answerIntent: 'Informar estágio', requiredFacts: ['enfermagem'] }],
+    newQuestionBudget: 0,
+  });
+  assert(persona.result.directQuestionsAnswered === 1 && persona.result.passed, 'persona_fact exige e aceita o fato obrigatório');
+}
+
 console.log('\n🧪 Mini sequência semântica');
 assert(gate('Eu tô bem também', ['Aí sim kkk']).result.passed, 'Não pergunta novamente se ele está bem');
 assert(gate('Estou indo trabalhar e vc?', ['Tô resolvendo umas coisas aqui, cedo assim dá até preguiça'], {

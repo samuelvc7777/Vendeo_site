@@ -80,6 +80,15 @@ export function estimateTextTokens(text: string): number {
   return Math.max(1, Math.ceil((text || "").length / 4));
 }
 
+export function stableDiagnosticHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < String(value || "").length; index++) {
+    hash ^= String(value || "").charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 export function buildBudgetedRecentContext(params: {
   messages: CanonicalMessage[];
   claimedMessageIds: string[];
@@ -293,6 +302,17 @@ export async function searchPersonaMemoryForBrain(
   limit = 8
 ): Promise<string> {
   const hits = await personaProvider.searchPersonaFacts("larissa", query);
+  const formatted = (hits || []).slice(0, limit).map((fact: any) => {
+    const key = fact.key || fact.field || fact.category || "fato";
+    const value = fact.value ?? fact.summary;
+    return value === undefined || value === null || value === ""
+      ? ""
+      : `• ${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`;
+  }).filter(Boolean).join("\n");
+  return formatted || "Nenhum fato encontrado na PersonaMemory.";
+}
+
+function formatPersonaMemoryHitsForBrain(hits: any[], limit = 8): string {
   const formatted = (hits || []).slice(0, limit).map((fact: any) => {
     const key = fact.key || fact.field || fact.category || "fato";
     const value = fact.value ?? fact.summary;
@@ -689,6 +709,7 @@ export interface SubagentDefinition {
   restrictions?: string[];
   createdAt?: string;
   updatedAt?: string;
+  missionSource?: "db" | "canonical_fallback";
 }
 
 export const CANONICAL_SUBAGENTS: Record<string, SubagentDefinition> = {
@@ -698,6 +719,7 @@ export const CANONICAL_SUBAGENTS: Record<string, SubagentDefinition> = {
     mission: "Criar conforto, reciprocidade e um começo natural de conversa, sem transformar o contato em entrevista nem antecipar assuntos profundos.",
     enabled: true,
     isSystem: true,
+    missionSource: "canonical_fallback",
   },
   descoberta: {
     id: "descoberta",
@@ -705,6 +727,7 @@ export const CANONICAL_SUBAGENTS: Record<string, SubagentDefinition> = {
     mission: "Conhecer organicamente quem o pretendente é, sua rotina, vida, trabalho, gostos e contexto pessoal, aproveitando naturalmente os assuntos que surgem.",
     enabled: true,
     isSystem: true,
+    missionSource: "canonical_fallback",
   },
   compatibilidade: {
     id: "compatibilidade",
@@ -712,6 +735,7 @@ export const CANONICAL_SUBAGENTS: Record<string, SubagentDefinition> = {
     mission: "Entender valores, momento de vida, visão de relacionamento, família, planos e compatibilidade com Larissa, somente quando houver abertura natural para assuntos mais pessoais.",
     enabled: true,
     isSystem: true,
+    missionSource: "canonical_fallback",
   },
 };
 
@@ -769,6 +793,7 @@ export async function loadSubagentsCatalog(params?: {
       stageIds: Array.isArray(row.stage_ids) ? row.stage_ids : [],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      missionSource: "db",
     }));
 
     // Merge resiliente garantindo que os 3 canônicos existam e mantenham isSystem: true
@@ -2721,7 +2746,7 @@ Quando estiver pronto para delegar ao subagente executor:
     "preferAudio": false,
     "selectedAudioId": "id retornado por cofre_audio_search ou null",
     "turnContract": {
-      "directQuestions": [{ "id": "q1", "text": "pergunta literal", "mustAnswer": true, "answerIntent": "intenção sem frase pronta", "requiredFacts": ["fato recuperado, se necessário"] }],
+      "directQuestions": [{ "id": "q1", "text": "pergunta literal", "mustAnswer": true, "answerKind": "wellbeing" | "current_activity" | "persona_fact" | "yes_no" | "preference" | "location" | "age" | "freeform", "answerIntent": "intenção sem frase pronta", "requiredFacts": ["fato recuperado, se necessário"] }],
       "mustAnswerFirst": true,
       "reactionTarget": "conteúdo ao qual reagir ou null",
       "newQuestionBudget": 0,
@@ -2778,6 +2803,14 @@ export function buildSubagentExecutorPrompt(params: {
 
   return `Você materializa a voz da Larissa no papel conversacional ${subagentName.toUpperCase()}.
 SUA MISSÃO NESTA ETAPA: ${mission}
+
+### PRECEDÊNCIA OBRIGATÓRIA
+1. Invariantes de segurança e backend.
+2. TurnContract.
+3. MissionPackage do Conversation Brain.
+4. DNA global da Larissa.
+5. Missão configurável do subagente.
+A missão específica do subagente serve apenas para especialização e nunca sobrepõe TurnContract, MissionPackage ou regras globais. Ela não pode obrigar perguntas, ignorar pergunta direta, ampliar newQuestionBudget, liberar ferramentas, alterar checkpoint ou trocar stage.
 
 ${LARISSA_COMPACT_SUBAGENT_PROMPT}
 
@@ -4326,6 +4359,7 @@ export async function searchPersonaMemory(params: {
   limit?: number;
   now?: Date | string;
   cachedFacts?: PersonaMemoryFact[];
+  allowLegacyFallback?: boolean;
 }): Promise<Array<{
   key: string;
   category: string;
@@ -4344,7 +4378,7 @@ export async function searchPersonaMemory(params: {
   }
 
   // Se o Supabase estiver sem fatos (ex: teste local puro), usa chaves do fallback legado
-  if (facts.length === 0) {
+  if (facts.length === 0 && params.allowLegacyFallback !== false) {
     facts = Object.entries(LARISSA_PERSONA_FACTS).map(([k, v]) => ({
       persona_id: personaId,
       category: "geral",
@@ -4357,6 +4391,8 @@ export async function searchPersonaMemory(params: {
       valid_until: null,
     }));
   }
+
+  if (facts.length === 0) return [];
 
   const rawTerms = (query || "")
     .toLowerCase()
@@ -6285,7 +6321,6 @@ export async function runExperimentalOrchestration(
     lastError: null,
     updatedAt: new Date().toISOString(),
   };
-
   // SNAPSHOT IMUTÁVEL NO INÍCIO DO CICLO:
   // A autoridade de progresso oficial pertence ao stage_completed_rules.
   // orchState.completedGoalIds e orchState.objectiveProgress servem como espelho/fallback.
@@ -6624,7 +6659,6 @@ export async function runExperimentalOrchestration(
     currentCycle.inputWatermark.claimedCount = claimedMessageIds.length;
     currentCycle.trace.push(`input_watermark: rev=${initialInboundRevision}, count=${claimedMessageIds.length}`);
     currentCycle.trace.push(`messages_claimed: ${claimedMessageIds.length}`);
-
     // Helper atômico de preempção segura contra ciclos zumbis e concorrência
     async function handleCyclePreemption(
       reasonLabel: string,
@@ -6700,7 +6734,6 @@ export async function runExperimentalOrchestration(
 
     currentCycle.trace.push(...contextTrace);
     currentCycle.trace.push(`context_built: msgs=${baseContextPayload.newMessages.length}`);
-
     const routerContextText = formatContextForConversationAgent(baseContextPayload);
     const conexaoContextText = formatContextForConexaoInicial(baseContextPayload);
     const descobertaContextText = formatContextForDescoberta(baseContextPayload);
@@ -6842,7 +6875,6 @@ export async function runExperimentalOrchestration(
     let currentLiveState: ConversationLiveState = orchState.liveState
       ? { ...orchState.liveState }
       : getDefaultConversationLiveState(conversationId);
-
     // NÍVEL 1: Mensagens Recentes com Orçamento Estrito (12 msgs / 1500 tokens)
     const recentMessageLimit = BRAIN_ORCHESTRATION_BUDGETS.recent_message_limit;
     const tokenBudget = BRAIN_ORCHESTRATION_BUDGETS.recent_context_token_budget;
@@ -6888,7 +6920,6 @@ export async function runExperimentalOrchestration(
     const finalRecentMessages = budgetedRecentContext.messages;
     currentCycle.trace.push(`brain_recent_context_estimated_tokens: ${budgetedRecentContext.estimatedTokens}`);
     currentCycle.trace.push(`brain_budget_overflow_required: ${budgetedRecentContext.budgetOverflowRequired}`);
-
     // NÍVEL 2: ContactMemory (fatos conhecidos sobre o pretendente)
     let contactFacts: Record<string, any> = {};
     try {
@@ -6907,7 +6938,6 @@ export async function runExperimentalOrchestration(
     const contactMemorySummary = Object.entries(contactFacts)
       .map(([k, v]) => `• ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
       .join("\n");
-
     // NÍVEL 3 & 4: Landmarks e Speech Acts da Memória Episódica
     const inboundsText = (claimedMessages || [])
       .map((m: any) => m.text || m.content || "")
@@ -6939,15 +6969,14 @@ export async function runExperimentalOrchestration(
     // NÍVEL 5: projeção compacta da fonte autoritativa PersonaMemory.
     let personaMemorySummary = "";
     try {
-      const personaFacts = await cyclePersonaMemoryProvider.searchPersonaFacts(
-        "larissa",
-        "identidade cidade estudo trabalho preferências rotina"
-      );
-      personaMemorySummary = (personaFacts || []).slice(0, 8).map((fact: any) => {
-        const key = fact.key || fact.field || fact.category || "fato";
-        const value = fact.value ?? fact.summary ?? "";
-        return value === "" ? "" : `• ${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`;
-      }).filter(Boolean).join("\n");
+      const personaFacts = await searchPersonaMemory({
+        supabase,
+        personaId: "larissa",
+        query: "identidade cidade estudo trabalho preferências rotina",
+        limit: 8,
+        allowLegacyFallback: false,
+      });
+      personaMemorySummary = formatPersonaMemoryHitsForBrain(personaFacts || []);
     } catch {}
 
     // Telemetria do Brain
@@ -7010,7 +7039,6 @@ export async function runExperimentalOrchestration(
         compactSubagents,
         toolResultsHistory,
       });
-
       const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: params.model });
       tokenMeasurements.add(brainRes.tokenMeasurement);
       brainInputTokens += brainRes.inputTokens;
@@ -7050,7 +7078,19 @@ export async function runExperimentalOrchestration(
             brainMemorySearchesCount++;
             brainMemorySourcesUsed.add("persona_memory");
             const q = String(toolParams.query || inboundsText).trim();
-            const formatted = await searchPersonaMemoryForBrain(cyclePersonaMemoryProvider, q);
+            let personaToolFacts: any[] = [];
+            try {
+              personaToolFacts = await searchPersonaMemory({
+                supabase,
+                personaId: "larissa",
+                query: q,
+                limit: 8,
+                allowLegacyFallback: false,
+              });
+            } catch {
+              personaToolFacts = [];
+            }
+            const formatted = formatPersonaMemoryHitsForBrain(personaToolFacts);
             toolResultsHistory.push(`[TOOL: persona_memory_search | query: "${q}"]\n${formatted}`);
           } else {
             toolResultsHistory.push(`[TOOL: persona_memory_search] Limite de buscas de memória atingido.`);
@@ -7130,7 +7170,6 @@ export async function runExperimentalOrchestration(
 
     // Atualiza o LiveState com o patch do Brain (com poda estrita de coleções)
     currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
-
     // Validação estrita de already_satisfied (Item 10 dos ajustes)
     if (brainPlan.objectiveDecision === "already_satisfied") {
       const targetObj = stageChecklistForRouter.currentObjective;
@@ -7212,7 +7251,6 @@ export async function runExperimentalOrchestration(
         preferAudio: audioSelection.preferAudio,
         turnContract,
       };
-
       // Subagente selecionado (definição do catálogo ou canônico)
       const catalogSub = availableSubagents.find((s: any) => s.id === responsibleSubagent);
       const subagentDef: SubagentDefinition = catalogSub || CANONICAL_SUBAGENTS[responsibleSubagent] || {
@@ -7223,8 +7261,14 @@ export async function runExperimentalOrchestration(
           : responsibleSubagent === "compatibilidade"
           ? CANONICAL_SUBAGENTS.compatibilidade.mission
           : CANONICAL_SUBAGENTS.conexao_inicial.mission,
+        missionSource: "canonical_fallback",
       };
-
+      const subagentMissionSource = subagentDef.missionSource || (catalogSub ? "db" : "canonical_fallback");
+      const subagentMissionHash = stableDiagnosticHash(subagentDef.mission || "");
+      currentCycle.trace.push(`subagent_definition_id=${subagentDef.id}`);
+      currentCycle.trace.push(`subagent_definition_name=${subagentDef.name}`);
+      currentCycle.trace.push(`subagent_mission_source=${subagentMissionSource}`);
+      currentCycle.trace.push(`subagent_mission_hash=${subagentMissionHash}`);
       // Estilo e orçamentos de emoji para a execução
       const recentLarissaOutbounds: string[] = [];
       try {
@@ -7266,7 +7310,6 @@ export async function runExperimentalOrchestration(
         styleStateSnippet: `Última forma: ${recentStyleState.last_response_shape} | Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`,
         candidateAudiosSnippet: candidateAudiosSnippet || undefined,
       });
-
       await publishAutoPilotState(supabase, conversationId, {
         status: "processing",
         activity: activity(
@@ -7367,7 +7410,6 @@ export async function runExperimentalOrchestration(
           lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
           isRetry: false,
         });
-
         if (lintResult.requiresRetry) {
           currentCycle.trace.push(`style_lint_retry_triggered: ${lintResult.retryReason}`);
 
@@ -7390,7 +7432,6 @@ Responda ESTRITAMENTE em JSON puro:
   ],
   "nextPhase": "${finalSubDecision.nextPhase}"
 }`;
-
           try {
             const retryRes = await callModelOrOpenAi(retryPrompt, { runtime, supabase, model: params.model });
             totalTokens += retryRes.tokens;
@@ -7452,7 +7493,10 @@ Responda ESTRITAMENTE em JSON puro:
           candidateBalloons: finalSubDecision.responses || [],
           turnContract,
         });
+        currentCycle.trace.push(`conversation_quality_passed=${qualityResult.passed}`);
+        currentCycle.trace.push(`conversation_quality_initial_issues=${JSON.stringify(qualityResult.issues.map((issue) => issue.code))}`);
         let qualityRetried = false;
+        let qualityFallbackUsed = false;
 
         if (!qualityResult.passed) {
           qualityRetried = true;
@@ -7499,10 +7543,30 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           if (!qualityResult.passed) {
             const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
             if (fallback) {
-              finalSubDecision.responses = fallback;
-              finalSubDecision.suggestedResponse = fallback.join("\n\n");
-              qualityResult = runConversationQualityGate({ inboundMessages: inboundTexts, candidateBalloons: fallback, turnContract });
-              currentCycle.trace.push("conversation_quality_safe_fallback_used");
+              qualityFallbackUsed = true;
+              const fallbackLint = runStyleLint(fallback, {
+                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              qualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: fallbackLint.cleanedBalloons,
+                turnContract,
+              });
+              if (qualityResult.passed) {
+                finalSubDecision.responses = fallbackLint.cleanedBalloons;
+                finalSubDecision.suggestedResponse = fallbackLint.cleanedBalloons.join("\n\n");
+                currentCycle.trace.push("conversation_quality_safe_fallback_used");
+              } else {
+                finalSubDecision.action = "wait";
+                finalSubDecision.responses = [];
+                finalSubDecision.suggestedResponse = "";
+                finalSubDecision.requiredTools = [];
+                currentCycle.trace.push("conversation_quality_fallback_rejected_dispatch_blocked");
+              }
             } else {
               finalSubDecision.action = "wait";
               finalSubDecision.responses = [];
@@ -7521,6 +7585,68 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         currentCycle.trace.push(`parrot_score=${qualityResult.parrotScore.toFixed(3)}`);
         currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
+
+        // ------------------------------------------------------------------
+        // ANTI-REPEAT + QUALITY GATE FINAL (autoridade absoluta de despacho)
+        // ------------------------------------------------------------------
+        if (finalSubDecision.action !== "wait" && finalSubDecision.responses?.length) {
+          const beforeAntiRepeat = [...finalSubDecision.responses];
+          const antiRepeatResult = await validateAntiRepeatGate({
+            conversationId,
+            candidateBalloons: beforeAntiRepeat,
+            supabase,
+          });
+          const finalAfterAntiRepeat = antiRepeatResult.allowedBalloons;
+          if (antiRepeatResult.isBlocked) {
+            currentCycle.trace.push(
+              `anti_repeat_gate_blocked: pruned=${antiRepeatResult.blockedBalloons.length}, remaining=${finalAfterAntiRepeat.length}`
+            );
+          }
+          let finalQualityResult = runConversationQualityGate({
+            inboundMessages: inboundTexts,
+            candidateBalloons: finalAfterAntiRepeat,
+            turnContract,
+          });
+          currentCycle.trace.push(`post_antirepeat_quality_passed=${finalQualityResult.passed}`);
+          currentCycle.trace.push(`post_antirepeat_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
+          let authoritativeBalloons = finalAfterAntiRepeat;
+          if (!finalQualityResult.passed && !qualityFallbackUsed) {
+            const finalFallback = safeHighConfidenceFallback(inboundTexts, turnContract);
+            if (finalFallback) {
+              const finalFallbackLint = runStyleLint(finalFallback, {
+                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              finalQualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: finalFallbackLint.cleanedBalloons,
+                turnContract,
+              });
+              if (finalQualityResult.passed) {
+                authoritativeBalloons = finalFallbackLint.cleanedBalloons;
+                qualityFallbackUsed = true;
+                currentCycle.trace.push("post_antirepeat_quality_safe_fallback_used");
+              }
+            }
+          }
+
+          currentCycle.trace.push(`final_quality_passed=${finalQualityResult.passed}`);
+          currentCycle.trace.push(`final_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
+
+          if (!finalQualityResult.passed) {
+            finalSubDecision.action = "wait";
+            finalSubDecision.responses = [];
+            finalSubDecision.suggestedResponse = "";
+            finalSubDecision.requiredTools = [];
+            currentCycle.trace.push("post_antirepeat_quality_blocked_dispatch");
+          } else {
+            finalSubDecision.responses = authoritativeBalloons;
+            finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+          }
+        }
       }
     }
 
@@ -7660,44 +7786,63 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       : decision.suggestedResponse;
 
     const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
-    let outboxEntry = outboxMap[idempotencyKey];
+    const finalTextBalloons = decision.responses?.length
+      ? decision.responses
+      : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []);
+    const hasFinalDispatchPayload = Boolean(
+      (decision.action === "reply" || decision.action === "advance_phase" || decision.action === "send_audio")
+      && initialContent
+      && (initialContentType === "audio" || finalTextBalloons.length === 1)
+    );
+    let outboxEntry: any = hasFinalDispatchPayload ? outboxMap[idempotencyKey] : undefined;
 
-    if (!outboxEntry) {
-      outboxEntry = {
-        id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        cycleId: correlationId,
-        conversationId,
-        idempotencyKey,
-        content: initialContent,
-        messageType: initialContentType,
-        status: "pending",
-        attempts: 0,
-        maxAttempts: 3,
-        createdAt: new Date().toISOString(),
-      };
-      outboxMap[idempotencyKey] = outboxEntry;
-    }
-    currentCycle.outboxEntryId = outboxEntry.id;
-    currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
+    if (hasFinalDispatchPayload) {
+      if (!outboxEntry) {
+        outboxEntry = {
+          id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          cycleId: correlationId,
+          conversationId,
+          idempotencyKey,
+          content: initialContent,
+          messageType: initialContentType,
+          status: "pending",
+          attempts: 0,
+          maxAttempts: 3,
+          createdAt: new Date().toISOString(),
+        };
+        outboxMap[idempotencyKey] = outboxEntry;
+      } else {
+        // O conteúdo final aprovado é autoritativo mesmo em retomadas idempotentes.
+        outboxEntry.content = initialContent;
+        outboxEntry.messageType = initialContentType;
+      }
+      currentCycle.outboxEntryId = outboxEntry.id;
+      currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
-    // Persiste imediatamente a Outbox com status 'pending' no banco via patch atômico no PostgreSQL
-    // No modo Shadow: NÃO prepara outbox operacional como intenção de envio real
-    if (orchState.mode !== "shadow") {
-      await prepareExperimentalOutboxEntryAtomic({
-        supabase,
-        conversationId,
-        cycleToken: correlationId,
-        outboxEntry,
-      });
+      // Persistência acontece somente depois dos gates finais.
+      if (orchState.mode !== "shadow") {
+        await prepareExperimentalOutboxEntryAtomic({
+          supabase,
+          conversationId,
+          cycleToken: correlationId,
+          outboxEntry,
+        });
+      }
+    } else {
+      currentCycle.trace.push(finalTextBalloons.length > 1
+        ? "outbox_deferred_to_final_balloons"
+        : "outbox_skipped_no_final_payload");
     }
 
     // ------------------------------------------------------------------------
     // MODO SHADOW: Registra tudo sem envio externo à Meta
     // ------------------------------------------------------------------------
     if (orchState.mode === "shadow") {
-      outboxEntry.status = "sent";
-      outboxEntry.sentAt = new Date().toISOString();
-      outboxEntry.providerMessageId = "shadow_simulated";
+      if (outboxEntry) {
+        outboxEntry.status = "sent";
+        outboxEntry.sentAt = new Date().toISOString();
+        outboxEntry.providerMessageId = "shadow_simulated";
+      }
       currentCycle.status = "completed";
       currentCycle.trace.push("shadow_simulation_completed");
 
@@ -7825,23 +7970,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           balloons = splitIntoBalloons(decision.suggestedResponse);
         } else {
           balloons = [];
-        }
-
-        // ANTI-REPEAT GATE DETERMINÍSTICO PRÉ-OUTBOX:
-        // Intercepta e poda perguntas primitivas repetidas antes de despachar à Meta
-        if (!isAudioAction && balloons.length > 0) {
-          const gateResult = await validateAntiRepeatGate({
-            conversationId,
-            candidateBalloons: balloons,
-            supabase,
-          });
-
-          if (gateResult.isBlocked) {
-            currentCycle.trace.push(
-              `anti_repeat_gate_blocked: pruned=${gateResult.blockedBalloons.length}, remaining=${gateResult.allowedBalloons.length}`
-            );
-            balloons = gateResult.allowedBalloons;
-          }
         }
 
         sentBalloonsCount = 0;
@@ -8009,7 +8137,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               createdAt: new Date().toISOString(),
             };
             outboxMap[balloonKey] = balloonOutbox;
+          } else {
+            balloonOutbox.content = balloonText;
+            balloonOutbox.messageType = balloonMessageType;
           }
+          currentCycle.outboxEntryId = balloonOutbox.id;
 
           await prepareExperimentalOutboxEntryAtomic({
             supabase,
@@ -8050,6 +8182,14 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             console.warn(
               `[Orchestrator] Falha no claim atômico da outbox para ${conversationId} (balão ${bIndex + 1}): motivo=${claimRes.reason}`
             );
+            if (claimRes.reason === "cycle_preempted") {
+              return await handleCyclePreemption("before_first_balloon_claim", {
+                isFresh: false,
+                newerInboundCount: 0,
+                newerInboundIds: [],
+                reason: "preempt_requested_flag",
+              });
+            }
             if (claimRes.isUncertain || claimRes.reason === "sending_stale_uncertain" || claimRes.reason === "dispatch_uncertain") {
               sentSuccessfully = true;
               currentCycle.status = "failed";

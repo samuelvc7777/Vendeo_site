@@ -2,7 +2,7 @@
 /**
  * scripts/test-larissa-chat-style.mjs
  * 
- * Bateria rigorosa de 28 testes canônicos para validação do:
+ * Bateria rigorosa de 29 testes canônicos para validação do:
  * - LARISSA_CHAT_STYLE_V2
  * - EMOJI_BUDGET Dinâmico
  * - STYLE_LINT Determinístico
@@ -14,7 +14,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import ts from 'typescript';
 
-console.log('🧪 Iniciando suíte de 28 testes do LARISSA_CHAT_STYLE_V2 & STYLE_LINT...\n');
+console.log('🧪 Iniciando suíte de 29 testes do LARISSA_CHAT_STYLE_V2 & STYLE_LINT...\n');
 
 // 1. Carrega módulo LarissaChatStyle
 function loadTsModule(filePath) {
@@ -398,4 +398,17 @@ assert.ok(tokensEst >= 150 && tokensEst <= 320, `Tokens de LARISSA_CHAT_STYLE_V2
   console.log('✔ Teste 28: Zero mensagens reais enviadas à Meta (ambiente de teste/validação mockado)');
 }
 
-console.log('\n🎉 TODOS OS 28 TESTES DE LARISSA_CHAT_STYLE_V2 & STYLE_LINT PASSARAM COM 100% DE SUCESSO!\n');
+// ----------------------------------------------------------------------------
+// TESTE 29: saudação alongada não pode ser removida por correspondência parcial
+// ----------------------------------------------------------------------------
+{
+  const res = runStyleLint(['Oii, tô bem sim, e vc?'], {
+    lastOutboundReaction: 'oi',
+    isRetry: true,
+  });
+  assert.equal(res.cleanedBalloons[0], 'Oii, tô bem sim, e vc?');
+  assert.ok(!res.issues.some((issue) => issue.rule === 'REACAO_CONSECUTIVA_REMOVIDA'));
+  console.log('✔ Teste 29: "Oii" não é mutilado por match parcial de "Oi"');
+}
+
+console.log('\n🎉 TODOS OS 29 TESTES DE LARISSA_CHAT_STYLE_V2 & STYLE_LINT PASSARAM COM 100% DE SUCESSO!\n');

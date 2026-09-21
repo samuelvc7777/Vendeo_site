@@ -5,11 +5,22 @@ export type TurnResponseShape =
   | "react_and_question"
   | "free_conversation";
 
+export type DirectAnswerKind =
+  | "wellbeing"
+  | "current_activity"
+  | "persona_fact"
+  | "yes_no"
+  | "preference"
+  | "location"
+  | "age"
+  | "freeform";
+
 export interface DirectQuestionContract {
   id: string;
   text: string;
   mustAnswer: boolean;
   answerIntent: string;
+  answerKind: DirectAnswerKind;
   requiredFacts?: string[];
 }
 
@@ -95,6 +106,30 @@ function extractQuestions(text: string): string[] {
   return String(text || "").split(/(?<=\?)/).map((part) => part.trim()).filter((part) => part.includes("?"));
 }
 
+const DIRECT_ANSWER_KINDS = new Set<DirectAnswerKind>([
+  "wellbeing", "current_activity", "persona_fact", "yes_no", "preference", "location", "age", "freeform",
+]);
+
+function inferDirectAnswerKind(questionText: string, inbound: string): DirectAnswerKind {
+  const question = normalize(questionText);
+  const context = normalize(inbound);
+  const combined = `${context} ${question}`;
+  const elliptical = /\b(?:e vc|e voce)\b/.test(question) || /\b(?:e vc|e voce)\b/.test(context);
+
+  if (isWellbeingQuestion(questionText) || (elliptical && /\b(?:to|estou|ta|esta)\s+bem\b/.test(context))) return "wellbeing";
+  if (/\b(?:quantos anos|qual (?:a )?sua idade|idade)\b/.test(combined) || (elliptical && /\btenho\s+\d{1,3}\s+anos\b/.test(context))) return "age";
+  if (/\b(?:onde (?:vc |voce )?mora|mora onde|qual (?:a )?sua cidade)\b/.test(combined) || (elliptical && /\b(?:moro|sou)\s+(?:em|de)\b/.test(context))) return "location";
+  if (/\b(?:ja visitou|ja foi|conhece|vc ja|voce ja)\b/.test(question)) return "yes_no";
+  if (/\b(?:gosta|curte|prefere|ama)\b/.test(question) || (elliptical && /\b(?:gosto|amo|adoro|prefiro|curto|nao gosto|nao curto)\b/.test(context))) return "preference";
+  if (/\b(?:faz estagio de que|estagio de que|qual (?:a )?area do (?:seu )?estagio|qual (?:o )?seu curso|trabalha com o que)\b/.test(combined)) return "persona_fact";
+  if (
+    /\b(?:ta fazendo o que|esta fazendo o que|fazendo oq|o que vc ta fazendo|o que voce esta fazendo)\b/.test(combined)
+    || (elliptical && /\b(?:indo|vou|to|estou|saindo|chegando|trabalhar|academia|estagio|hospital)\b/.test(context))
+  ) return "current_activity";
+  if (/^(?:vc |voce )?(?:gosta|tem|quer|vai|pode|consegue|faz|e|eh)\b/.test(question)) return "yes_no";
+  return "freeform";
+}
+
 export function buildTurnContract(
   inboundMessages: string[],
   requested?: Partial<TurnContract> | null
@@ -105,18 +140,24 @@ export function buildTurnContract(
   const detectedQuestions = explicitQuestions.length === 0 && isWellbeingQuestion(inbound) ? [inbound] : explicitQuestions;
   const requestedQuestions = Array.isArray(requested?.directQuestions) ? requested!.directQuestions! : [];
   const directQuestions = requestedQuestions.length > 0
-    ? requestedQuestions.map((question, index) => ({
+    ? requestedQuestions.map((question, index) => {
+        const text = String(question.text || detectedQuestions[index] || "").trim();
+        const requestedKind = String(question.answerKind || "") as DirectAnswerKind;
+        return {
         id: String(question.id || `direct_${index + 1}`),
-        text: String(question.text || detectedQuestions[index] || "").trim(),
+        text,
         mustAnswer: question.mustAnswer !== false,
         answerIntent: String(question.answerIntent || "Responder diretamente ao que o pretendente perguntou"),
+        answerKind: DIRECT_ANSWER_KINDS.has(requestedKind) ? requestedKind : inferDirectAnswerKind(text, inbound),
         requiredFacts: Array.isArray(question.requiredFacts) ? question.requiredFacts.map(String) : [],
-      }))
+      };
+      })
     : detectedQuestions.map((text, index) => ({
         id: `direct_${index + 1}`,
         text,
         mustAnswer: true,
         answerIntent: greeting ? "Confirmar como Larissa está" : "Responder diretamente ao que foi perguntado",
+        answerKind: inferDirectAnswerKind(text, inbound),
         requiredFacts: [],
       }));
 
@@ -158,6 +199,54 @@ function containsWellbeingAnswer(text: string): boolean {
     || /\b(?:bem sim|tudo certo comigo|ta tudo bem comigo)\b/i.test(text);
 }
 
+function containsCurrentActivityAnswer(text: string): boolean {
+  const value = normalize(text);
+  const firstPerson = /\b(?:to|estou|vou|acabei|cheguei|fico|fiquei|trabalho|estudo|faco|resolvo)\b/.test(value);
+  const activity = /\b(?:fazendo|indo|saindo|voltando|trabalh|estagi|estud|resolv|arrum|cheg|casa|hospital|academia|ocupad|descans)\w*\b/.test(value);
+  return firstPerson && activity;
+}
+
+function containsPersonaFactAnswer(text: string, facts: string[]): boolean {
+  if (facts.length > 0) return facts.every((fact) => normalize(text).includes(normalize(fact)));
+  return /\b(?:eu sou|sou |faco|estudo|trabalho|moro|tenho|meu|minha)\b/.test(normalize(text));
+}
+
+function containsYesNoAnswer(text: string): boolean {
+  return /\b(?:sim|nao|gosto|nao gosto|tenho|nao tenho|quero|nao quero|vou|nao vou|posso|nao posso|conheco|visitei|ja fui|fui|vou la)\b/.test(normalize(text));
+}
+
+function containsPreferenceAnswer(text: string): boolean {
+  return /\b(?:eu )?(?:gosto|amo|adoro|prefiro|curto|nao gosto|nao curto)\b/.test(normalize(text));
+}
+
+function containsLocationAnswer(text: string, facts: string[]): boolean {
+  if (facts.length > 0) return facts.every((fact) => normalize(text).includes(normalize(fact)));
+  return /\b(?:moro|sou)\s+(?:em|de)\b/.test(normalize(text)) || /\bfico\s+em\b/.test(normalize(text));
+}
+
+function containsAgeAnswer(text: string, facts: string[]): boolean {
+  if (facts.length > 0) return facts.every((fact) => normalize(text).includes(normalize(fact)));
+  return /\b(?:tenho|fiz)\s+\d{1,3}(?:\s+anos)?\b/.test(normalize(text));
+}
+
+function answersDirectQuestion(question: DirectQuestionContract, outbound: string, parrotScore: number): boolean {
+  const facts = question.requiredFacts || [];
+  switch (question.answerKind) {
+    case "wellbeing": return containsWellbeingAnswer(outbound);
+    case "current_activity": return containsCurrentActivityAnswer(outbound);
+    case "persona_fact": return containsPersonaFactAnswer(outbound, facts);
+    case "yes_no": return containsYesNoAnswer(outbound);
+    case "preference": return containsPreferenceAnswer(outbound);
+    case "location": return containsLocationAnswer(outbound, facts);
+    case "age": return containsAgeAnswer(outbound, facts);
+    case "freeform":
+    default:
+      return facts.every((fact) => normalize(outbound).includes(normalize(fact)))
+        && !hasOnlyQuestions(outbound)
+        && parrotScore < 0.85;
+  }
+}
+
 function countQuestions(text: string): number {
   return (text.match(/\?/g) || []).length;
 }
@@ -192,9 +281,7 @@ export function runConversationQualityGate(params: {
   for (const question of requiredQuestions) {
     const facts = question.requiredFacts || [];
     const missingFacts = facts.filter((fact) => !normalize(outbound).includes(normalize(fact)));
-    const questionAnswered = wellbeing
-      ? containsWellbeingAnswer(outbound)
-      : missingFacts.length === 0 && !hasOnlyQuestions(outbound) && parrotScore < 0.85;
+    const questionAnswered = missingFacts.length === 0 && answersDirectQuestion(question, outbound, parrotScore);
     if (questionAnswered) answered++;
     else add("DIRECT_QUESTION_UNANSWERED", `A pergunta direta não foi respondida: ${question.text}`);
     if (missingFacts.length > 0) {
