@@ -2552,6 +2552,22 @@ export async function dispatchOutboxEntry(
       return { success: true, providerMessageId: providerId };
     }
 
+    // Bypass seguro para conversas de teste / sandbox: não envia para o Instagram real da Meta
+    const isTestRecipient =
+      String(recipientId).startsWith("test_") ||
+      String(recipientId).startsWith("sandbox_") ||
+      String(outboxEntry.conversationId || "").startsWith("test_") ||
+      String(outboxEntry.conversationId || "").startsWith("sandbox_");
+
+    if (isTestRecipient) {
+      const providerId = `sim_meta_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      outboxEntry.status = "sent";
+      outboxEntry.sentAt = new Date().toISOString();
+      outboxEntry.providerMessageId = providerId;
+      outboxEntry.isUncertain = false;
+      return { success: true, providerMessageId: providerId };
+    }
+
     // Despacho oficial Meta Graph API
     const { data: configRow } = await supabase
       .from("instagram_config")
