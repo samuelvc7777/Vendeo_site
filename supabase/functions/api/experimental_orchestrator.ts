@@ -6751,6 +6751,9 @@ export async function runExperimentalOrchestration(
           currentObjectiveRequired: stageChecklistForRouter.currentObjective?.required !== false,
           currentObjectiveKind: stageChecklistForRouter.currentObjective?.kind,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
+          currentInboundMessages: claimedMessages
+            .map((m: any) => ({ id: String(m.id || ""), text: String(m.text || "") }))
+            .filter((m: any) => m.id && m.text),
           recentMessages: finalRecentMessages.map((m) => ({
             sender: (m.sender === "pretendente" ? "user" : "larissa") as "user" | "larissa",
             text: m.text,
@@ -8682,11 +8685,12 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
     await publishAutoPilotState(supabase, conversationId, {
       status: "failed",
+      cycleId: correlationId,
       activity: activity(
         "failed",
         "Erro na Atria",
         err.message || "Falha na análise da Atria",
-        { mode: orchState.mode }
+        { mode: orchState.mode, cycleId: correlationId }
       ),
     });
 

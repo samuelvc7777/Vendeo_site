@@ -180,6 +180,22 @@ export function validateConversationBrainPlan(
     }
   }
 
+  // Validação estrita de evidenceMessageId e satisfiedObjectiveId para already_satisfied
+  if (plan.objectiveDecision === "already_satisfied") {
+    if (!plan.satisfiedObjectiveId || typeof plan.satisfiedObjectiveId !== "string" || !plan.satisfiedObjectiveId.trim()) {
+      return {
+        valid: false,
+        error: "satisfiedObjectiveId é obrigatório e deve ser string não vazia quando objectiveDecision='already_satisfied'",
+      };
+    }
+    if (!plan.evidenceMessageId || typeof plan.evidenceMessageId !== "string" || !plan.evidenceMessageId.trim()) {
+      return {
+        valid: false,
+        error: "evidenceMessageId é obrigatório e deve ser string não vazia quando objectiveDecision='already_satisfied'",
+      };
+    }
+  }
+
   // Validação de turnContract (aceita tanto na raiz quanto em missionPackage)
   const turnContract = plan.turnContract || plan.missionPackage?.turnContract;
   if (!turnContract || typeof turnContract !== "object") {
@@ -310,6 +326,8 @@ export function buildFallbackBrainPlan(
     action: "reply",
     responsibleSubagent: targetSubagent,
     objectiveDecision: "none",
+    satisfiedObjectiveId: null,
+    evidenceMessageId: null,
     reasoning: defaultText.slice(0, 300),
     liveStatePatch: {},
     responses: [defaultText || "oi, tudo bem?"],
@@ -333,6 +351,7 @@ export interface RunOpenAiBrainParams {
   currentObjectiveRequired?: boolean;
   currentObjectiveKind?: string | null;
   inboundMessages: string[];
+  currentInboundMessages?: Array<{ id: string; text: string }>;
   recentMessages: Array<{ sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;
   landmarksSummary?: string;
@@ -433,8 +452,15 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     sections.push(`\n## HISTÓRICO RECENTE\n${historyLines.join("\n")}`);
   }
 
-  const inbounds = inboundMessages.map((msg, i) => `[Mensagem ${i + 1}]: "${msg}"`).join("\n");
-  sections.push(`\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inbounds || "[Nenhuma mensagem nova]"}`);
+  let inboundsText = "[Nenhuma mensagem nova]";
+  if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
+    inboundsText = params.currentInboundMessages
+      .map((m) => `[MENSAGEM id="${m.id}"]: "${m.text}"`)
+      .join("\n");
+  } else if (inboundMessages && inboundMessages.length > 0) {
+    inboundsText = inboundMessages.map((msg, i) => `[Mensagem ${i + 1}]: "${msg}"`).join("\n");
+  }
+  sections.push(`\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}`);
 
   const subagentCards = availableSubagents.map(
     (s) => `- ID: "${s.id}" | Nome: "${s.name}" | Missão: ${s.mission}`
@@ -481,10 +507,10 @@ Você é o Conversation Brain & Voz Conversacional da Larissa. Você opera em TU
      * Se houver abertura de baixo atrito: escolha "pursue". Só use "defer" se naquele momento for artificial ou concorrer com momento humano mais forte.
 
    - CRITÉRIOS RÍGIDOS PARA objectiveDecision:
-     * "pursue": Use quando o objetivo estiver pendente, a informação não for conhecida, não tiver sido perguntada recentemente, não existir tópico mais forte e a pergunta couber naturalmente no fluxo.
-     * "defer": Use APENAS quando houver motivo legítimo: desabafo, momento emocional delicado, pergunta direta dele exigindo resposta dedicada, flerte que merece réplica, ou quando a pergunta do objetivo ficaria artificial naquele momento. PROIBIDO usar "defer" por medo abstrato de "parecer entrevista".
-     * "already_satisfied": Use quando a informação do objetivo já tiver sido revelada espontaneamente pelo pretendente (ex: ele disse "moro em Barbacena, e vc?").
-     * "none": Use quando não houver objetivo pertinente, ou quando todos os objetivos aplicáveis já foram satisfeitos. NÃO use "none" como fuga de decisão.
+     * "pursue": Use quando o objetivo estiver pendente, a informação não for conhecida, não tiver sido perguntada recentemente, não existir tópico mais forte e a pergunta couber naturalmente no fluxo. evidenceMessageId deve ser null.
+     * "defer": Use APENAS quando houver motivo legítimo: desabafo, momento emocional delicado, pergunta direta dele exigindo resposta dedicada, flerte que merece réplica, ou quando a pergunta do objetivo ficaria artificial naquele momento. PROIBIDO usar "defer" por medo abstrato de "parecer entrevista". evidenceMessageId deve ser null.
+     * "already_satisfied": Use quando a informação do objetivo já tiver sido revelada espontaneamente pelo pretendente (ex: ele disse "moro em Barbacena, e vc?"). Quando escolher "already_satisfied", é OBRIGATÓRIO preencher "satisfiedObjectiveId" com o ID do objetivo e "evidenceMessageId" com o ID exato da mensagem inbound recebida neste turno que comprova o fato (obtido do cabeçalho [MENSAGEM id="..."]).
+     * "none": Use quando não houver objetivo pertinente, ou quando todos os objetivos aplicáveis já foram satisfeitos. NÃO use "none" como fuga de decisão. evidenceMessageId deve ser null.
 
    - CONVERSATIONAL MOMENTUM (SEMPRE DEIXAR A PORTA ABERTA):
      * CADA TURNO DEVE DEIXAR UMA PORTA ABERTA PARA O PRÓXIMO.
@@ -540,6 +566,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "responsibleSubagent": "id_do_subagente",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
+  "evidenceMessageId": null,
   "reasoning": "sua justificativa estratégica",
   "liveStatePatch": { "lastUserEmotionalTone": "...", "currentTopic": "..." },
   "currentTopic": "tópico atual",
@@ -581,7 +608,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "balão 2"
   ]
 }
-Nota: "memoryWrites" é opcional (omita ou deixe vazio se nada novo e relevante foi revelado no turno).`
+Nota 1: Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS (evidenceMessageId deve conter o ID exato da mensagem de [MENSAGEM id="..."]). Para pursue, defer ou none, evidenceMessageId DEVE ser null.
+Nota 2: "memoryWrites" é opcional (omita ou deixe vazio se nada novo e relevante foi revelado no turno).`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);

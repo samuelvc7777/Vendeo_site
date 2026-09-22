@@ -19,7 +19,8 @@ export type AutoPilotChatStatus =
   | "processing" // Sendo respondido agora pela IA (simulando digitação)
   | "paused_guardrail" // Pausado por foto recebida ou conteúdo estranho
   | "paused_handoff" // Pausado por chegar no momento da rifa (chamar dono)
-  | "disabled"; // Desativado pelo operador
+  | "disabled" // Desativado pelo operador
+  | "failed"; // Falha no ciclo do piloto automático
 
 export type AutoPilotActivityPhase =
   | "waiting"
@@ -31,7 +32,8 @@ export type AutoPilotActivityPhase =
   | "checklist"
   | "typing"
   | "sending"
-  | "completed";
+  | "completed"
+  | "failed";
 
 export interface AutoPilotActivity {
   phase: AutoPilotActivityPhase;

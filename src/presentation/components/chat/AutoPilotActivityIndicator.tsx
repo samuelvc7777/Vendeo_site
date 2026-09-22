@@ -256,15 +256,16 @@ export function AutoPilotActivityIndicator({
   const [isPausing, setIsPausing] = useState<boolean>(false);
   const [isSendingNow, setIsSendingNow] = useState<boolean>(false);
 
-  // Pensamentos limpos e estruturados (recupera da atividade atual ou do histórico persistido)
-  const rawAtria = activity?.atriaThought || state.lastThoughts?.atriaThought;
-  const rawSol = activity?.solThought || state.lastThoughts?.solThought;
+  // Fases e Stepper Cognitivo
+  const phase = activity?.phase;
+  const isFailed = phase === "failed" || state.status === "failed";
+
+  // Pensamentos limpos e estruturados (recupera da atividade atual ou do histórico persistido apenas se NÃO falhou)
+  const rawAtria = activity?.atriaThought || (!isFailed ? state.lastThoughts?.atriaThought : undefined);
+  const rawSol = activity?.solThought || (!isFailed ? state.lastThoughts?.solThought : undefined);
   const validAtriaThought = getValidThought(rawAtria);
   const validSolThought = getValidThought(rawSol);
   const hasThoughts = Boolean(validAtriaThought || validSolThought);
-
-  // Fases e Stepper Cognitivo
-  const phase = activity?.phase;
   const isCompleted = phase === "completed" || (!isAutoPilotActivelyWorking(state) && hasThoughts);
   const isAtriaActive = phase === "atria" || phase === "context" || (phase as string) === "search" || (phase as string) === "reanalyzing";
   const isAtriaDone = isCompleted || (!isAtriaActive && (Boolean(validAtriaThought) || phase === "sol" || phase === "typing" || phase === "sending" || phase === "checklist"));
@@ -741,6 +742,11 @@ export function AutoPilotActivityIndicator({
                       <Loader2 className="h-2.5 w-2.5 animate-spin" />
                       {validAtriaThought ? "Analisando ao vivo..." : "Analisando..."}
                     </span>
+                  ) : isFailed && validAtriaThought ? (
+                    <span className="text-[9px] font-medium text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <X className="h-2.5 w-2.5 text-rose-400" />
+                      Rascunho descartado
+                    </span>
                   ) : validAtriaThought ? (
                     <span className="text-[9px] font-medium text-cyan-400/90 bg-cyan-500/10 border border-cyan-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <Check className="h-2.5 w-2.5 text-cyan-400" />
@@ -793,6 +799,11 @@ export function AutoPilotActivityIndicator({
                     <span className="text-[9px] font-semibold text-amber-300 bg-amber-500/20 px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse">
                       <Loader2 className="h-2.5 w-2.5 animate-spin" />
                       {validSolThought ? "Redigindo ao vivo..." : "Redigindo..."}
+                    </span>
+                  ) : isFailed && validSolThought ? (
+                    <span className="text-[9px] font-medium text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <X className="h-2.5 w-2.5 text-rose-400" />
+                      Rascunho descartado
                     </span>
                   ) : validSolThought ? (
                     <span className="text-[9px] font-medium text-amber-400/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">

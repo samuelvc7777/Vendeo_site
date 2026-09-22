@@ -189,6 +189,7 @@ test("CONTRATO 5: Cidade espontaneamente informada -> already_satisfied", async 
     responsibleSubagent: "conexao_inicial",
     objectiveDecision: "already_satisfied",
     satisfiedObjectiveId: "goal_city",
+    evidenceMessageId: "msg_inbound_barbacena",
     reasoning: "Ele revelou espontaneamente que mora em Barbacena",
     responses: ["Barbacena é pertinho daqui né"],
     turnContract: {
@@ -209,6 +210,9 @@ test("CONTRATO 5: Cidade espontaneamente informada -> already_satisfied", async 
     currentObjectiveLabel: "Cidade",
     currentObjectiveRequired: true,
     inboundMessages: ["moro em Barbacena, e vc?"],
+    currentInboundMessages: [
+      { id: "msg_inbound_barbacena", text: "moro em Barbacena, e vc?" },
+    ],
     recentMessages: [],
     availableSubagents: subagents,
     runtime: { callOpenAiAgent: async () => ({ plan: mockPlan, tokens: 65 }) },
