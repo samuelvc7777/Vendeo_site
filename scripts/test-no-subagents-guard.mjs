@@ -18,12 +18,20 @@ const BANNED_TERMS = [
   "allowedSubagents",
   "primarySubagent",
   "delegate_mission",
+  "SubagentDecision",
+  "validateSubagentDecision",
+  "ConversationRoutingDecision",
+  "targetSubagent",
+  "agentVersions.subagent",
+  "shadowSimulation",
 ];
 
 const BANNED_FILES = [
   "src/domain/repositories/ISubagentRepository.ts",
   "src/infrastructure/repositories/SupabaseSubagentRepository.ts",
   "src/domain/entities/Subagent.ts",
+  "src/presentation/components/config/SubagentsManager.tsx",
+  "src/presentation/hooks/useSubagents.ts",
 ];
 
 const PRODUCTION_CODE_FILES = [

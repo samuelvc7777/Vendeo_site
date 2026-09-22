@@ -438,7 +438,7 @@ export function authorizeMissionAudioSelection(
 }
 
 export function enforceAuthorizedAudioDecision(
-  decision: Pick<SubagentDecision, "action" | "audioId">,
+  decision: Pick<BrainDecision, "action" | "audioId">,
   mission: Pick<MissionPackage, "selectedAudioId" | "candidateAudios">
 ): { allowed: boolean; audioId?: string; reason?: string } {
   const requestedAudioId = decision.audioId || null;
@@ -531,12 +531,6 @@ export interface AudioDeliveryHistory {
   providerMessageId?: string;
 }
 
-export interface ConversationRoutingDecision {
-  targetSubagent: string;
-  action: "delegate" | "wait" | "pause";
-  reason: string;
-}
-
 export interface MemoryCandidate {
   entity: string;
   kind?: "episodic" | "fact";
@@ -547,7 +541,7 @@ export interface MemoryCandidate {
   evidenceMessageId: string;
 }
 
-export interface SubagentDecision {
+export interface BrainDecision {
   action: OrchestrationAction;
   checkpoint: string;
   summary: string;
@@ -635,13 +629,11 @@ export interface ProcessingCycle {
   completedAt?: string | null;
   status: "in_progress" | "completed" | "failed" | "cancelled" | "superseded";
   agentVersions: {
-    router: string;
-    subagent: string;
+    brain: string;
     prompt: string;
   };
   decision?: OrchestratorDecision;
   brainModel?: string;
-  executorModel?: string;
   outboxEntryId?: string;
   metrics?: {
     durationMs: number;
@@ -657,11 +649,11 @@ export interface ProcessingCycle {
     claimedCount: number;
     snapshotTimestamp: string;
   };
-  shadowSimulation?: any;
 }
 
 export interface ConversationOrchestrationState {
   version: 1;
+  /** @deprecated Apenas leitura de registros históricos legados */
   mode?: string;
   brainProvider?: "internal" | "openai_agent";
   currentPhase: OrchestrationPhase;
@@ -913,107 +905,14 @@ export function extractJsonFromText(raw: string): any {
 }
 
 // ----------------------------------------------------------------------------
-// 1. Validador do Agente da Conversa (Roteamento)
+// 1. Validador de Decisão do Brain
 // ----------------------------------------------------------------------------
-export function validateRoutingDecision(
-  data: unknown,
-  fallbackPhase: OrchestrationPhase,
-  validSubagentIds?: string[]
-): ConversationRoutingDecision {
-  if (!data || typeof data !== "object") {
-    return {
-      targetSubagent: fallbackPhase,
-      action: "delegate",
-      reason: "Fallback por payload não-objeto",
-    };
-  }
-  const obj = data as Record<string, any>;
-  const action = obj.action === "wait" || obj.action === "pause" ? obj.action : "delegate";
-  const reason =
-    typeof obj.reason === "string"
-      ? obj.reason.trim()
-      : typeof obj.reasoning === "string"
-      ? obj.reasoning.trim()
-      : "Decisão de roteamento válida";
-
-  // Se 'none' foi expressamente retornado
-  if (obj.targetSubagent === "none") {
-    return {
-      targetSubagent: "none",
-      action: obj.action === "pause" ? "pause" : "wait",
-      reason,
-    };
-  }
-
-  // Se lista de IDs válidos foi informada (catálogo ativo)
-  if (validSubagentIds && Array.isArray(validSubagentIds) && validSubagentIds.length > 0) {
-    if (typeof obj.targetSubagent === "string" && validSubagentIds.includes(obj.targetSubagent)) {
-      return {
-        targetSubagent: obj.targetSubagent,
-        action,
-        reason,
-      };
-    }
-  } else {
-    // Validação aberta padrão (aceita canônicos ou identificador alfanumérico válido)
-    if (
-      obj.targetSubagent === "conexao_inicial" ||
-      obj.targetSubagent === "descoberta" ||
-      obj.targetSubagent === "compatibilidade"
-    ) {
-      return {
-        targetSubagent: obj.targetSubagent,
-        action,
-        reason,
-      };
-    }
-
-    if (typeof obj.targetSubagent === "string" && /^[a-z0-9_]{2,64}$/i.test(obj.targetSubagent)) {
-      return {
-        targetSubagent: obj.targetSubagent,
-        action,
-        reason,
-      };
-    }
-  }
-
-  // Compatibilidade resiliente com mocks e decisões diretas
-  if (obj.currentPhase === "descoberta" || obj.nextPhase === "descoberta") {
-    return {
-      targetSubagent: "descoberta",
-      action: "delegate",
-      reason: "Roteado com base na fase da decisão",
-    };
-  }
-  if (obj.currentPhase === "compatibilidade" || obj.nextPhase === "compatibilidade") {
-    return {
-      targetSubagent: "compatibilidade",
-      action: "delegate",
-      reason: "Roteado com base na fase da decisão",
-    };
-  }
-
-  return {
-    targetSubagent: fallbackPhase || "conexao_inicial",
-    action: obj.action === "wait" ? "wait" : "delegate",
-    reason:
-      typeof obj.reasoning === "string"
-        ? obj.reasoning.trim()
-        : typeof obj.reason === "string"
-        ? obj.reason.trim()
-        : "Roteamento padrão para fase atual",
-  };
-}
-
-// ----------------------------------------------------------------------------
-// 2. Validador de Decisão de Subagente
-// ----------------------------------------------------------------------------
-export function validateSubagentDecision(
+export function validateBrainDecision(
   data: unknown,
   currentPhase: OrchestrationPhase
-): SubagentDecision {
+): BrainDecision {
   if (!data || typeof data !== "object") {
-    throw new Error("Decisão do subagente inválida: payload não é um objeto.");
+    throw new Error("Decisão do cérebro (Brain) inválida: payload não é um objeto.");
   }
   const obj = data as Record<string, any>;
 
@@ -1045,27 +944,29 @@ export function validateSubagentDecision(
       : currentPhase === "descoberta"
       ? "chk_pergunta_sobre_ele"
       : currentPhase === "compatibilidade"
-      ? "chk_alinhamento_valores"
+      ? "chk_valores_vida"
       : "chk_saudacao_feita";
 
-  const summary = typeof obj.summary === "string" ? obj.summary.trim() : "Turno processado";
+  const summary =
+    typeof obj.summary === "string" && obj.summary.trim()
+      ? obj.summary.trim()
+      : "Interação processada pelo Brain";
 
+  const suggestedResponse =
+    typeof obj.suggestedResponse === "string" ? obj.suggestedResponse.trim() : "";
+
+  // Suporte a responses (array de balões fragmentados)
   let responses: string[] | undefined;
   if (Array.isArray(obj.responses) && obj.responses.length > 0) {
-    responses = obj.responses.map(String).map((s) => s.trim()).filter(Boolean);
-  }
-
-  let suggestedResponse = typeof obj.suggestedResponse === "string" ? obj.suggestedResponse.trim() : "";
-  if (!suggestedResponse && responses && responses.length > 0) {
-    suggestedResponse = responses.join("\n\n");
-  } else if (suggestedResponse && (!responses || responses.length === 0)) {
+    responses = obj.responses.map(String).map((r: string) => r.trim()).filter(Boolean);
+  } else if (suggestedResponse) {
     responses = splitIntoBalloons(suggestedResponse);
   }
 
   const reasoning =
     typeof obj.reasoning === "string" && obj.reasoning.trim()
       ? obj.reasoning.trim()
-      : "Execução especializada do subagente";
+      : "Execução especializada do Brain";
 
   let objectiveCompletion: { objectiveId: string; evidenceMessageId?: string; value?: any } | undefined;
   const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
@@ -5622,7 +5523,6 @@ export interface RunOrchestrationParams {
 }
 
 export interface OrchestrationResult {
-  mode?: string;
   handled: boolean;
   skippedDuplicate?: boolean;
   sentToMeta?: boolean;
@@ -5716,7 +5616,6 @@ export async function runBrainOrchestration(
         orchState.messageLedger[newMessage.id] = "pending";
       }
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -5727,7 +5626,6 @@ export async function runBrainOrchestration(
       `[Orchestrator] Lock ativo detectado (${claimLockRes.activeCycleToken || "outro ciclo"}) para ${conversationId}. Abortando execução concorrente.`
     );
     return {
-      mode: orchState.mode,
       handled: false,
       sentToMeta: false,
       blockLegacyFallback: true,
@@ -5758,9 +5656,8 @@ export async function runBrainOrchestration(
       startedAt: new Date().toISOString(),
       status: "in_progress",
       agentVersions: {
-        router: "1.2.0",
-        subagent: "1.2.0",
-        prompt: "1.2.0",
+        brain: "2.0.0",
+        prompt: "2.0.0",
       },
       inputWatermark: {
         revision: initialInboundRevision,
@@ -5803,7 +5700,6 @@ export async function runBrainOrchestration(
         cycleRecord: currentCycle,
       });
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -5814,7 +5710,6 @@ export async function runBrainOrchestration(
         `[Orchestrator] Ciclo ${correlationId} perdeu ownership para outro ciclo antes do ACK em ${conversationId}. Abortando sem modificar estado.`
       );
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -5834,7 +5729,6 @@ export async function runBrainOrchestration(
         cycleRecord: currentCycle,
       });
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -5853,7 +5747,7 @@ export async function runBrainOrchestration(
         clearCancelFlag: true,
         cycleRecord: currentCycle,
       });
-      return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
+      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
 
     const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
@@ -5958,7 +5852,7 @@ export async function runBrainOrchestration(
         processingStatus: "idle",
         cycleRecord: currentCycle,
       });
-      return { mode: orchState.mode, handled: true, skippedDuplicate: true, blockLegacyFallback: true };
+      return { handled: true, skippedDuplicate: true, blockLegacyFallback: true };
     }
 
     // SNAPSHOT IMUTÁVEL DO CICLO: Claims all pending messages
@@ -5998,7 +5892,6 @@ export async function runBrainOrchestration(
       });
       if (claimMsgsRes.reason === "cycle_preempted") {
         return {
-          mode: orchState.mode,
           handled: false,
           sentToMeta: false,
           blockLegacyFallback: true,
@@ -6006,7 +5899,6 @@ export async function runBrainOrchestration(
         };
       }
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -6049,7 +5941,6 @@ export async function runBrainOrchestration(
           `[Orchestrator] Ciclo ${correlationId} perdeu o lock para ${releaseRes.activeToken || "outro ciclo"}. Abortando preempção sem sobrescrever estado.`
         );
         return {
-          mode: orchState.mode,
           handled: false,
           sentToMeta: false,
           blockLegacyFallback: true,
@@ -6063,12 +5954,11 @@ export async function runBrainOrchestration(
           "idle",
           "Nova mensagem recebida",
           "Recalculando com contexto atualizado...",
-          { mode: orchState.mode }
+          {}
         ),
       });
 
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -6683,7 +6573,7 @@ export async function runBrainOrchestration(
       return await handleCyclePreemption("during_conversation_agent", freshnessAfterRouter);
     }
 
-    let finalSubDecision: SubagentDecision | null = null;
+    let finalSubDecision: BrainDecision | null = null;
 
     if (brainPlan.action === "wait") {
       finalSubDecision = {
@@ -6696,7 +6586,7 @@ export async function runBrainOrchestration(
         requiredTools: [],
         objectiveCompletion: brainObjectiveCompletion || undefined,
       };
-      currentCycle.trace.push("subagent_action: wait");
+      currentCycle.trace.push("brain_action: wait");
     } else {
       // Prepara o MissionPackage consolidado para o executor
       const requestedDirective = brainPlan.objectiveDecision;
@@ -6722,9 +6612,10 @@ export async function runBrainOrchestration(
           : null,
         relevantMemoryContext: (brainPlan.missionPackage?.relevantMemoryContext || [
           contactMemorySummary ? `FATOS DO PRETENDENTE:\n${contactMemorySummary}` : "",
-          landmarksSummary ? `MARCOS NARRATIVOS:\n${landmarksSummary}` : "",
-          toolResultsHistory.length > 0 ? `PESQUISAS FEITAS NESTE TURNO:\n${toolResultsHistory.join("\n")}` : "",
-        ].filter(Boolean).join("\n\n")),
+          landmarksSummary ? `MARCOS HISTÓRICOS:\n${landmarksSummary}` : "",
+          speechActsSummary ? `ATOS DE FALA RECENTES:\n${speechActsSummary}` : "",
+          personaMemorySummary ? `FATOS RELEVANTES DA LARISSA:\n${personaMemorySummary}` : "",
+        ]).filter(Boolean).join("\n\n"),
         liveStateContext: serializeLiveStateForPrompt(currentLiveState),
         selectedAudioId: audioSelection.selectedAudioId,
         candidateAudios: audioSelection.candidateAudios,
@@ -6815,8 +6706,7 @@ export async function runBrainOrchestration(
 
         currentCycle.trace.push("single_turn_agent_execution_used: true");
         currentCycle.trace.push("second_model_inference_skipped: true");
-        currentCycle.executorModel = "same_agent (gpt-5.6-luna)";
-        currentCycle.trace.push("executor_model: same_agent (gpt-5.6-luna)");
+        currentCycle.trace.push("model: gpt-5.6-luna");
       } else {
         // Constrói prompt do executor enxuto (modo legado)
         const executorPrompt = buildSubagentExecutorPrompt({
@@ -6842,22 +6732,16 @@ export async function runBrainOrchestration(
           ),
         });
 
-        // Resolução explícita do modelo do executor (sem fallback silencioso para gpt-4o-mini)
-        const executorModel =
-          (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_EXECUTOR_MODEL") : process.env.OPENAI_EXECUTOR_MODEL) ||
-          stageRules.openaiExecutorModel ||
-          orchState.executorModel ||
-          (params as any)?.executorModel ||
-          (params as any)?.options?.executorModel ||
-          OPENAI_EXECUTOR_DEFAULT_MODEL;
-
-        currentCycle.executorModel = executorModel;
-        currentCycle.trace.push(`executor_model: ${executorModel}`);
+        // Resolução do modelo (fallback legado)
+        const brainLegacyModel =
+          params.model ||
+          (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL) ||
+          OPENAI_BRAIN_DEFAULT_MODEL;
 
         const execRes = await callModelOrOpenAi(executorPrompt, {
           runtime,
           supabase,
-          model: executorModel,
+          model: brainLegacyModel,
           disallowDowngrade: true,
         });
         tokenMeasurements.add(execRes.tokenMeasurement);
@@ -6878,7 +6762,7 @@ export async function runBrainOrchestration(
             requiredTools: [],
           };
         } else {
-          finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
+          finalSubDecision = validateBrainDecision(rawSubJson, currentPhase);
           currentCycle.trace.push("agent_executed: openai_agent");
         }
       }
@@ -6972,14 +6856,14 @@ Responda ESTRITAMENTE em JSON puro:
             const retryRes = await callModelOrOpenAi(retryPrompt, {
               runtime,
               supabase,
-              model: executorModel,
+              model: brainLegacyModel,
               disallowDowngrade: true,
             });
             totalTokens += retryRes.tokens;
             finalGenerationTokens += retryRes.tokens;
             const retryJson = extractJsonFromText(retryRes.content);
             if (retryJson) {
-              const validatedRetry = validateSubagentDecision(retryJson, currentPhase);
+              const validatedRetry = validateBrainDecision(retryJson, currentPhase);
               candidateBalloons = (validatedRetry.responses && validatedRetry.responses.length > 0)
                 ? validatedRetry.responses
                 : splitIntoBalloons(validatedRetry.suggestedResponse);
@@ -7056,14 +6940,14 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             const retryRes = await callModelOrOpenAi(qualityRetryPrompt, {
               runtime,
               supabase,
-              model: executorModel,
+              model: brainLegacyModel,
               disallowDowngrade: true,
             });
             totalTokens += retryRes.tokens;
             finalGenerationTokens += retryRes.outputTokens;
             const retryJson = extractJsonFromText(retryRes.content);
             if (retryJson) {
-              const retriedDecision = validateSubagentDecision(retryJson, currentPhase);
+              const retriedDecision = validateBrainDecision(retryJson, currentPhase);
               const retriedBalloons = retriedDecision.responses?.length
                 ? retriedDecision.responses
                 : splitIntoBalloons(retriedDecision.suggestedResponse);
@@ -7244,9 +7128,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     }
 
     // ------------------------------------------------------------------------
-    // FRESHNESS GATE 2: Revalidação imediatamente após o Subagente
+    // FRESHNESS GATE 2: Revalidação imediatamente após o Brain
     // ------------------------------------------------------------------------
-    const freshnessAfterSubagent = await checkFreshnessGate({
+    const freshnessAfterBrain = await checkFreshnessGate({
       supabase,
       conversationId,
       claimedMessageIds,
@@ -7254,8 +7138,8 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       initialInboundRevision,
     });
 
-    if (!freshnessAfterSubagent.isFresh) {
-      return await handleCyclePreemption("during_subagent", freshnessAfterSubagent);
+    if (!freshnessAfterBrain.isFresh) {
+      return await handleCyclePreemption("during_brain_execution", freshnessAfterBrain);
     }
 
     // ------------------------------------------------------------------------
@@ -7328,7 +7212,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       for (const id of claimedMessageIds) {
         ledger[id] = "pending";
       }
-      return { mode: orchState.mode, handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
+      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
 
     // 2. Preempção por novo ciclo concorrente ou expiração de lock (Stale Lock / Zombie Cycle Prevention)
@@ -7339,7 +7223,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       currentCycle.status = "failed";
       currentCycle.trace.push(`cycle_preempted: lock_lost`);
       return {
-        mode: orchState.mode,
         handled: false,
         sentToMeta: false,
         blockLegacyFallback: true,
@@ -7508,7 +7391,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
               const updatedState: ConversationOrchestrationState = {
                 version: 1,
-                mode: "experimental",
                 currentPhase: orchState.currentPhase || currentPhase,
                 currentStageId: orchState.currentStageId || currentStageId,
                 checkpoint: decision.checkpoint,
@@ -7544,7 +7426,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               if (!partialFinalization.released) {
                 currentCycle.trace.push(`partial_finalization_failed: ${partialFinalization.reason || "lost_lock"}`);
                 return {
-                  mode: orchState.mode,
                   handled: false,
                   sentToMeta: sentBalloonsCount > 0,
                   blockLegacyFallback: true,
@@ -7559,7 +7440,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                   "completed",
                   "Envio parcial concluído",
                   `Balão ${sentBalloonsCount}/${balloons.length} enviado. Adaptando para nova mensagem...`,
-                  { mode: "experimental", sentBalloonsCount, totalBalloons: balloons.length }
+                  { sentBalloonsCount, totalBalloons: balloons.length }
                 ),
               });
 
@@ -7585,7 +7466,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               }
 
               return {
-                mode: orchState.mode,
                 handled: true,
                 sentToMeta: true,
                 blockLegacyFallback: true,
@@ -7642,8 +7522,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 totalBalloons: balloons.length,
                 currentBalloon: bIndex + 1,
                 countdownSeconds: 0,
-                mode: "experimental",
-              }
+                }
             ),
           });
 
@@ -7675,7 +7554,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 ledger[id] = "processed";
               }
               return {
-                mode: orchState.mode,
                 handled: true,
                 sentToMeta: true,
                 blockLegacyFallback: true,
@@ -7694,7 +7572,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               });
 
               return {
-                mode: orchState.mode,
                 handled: false,
                 sentToMeta: sentBalloonsCount > 0,
                 blockLegacyFallback: true,
@@ -7702,7 +7579,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               };
             } else {
               return {
-                mode: orchState.mode,
                 handled: false,
                 sentToMeta: sentBalloonsCount > 0,
                 blockLegacyFallback: true,
@@ -7987,7 +7863,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
         const updatedState: ConversationOrchestrationState = {
           version: 1,
-          mode: "experimental",
           currentPhase: finalPhaseForExp,
           currentStageId: stageProgression.nextStageId,
           checkpoint: decision.checkpoint,
@@ -8060,7 +7935,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             `[Orchestrator] CAS final falhou para ciclo ${correlationId} (motivo=${casResult.reason}, activeToken=${casResult.activeToken || "null"}). Abortando commit oficial com zero contaminação de memória.`
           );
           return {
-            mode: orchState.mode,
             handled: false,
             sentToMeta: sentSuccessfully,
             blockLegacyFallback: true,
@@ -8085,7 +7959,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               solThought: decision.suggestedResponse,
               currentResponsePreview: decision.suggestedResponse,
               previewResponses: [decision.suggestedResponse],
-              mode: "experimental",
               decision,
             }
           ),
