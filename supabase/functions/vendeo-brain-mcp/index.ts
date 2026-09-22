@@ -312,7 +312,7 @@ serve(async (req: Request) => {
             {
               name: "persona_memory_search",
               description:
-                "Busca autoritativa na Persona Memory da Larissa no Supabase. Use sempre para saber gostos, fatos, rotina, preferencias ou detalhes pessoais antes de responder. Nao invente fatos sobre a persona.",
+                "Busca autoritativa na PersonaMemory da Larissa no Supabase para descobrir fatos reais que gerem afinidade, conexão pessoal, reação autêntica, experiência parecida, diferença interessante, comentário pessoal ou grounding factual. Use para profissão, formação, estudos, hobbies, experiências, viagens, rotina, preferências, gostos, hábitos, valores e reação pessoal. Quando o pretendente revelar um fato pessoal relevante e o contexto não trouxer informação suficiente da Larissa sobre o tema, prefira consultar antes de concluir que não existe conexão. Retorne apenas fatos úteis ao turno; não invente fatos sobre a persona.",
               inputSchema: {
                 type: "object",
                 properties: {

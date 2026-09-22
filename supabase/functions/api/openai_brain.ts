@@ -23,7 +23,7 @@ export const PERSONA_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "persona_memory_search",
     description:
-      "Pesquisa a PersonaMemory oficial da Larissa no Supabase para encontrar fatos, preferências, hábitos, experiências, gostos, opiniões e informações relevantes ao contexto atual. Use quando precisar descobrir algo verdadeiro sobre Larissa. Não invente fatos que podem ser consultados nesta ferramenta.",
+      "Pesquisa a PersonaMemory oficial da Larissa no Supabase para descobrir fatos reais que possam gerar afinidade, conexão pessoal, reação autêntica, experiência parecida, diferença interessante, comentário pessoal ou grounding factual. Use para profissão, formação, estudos, hobbies, experiências, viagens, rotina, preferências, gostos, hábitos, valores e reação pessoal. Quando o pretendente revelar um fato pessoal relevante e o contexto não trouxer informação suficiente da Larissa sobre o tema, prefira consultar esta ferramenta antes de concluir que não existe conexão. Não invente fatos que podem ser consultados nesta ferramenta.",
     parameters: {
       type: "object",
       properties: {
@@ -121,6 +121,41 @@ export function validateConversationBrainPlan(
   return { valid: true };
 }
 
+/**
+ * Validação estrutural: o Brain continua decidindo se memória é necessária;
+ * este guard apenas impede que um plano final descreva uma tool pendente.
+ */
+export function validatePersonaMemoryExecutionInvariant(
+  plan: any,
+  actualMemoryToolCalled: boolean,
+): PlanValidationResult {
+  const mission = plan?.missionPackage || {};
+  const memoryConsulted = mission.memoryConsulted ?? plan?.memoryConsulted;
+  const personaMemoryQuery = mission.personaMemoryQuery ?? plan?.personaMemoryQuery;
+  const searchableText = [
+    plan?.action,
+    plan?.reasoning,
+    mission.conversationIntent,
+    mission.memoryRationale,
+    mission.objectiveDirective,
+  ].filter((value) => typeof value === "string").join("\n");
+  const describesPendingSearch = /(?:vou\s+consultar|consultar\s+depois|consultar\s+persona\s*memory\s+e\s+ent[ãa]o|buscar\s+na\s+mem[oó]ria|usar\s+persona_memory_search|verificar\s+fatos\s+da\s+larissa)/i.test(searchableText);
+
+  if (memoryConsulted === true && !actualMemoryToolCalled) {
+    return { valid: false, error: "PLAN_INCOMPLETE_TOOL_EXECUTION: memoryConsulted=true sem mcp_call real" };
+  }
+  if (personaMemoryQuery && !actualMemoryToolCalled) {
+    return { valid: false, error: "PLAN_INCOMPLETE_TOOL_EXECUTION: personaMemoryQuery sem mcp_call real" };
+  }
+  if (describesPendingSearch && !actualMemoryToolCalled) {
+    return { valid: false, error: "PLAN_INCOMPLETE_TOOL_EXECUTION: plano descreve consulta futura sem executá-la" };
+  }
+  if (actualMemoryToolCalled && memoryConsulted === false) {
+    return { valid: false, error: "PLAN_INCOMPLETE_TOOL_EXECUTION: mcp_call real contradiz memoryConsulted=false" };
+  }
+  return { valid: true };
+}
+
 export function buildFallbackBrainPlan(
   rawResponseText: string,
   availableSubagents?: Array<{ id: string }>
@@ -182,6 +217,7 @@ export interface OpenAiBrainTurnResult {
     status?: string;
     toolsRequested: string[];
     toolExecutionsCount: number;
+    actualMemoryToolCalled: boolean;
     durationMs: number;
     inputTokens: number;
     outputTokens: number;
@@ -246,15 +282,16 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     `\n## INSTRUÇÃO DE DECISÃO E REGRAS MANDATÓRIAS
 Você é o Conversation Brain da Larissa. Sua função é:
 1. Avaliar a intenção do pretendente nas novas mensagens.
-2. Antes de planejar, avalie se algo real da Larissa tornaria a resposta mais pessoal, autêntica ou específica. Se sim e o fato não estiver no contexto, USE persona_memory_search. Considere hobbies, profissão, estudo, trabalho, rotina, viagens, comida, música, família, valores, medos, experiências, opiniões e perguntas diretas sobre Larissa. Não use a ferramenta mecanicamente em saudações simples.
-3. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
+2. AFFINITY CHECK (OBRIGATÓRIO): Você não conhece toda a PersonaMemory carregada de antemão. Portanto, ausência de um fato no contexto atual não prova que tal fato não existe na memória. Quando o pretendente revelar um fato pessoal substantivo sobre profissão, formação/estudo, hobby, viagem, rotina, gosto, preferência, comida, música, filmes, família, valores, religião, relacionamento, lugar, experiência marcante, plano futuro ou hábito, e o contexto não tiver informação suficiente da Larissa sobre o tema, faça UMA busca breve em persona_memory_search ANTES de concluir que não existe afinidade ou conexão pessoal relevante. Se houver mais de um gancho, pesquise o assunto principal em uma única query abrangente; máximo recomendado: 1 busca PersonaMemory por turno. Não use a ferramenta para saudações triviais, mensagens operacionais, nem quando emoção ou urgência exigir apenas acolhimento e a busca não agregar valor.
+3. TOOL EXECUTION INVARIANT: quando decidir que uma ferramenta é necessária para produzir o BrainPlan, EXECUTE a ferramenta antes de emitir o plano final. Nunca descreva uma chamada futura como texto. A sequência obrigatória é DECIDIR BUSCAR → EXECUTAR TOOL → RECEBER RESULTADO → ANALISAR → SELECIONAR FATOS → EMITIR BRAINPLAN FINAL. personaMemoryQuery é apenas telemetria de uma query já executada, nunca uma proposta futura. Se memoryConsulted=true ou personaMemoryQuery estiver preenchido, persona_memory_search já deve ter acontecido. O executor/subagente nunca consulta PersonaMemory: receba somente relevantPersonaFacts já resolvidos. Se não era necessário consultar, use memoryConsulted=false e dê uma memoryRationale concreta; nunca alegue que não existe fato da Larissa sem pesquisa.
+4. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
    - NUNCA declare nem deduza que a Larissa NÃO faz algo, NÃO gosta, NUNCA foi ou NÃO pratica uma atividade apenas pela ausência de fatos na PersonaMemory.
    - Ausência de evidência NÃO é fato negativo!
    - Se não houver fato, trate como desconhecido e não atribua experiência, gosto, medo ou opinião à Larissa.
    - JAMAIS declare categoricamente negações falsas como 'nunca andei de moto', 'não gosto disso' ou 'não pratico nada disso'.
-4. Priorize perguntas diretas e desabafos. Objetivos são intenções de longo prazo: adie-os quando o momento humano pedir acolhimento; marque already_satisfied apenas se a mensagem atual realmente trouxer a evidência. Pergunte somente quando houver gancho específico e curiosidade genuína — nunca para preencher checklist.
-5. Escolha responsibleSubagent somente entre os SUBAGENTES DISPONÍVEIS. Sua escolha será validada sem substituição automática.
-6. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
+5. Priorize perguntas diretas e desabafos. Objetivos são intenções de longo prazo: adie-os quando o momento humano pedir acolhimento; marque already_satisfied apenas se a mensagem atual realmente trouxer a evidência. Pergunte somente quando houver gancho específico e curiosidade genuína — nunca para preencher checklist.
+6. Escolha responsibleSubagent somente entre os SUBAGENTES DISPONÍVEIS. Sua escolha será validada sem substituição automática.
+7. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
 {
   "action": "delegate_mission",
   "responsibleSubagent": "id_do_subagente",
@@ -272,6 +309,8 @@ Você é o Conversation Brain da Larissa. Sua função é:
     "curiosityOpportunity": "...",
     "questionRecommendation": "none | pergunta específica e natural",
     "relevantPersonaFacts": [{ "fact": "...", "memoryId": "quando disponível", "origin": "persona_memory", "reason": "por que é relevante" }],
+    "memoryConsulted": true | false,
+    "memoryRationale": "se false em fato pessoal substantivo, explique uma prioridade concreta do turno; nunca alegue ausência de fato da Larissa sem ter pesquisado",
     "turnContract": {
       "directQuestions": [],
       "mustAnswerFirst": true,
@@ -296,14 +335,37 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   const startTime = Date.now();
   console.log("[Brain] turn_started");
 
-  const apiKey =
+  let apiKey =
     params.apiKey ||
     (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_API_KEY") : process.env.OPENAI_API_KEY);
 
-  const agentId =
+  let agentId =
     params.agentId ||
-    (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_AGENT_ID") : process.env.OPENAI_BRAIN_AGENT_ID) ||
-    "agent_brain_default";
+    (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_AGENT_ID") : process.env.OPENAI_BRAIN_AGENT_ID);
+
+  if ((!apiKey || !agentId || agentId === "agent_brain_default") && params.supabase) {
+    try {
+      const { data: configs } = await params.supabase
+        .from("instagram_config")
+        .select("id, app_secret")
+        .in("id", ["openai_api_key", "openai_brain_agent_id"]);
+
+      if (Array.isArray(configs)) {
+        for (const cfg of configs) {
+          if (cfg.id === "openai_api_key" && !apiKey && cfg.app_secret?.startsWith("sk-")) {
+            apiKey = cfg.app_secret.trim();
+          }
+          if (cfg.id === "openai_brain_agent_id" && (!agentId || agentId === "agent_brain_default") && cfg.app_secret) {
+            agentId = cfg.app_secret.trim();
+          }
+        }
+      }
+    } catch (_err) {
+      // Falha defensiva silenciosa
+    }
+  }
+
+  agentId = agentId || "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482";
 
   const telemetry: OpenAiBrainTurnResult["telemetry"] = {
     agentId,
@@ -314,6 +376,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     outputTokens: 0,
     totalTokens: 0,
     sourcesUsed: [],
+    actualMemoryToolCalled: false,
   };
 
   const contextMessage = buildOpenAiBrainContextMessage(params);
@@ -330,6 +393,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             console.log(`[Brain] tool_requested ${toolName}`);
             telemetry.toolsRequested.push(toolName);
             telemetry.toolExecutionsCount++;
+            telemetry.actualMemoryToolCalled = true;
             if (!telemetry.sourcesUsed.includes("persona_memory")) {
               telemetry.sourcesUsed.push("persona_memory");
             }
@@ -346,7 +410,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry.totalTokens = mockResult.tokens || 100;
       telemetry.sessionId = mockResult.sessionId || `sess_runtime_${Date.now()}`;
 
-      const validation = validateConversationBrainPlan(mockResult.plan, params.availableSubagents);
+      const basicValidation = validateConversationBrainPlan(mockResult.plan, params.availableSubagents);
+      const invariantValidation = validatePersonaMemoryExecutionInvariant(mockResult.plan, telemetry.actualMemoryToolCalled);
+      const validation = !basicValidation.valid ? basicValidation : invariantValidation;
       if (params.strictOpenAiPilot) {
         if (!mockResult.plan || !validation.valid) {
           if (!params.schemaRetryCount) {
@@ -540,6 +606,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         console.log(`[MCP] tool_called ${toolName}`);
         telemetry.toolsRequested.push(toolName);
         telemetry.toolExecutionsCount++;
+        telemetry.actualMemoryToolCalled = true;
         if (!telemetry.sourcesUsed.includes("persona_memory")) {
           telemetry.sourcesUsed.push("persona_memory");
         }
@@ -557,7 +624,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     let parsedPlan = extractJsonFromText(rawResponseText);
-    const validation = validateConversationBrainPlan(parsedPlan, params.availableSubagents);
+    const basicValidation = validateConversationBrainPlan(parsedPlan, params.availableSubagents);
+    const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
+    const validation = !basicValidation.valid ? basicValidation : invariantValidation;
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {

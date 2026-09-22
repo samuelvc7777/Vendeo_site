@@ -6626,7 +6626,7 @@ export async function runExperimentalOrchestration(
       const agentId =
         (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_AGENT_ID") : process.env.OPENAI_BRAIN_AGENT_ID) ||
         stageRules.openaiBrainAgentId ||
-        "agent_brain_default";
+        "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482";
 
       const isStrict = Boolean(
         stageRules.strictOpenAiPilot ||
