@@ -4633,6 +4633,8 @@ serve(async (req: Request) => {
           last_error: mode === "legacy" ? null : existingOrch.last_error || null,
           version: 1,
           updated_at: new Date().toISOString(),
+          brainProvider: mode === "legacy" ? undefined : (existingOrch.brainProvider || "openai_agent"),
+          strictOpenAiPilot: mode === "legacy" ? undefined : (existingOrch.strictOpenAiPilot ?? true),
         };
 
         const updatedRules = {

@@ -6636,7 +6636,7 @@ export async function runExperimentalOrchestration(
       stageRules.orchestration?.brainProvider ||
       orchState.brainProvider ||
       (typeof Deno !== "undefined"
-        ? (Deno.env.get("ENABLE_OPENAI_BRAIN_AGENT") === "true" ? "openai_agent" : "internal")
+        ? (Deno.env.get("ENABLE_OPENAI_BRAIN_AGENT") === "true" || orchState.mode === "experimental" || orchState.mode === "shadow" ? "openai_agent" : "internal")
         : (process.env.ENABLE_OPENAI_BRAIN_AGENT === "true" ? "openai_agent" : "internal"));
 
     const isOpenAiAgentBrain = configuredBrainProvider === "openai_agent";
@@ -7052,7 +7052,10 @@ export async function runExperimentalOrchestration(
         ? normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4)
         : buildTurnContract(
           canonicalClaimed.map((message) => message.text),
-          brainPlan.missionPackage?.turnContract
+          {
+            ...brainPlan.missionPackage?.turnContract,
+            objectiveDirective: normalizedDirective,
+          } as any
         );
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),

@@ -186,7 +186,7 @@ export function buildTurnContract(
       ? shape
       : directQuestions.length > 0
         ? (greeting ? "answer_and_reciprocate" : "answer_only")
-        : "react_only",
+        : ((requested as any)?.objectiveDirective === "pursue" && requested?.newQuestionBudget !== 0 ? "react_and_question" : "react_only"),
     avoidEchoPhrases: Array.isArray(requested?.avoidEchoPhrases) ? requested!.avoidEchoPhrases!.map(String) : detectedQuestions,
     avoidTopics: Array.isArray(requested?.avoidTopics) ? requested!.avoidTopics!.map(String) : [],
     maxBalloons: Math.max(1, Math.min(4, Number(requested?.maxBalloons || (greeting ? 1 : 4)))),
