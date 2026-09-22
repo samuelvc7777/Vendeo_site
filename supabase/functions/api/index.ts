@@ -1466,6 +1466,43 @@ serve(async (req: Request) => {
         );
       }
 
+      // Enriquecimento opcional com Contact Memory oficial (00-05)
+      const allFactsByConv: Record<string, any[]> = {};
+      const allQuotesByConv: Record<string, any[]> = {};
+      if (Array.isArray(convs) && convs.length > 0) {
+        const convIds = convs.map((c: any) => String(c.id)).filter(Boolean);
+        try {
+          const { data: dbFacts } = await supabase
+            .from("contact_memory_facts")
+            .select("conversation_id, entity, field, value, temporal_status, source_message_ids, confidence, importance, created_at")
+            .in("conversation_id", convIds)
+            .neq("temporal_status", "superseded")
+            .order("importance", { ascending: false });
+
+          if (Array.isArray(dbFacts)) {
+            for (const f of dbFacts) {
+              const cId = f.conversation_id;
+              if (!allFactsByConv[cId]) allFactsByConv[cId] = [];
+              allFactsByConv[cId].push(f);
+            }
+          }
+
+          const { data: dbQuotes } = await supabase
+            .from("contact_memory_quotes")
+            .select("conversation_id, speaker, quote_text, context_or_reason, source_message_id, importance, created_at")
+            .in("conversation_id", convIds)
+            .order("importance", { ascending: false });
+
+          if (Array.isArray(dbQuotes)) {
+            for (const q of dbQuotes) {
+              const cId = q.conversation_id;
+              if (!allQuotesByConv[cId]) allQuotesByConv[cId] = [];
+              allQuotesByConv[cId].push(q);
+            }
+          }
+        } catch (_err) {}
+      }
+
       const STAGE_DEFAULT_OBJECTIVES: Record<string, Array<{ id: string; label: string; memoryEntity?: string; memoryField?: string }>> = {
         conexao_inicial: [
           { id: "obj_conexao_acolhimento", label: "Acolher o pretendente e responder saudações" },
@@ -1526,6 +1563,9 @@ serve(async (req: Request) => {
           };
         });
 
+        const dbFacts = allFactsByConv[String(conv.id)] || [];
+        const dbQuotes = allQuotesByConv[String(conv.id)] || [];
+
         return {
           id: String(conv.id || ""),
           contactId: String(conv.contact_id || conv.id || ""),
@@ -1544,6 +1584,8 @@ serve(async (req: Request) => {
             snippets: Array.isArray(mem.snippets) ? mem.snippets : [],
             lastUpdated: mem.lastUpdated || "",
           },
+          contactMemoryFacts: dbFacts,
+          contactMemoryQuotes: dbQuotes,
           objectives: resolvedGoals,
           checklist: {
             stage: currentStageId === "conexao_inicial" ? "Conexão Inicial" : currentStageId === "descoberta" ? "Descoberta" : currentStageId,
@@ -1679,7 +1721,7 @@ serve(async (req: Request) => {
 
       let query = supabase
         .from("conversation_episodic_memory")
-        .select("id, conversation_id, actor, event_type, memory_class, summary, details, emotional_tone, relevance_score, message_id, created_at")
+        .select("id, conversation_id, actor, event_type, memory_class, summary, details, emotional_tone, relevance_score, message_id, loop_status, resolved_at, resolution_message_id, importance, created_at")
         .eq("conversation_id", conversationId);
 
       if (before) {
@@ -1699,6 +1741,7 @@ serve(async (req: Request) => {
       const list = eps || [];
       const landmarks: any[] = [];
       const speechActs: any[] = [];
+      const openLoops: any[] = [];
 
       for (const e of list) {
         const item = {
@@ -1711,9 +1754,17 @@ serve(async (req: Request) => {
           details: e.details || null,
           emotionalTone: e.emotional_tone || "neutro",
           relevanceScore: typeof e.relevance_score === "number" ? e.relevance_score : 1.0,
+          importance: typeof e.importance === "number" ? e.importance : 0.7,
+          loopStatus: e.loop_status || null,
+          resolvedAt: e.resolved_at || null,
+          resolutionMessageId: e.resolution_message_id || null,
           messageId: e.message_id || null,
           createdAt: e.created_at || new Date().toISOString(),
         };
+
+        if (item.loopStatus === "open" || item.eventType === "plan") {
+          openLoops.push(item);
+        }
 
         if (item.memoryClass === "landmark") {
           landmarks.push(item);
@@ -1729,6 +1780,8 @@ serve(async (req: Request) => {
           total: list.length,
           totalLandmarks: landmarks.length,
           totalSpeechActs: speechActs.length,
+          totalOpenLoops: openLoops.length,
+          openLoops,
           landmarks,
           speechActs,
           episodes: list,

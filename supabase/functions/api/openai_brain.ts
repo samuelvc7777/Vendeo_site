@@ -9,6 +9,14 @@ import {
   type PersonaMemoryCompactToolOutput,
 } from "./persona_memory.ts";
 import {
+  searchContactMemory,
+  type ContactMemoryCompactToolOutput,
+} from "./contact_memory.ts";
+import {
+  searchUnifiedConversationMemory,
+  type UnifiedConversationMemoryOutput,
+} from "./conversation_episodic_memory.ts";
+import {
   LARISSA_INTERACTION_DNA_VERSION,
   LARISSA_INTERACTION_DNA_HASH,
 } from "./larissa_interaction_dna.ts";
@@ -42,6 +50,70 @@ export const PERSONA_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
         },
       },
       required: ["query"],
+    },
+  },
+};
+
+export const CONTACT_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
+  type: "function",
+  function: {
+    name: "contact_memory_search",
+    description:
+      "Pesquisa a Contact Memory do pretendente (fatos duráveis, entidades citadas e frases marcantes) no Supabase. Permite consultar detalhes já revelados sobre ele (onde mora, profissão, idade, pets, gostos, rotina, planos). REQUER o parâmetro 'scope' (o capability scope do turno).",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: {
+          type: "string",
+          description: "Capability Scope efêmero do turno atual (ex: 'scope_...')",
+        },
+        query: {
+          type: "string",
+          description: "Termos de busca sobre fatos ou citações do pretendente (ex: 'onde mora', 'idade', 'trabalho', 'irmã', 'moto').",
+        },
+        scopes: {
+          type: "array",
+          items: { type: "string", enum: ["facts", "entities", "quotes"] },
+          description: "Escopos opcionais de busca em Contact Memory.",
+        },
+        limit: {
+          type: "number",
+          description: "Número máximo de itens retornados (entre 1 e 8, default: 5).",
+        },
+      },
+      required: ["scope", "query"],
+    },
+  },
+};
+
+export const CONVERSATION_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
+  type: "function",
+  function: {
+    name: "conversation_memory_search",
+    description:
+      "Pesquisa marcos, episódios passados, atos de fala, combinados/promessas pendentes (open loops) e histórico da conversa no Supabase. Use para evitar perguntas repetidas, honrar combinados e recuperar contexto de turnos anteriores. REQUER o parâmetro 'scope'.",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: {
+          type: "string",
+          description: "Capability Scope efêmero do turno atual (ex: 'scope_...')",
+        },
+        query: {
+          type: "string",
+          description: "Termos de busca sobre episódios, acordos ou perguntas feitas.",
+        },
+        scopes: {
+          type: "array",
+          items: { type: "string", enum: ["episodes", "speech_acts", "open_loops", "history"] },
+          description: "Escopos opcionais de busca em Conversation Memory.",
+        },
+        limit: {
+          type: "number",
+          description: "Número máximo de itens retornados (entre 1 e 8, default: 5).",
+        },
+      },
+      required: ["scope", "query"],
     },
   },
 };
@@ -257,6 +329,9 @@ export interface RunOpenAiBrainParams {
   currentStageId: string;
   currentObjectiveId?: string | null;
   currentObjectiveLabel?: string | null;
+  currentObjectiveDescription?: string | null;
+  currentObjectiveRequired?: boolean;
+  currentObjectiveKind?: string | null;
   inboundMessages: string[];
   recentMessages: Array<{ sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;
@@ -273,6 +348,7 @@ export interface RunOpenAiBrainParams {
   schemaRetryCount?: number;
   schemaFeedback?: string;
   recentStyleStateSnippet?: string;
+  memoryScopeId?: string;
 }
 
 export interface OpenAiBrainTurnResult {
@@ -306,6 +382,8 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     currentStageId,
     currentObjectiveId,
     currentObjectiveLabel,
+    currentObjectiveDescription,
+    currentObjectiveRequired,
     inboundMessages,
     recentMessages,
     contactMemorySummary,
@@ -313,13 +391,24 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     liveStateContext,
     availableSubagents,
     recentStyleStateSnippet,
+    memoryScopeId,
   } = params;
+
+  const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
+  const objectiveType = currentObjectiveRequired === false ? "[OPCIONAL / OPORTUNÍSTICO]" : "[OBRIGATÓRIO]";
+  const objectiveLine = currentObjectiveId
+    ? `${currentObjectiveId} ("${currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
+    : "Nenhum objetivo pendente";
 
   const sections: string[] = [
     `# TURNO DA CONVERSA: ${conversationId}`,
     `ETAPA ATUAL: ${currentStageId}`,
-    `OBJETIVO DA ETAPA: ${currentObjectiveId ? `${currentObjectiveId} (${currentObjectiveLabel || "em aberto"})` : "Nenhum objetivo pendente"}`,
+    `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
+
+  if (memoryScopeId) {
+    sections.push(`MEMORY_SCOPE_ID: "${memoryScopeId}" (Obrigatório usar como parâmetro 'scope' ao chamar contact_memory_search ou conversation_memory_search)`);
+  }
 
   if (liveStateContext) {
     sections.push(`\n## ESTADO VIVO\n${liveStateContext}`);
@@ -364,26 +453,70 @@ Você é o Conversation Brain & Voz Conversacional da Larissa. Você opera em TU
    - Avalie as novas mensagens do pretendente, tom emocional, perguntas diretas ou desabafos.
    - Responda primeiro a qualquer pergunta direta antes de introduzir um novo gancho. Máximo 1 nova pergunta por turno.
 
-2. AFFINITY CHECK (OBRIGATÓRIO):
-   - Você não conhece toda a PersonaMemory carregada de antemão. Ausência de fato no contexto imediato NÃO significa que a Larissa não possua aquela vivência.
-   - Quando o pretendente revelar fato pessoal substantivo sobre profissão, formação/estudos, hobby, viagens, rotina, gostos, preferência, comida, música, filmes, família, valores, religião, lugar ou planos futuros, e o contexto não tiver informação suficiente da Larissa sobre o tema, faça UMA busca breve e objetiva em persona_memory_search ANTES de concluir que não existe afinidade ou conexão.
-   - Máximo recomendado: 1 busca PersonaMemory por turno. Não pesquise para saudações triviais ou desabafos que exigem acolhimento imediato.
+2. PROGRESSÃO OPORTUNÍSTICA & DIRETRIZES DE OBJETIVOS (CRÍTICO):
+   - Os objetivos da etapa são a bússola ativa da conversa.
+   - PROGRESSÃO OPORTUNÍSTICA: Quando houver:
+     (1) Objetivo pendente ativo da etapa;
+     (2) Nenhuma pergunta direta do pretendente pendente de resposta;
+     (3) Nenhum assunto emocional sério (dor, desabafo, hospital, luto) exigindo acolhimento exclusivo;
+     (4) Nenhum tópico atual mais rico ou interessante para aprofundar;
+     (5) Uma abertura conversacional natural (ex: saudação trocada, encerramento de frase, mensagem fática leve como "ah que bom rs", "que bom", "ah sim", "kkk");
+     -> O Brain DEVE PREFERIR APROVEITAR A ABERTURA para avançar o objetivo pendente: tenda a objectiveDecision = "pursue".
+     Isso NÃO é forçar checkpoint nem questionário. É condução natural e humana para evitar diálogos mortos.
 
-3. TOOL EXECUTION INVARIANT:
-   - Se decidir que a ferramenta é necessária, EXECUTE a ferramenta antes de emitir a resposta final em JSON. Nunca descreva consultas futuras no texto.
+   - DIFERENÇA ENTRE FORÇAR E APROVEITAR:
+     * FORÇAR (PROIBIDO): Pretendente desabafa sobre hospital/dor -> perguntar objetivo cidade ("nossa... e vc mora onde?") é forçado e insensível. Use objectiveDecision = "defer".
+     * APROVEITAR (OBRIGATÓRIO): Pretendente manda "ah que bom rs" (ou "oii estou bem sim e vc?", após você responder que está bem) -> não há dor nem tópico concorrendo. Há abertura para perguntar a cidade com naturalidade ("e vc é de onde?"). Use objectiveDecision = "pursue".
+
+   - MENSAGENS FÁTICAS & FIM DO ACKNOWLEDGEMENT LOOP:
+     * Mensagens como "ah sim", "que bom", "pois é", "kkk", "sim", "entendi", "ah que bom rs" frequentemente NÃO trazem novo tópico.
+     * Quando o pretendente mandar apenas continuidade social leve e houver objetivo pendente:
+       NUNCA responda apenas com outro acknowledgement vazio (PROIBIDO: "bom saber", "entendi", "que bom", "ah sim" sem acrescentar nada).
+     * Proibido o ciclo: ELE: "tô bem" -> LARISSA: "que bom" -> ELE: "ah que bom" -> LARISSA: "bom saber".
+     * Quebre o ciclo imediatamente avançando o objetivo pendente com pergunta natural ou criando um gancho real.
+
+   - OBJETIVOS OPCIONAIS (OPPORTUNISTIC OBJECTIVES):
+     * [OPCIONAL / OPORTUNÍSTICO] significa apenas que não trava a mudança de etapa se a conversa fluir para outro lado.
+     * NUNCA trate opcional como irrelevante, NUNCA ignore e NUNCA use defer por padrão!
+     * Se houver abertura de baixo atrito: escolha "pursue". Só use "defer" se naquele momento for artificial ou concorrer com momento humano mais forte.
+
+   - CRITÉRIOS RÍGIDOS PARA objectiveDecision:
+     * "pursue": Use quando o objetivo estiver pendente, a informação não for conhecida, não tiver sido perguntada recentemente, não existir tópico mais forte e a pergunta couber naturalmente no fluxo.
+     * "defer": Use APENAS quando houver motivo legítimo: desabafo, momento emocional delicado, pergunta direta dele exigindo resposta dedicada, flerte que merece réplica, ou quando a pergunta do objetivo ficaria artificial naquele momento. PROIBIDO usar "defer" por medo abstrato de "parecer entrevista".
+     * "already_satisfied": Use quando a informação do objetivo já tiver sido revelada espontaneamente pelo pretendente (ex: ele disse "moro em Barbacena, e vc?").
+     * "none": Use quando não houver objetivo pertinente, ou quando todos os objetivos aplicáveis já foram satisfeitos. NÃO use "none" como fuga de decisão.
+
+   - CONVERSATIONAL MOMENTUM (SEMPRE DEIXAR A PORTA ABERTA):
+     * CADA TURNO DEVE DEIXAR UMA PORTA ABERTA PARA O PRÓXIMO.
+     * Respostas secas ("Bom saber", "Que bom", "Entendi") que apenas encerram o assunto são proibidas quando há abertura conversacional.
+     * Antes de formular responses[], autoavalie: "Minha resposta cria continuidade ou mata uma conversa que ainda tinha abertura?".
+
+   - RELAÇÃO COM O INTERACTION DNA:
+     * DNA dita COMO falar (meiga, ágil, celular, sem pontuação formal, sem exclamação, sem papagaio).
+     * Objetivos ditam PARA ONDE a conversa avança.
+     * "Pergunta somente se fizer sentido": um objetivo pendente é justamente aquilo que torna a pergunta natural!
+     * MÁXIMO 1 NOVA PERGUNTA POR TURNO. Não faça interrogatório nem encadeie perguntas. Um objetivo de cada vez.
+
+3. SISTEMA DE MEMÓRIAS VIA MCP (CONSULTAS SOB DEMANDA):
+   - persona_memory_search(query, limit): Fatos oficiais da Larissa (estudo, profissão, hobbies, infância, família). Use quando o pretendente revelar tema substantivo e faltar grounding da Larissa no contexto.
+   - contact_memory_search(scope, query, scopes, limit): Fatos duráveis e frases marcantes do pretendente (idade, profissão, pets, onde mora, planos). REQUER o parâmetro 'scope' informado em MEMORY_SCOPE_ID.
+   - conversation_memory_search(scope, query, scopes, limit): Episódios passados, atos de fala, combinados/promessas pendentes (open loops) e autorrevelações já feitas pela Larissa. REQUER o parâmetro 'scope'. Use para evitar perguntas repetidas e honrar combinados.
+   - Máximo recomendado: 1 a 2 consultas de memória por turno. Não pesquise para saudações triviais.
+
+4. TOOL EXECUTION INVARIANT:
+   - Se decidir que qualquer ferramenta é necessária, EXECUTE a ferramenta antes de emitir a resposta final em JSON. Nunca descreva consultas futuras no texto.
    - A sequência obrigatória é: DECIDIR BUSCAR → EXECUTAR TOOL → RECEBER FATOS → RACIOCINAR → GERAR RESPOSTA FINAL.
-   - personaMemoryQuery é telemetria da query já executada. Se memoryConsulted=true, persona_memory_search já deve ter sido executada. Se não for necessária, use memoryConsulted=false e forneça memoryRationale concreta.
 
-4. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
+5. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
    - NUNCA declare nem deduza que a Larissa NÃO faz algo, NÃO gosta, NUNCA foi ou NÃO pratica uma atividade apenas pela ausência de fatos na PersonaMemory.
    - Ausência de evidência NÃO é fato negativo! Se não houver fato, trate como desconhecido e não invente nem negue categoricamente.
    - JAMAIS declare categoricamente negações falsas como 'nunca andei de moto', 'não gosto disso' ou 'não pratico nada disso'.
 
-5. ESCOLHA E EXECUÇÃO DO SUBAGENTE RESPONSÁVEL:
+6. ESCOLHA E EXECUÇÃO DO SUBAGENTE RESPONSÁVEL:
    - Escolha responsibleSubagent SOMENTE entre os SUBAGENTES DISPONÍVEIS (ex: "conexao_inicial", "descoberta", "compatibilidade").
    - Assuma internamente a missão do subagente escolhido para conduzir a conversa.
 
-6. FORMA DE DIGITAR & LINGUAGEM DE CELULAR (LARISSA_CHAT_STYLE_V2):
+7. FORMA DE DIGITAR & LINGUAGEM DE CELULAR (LARISSA_CHAT_STYLE_V2):
    - LINGUAGEM DE SMARTPHONE: Português coloquial real do dia a dia, doce, meigo e ágil. Use abreviações: vc, tô, tá, pra, tbm, né, ué.
    - PROIBIDO: NUNCA use "cê" (sempre "vc" ou o nome dele). NUNCA use "trampar", "trampo" ou "trampando" (use trabalho ou serviço).
    - UAI RARO: "uai" é muito raro e opcional (máx 1 a cada 15 turnos). Nunca use como bordão.
@@ -398,7 +531,7 @@ Você é o Conversation Brain & Voz Conversacional da Larissa. Você opera em TU
 
 <!-- EXTENSION_POINT: LARISSA_INTERACTION_DNA (Ponto único de extensão para DNA e dinâmicas avançadas de interação) -->
 
-7. CONTRATO DE SAÍDA JSON FINAL (TURNO ÚNICO):
+8. CONTRATO DE SAÍDA JSON FINAL (TURNO ÚNICO):
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
   "action": "reply",
@@ -416,6 +549,23 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "relevantPersonaFacts": [
     { "fact": "...", "memoryId": "quando disponível", "origin": "persona_memory", "reason": "por que é relevante" }
   ],
+  "memoryWrites": {
+    "contactFacts": [
+      { "entity": "self", "field": "campo_relevante", "value": "valor_informado", "temporalStatus": "durable" }
+    ],
+    "quotes": [
+      { "speaker": "user", "quoteText": "frase marcante dita por ele", "importance": 3 }
+    ],
+    "episodes": [
+      { "actor": "user" | "larissa" | "both", "eventType": "landmark" | "plan", "topic": "...", "summary": "...", "importance": 3 }
+    ],
+    "speechActs": [
+      { "actor": "larissa" | "user", "eventType": "self_disclosure" | "question", "topic": "...", "summary": "..." }
+    ],
+    "openLoops": [
+      { "actor": "both", "eventType": "plan", "topic": "...", "summary": "...", "loopStatus": "open" }
+    ]
+  },
   "turnContract": {
     "directQuestions": [],
     "mustAnswerFirst": true,
@@ -428,7 +578,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "balão 1",
     "balão 2"
   ]
-}`
+}
+Nota: "memoryWrites" é opcional (omita ou deixe vazio se nada novo e relevante foi revelado no turno).`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
@@ -499,7 +650,11 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       const mockResult = await params.runtime.callOpenAiAgent({
         agentId,
         context: contextMessage,
-        tools: [PERSONA_MEMORY_TOOL_DEFINITION],
+        tools: [
+          PERSONA_MEMORY_TOOL_DEFINITION,
+          CONTACT_MEMORY_TOOL_DEFINITION,
+          CONVERSATION_MEMORY_TOOL_DEFINITION,
+        ],
         executeTool: async (toolName: string, toolArgs: any) => {
           if (toolName === "persona_memory_search") {
             console.log(`[Brain] tool_requested ${toolName}`);
@@ -510,6 +665,42 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
               telemetry.sourcesUsed.push("persona_memory");
             }
             const output = await executePersonaMemoryTool(toolArgs, params.supabase);
+            console.log("[Brain] tool_output_submitted");
+            return output;
+          }
+          if (toolName === "contact_memory_search") {
+            console.log(`[Brain] tool_requested ${toolName}`);
+            telemetry.toolsRequested.push(toolName);
+            telemetry.toolExecutionsCount++;
+            telemetry.actualMemoryToolCalled = true;
+            if (!telemetry.sourcesUsed.includes("contact_memory")) {
+              telemetry.sourcesUsed.push("contact_memory");
+            }
+            const output = await searchContactMemory({
+              supabase: params.supabase,
+              conversationId: params.conversationId,
+              query: toolArgs?.query || "",
+              scopes: toolArgs?.scopes,
+              limit: toolArgs?.limit,
+            });
+            console.log("[Brain] tool_output_submitted");
+            return output;
+          }
+          if (toolName === "conversation_memory_search") {
+            console.log(`[Brain] tool_requested ${toolName}`);
+            telemetry.toolsRequested.push(toolName);
+            telemetry.toolExecutionsCount++;
+            telemetry.actualMemoryToolCalled = true;
+            if (!telemetry.sourcesUsed.includes("conversation_memory")) {
+              telemetry.sourcesUsed.push("conversation_memory");
+            }
+            const output = await searchUnifiedConversationMemory({
+              supabase: params.supabase,
+              conversationId: params.conversationId,
+              query: toolArgs?.query || "",
+              scopes: toolArgs?.scopes,
+              limit: toolArgs?.limit,
+            });
             console.log("[Brain] tool_output_submitted");
             return output;
           }
@@ -713,19 +904,22 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     const items: any[] = itemsData.data || [];
 
     for (const item of items) {
-      if (
-        item.type === "tool_call" ||
-        item.type === "mcp_call" ||
-        item.name === "persona_memory_search" ||
-        item.name?.includes("persona_memory_search")
-      ) {
-        const toolName = item.name || "persona_memory_search";
+      const isToolCall = item.type === "tool_call" || item.type === "mcp_call";
+      const rawName = String(item.name || "");
+      if (isToolCall || rawName.includes("memory_search")) {
+        const toolName = rawName || "memory_search";
         console.log(`[MCP] tool_called ${toolName}`);
         telemetry.toolsRequested.push(toolName);
         telemetry.toolExecutionsCount++;
         telemetry.actualMemoryToolCalled = true;
-        if (!telemetry.sourcesUsed.includes("persona_memory")) {
+        if (toolName.includes("persona_memory_search") && !telemetry.sourcesUsed.includes("persona_memory")) {
           telemetry.sourcesUsed.push("persona_memory");
+        }
+        if (toolName.includes("contact_memory_search") && !telemetry.sourcesUsed.includes("contact_memory")) {
+          telemetry.sourcesUsed.push("contact_memory");
+        }
+        if (toolName.includes("conversation_memory_search") && !telemetry.sourcesUsed.includes("conversation_memory")) {
+          telemetry.sourcesUsed.push("conversation_memory");
         }
       }
     }

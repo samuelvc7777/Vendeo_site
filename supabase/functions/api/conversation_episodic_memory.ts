@@ -1415,3 +1415,235 @@ export async function searchRawConversationHistory(params: {
     return [];
   }
 }
+
+export interface ConversationMemoryCompactHit {
+  type: "episode" | "speech_act" | "open_loop" | "raw_message";
+  actor: "larissa" | "pretendente";
+  topic?: string | null;
+  summary: string;
+  sourceMessageId?: string | null;
+  occurredAt?: string;
+  relevanceScore?: number;
+}
+
+export interface ConversationMemoryCompactToolOutput {
+  found: boolean;
+  results: ConversationMemoryCompactHit[];
+}
+
+export interface EpisodeWriteInput {
+  actor?: "larissa" | "pretendente";
+  eventType: EpisodeEventType;
+  topic?: string | null;
+  summary: string;
+  originalText?: string | null;
+  sourceMessageIds?: string[];
+  semanticKeys?: string[];
+  memoryClass?: EpisodeMemoryClass;
+  importance?: number;
+}
+
+export interface OpenLoopWriteInput {
+  topic?: string | null;
+  summary: string;
+  sourceMessageId: string;
+  actor?: "larissa" | "pretendente";
+  status?: "open" | "closed" | "dropped";
+  resolutionMessageId?: string | null;
+  importance?: number;
+}
+
+/**
+ * Busca unificada na Conversation Memory (Episódios + Atos de Fala + Open Loops + Histórico Bruto)
+ */
+export async function searchUnifiedConversationMemory(params: {
+  supabase: any;
+  conversationId: string;
+  query: string;
+  scopes?: Array<"episodes" | "speech_acts" | "open_loops" | "history">;
+  limit?: number;
+}): Promise<ConversationMemoryCompactToolOutput> {
+  const { supabase, conversationId, query, scopes = ["episodes", "speech_acts", "open_loops", "history"] } = params;
+  const limit = Math.min(Math.max(Number(params.limit) || 5, 1), 8);
+  const cleanQuery = (query || "").trim();
+
+  if (!cleanQuery || !conversationId) {
+    return { found: false, results: [] };
+  }
+
+  const results: ConversationMemoryCompactHit[] = [];
+
+  // 1. Busca na memória episódica estruturada (episodes, speech_acts, open_loops)
+  if (scopes.includes("episodes") || scopes.includes("speech_acts") || scopes.includes("open_loops")) {
+    const episodicHits = await searchConversationEpisodicMemory({
+      supabase,
+      conversationId,
+      query: cleanQuery,
+      limit,
+    });
+
+    for (const hit of episodicHits) {
+      const isSpeechAct = ["question", "answer", "self_disclosure", "fact_reveal", "preference_reveal"].includes(hit.event_type);
+      const isOpenLoop = hit.event_type === "plan" || (hit as any).loop_status === "open";
+      const hitType: "episode" | "speech_act" | "open_loop" = isOpenLoop
+        ? "open_loop"
+        : isSpeechAct
+        ? "speech_act"
+        : "episode";
+
+      if (
+        (hitType === "episode" && !scopes.includes("episodes")) ||
+        (hitType === "speech_act" && !scopes.includes("speech_acts")) ||
+        (hitType === "open_loop" && !scopes.includes("open_loops"))
+      ) {
+        continue;
+      }
+
+      results.push({
+        type: hitType,
+        actor: hit.actor,
+        topic: hit.topic,
+        summary: hit.summary,
+        sourceMessageId: hit.source_message_id,
+        occurredAt: hit.created_at,
+        relevanceScore: hit.relevanceScore || hit.relevance,
+      });
+
+      if (results.length >= limit) break;
+    }
+  }
+
+  // 2. Fallback para histórico bruto se poucos resultados e "history" estiver nos scopes
+  if (results.length < limit && scopes.includes("history")) {
+    const rawHits = await searchRawConversationHistory({
+      supabase,
+      conversationId,
+      query: cleanQuery,
+      limit: limit - results.length,
+    });
+
+    for (const rh of rawHits) {
+      results.push({
+        type: "raw_message",
+        actor: rh.sender,
+        summary: rh.audioTranscript ? `[Áudio transcrito]: "${rh.audioTranscript}"` : `"${rh.text}"`,
+        sourceMessageId: rh.messageId,
+        occurredAt: rh.createdAt,
+        relevanceScore: rh.matchScore,
+      });
+      if (results.length >= limit) break;
+    }
+  }
+
+  return {
+    found: results.length > 0,
+    results: results.slice(0, limit),
+  };
+}
+
+/**
+ * Persiste episódios, atos de fala e open loops com idempotência estrita via fingerprints.
+ */
+export async function commitConversationMemoryWrites(params: {
+  supabase: any;
+  conversationId: string;
+  cycleId: string;
+  episodes?: EpisodeWriteInput[];
+  speechActs?: EpisodeWriteInput[];
+  openLoops?: OpenLoopWriteInput[];
+  validMessageIds: Set<string>;
+}): Promise<{ episodesCommitted: number; speechActsCommitted: number; openLoopsCommitted: number }> {
+  const { supabase, conversationId, cycleId, episodes = [], speechActs = [], openLoops = [], validMessageIds } = params;
+  let episodesCommitted = 0;
+  let speechActsCommitted = 0;
+  let openLoopsCommitted = 0;
+
+  const allEpisodesToSave: ConversationEpisode[] = [];
+
+  // Processa Episódios
+  for (const ep of episodes) {
+    if (!ep.summary) continue;
+    const actor = ep.actor || "pretendente";
+    const srcIds = (ep.sourceMessageIds || []).filter((id) => validMessageIds.has(String(id)));
+    const primarySrc = srcIds[0] || (actor === "larissa" ? cycleId : null);
+    if (actor === "pretendente" && !primarySrc) continue;
+
+    allEpisodesToSave.push({
+      conversation_id: conversationId,
+      actor,
+      event_type: ep.eventType || "topic",
+      topic: ep.topic || null,
+      summary: ep.summary.trim(),
+      original_text: ep.originalText || null,
+      source_message_id: primarySrc,
+      source_message_ids: srcIds.length > 0 ? srcIds : [primarySrc!],
+      semantic_keys: ep.semanticKeys || [],
+      memory_class: ep.memoryClass || "landmark",
+      metadata: { importance: ep.importance ?? 0.7, cycle_id: cycleId },
+    });
+    episodesCommitted++;
+  }
+
+  // Processa Speech Acts
+  for (const sa of speechActs) {
+    if (!sa.summary) continue;
+    const actor = sa.actor || "larissa";
+    const srcIds = (sa.sourceMessageIds || []).filter((id) => validMessageIds.has(String(id)));
+    const primarySrc = srcIds[0] || (actor === "larissa" ? cycleId : null);
+
+    allEpisodesToSave.push({
+      conversation_id: conversationId,
+      actor,
+      event_type: sa.eventType || "statement",
+      topic: sa.topic || null,
+      summary: sa.summary.trim(),
+      original_text: sa.originalText || null,
+      source_message_id: primarySrc,
+      source_message_ids: srcIds.length > 0 ? srcIds : [primarySrc!],
+      semantic_keys: sa.semanticKeys || [],
+      memory_class: "speech_act",
+      metadata: { importance: sa.importance ?? 0.5, cycle_id: cycleId },
+    });
+    speechActsCommitted++;
+  }
+
+  // Processa Open Loops
+  for (const ol of openLoops) {
+    if (!ol.summary) continue;
+    const actor = ol.actor || "pretendente";
+    const status = ol.status || "open";
+    const srcId = validMessageIds.has(String(ol.sourceMessageId))
+      ? String(ol.sourceMessageId)
+      : cycleId;
+
+    allEpisodesToSave.push({
+      conversation_id: conversationId,
+      actor,
+      event_type: "plan",
+      topic: ol.topic || null,
+      summary: ol.summary.trim(),
+      source_message_id: srcId,
+      source_message_ids: [srcId],
+      semantic_keys: ["open_loop", `loop.${status}`],
+      memory_class: "landmark",
+      metadata: {
+        loop_status: status,
+        resolution_message_id: ol.resolutionMessageId || null,
+        importance: ol.importance ?? 0.8,
+        cycle_id: cycleId,
+      },
+    });
+    openLoopsCommitted++;
+  }
+
+  if (allEpisodesToSave.length > 0) {
+    await saveConversationEpisodes({
+      supabase,
+      conversationId,
+      episodes: allEpisodesToSave,
+    });
+  }
+
+  return { episodesCommitted, speechActsCommitted, openLoopsCommitted };
+}
+

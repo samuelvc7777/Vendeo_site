@@ -8,6 +8,11 @@ import {
   sanitizeMcpTelemetry,
   type SanitizedMcpTelemetry,
 } from "./_shared/persona_memory.ts";
+import {
+  resolveMemoryScope,
+  searchMcpContactMemory,
+  searchMcpConversationMemory,
+} from "./_shared/mcp_memory_helpers.ts";
 export { sanitizeMcpTelemetry, type SanitizedMcpTelemetry };
 
 const corsHeaders = {
@@ -241,7 +246,7 @@ serve(async (req: Request) => {
             },
           },
           instructions:
-            "Use persona_memory_search para pesquisar fatos oficiais e preferências da Larissa no Supabase.",
+            "vendeo_memory: Use persona_memory_search para pesquisar fatos oficiais da Larissa. Use contact_memory_search (com o parâmetro scope) para fatos/citações do pretendente. Use conversation_memory_search (com o parâmetro scope) para episódios/open loops/histórico.",
         },
       }),
       { status: 200, headers: responseHeaders }
@@ -273,7 +278,7 @@ serve(async (req: Request) => {
             version: MCP_SERVER_VERSION,
           },
           instructions:
-            "Use persona_memory_search para pesquisar fatos oficiais e preferências da Larissa no Supabase.",
+            "vendeo_memory: Use persona_memory_search para pesquisar fatos oficiais da Larissa. Use contact_memory_search (com o parâmetro scope) para fatos/citações do pretendente. Use conversation_memory_search (com o parâmetro scope) para episódios/open loops/histórico.",
         },
       }),
       { status: 200, headers: responseHeaders }
@@ -327,6 +332,64 @@ serve(async (req: Request) => {
                   },
                 },
                 required: ["query"],
+              },
+            },
+            {
+              name: "contact_memory_search",
+              description:
+                "Busca autoritativa em Contact Memory (Fatos e Citações do Pretendente) no Supabase. Permite consultar fatos duráveis (idade, profissão, gostos, rotina, planos, família, pets, dados pessoais) e frases marcantes do pretendente. REQUER o parâmetro 'scope' (o capability scope do turno atual). Use quando precisar recuperar ou confirmar detalhes já revelados pelo pretendente.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  scope: {
+                    type: "string",
+                    description: "Capability Scope efêmero gerado pelo backend para o turno atual (ex: 'scope_...')",
+                  },
+                  query: {
+                    type: "string",
+                    description: "Termo de busca ou pergunta sobre fatos ou citações do pretendente (ex: 'onde mora', 'idade', 'trabalho', 'irmã', 'moto')",
+                  },
+                  scopes: {
+                    type: "array",
+                    items: { type: "string", enum: ["facts", "entities", "quotes"] },
+                    description: "Escopos opcionais de busca em Contact Memory (padrão: ['facts', 'entities', 'quotes'])",
+                  },
+                  limit: {
+                    type: "integer",
+                    description: "Quantidade máxima de resultados a retornar (padrão 5, máx 8)",
+                    default: 5,
+                  },
+                },
+                required: ["scope", "query"],
+              },
+            },
+            {
+              name: "conversation_memory_search",
+              description:
+                "Busca autoritativa em Conversation Memory (Episódios passados, Atos de fala, Open loops pendentes e Histórico da conversa) no Supabase. Permite consultar eventos marcantes, temas discutidos, promessas/combinados pendentes, autorrevelações já feitas pela Larissa ou histórico bruto. REQUER o parâmetro 'scope' (o capability scope do turno atual). Use para evitar perguntas repetidas, honrar combinados e recuperar contexto de turnos anteriores.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  scope: {
+                    type: "string",
+                    description: "Capability Scope efêmero gerado pelo backend para o turno atual (ex: 'scope_...')",
+                  },
+                  query: {
+                    type: "string",
+                    description: "Termo de busca sobre episódios, combinados, perguntas anteriores ou temas",
+                  },
+                  scopes: {
+                    type: "array",
+                    items: { type: "string", enum: ["episodes", "speech_acts", "open_loops", "history"] },
+                    description: "Escopos opcionais de busca em Conversation Memory (padrão: ['episodes', 'speech_acts', 'open_loops', 'history'])",
+                  },
+                  limit: {
+                    type: "integer",
+                    description: "Quantidade máxima de resultados a retornar (padrão 5, máx 8)",
+                    default: 5,
+                  },
+                },
+                required: ["scope", "query"],
               },
             },
           ],
@@ -383,9 +446,21 @@ serve(async (req: Request) => {
       rawToolName.endsWith("_persona_memory_search") ||
       rawToolName.includes("persona_memory_search");
 
+    const isContactTool =
+      rawToolName === "contact_memory_search" ||
+      rawToolName.endsWith(":contact_memory_search") ||
+      rawToolName.endsWith("_contact_memory_search") ||
+      rawToolName.includes("contact_memory_search");
+
+    const isConversationTool =
+      rawToolName === "conversation_memory_search" ||
+      rawToolName.endsWith(":conversation_memory_search") ||
+      rawToolName.endsWith("_conversation_memory_search") ||
+      rawToolName.includes("conversation_memory_search");
+
     const toolArgs = params?.arguments || {};
 
-    if (!isPersonaTool) {
+    if (!isPersonaTool && !isContactTool && !isConversationTool) {
       return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -399,19 +474,7 @@ serve(async (req: Request) => {
       );
     }
 
-    console.log("[MCP] request_received");
-    console.log("[MCP] tool_called persona_memory_search");
-
-    // Sanitizacao rigorosa dos argumentos recebidos da OpenAI
-    let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
-    let limit = 5;
-    if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
-      limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
-    }
-
-    console.log(`[MCP] persona_query_received length=${query.length}`);
-
-    // Obtencao do cliente Supabase para consulta segura a tabela oficial public.persona_memory
+    // Obtencao do cliente Supabase para consulta segura
     if (!supabaseUrl || !supabaseServiceKey) {
       console.error("[MCP] Erro de infraestrutura: SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY ausente.");
       return new Response(
@@ -429,43 +492,179 @@ serve(async (req: Request) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    let hits: any[] = [];
-    try {
-      hits = await searchPersonaMemory({
-        supabase,
-        personaId: "larissa",
-        query,
-        limit,
-        allowLegacyFallback: false,
-      });
-    } catch (err) {
-      console.error("[MCP] Erro ao consultar searchPersonaMemory:", err);
-      hits = [];
+    // 1. PERSONA MEMORY SEARCH
+    if (isPersonaTool) {
+      console.log("[MCP] request_received: persona_memory_search");
+
+      // Sanitizacao rigorosa dos argumentos recebidos da OpenAI
+      let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+      let limit = 5;
+      if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
+        limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
+      }
+
+      console.log(`[MCP] persona_query_received length=${query.length}`);
+
+      let hits: any[] = [];
+      try {
+        hits = await searchPersonaMemory({
+          supabase,
+          personaId: "larissa",
+          query,
+          limit,
+          allowLegacyFallback: false,
+        });
+      } catch (err) {
+        console.error("[MCP] Erro ao consultar searchPersonaMemory:", err);
+        hits = [];
+      }
+
+      const toolOutput = formatPersonaMemoryForToolOutput(hits);
+      console.log(`[MCP] persona_results=${toolOutput.results.length}`);
+
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(toolOutput),
+              },
+            ],
+            isError: false,
+          },
+        }),
+        { status: 200, headers: responseHeaders }
+      );
     }
 
-    const toolOutput = formatPersonaMemoryForToolOutput(hits);
+    // 2. CONTACT MEMORY SEARCH
+    if (isContactTool) {
+      console.log("[MCP] request_received: contact_memory_search");
+      const incomingScope = typeof toolArgs?.scope === "string" ? toolArgs.scope.trim() : "";
+      let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+      let limit = 5;
+      if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
+        limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
+      }
 
-    console.log(`[MCP] persona_results=${toolOutput.results.length}`);
-    console.log("[MCP] response_completed");
-
-    // Não persiste fatos pessoais em instagram_config; a telemetria é somente operacional.
-
-    return new Response(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(toolOutput),
+      const resolved = await resolveMemoryScope(supabase, incomingScope);
+      if (!resolved) {
+        console.warn(`[MCP] Scope inválido, expirado ou revogado para contact_memory_search: '${incomingScope}'`);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "Invalid, expired, or unauthorized memory scope",
+                    found: false,
+                    results: [],
+                  }),
+                },
+              ],
+              isError: false,
             },
-          ],
-          isError: false,
-        },
-      }),
-      { status: 200, headers: responseHeaders }
-    );
+          }),
+          { status: 200, headers: responseHeaders }
+        );
+      }
+
+      const toolOutput = await searchMcpContactMemory({
+        supabase,
+        conversationId: resolved.conversationId,
+        query,
+        scopes: Array.isArray(toolArgs?.scopes) ? toolArgs.scopes : undefined,
+        limit,
+      });
+
+      console.log(`[MCP] contact_memory_results=${toolOutput.results.length}`);
+
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(toolOutput),
+              },
+            ],
+            isError: false,
+          },
+        }),
+        { status: 200, headers: responseHeaders }
+      );
+    }
+
+    // 3. CONVERSATION MEMORY SEARCH
+    if (isConversationTool) {
+      console.log("[MCP] request_received: conversation_memory_search");
+      const incomingScope = typeof toolArgs?.scope === "string" ? toolArgs.scope.trim() : "";
+      let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+      let limit = 5;
+      if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
+        limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
+      }
+
+      const resolved = await resolveMemoryScope(supabase, incomingScope);
+      if (!resolved) {
+        console.warn(`[MCP] Scope inválido, expirado ou revogado para conversation_memory_search: '${incomingScope}'`);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "Invalid, expired, or unauthorized memory scope",
+                    found: false,
+                    results: [],
+                  }),
+                },
+              ],
+              isError: false,
+            },
+          }),
+          { status: 200, headers: responseHeaders }
+        );
+      }
+
+      const toolOutput = await searchMcpConversationMemory({
+        supabase,
+        conversationId: resolved.conversationId,
+        query,
+        scopes: Array.isArray(toolArgs?.scopes) ? toolArgs.scopes : undefined,
+        limit,
+      });
+
+      console.log(`[MCP] conversation_memory_results=${toolOutput.results.length}`);
+
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(toolOutput),
+              },
+            ],
+            isError: false,
+          },
+        }),
+        { status: 200, headers: responseHeaders }
+      );
+    }
   }
 
   // Metodo desconhecido

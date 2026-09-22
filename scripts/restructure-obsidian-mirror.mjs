@@ -138,9 +138,23 @@ export function generateAboutMarkdown(contact) {
 
   const selfFacts = contact.memory?.entities?.self || {};
   const selfFields = Object.keys(selfFacts);
+  const dbFacts = Array.isArray(contact.contactMemoryFacts) ? contact.contactMemoryFacts : [];
+  const dbQuotes = Array.isArray(contact.contactMemoryQuotes) ? contact.contactMemoryQuotes : [];
 
   let selfSection = '_Nenhum fato durável registrado ainda sobre o pretendente._';
-  if (selfFields.length > 0) {
+  if (dbFacts.length > 0) {
+    const selfDbFacts = dbFacts.filter((f) => !f.entity || f.entity === 'self');
+    if (selfDbFacts.length > 0) {
+      selfSection = selfDbFacts
+        .map((f) => {
+          const val = typeof f.value === 'object' ? JSON.stringify(f.value) : String(f.value);
+          const prov = f.source_message_ids?.[0] ? ` *(origem: \`${f.source_message_ids[0]}\`)*` : '';
+          const status = f.temporal_status && f.temporal_status !== 'durable' ? ` [${f.temporal_status}]` : '';
+          return `- **${f.field}:** ${val}${status}${prov}`;
+        })
+        .join('\n');
+    }
+  } else if (selfFields.length > 0) {
     selfSection = selfFields
       .map((field) => {
         const item = selfFacts[field];
@@ -155,7 +169,24 @@ export function generateAboutMarkdown(contact) {
   const entities = contact.memory?.entities || {};
   const otherEntities = Object.keys(entities).filter((k) => k !== 'self');
   let othersSection = '_Nenhuma outra entidade citada até o momento._';
-  if (otherEntities.length > 0) {
+  if (dbFacts.length > 0) {
+    const otherDbFacts = dbFacts.filter((f) => f.entity && f.entity !== 'self');
+    if (otherDbFacts.length > 0) {
+      const byEntity = {};
+      for (const f of otherDbFacts) {
+        if (!byEntity[f.entity]) byEntity[f.entity] = [];
+        byEntity[f.entity].push(f);
+      }
+      othersSection = Object.keys(byEntity)
+        .map((entKey) => {
+          const factLines = byEntity[entKey]
+            .map((f) => `  - **${f.field}:** ${typeof f.value === 'object' ? JSON.stringify(f.value) : f.value}`)
+            .join('\n');
+          return `### Entidade: ${entKey}\n${factLines}`;
+        })
+        .join('\n\n');
+    }
+  } else if (otherEntities.length > 0) {
     othersSection = otherEntities
       .map((entKey) => {
         const entFacts = entities[entKey] || {};
@@ -170,10 +201,18 @@ export function generateAboutMarkdown(contact) {
       .join('\n\n');
   }
 
-  // Snippets/trechos literais
+  // Snippets/trechos literais e Quotes
   const snippets = Array.isArray(contact.memory?.snippets) ? contact.memory.snippets : [];
   let snippetsSection = '_Nenhum trecho textual relevante destacado._';
-  if (snippets.length > 0) {
+  if (dbQuotes.length > 0) {
+    snippetsSection = dbQuotes
+      .map((q) => {
+        const reason = q.context_or_reason ? ` *(${q.context_or_reason})*` : '';
+        const prov = q.source_message_id ? ` *(origem: \`${q.source_message_id}\`)*` : '';
+        return `- > "${q.quote_text}"${reason}${prov}`;
+      })
+      .join('\n');
+  } else if (snippets.length > 0) {
     snippetsSection = snippets
       .map((s) => {
         const text = typeof s === 'string' ? s : s?.text || JSON.stringify(s);
@@ -357,18 +396,27 @@ export function generateEpisodesMarkdown(contact, episodesInput = []) {
   let rawList = [];
   let landmarks = [];
   let speechActs = [];
+  let openLoops = [];
 
   if (episodesInput && typeof episodesInput === 'object' && !Array.isArray(episodesInput)) {
     landmarks = Array.isArray(episodesInput.landmarks) ? episodesInput.landmarks : [];
     speechActs = Array.isArray(episodesInput.speechActs) ? episodesInput.speechActs : [];
-    rawList = Array.isArray(episodesInput.episodes) ? episodesInput.episodes : [...landmarks, ...speechActs];
+    openLoops = Array.isArray(episodesInput.openLoops) ? episodesInput.openLoops : [];
+    rawList = Array.isArray(episodesInput.episodes) ? episodesInput.episodes : [...landmarks, ...speechActs, ...openLoops];
   } else if (Array.isArray(episodesInput)) {
     rawList = episodesInput;
     for (const ep of rawList) {
       const isLandmark = ep.memoryClass === 'landmark' || ep.memory_class === 'landmark' ||
         ['life_event', 'preference', 'boundary', 'landmark'].includes(ep.event_type || ep.eventType);
-      if (isLandmark) landmarks.push(ep);
-      else speechActs.push(ep);
+      const isOpenLoop = ep.loop_status === 'open' || ep.loopStatus === 'open' || ep.loop_status === 'resolved' || ep.loopStatus === 'resolved' || ep.event_type === 'plan' || ep.eventType === 'plan';
+      
+      if (isOpenLoop) {
+        openLoops.push(ep);
+      } else if (isLandmark) {
+        landmarks.push(ep);
+      } else {
+        speechActs.push(ep);
+      }
     }
   }
 
@@ -380,9 +428,24 @@ export function generateEpisodesMarkdown(contact, episodesInput = []) {
     return `- **${actorLabel}** (${eventType}${scoreStr}) — ${time}:\n  - *${ep.summary || ep.details || ''}*`;
   };
 
+  const formatOpenLoopItem = (ep) => {
+    const isResolved = ep.loop_status === 'resolved' || ep.loopStatus === 'resolved';
+    const check = isResolved ? '[x]' : '[ ]';
+    const actorLabel = (ep.actor === 'larissa' || ep.is_from_me) ? '🌸 Larissa' : `👤 ${name}`;
+    const time = ep.created_at || ep.createdAt ? new Date(ep.created_at || ep.createdAt).toLocaleDateString('pt-BR') : '';
+    const resNote = isResolved && (ep.resolved_at || ep.resolvedAt)
+      ? ` *(resolvido em ${new Date(ep.resolved_at || ep.resolvedAt).toLocaleDateString('pt-BR')})*`
+      : '';
+    return `- ${check} **${actorLabel}:** ${ep.summary || ep.details || ''}${resNote} *(iniciado: ${time})*`;
+  };
+
   const landmarksSection = landmarks.length > 0
     ? landmarks.map(formatEpisodeItem).join('\n')
     : '_Nenhum marco narrativo (landmark) registrado ainda._';
+
+  const openLoopsSection = openLoops.length > 0
+    ? openLoops.map(formatOpenLoopItem).join('\n')
+    : '_Nenhum combinado ou promessa em aberto no momento._';
 
   const speechActsSection = speechActs.length > 0
     ? speechActs.map(formatEpisodeItem).join('\n')
@@ -406,6 +469,13 @@ updated_at: "${updatedAt}"
 *Fatos estruturantes da história de vida, preferências marcantes e limites declarados.*
 
 ${landmarksSection}
+
+---
+
+## 🔄 Combinados e Promessas em Aberto (Open Loops)
+*Pendências, promessas mútuas e tópicos aguardando retorno.*
+
+${openLoopsSection}
 
 ---
 

@@ -18,6 +18,7 @@ import {
   searchConversationEpisodicMemory,
   validateAntiRepeatGate,
   searchRawConversationHistory,
+  commitConversationMemoryWrites,
   type RawConversationHistorySearchResult,
 } from "./conversation_episodic_memory.ts";
 export {
@@ -27,6 +28,19 @@ export {
   executeEpisodeWriter,
   extractEpisodesFromPretendenteMessage,
   searchRawConversationHistory,
+  commitConversationMemoryWrites,
+};
+import {
+  createAgentMemoryScope,
+  revokeAgentMemoryScope,
+  commitContactMemoryWrites,
+  searchContactMemory,
+} from "./contact_memory.ts";
+export {
+  createAgentMemoryScope,
+  revokeAgentMemoryScope,
+  commitContactMemoryWrites,
+  searchContactMemory,
 };
 import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
@@ -3490,7 +3504,7 @@ export async function resolveStageChecklistGoals(params: {
       id: goal.id,
       label: goal.label,
       kind: isStateGoal ? ("conversation_state" as const) : ("fact" as const),
-      required: true, // No modelo mental determinístico, todo ativo é checkpoint obrigatório
+      required: goal.required !== false,
       allowedSubagents: goal.allowedSubagents || [responsibleSubagent],
       primarySubagent: goal.primarySubagent || responsibleSubagent,
       description: goal.description,
@@ -3570,7 +3584,8 @@ export async function resolveStageChecklistGoals(params: {
   const openObjectives = resolvedGoals.filter((g) => g.status === "pending");
   const currentObjective = openObjectives[0] || null;
   const remainingObjectives = openObjectives.slice(1);
-  const stageComplete = activeGoals.length > 0 && openObjectives.length === 0;
+  const requiredPending = openObjectives.filter((g) => g.required !== false);
+  const stageComplete = activeGoals.length > 0 && requiredPending.length === 0;
 
   return {
     stage: matchedStage?.name || (
@@ -3586,7 +3601,7 @@ export async function resolveStageChecklistGoals(params: {
       kind: g.kind || "fact",
       status: g.status,
       value: g.value,
-      required: true,
+      required: g.required !== false,
       allowedSubagents: g.allowedSubagents,
       primarySubagent: g.primarySubagent,
       description: g.description,
@@ -6696,6 +6711,7 @@ export async function runExperimentalOrchestration(
     const toolResultsHistory: string[] = [];
     let brainPlan: ConversationBrainPlan | null = null;
     let brainIterations = 0;
+    let currentMemoryScopeId: string | undefined;
 
     if (isOpenAiAgentBrain) {
       const agentId =
@@ -6711,12 +6727,29 @@ export async function runExperimentalOrchestration(
       );
 
       try {
+        const scopeRes = await createAgentMemoryScope({
+          supabase,
+          conversationId,
+          cycleId: correlationId,
+          agentId,
+          ttlSeconds: 300,
+        });
+        currentMemoryScopeId = scopeRes.scopeId;
+        currentCycle.trace.push(`agent_memory_scope_created=${currentMemoryScopeId}`);
+      } catch (scopeErr) {
+        console.warn("[Orchestrator] Falha ao criar agent_memory_scope:", scopeErr);
+      }
+
+      try {
         const openAiBrainTurn = await runOpenAiBrainTurn({
           supabase,
           conversationId,
           currentStageId,
           currentObjectiveId: stageChecklistForRouter.currentObjective?.id,
           currentObjectiveLabel: stageChecklistForRouter.currentObjective?.label,
+          currentObjectiveDescription: stageChecklistForRouter.currentObjective?.description,
+          currentObjectiveRequired: stageChecklistForRouter.currentObjective?.required !== false,
+          currentObjectiveKind: stageChecklistForRouter.currentObjective?.kind,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
           recentMessages: finalRecentMessages.map((m) => ({
             sender: (m.sender === "pretendente" ? "user" : "larissa") as "user" | "larissa",
@@ -6732,6 +6765,7 @@ export async function runExperimentalOrchestration(
           runtime,
           strictOpenAiPilot: isStrict,
           recentStyleStateSnippet: recentStyleSnippet,
+          memoryScopeId: currentMemoryScopeId,
         });
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
@@ -8482,6 +8516,79 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             } catch (candErr: any) {
               console.warn("[Orchestrator] Erro ao persistir candidateEpisodes:", candErr);
             }
+          }
+
+          // Gravação determinística de Contact Memory & Conversation Memory (00–05) propostas pelo Brain
+          if (brainPlan?.memoryWrites && typeof brainPlan.memoryWrites === "object" && orchState.mode !== "shadow") {
+            try {
+              const validMsgIds = new Set<string>((claimedMessages || []).map((m: any) => String(m.id)));
+              const primaryFallbackMsgId = claimedMessages?.[0]?.id ? String(claimedMessages[0].id) : correlationId;
+
+              // 1. Contact Memory (Fatos e Quotes)
+              const rawFacts = Array.isArray(brainPlan.memoryWrites.contactFacts) ? brainPlan.memoryWrites.contactFacts : [];
+              const rawQuotes = Array.isArray(brainPlan.memoryWrites.quotes) ? brainPlan.memoryWrites.quotes : [];
+
+              const normalizedFacts = rawFacts.map((f: any) => {
+                const srcIds = Array.isArray(f.sourceMessageIds) && f.sourceMessageIds.length > 0
+                  ? f.sourceMessageIds.map(String)
+                  : [primaryFallbackMsgId];
+                return {
+                  ...f,
+                  sourceMessageIds: srcIds,
+                  sourceActor: f.sourceActor || "pretendente",
+                };
+              });
+
+              const normalizedQuotes = rawQuotes.map((q: any) => ({
+                ...q,
+                sourceMessageId: q.sourceMessageId ? String(q.sourceMessageId) : primaryFallbackMsgId,
+              }));
+
+              if (normalizedFacts.length > 0 || normalizedQuotes.length > 0) {
+                const contactRes = await commitContactMemoryWrites({
+                  supabase,
+                  conversationId,
+                  cycleId: correlationId,
+                  facts: normalizedFacts,
+                  quotes: normalizedQuotes,
+                  validMessageIds: validMsgIds,
+                });
+                currentCycle.trace.push(
+                  `contact_memory_writes_committed: facts=${contactRes.factsCommitted} quotes=${contactRes.quotesCommitted} superseded=${contactRes.supersededCount}`
+                );
+              }
+
+              // 2. Conversation Memory (Episódios, Speech Acts, Open Loops)
+              const rawEpisodes = Array.isArray(brainPlan.memoryWrites.episodes) ? brainPlan.memoryWrites.episodes : [];
+              const rawSpeechActs = Array.isArray(brainPlan.memoryWrites.speechActs) ? brainPlan.memoryWrites.speechActs : [];
+              const rawOpenLoops = Array.isArray(brainPlan.memoryWrites.openLoops) ? brainPlan.memoryWrites.openLoops : [];
+
+              if (rawEpisodes.length > 0 || rawSpeechActs.length > 0 || rawOpenLoops.length > 0) {
+                const convRes = await commitConversationMemoryWrites({
+                  supabase,
+                  conversationId,
+                  cycleId: correlationId,
+                  episodes: rawEpisodes,
+                  speechActs: rawSpeechActs,
+                  openLoops: rawOpenLoops,
+                  validMessageIds: validMsgIds,
+                });
+                currentCycle.trace.push(
+                  `conversation_memory_writes_committed: episodes=${convRes.episodesCommitted} speechActs=${convRes.speechActsCommitted} openLoops=${convRes.openLoopsCommitted}`
+                );
+              }
+            } catch (memWriteErr: any) {
+              console.warn("[Orchestrator] Erro fail-safe ao persistir memoryWrites 00-05:", memWriteErr);
+            }
+          }
+        }
+
+        if (currentMemoryScopeId) {
+          try {
+            await revokeAgentMemoryScope({ supabase, scopeId: currentMemoryScopeId });
+            currentCycle.trace.push(`agent_memory_scope_revoked=${currentMemoryScopeId}`);
+          } catch (revScopeErr) {
+            console.warn("[Orchestrator] Falha ao revogar agent_memory_scope:", revScopeErr);
           }
         }
       }

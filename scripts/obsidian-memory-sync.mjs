@@ -697,7 +697,7 @@ export async function fetchRemoteConversationHistory(supabaseUrl, token, convers
  * Busca episódios classificados (landmarks e speech acts)
  */
 export async function fetchRemoteConversationEpisodes(supabaseUrl, token, conversationId, limit = 100) {
-  if (!conversationId) return { landmarks: [], speechActs: [], episodes: [] };
+  if (!conversationId) return { landmarks: [], speechActs: [], openLoops: [], episodes: [] };
   const baseUrl = supabaseUrl.replace(/\/$/, '');
   const endpoint = `${baseUrl}/functions/v1/api/internal/conversation-episodes-export?conversation_id=${encodeURIComponent(conversationId)}&limit=${limit}`;
   try {
@@ -708,15 +708,16 @@ export async function fetchRemoteConversationEpisodes(supabaseUrl, token, conver
         'Accept': 'application/json',
       },
     });
-    if (!res.ok) return { landmarks: [], speechActs: [], episodes: [] };
+    if (!res.ok) return { landmarks: [], speechActs: [], openLoops: [], episodes: [] };
     const data = await res.json();
     return {
       landmarks: Array.isArray(data.landmarks) ? data.landmarks : [],
       speechActs: Array.isArray(data.speechActs) ? data.speechActs : [],
+      openLoops: Array.isArray(data.openLoops) ? data.openLoops : [],
       episodes: Array.isArray(data.episodes) ? data.episodes : [],
     };
   } catch {
-    return { landmarks: [], speechActs: [], episodes: [] };
+    return { landmarks: [], speechActs: [], openLoops: [], episodes: [] };
   }
 }
 
