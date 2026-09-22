@@ -7368,7 +7368,7 @@ export async function runBrainOrchestration(
                     responseIndex: q.responseIndex,
                     balloonText,
                     canonicalMeaning: q.canonicalMeaning,
-                    sourceTurn: currentTurnIndex,
+                    sourceMessageId: claimedMessageIds[claimedMessageIds.length - 1],
                   });
                   currentCycle.trace.push(`question_intent_recorded: ${q.intentKey}`);
                 }
