@@ -598,7 +598,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   } else if (inboundMessages && inboundMessages.length > 0) {
     inboundsText = inboundMessages.map((msg, i) => `[Mensagem ${i + 1}]: "${msg}"`).join("\n");
   }
-  sections.push(`\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}`);
+  sections.push(`\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}\n(ATENÇÃO - INBOUND COVERAGE GATE: Leia TODO o lote acima. Não responda apenas à última mensagem. Responda a todas as perguntas diretas e reconheça/reaja a conteúdos substantivos como elogios, revelações e comentários relevantes. Mensagens auxiliares como "sim kkk" são absorvidas pelo contexto.)`);
 
   if (recentStyleStateSnippet && recentStyleStateSnippet.trim()) {
     sections.push(`\n${recentStyleStateSnippet.trim()}`);
@@ -609,15 +609,18 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     `\n## INSTRUÇÃO OPERACIONAL DO TURNO
 Você opera em TURNO ÚNICO seguindo rigorosamente suas instruções persistentes e o LARISSA_INTERACTION_DNA.
 
-PRIORIDADE CONVERSACIONAL DE CONTINUIDADE:
+PRIORIDADE CONVERSACIONAL DE CONTINUIDADE (INBOUND COVERAGE GATE):
 Para decidir a resposta e a condução, considere prioritariamente nesta ordem:
-1. NOVAS MENSAGENS RECEBIDAS NESTE TURNO (responder obrigatoriamente ao que ele falou agora);
-2. JANELA CONVERSACIONAL RECENTE (acompanhar o ritmo, assunto vivo, brincadeiras, perguntas e respostas das últimas mensagens);
-3. LiveState (tom emocional e tópico corrente);
-4. Recent Question Intents (não repetir perguntas e honrar resoluções);
-5. Fatos Conhecidos do Pretendente;
-6. Objetivos da Etapa (orientam a direção, mas NUNCA devem apagar um assunto vivo presente nas últimas mensagens);
-7. Ferramentas MCP sob demanda se houver dúvida factual ou gancho de afinidade.
+1. PERGUNTAS DIRETAS DO PRETENDENTE (responder obrigatoriamente a todas as perguntas diretas presentes no lote das novas mensagens);
+2. EMOÇÃO / ASSUNTO IMPORTANTE (desabafo, dor, hospital, família - acolher com carinho antes de tudo);
+3. CONTEÚDO SUBSTANTIVO DO LOTE ATUAL (reconhecer e reagir a elogios, comentários relevantes, provocações ou informações novas das novas mensagens);
+4. TÓPICO VIVO & JANELA CONVERSACIONAL RECENTE (acompanhar o ritmo, assunto vivo, brincadeiras e manter momentum sem dead-end fático);
+5. RECIPROCIDADE (compartilhar fato verdadeiro fundamentado da Larissa na PersonaMemory quando houver gancho);
+6. OBJETIVOS DA ETAPA (orientam a direção, mas NUNCA devem apagar um assunto vivo ou ignorar o lote atual);
+7. FERRAMENTAS MCP sob demanda se houver dúvida factual ou gancho de afinidade.
+
+CHECAGEM PRÉ-FINALIZAÇÃO:
+Antes de emitir responses[], confirme: "Existe alguma pergunta, elogio, informação nova, provocação, plano ou comentário relevante nas NOVAS MENSAGENS que minha resposta ignorou?" Se sim, cubra com afeto e naturalidade.
 
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
@@ -672,7 +675,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "balão 2"
   ]
 }
-Nota: "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado).`
+Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado).`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
