@@ -139,6 +139,11 @@ export {
 };
 export type { QuestionIntentAnnotation };
 
+import {
+  resolveInboundAudioMessage,
+  transcribeWithGroqCloud,
+} from "./audio_transcription.ts";
+
 /**
  * Configurações e limites orçamentários centrais do Conversation Brain e ContextBuilder.
  * Defaults centralizados e configuráveis via opções de ciclo / config de autopiloto.
@@ -218,7 +223,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
   try {
     const { data: lastOutboundRows } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
+      .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
       .eq("conversation_id", conversationId)
       .or("is_mine.eq.true,is_from_me.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
       .order("created_at", { ascending: false })
@@ -235,7 +240,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
     try {
       const { data: replyTargetRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
+        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
         .eq("conversation_id", conversationId)
         .in("id", replyTargetIds);
       if (Array.isArray(replyTargetRows)) {
@@ -597,6 +602,8 @@ export interface CanonicalMessage {
   text: string;
   replyToMessageId?: string | null;
   mediaUrl?: string | null;
+  audioTranscript?: string | null;
+  hasValidTranscript?: boolean;
   status: MessageProcessingStatus;
   claimedByCycleId?: string | null;
 }
@@ -1325,16 +1332,46 @@ export function formatContextForDescoberta(
 // 5.2. Normalizador Canônico de Mensagens (.agents/STANDARDS.md)
 // ----------------------------------------------------------------------------
 export function normalizeToCanonicalMessage(raw: any, conversationId: string): CanonicalMessage {
-  const isMine = Boolean(raw.is_mine || raw.sender_id === "me");
+  const isMine = Boolean(raw.is_mine || raw.is_from_me || raw.sender_id === "me" || raw.sender === "larissa");
   let msgType: "text" | "audio" | "image" | "file" = "text";
-  const rawText = String(raw.text || "").trim();
+  const rawText = String(raw.text || raw.message || "").trim();
 
-  if (raw.media_type === "audio" || rawText.startsWith("[audio:")) {
+  if (
+    raw.media_type === "audio" ||
+    raw.mediaType === "audio" ||
+    raw.type === "audio" ||
+    rawText.startsWith("[audio:") ||
+    rawText.includes("[audio:")
+  ) {
     msgType = "audio";
-  } else if (raw.media_type === "image" || rawText.startsWith("[image:")) {
+  } else if (
+    raw.media_type === "image" ||
+    raw.mediaType === "image" ||
+    raw.type === "image" ||
+    rawText.startsWith("[image:")
+  ) {
     msgType = "image";
-  } else if (raw.media_type === "file" || rawText.startsWith("[file:")) {
+  } else if (
+    raw.media_type === "file" ||
+    raw.mediaType === "file" ||
+    raw.type === "file" ||
+    rawText.startsWith("[file:")
+  ) {
     msgType = "file";
+  }
+
+  const rawAudioTranscript = raw.audio_transcript || raw.audioTranscript || null;
+  let text = rawText;
+  let hasValidTranscript = false;
+
+  if (msgType === "audio") {
+    if (rawAudioTranscript && String(rawAudioTranscript).trim()) {
+      text = String(rawAudioTranscript).trim();
+      hasValidTranscript = true;
+    } else if (rawText.startsWith("[audio:") || rawText.includes("[audio:") || !rawText) {
+      text = "[áudio recebido — transcrição indisponível]";
+      hasValidTranscript = false;
+    }
   }
 
   return {
@@ -1344,9 +1381,11 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
     direction: isMine ? "outbound" : "inbound",
     timestamp: raw.timestamp || raw.created_at || new Date().toISOString(),
     type: msgType,
-    text: rawText,
+    text,
     replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId || raw.quoted_message_id || raw.quotedMessageId || null,
-    mediaUrl: raw.media_url || null,
+    mediaUrl: raw.media_url || raw.mediaUrl || null,
+    audioTranscript: rawAudioTranscript ? String(rawAudioTranscript).trim() : null,
+    hasValidTranscript,
     status: raw.status || "received",
   };
 }
@@ -3195,7 +3234,7 @@ export async function validateHistoricalInboundEvidence(params: {
     try {
       const { data, error } = await supabase
         .from("instagram_messages")
-        .select("id, conversation_id, is_mine, text, created_at")
+        .select("id, conversation_id, is_mine, text, created_at, media_type, media_url, audio_transcript")
         .eq("id", cleanSourceId)
         .maybeSingle();
 
@@ -3209,6 +3248,11 @@ export async function validateHistoricalInboundEvidence(params: {
 
       if (data.is_mine === true) {
         return { valid: false, reason: "outbound_message_rejected" };
+      }
+
+      // Se for áudio com transcrição, normaliza text para o conteúdo falado
+      if (data.media_type === "audio" && data.audio_transcript && String(data.audio_transcript).trim()) {
+        data.text = String(data.audio_transcript).trim();
       }
 
       return { valid: true, message: data };
@@ -5777,7 +5821,7 @@ export async function runBrainOrchestration(
     while (hasMore) {
       const q = supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction, audio_transcript")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false });
 
@@ -5845,6 +5889,9 @@ export async function runBrainOrchestration(
               text: newMessage.text,
               created_at: newMessage.timestamp,
               is_mine: false,
+              media_type: (newMessage as any).mediaType || (newMessage as any).media_type,
+              media_url: (newMessage as any).mediaUrl || (newMessage as any).media_url,
+              audio_transcript: (newMessage as any).audioTranscript || (newMessage as any).audio_transcript,
             },
             conversationId
           )
@@ -5858,6 +5905,31 @@ export async function runBrainOrchestration(
       const timeB = b.timestamp || b.created_at || "";
       return timeA > timeB ? 1 : timeA < timeB ? -1 : 0;
     });
+
+    // DEFESA ATIVA: Se houver qualquer mensagem de áudio pendente sem transcrição, resolve antes de prosseguir
+    for (const msg of pendingMessages) {
+      if (msg.type === "audio" && (!msg.audioTranscript || !msg.audioTranscript.trim())) {
+        try {
+          const resolved = await resolveInboundAudioMessage(supabase, {
+            id: msg.id,
+            text: msg.text,
+            media_type: "audio",
+            media_url: msg.mediaUrl,
+            audio_transcript: msg.audioTranscript,
+          });
+          if (resolved.hasValidTranscript && resolved.transcript) {
+            msg.audioTranscript = resolved.transcript;
+            msg.hasValidTranscript = true;
+            msg.text = resolved.transcript;
+          } else {
+            msg.text = "[áudio recebido — transcrição indisponível]";
+          }
+        } catch (rErr) {
+          console.warn(`[Brain] Erro defensivo ao resolver áudio ${msg.id}:`, rErr);
+          msg.text = "[áudio recebido — transcrição indisponível]";
+        }
+      }
+    }
 
     if (pendingMessages.length === 0) {
       console.log(`[Orchestrator] Nenhuma mensagem pendente para ${conversationId}. Abortando por idempotência.`);
@@ -6098,7 +6170,7 @@ export async function runBrainOrchestration(
     try {
       const { data: recentDbRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
+        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
         .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);

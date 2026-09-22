@@ -6,6 +6,12 @@ import { buildTinderAiPromptForBackend } from "./tinder_ai.ts";
 import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
 import { runBrainOrchestration, requestBrainCyclePreemptionAtomic } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import {
+  getGroqApiKey,
+  transcribeWithGroqCloud,
+  resolveInboundAudioMessage,
+} from "./audio_transcription.ts";
+export { getGroqApiKey, transcribeWithGroqCloud, resolveInboundAudioMessage };
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -41,25 +47,6 @@ function getSupabaseClient() {
   return createClient(url, key);
 }
 
-async function getGroqApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("GROQ_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "groq_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("gsk_")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da Groq no Supabase:", err);
-  }
-  return null;
-}
 
 async function getBaiApiKey(supabase: any): Promise<string | null> {
   const envKey = (Deno.env.get("BAI_API_KEY") || "").trim();
@@ -369,65 +356,6 @@ function sanitizeResponses(responses: string[], bannedEmojis: string[] = []): st
   return cleanedEmojis.map((r) => replaceDotsWithCommas(r)).filter(Boolean);
 }
 
-async function transcribeWithGroqCloud(
-  supabase: any,
-  mediaUrl: string,
-  providedKey?: string
-): Promise<string | null> {
-  const apiKey = (providedKey || (await getGroqApiKey(supabase)) || "").trim();
-  if (!apiKey) {
-    console.warn("[transcribeWithGroqCloud] Nenhuma chave GROQ_API_KEY configurada.");
-    return null;
-  }
-
-  try {
-    const audioRes = await fetch(mediaUrl, { signal: AbortSignal.timeout(15_000) });
-    if (!audioRes.ok) {
-      console.warn(`[transcribeWithGroqCloud] Falha ao baixar áudio: HTTP ${audioRes.status}`);
-      return null;
-    }
-
-    const rawBytes = await audioRes.arrayBuffer();
-    if (!rawBytes || rawBytes.byteLength === 0) return null;
-
-    const detectedMime = audioRes.headers.get("content-type")?.split(";")[0] || "audio/m4a";
-    const mimeType = detectedMime === "application/octet-stream" ? "audio/m4a" : detectedMime;
-
-    let extension = "m4a";
-    if (mimeType.includes("mp3") || mimeType.includes("mpeg")) extension = "mp3";
-    else if (mimeType.includes("ogg")) extension = "ogg";
-    else if (mimeType.includes("wav")) extension = "wav";
-    else if (mimeType.includes("webm")) extension = "webm";
-    else if (mimeType.includes("mp4")) extension = "m4a";
-
-    const form = new FormData();
-    const audioBlob = new Blob([rawBytes], { type: mimeType });
-    form.set("file", audioBlob, `audio.${extension}`);
-    form.set("model", "whisper-large-v3");
-    form.set("language", "pt");
-    form.set("temperature", "0");
-    form.set("response_format", "json");
-
-    const groqRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    const payload = await groqRes.json().catch(() => ({}));
-    if (!groqRes.ok) {
-      console.error(`[transcribeWithGroqCloud] Erro Groq HTTP ${groqRes.status}:`, payload);
-      return null;
-    }
-
-    const text = typeof payload?.text === "string" ? payload.text.trim() : "";
-    return text || null;
-  } catch (err: unknown) {
-    console.error("[transcribeWithGroqCloud] Exceção na transcrição:", err);
-    return null;
-  }
-}
 
 /**
  * Extrai o ID oficial da thread do Instagram diretamente do message ID (mid) da Meta.
@@ -915,6 +843,23 @@ serve(async (req: Request) => {
               (typeof message.reply_to === "string" ? message.reply_to : null) ||
               null;
 
+            let audioTranscript: string | null = null;
+            if (isAudioMsg && !isEcho && audioUrl) {
+              try {
+                const resolved = await resolveInboundAudioMessage(supabase, {
+                  id: messageId,
+                  text: text,
+                  media_type: "audio",
+                  media_url: audioUrl,
+                });
+                if (resolved.hasValidTranscript && resolved.transcript) {
+                  audioTranscript = resolved.transcript;
+                }
+              } catch (aErr) {
+                console.warn("[Webhook] Erro na transcrição imediata do áudio:", aErr);
+              }
+            }
+
             const { error: msgSaveErr } = await supabase.from("instagram_messages").upsert({
               id: messageId,
               conversation_id: conversationId,
@@ -928,6 +873,8 @@ serve(async (req: Request) => {
               media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
               reply_to_message_id: replyToMid,
               direction: isEcho ? "outbound" : "inbound",
+              audio_transcript: audioTranscript,
+              audio_transcribed_at: audioTranscript ? new Date().toISOString() : null,
             });
 
             if (msgSaveErr) {
@@ -1109,15 +1056,41 @@ serve(async (req: Request) => {
                   } else {
                     // responseDelayMinutes = 0: inicia imediatamente
                     console.log(`[Brain] responseDelayMinutes=0. Executando Brain imediatamente para conversa ${conversationId}`);
+                    let brainInputText = text || "";
+                    if (isAudioMsg) {
+                      if (!audioTranscript) {
+                        try {
+                          const resolvedNow = await resolveInboundAudioMessage(supabase, {
+                            id: messageId,
+                            text: text,
+                            media_type: "audio",
+                            media_url: audioUrl,
+                          });
+                          if (resolvedNow.hasValidTranscript && resolvedNow.transcript) {
+                            audioTranscript = resolvedNow.transcript;
+                            brainInputText = resolvedNow.transcript;
+                          } else {
+                            brainInputText = "[áudio recebido — transcrição indisponível]";
+                          }
+                        } catch {
+                          brainInputText = "[áudio recebido — transcrição indisponível]";
+                        }
+                      } else {
+                        brainInputText = audioTranscript;
+                      }
+                    }
+
                     const brainPromise = (async () => {
                       const res = await runBrainOrchestration({
                         supabase,
                         conversationId,
                         newMessage: {
                           id: messageId,
-                          text: text || "",
+                          text: brainInputText,
                           timestamp: timestamp || new Date().toISOString(),
                           sender: senderId || "them",
+                          mediaType: isAudioMsg ? "audio" : undefined,
+                          audioTranscript: audioTranscript || undefined,
                         },
                       });
 
@@ -3857,7 +3830,7 @@ serve(async (req: Request) => {
             // Busca a última mensagem da conversa com ordenação precisa
             const { data: lastMsgs } = await supabase
               .from("instagram_messages")
-              .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url")
+              .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url, audio_transcript")
               .eq("conversation_id", conv.id)
               .order("created_at", { ascending: false })
               .limit(1);
@@ -3870,14 +3843,18 @@ serve(async (req: Request) => {
 
               // BRAIN: Único orquestrador oficial (fail-closed)
               console.log(`[Brain] cron:tick roteando para Brain em ${conv.id}`);
+              const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+
               const brainPromise = runBrainOrchestration({
                 supabase,
                 conversationId: conv.id,
                 newMessage: {
                   id: lastMsg.id,
-                  text: lastMsg.text || "",
+                  text: resolvedAudio.text,
                   timestamp: lastMsg.timestamp || lastMsg.created_at,
                   sender: lastMsg.sender_id || "them",
+                  mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+                  audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
                 },
               });
 
@@ -3928,7 +3905,7 @@ serve(async (req: Request) => {
         // 1. Busca a última mensagem registrada para esta conversa
         const { data: lastMsgs, error: msgErr } = await supabase
           .from("instagram_messages")
-          .select("id, text, timestamp, sender_id, is_mine, media_type, media_url")
+          .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
           .eq("conversation_id", conversationId)
           .order("timestamp", { ascending: false })
           .limit(1);
@@ -3970,14 +3947,18 @@ serve(async (req: Request) => {
 
           // BRAIN: Único orquestrador oficial (fail-closed)
           console.log(`[Brain] activation_trigger roteando para Brain em ${conversationId}`);
+          const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+
           const brainPromise = runBrainOrchestration({
             supabase,
             conversationId,
             newMessage: {
               id: lastMsg.id,
-              text: lastMsg.text || "",
+              text: resolvedAudio.text,
               timestamp: lastMsg.timestamp,
               sender: lastMsg.sender_id || "them",
+              mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+              audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
             },
           });
 
@@ -4341,7 +4322,7 @@ serve(async (req: Request) => {
         if (convRow?.ai_debounce_until) {
           const { data: lastMsgs } = await supabase
             .from("instagram_messages")
-            .select("id, text, timestamp, sender_id, is_mine")
+            .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
             .eq("conversation_id", conversationId)
             .order("timestamp", { ascending: false })
             .limit(1);
@@ -4349,14 +4330,18 @@ serve(async (req: Request) => {
           if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
             // BRAIN: Único orquestrador oficial (fail-closed)
             console.log(`[Brain] send-now roteando para Brain em ${conversationId}`);
+            const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+
             const brainPromise = runBrainOrchestration({
               supabase,
               conversationId,
               newMessage: {
                 id: lastMsg.id,
-                text: lastMsg.text || "",
+                text: resolvedAudio.text,
                 timestamp: lastMsg.timestamp,
                 sender: lastMsg.sender_id || "them",
+                mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+                audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
               },
             });
 
