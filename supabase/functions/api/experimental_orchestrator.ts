@@ -128,6 +128,12 @@ export const BRAIN_ORCHESTRATION_BUDGETS = {
   brain_history_search_results: 6,
 } as const;
 
+/**
+ * Modelo oficial do Subagente Executor no runtime experimental.
+ * Configuração centralizada para garantir que tanto o Brain quanto o Executor usem gpt-5.6-terra.
+ */
+export const OPENAI_EXECUTOR_DEFAULT_MODEL = "gpt-5.6-terra";
+
 export function estimateTextTokens(text: string): number {
   return Math.max(1, Math.ceil((text || "").length / 4));
 }
@@ -618,6 +624,8 @@ export interface ProcessingCycle {
     prompt: string;
   };
   decision?: OrchestratorDecision;
+  brainModel?: string;
+  executorModel?: string;
   outboxEntryId?: string;
   metrics?: {
     durationMs: number;
@@ -5624,6 +5632,7 @@ export interface ModelCallOptions {
   model?: string;
   temperature?: number;
   reasoningEffort?: "low" | "medium";
+  disallowDowngrade?: boolean;
 }
 
 async function callModelOrOpenAi(
@@ -5654,29 +5663,36 @@ async function callModelOrOpenAi(
     }
   }
 
-  const primaryModel = options.model || "gpt-4o-mini";
+  const primaryModel = options.model || (options.disallowDowngrade ? OPENAI_EXECUTOR_DEFAULT_MODEL : "gpt-4o-mini");
   const maxRetries = 3;
   let lastError: any = null;
+
+  if (options.disallowDowngrade && !openAiKey) {
+    throw new Error("EXECUTOR_MODEL_FAILED: OPENAI_API_KEY ausente para execução do subagente executor.");
+  }
 
   if (openAiKey) {
     let currentModel = primaryModel;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        console.log(`[Orchestrator] Invocando OpenAI oficial (${currentModel}) tentativa ${attempt}/${maxRetries}...`);
-        const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${openAiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
+          const reqBody: any = {
             model: currentModel,
             messages: [{ role: "user", content: prompt }],
-            temperature: options.temperature ?? 0.3,
             response_format: { type: "json_object" },
-          }),
-          signal: AbortSignal.timeout(35000),
-        });
+          };
+          if (!currentModel.includes("terra") && !currentModel.startsWith("o1") && !currentModel.startsWith("o3")) {
+            reqBody.temperature = options.temperature ?? 0.3;
+          }
+
+          const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${openAiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(reqBody),
+            signal: AbortSignal.timeout(35000),
+          });
 
         if (oaiRes.ok) {
           const jsonRes = await oaiRes.json();
@@ -5699,7 +5715,19 @@ async function callModelOrOpenAi(
           }
         }
 
-        // Se o modelo solicitado der 404 (model_not_found), tenta fallback para gpt-4o-mini
+        // Se disallowDowngrade for true, NUNCA permite fallback para modelo inferior
+        if (options.disallowDowngrade) {
+          const errText = await oaiRes.text();
+          lastError = new Error(`OpenAI (${currentModel}) retornou erro HTTP ${oaiRes.status}: ${errText.slice(0, 200)}`);
+          if ([500, 502, 503, 504, 429].includes(oaiRes.status)) {
+            console.warn(`[Orchestrator] OpenAI (${currentModel}) retornou status transitório ${oaiRes.status} na tentativa ${attempt}/${maxRetries}. Aguardando retry...`);
+            await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+            continue;
+          }
+          break;
+        }
+
+        // Se o modelo solicitado der 404 (model_not_found), tenta fallback para gpt-4o-mini (somente legado)
         if (oaiRes.status === 404 && currentModel !== "gpt-4o-mini") {
           console.warn(`[Orchestrator] Modelo ${currentModel} não encontrado na OpenAI (404). Alternando para gpt-4o-mini...`);
           currentModel = "gpt-4o-mini";
@@ -5723,6 +5751,11 @@ async function callModelOrOpenAi(
         await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
       }
     }
+  }
+
+  // Falha fechada no caminho experimental: não degrada para Kie/Atria/Groq com fallback
+  if (options.disallowDowngrade) {
+    throw new Error(`EXECUTOR_MODEL_FAILED: Falha na execução estrita com modelo ${primaryModel} (${lastError?.message || "falha desconhecida"})`);
   }
 
   // 2. Fallback Secundário via Kie.ai (gpt-5-6-sol / gpt-5-6-terra)
@@ -6660,6 +6693,8 @@ export async function runExperimentalOrchestration(
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
           brainPlan = openAiBrainTurn.plan;
+          currentCycle.brainModel = "gpt-5.6-terra";
+          currentCycle.trace.push("brain_model: gpt-5.6-terra");
           brainInputTokens += openAiBrainTurn.telemetry.inputTokens;
           brainOutputTokens += openAiBrainTurn.telemetry.outputTokens;
           totalTokens += openAiBrainTurn.telemetry.totalTokens;
@@ -7031,7 +7066,24 @@ export async function runExperimentalOrchestration(
         ),
       });
 
-      const execRes = await callModelOrOpenAi(executorPrompt, { runtime, supabase, model: params.model });
+      // Resolução explícita do modelo do subagente executor (sem fallback silencioso para gpt-4o-mini)
+      const executorModel =
+        (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_EXECUTOR_MODEL") : process.env.OPENAI_EXECUTOR_MODEL) ||
+        stageRules.openaiExecutorModel ||
+        orchState.executorModel ||
+        (params as any)?.executorModel ||
+        (params as any)?.options?.executorModel ||
+        OPENAI_EXECUTOR_DEFAULT_MODEL;
+
+      currentCycle.executorModel = executorModel;
+      currentCycle.trace.push(`executor_model: ${executorModel}`);
+
+      const execRes = await callModelOrOpenAi(executorPrompt, {
+        runtime,
+        supabase,
+        model: executorModel,
+        disallowDowngrade: true,
+      });
       tokenMeasurements.add(execRes.tokenMeasurement);
       totalTokens += execRes.tokens;
       subagentInputTokens += execRes.inputTokens;
@@ -7140,7 +7192,12 @@ Responda ESTRITAMENTE em JSON puro:
   "nextPhase": "${finalSubDecision.nextPhase}"
 }`;
           try {
-            const retryRes = await callModelOrOpenAi(retryPrompt, { runtime, supabase, model: params.model });
+            const retryRes = await callModelOrOpenAi(retryPrompt, {
+              runtime,
+              supabase,
+              model: executorModel,
+              disallowDowngrade: true,
+            });
             totalTokens += retryRes.tokens;
             finalGenerationTokens += retryRes.tokens;
             const retryJson = extractJsonFromText(retryRes.content);
@@ -7219,7 +7276,12 @@ Contrato obrigatório: ${JSON.stringify(turnContract)}
 Reescreva a mesma missão. Responda primeiro à pergunta direta, acrescente reação real, não ecoe a fala, não introduza tópico adiado e respeite o limite de perguntas e balões.
 Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           try {
-            const retryRes = await callModelOrOpenAi(qualityRetryPrompt, { runtime, supabase, model: params.model });
+            const retryRes = await callModelOrOpenAi(qualityRetryPrompt, {
+              runtime,
+              supabase,
+              model: executorModel,
+              disallowDowngrade: true,
+            });
             totalTokens += retryRes.tokens;
             finalGenerationTokens += retryRes.outputTokens;
             const retryJson = extractJsonFromText(retryRes.content);
