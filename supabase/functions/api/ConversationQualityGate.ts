@@ -194,6 +194,33 @@ export function buildTurnContract(
   };
 }
 
+/** Normaliza um contrato já decidido pelo Brain, sem inferir estratégia conversacional. */
+export function normalizeBrainTurnContract(
+  requested: Partial<TurnContract> | null | undefined,
+  technicalMaxBalloons = 4,
+): TurnContract {
+  const raw = requested || {};
+  return {
+    directQuestions: Array.isArray(raw.directQuestions) ? raw.directQuestions.map((question, index) => ({
+      id: String(question.id || `direct_${index + 1}`),
+      text: String(question.text || ""),
+      mustAnswer: question.mustAnswer !== false,
+      answerIntent: String(question.answerIntent || "Responder à pergunta direta"),
+      answerKind: DIRECT_ANSWER_KINDS.has(question.answerKind as DirectAnswerKind)
+        ? question.answerKind as DirectAnswerKind : "freeform",
+      requiredFacts: Array.isArray(question.requiredFacts) ? question.requiredFacts.map(String) : [],
+    })) : [],
+    mustAnswerFirst: raw.mustAnswerFirst === true,
+    reactionTarget: raw.reactionTarget ?? null,
+    newQuestionBudget: raw.newQuestionBudget === 0 ? 0 : 1,
+    responseShape: typeof raw.responseShape === "string" ? raw.responseShape as TurnResponseShape : "free_conversation",
+    avoidEchoPhrases: Array.isArray(raw.avoidEchoPhrases) ? raw.avoidEchoPhrases.map(String) : [],
+    avoidTopics: Array.isArray(raw.avoidTopics) ? raw.avoidTopics.map(String) : [],
+    maxBalloons: Math.max(1, Math.min(technicalMaxBalloons, Number(raw.maxBalloons) || technicalMaxBalloons)),
+    preferNoEmoji: raw.preferNoEmoji === true,
+  };
+}
+
 export function detectParrotResponse(inboundMessages: string[], candidateBalloons: string[]): number {
   const inbound = inboundMessages.join(" ");
   const outbound = candidateBalloons.join(" ");

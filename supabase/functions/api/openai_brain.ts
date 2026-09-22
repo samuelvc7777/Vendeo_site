@@ -112,6 +112,12 @@ export function validateConversationBrainPlan(
   if (!turnContract.responseShape || typeof turnContract.responseShape !== "string") {
     return { valid: false, error: "turnContract.responseShape deve ser string não vazia" };
   }
+  if (!Array.isArray(turnContract.directQuestions)) {
+    return { valid: false, error: "turnContract.directQuestions deve ser uma lista" };
+  }
+  if (!Number.isInteger(turnContract.maxBalloons) || turnContract.maxBalloons < 1 || turnContract.maxBalloons > 4) {
+    return { valid: false, error: "turnContract.maxBalloons deve ser inteiro entre 1 e 4" };
+  }
   return { valid: true };
 }
 
@@ -160,6 +166,9 @@ export interface RunOpenAiBrainParams {
   runtime?: any;
   strictOpenAiPilot?: boolean;
   vaultIds?: string[];
+  candidateEvidence?: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }>;
+  schemaRetryCount?: number;
+  schemaFeedback?: string;
 }
 
 export interface OpenAiBrainTurnResult {
@@ -205,6 +214,9 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   if (liveStateContext) {
     sections.push(`\n## ESTADO VIVO\n${liveStateContext}`);
   }
+  if (params.candidateEvidence?.length) {
+    sections.push(`\n## EVIDÊNCIAS CANDIDATAS DE OBJETIVO (NÃO CONCLUEM NADA SOZINHAS)\n${params.candidateEvidence.map((e) => `- objetivo=${e.objectiveId}; mensagem=${e.evidenceMessageId}; evidência=${e.summary}`).join("\n")}`);
+  }
 
   if (contactMemorySummary) {
     sections.push(`\n## FATOS CONHECIDOS DO PRETENDENTE\n${contactMemorySummary}`);
@@ -234,13 +246,15 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     `\n## INSTRUÇÃO DE DECISÃO E REGRAS MANDATÓRIAS
 Você é o Conversation Brain da Larissa. Sua função é:
 1. Avaliar a intenção do pretendente nas novas mensagens.
-2. Se precisar de fatos sobre a vida, rotina, gostos, memórias ou opiniões da Larissa para reagir com autenticidade, USE A FERRAMENTA persona_memory_search. NÃO invente fatos.
+2. Antes de planejar, avalie se algo real da Larissa tornaria a resposta mais pessoal, autêntica ou específica. Se sim e o fato não estiver no contexto, USE persona_memory_search. Considere hobbies, profissão, estudo, trabalho, rotina, viagens, comida, música, família, valores, medos, experiências, opiniões e perguntas diretas sobre Larissa. Não use a ferramenta mecanicamente em saudações simples.
 3. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
    - NUNCA declare nem deduza que a Larissa NÃO faz algo, NÃO gosta, NUNCA foi ou NÃO pratica uma atividade apenas pela ausência de fatos na PersonaMemory.
    - Ausência de evidência NÃO é fato negativo!
-   - Se o pretendente mencionar ou convidar para um assunto que não consta nos fatos pesquisados (ex: motocross, aula de dança, esporte específico), oriente o subagente a reagir com curiosidade autêntica, receptividade ou charme descontraído (ex: 'nunca comentei disso por aqui!', 'me conta mais', 'acho o maior barato quem faz').
+   - Se não houver fato, trate como desconhecido e não atribua experiência, gosto, medo ou opinião à Larissa.
    - JAMAIS declare categoricamente negações falsas como 'nunca andei de moto', 'não gosto disso' ou 'não pratico nada disso'.
-4. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
+4. Priorize perguntas diretas e desabafos. Objetivos são intenções de longo prazo: adie-os quando o momento humano pedir acolhimento; marque already_satisfied apenas se a mensagem atual realmente trouxer a evidência. Pergunte somente quando houver gancho específico e curiosidade genuína — nunca para preencher checklist.
+5. Escolha responsibleSubagent somente entre os SUBAGENTES DISPONÍVEIS. Sua escolha será validada sem substituição automática.
+6. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
 {
   "action": "delegate_mission",
   "responsibleSubagent": "id_do_subagente",
@@ -251,6 +265,13 @@ Você é o Conversation Brain da Larissa. Sua função é:
   "missionPackage": {
     "subagentId": "id_do_subagente",
     "objectiveDirective": "pursue" | "defer" | "already_satisfied" | "none",
+    "conversationIntent": "...",
+    "emotionalTone": "...",
+    "currentTopic": "...",
+    "bestHook": "...",
+    "curiosityOpportunity": "...",
+    "questionRecommendation": "none | pergunta específica e natural",
+    "relevantPersonaFacts": [{ "fact": "...", "memoryId": "quando disponível", "origin": "persona_memory", "reason": "por que é relevante" }],
     "turnContract": {
       "directQuestions": [],
       "mustAnswerFirst": true,
@@ -263,6 +284,7 @@ Você é o Conversation Brain da Larissa. Sua função é:
 }`
   );
 
+  if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
   return sections.join("\n");
 }
 
@@ -327,6 +349,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       const validation = validateConversationBrainPlan(mockResult.plan, params.availableSubagents);
       if (params.strictOpenAiPilot) {
         if (!mockResult.plan || !validation.valid) {
+          if (!params.schemaRetryCount) {
+            return runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "plan_null" });
+          }
           const errMsg = `[OpenAI Agent Strict Mode Mock] Plano inválido ou ausente: ${validation.error || "plan_null"}`;
           console.error(errMsg);
           telemetry.finalPlanParsed = false;
@@ -522,7 +547,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     // Identifica mensagem final do assistente
-    const assistantMsg = items.find(
+    const assistantMsg = [...items].reverse().find(
       (it) => it.type === "message" && it.role === "assistant" && (it.phase === "final_answer" || !it.phase)
     );
 
@@ -536,6 +561,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {
+        if (!params.schemaRetryCount) {
+          return runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "JSON estruturado não encontrado" });
+        }
         const errorMsg = `[OpenAI Agent Strict Mode] Plano inválido ou ausente retornado pelo Brain: ${validation.error || "JSON estruturado não encontrado"}`;
         console.error(errorMsg);
         telemetry.finalPlanParsed = false;

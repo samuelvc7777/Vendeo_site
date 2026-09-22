@@ -182,6 +182,13 @@ test("4. Execução ponta a ponta: Turno com Tool persona_memory_search (Cenári
             missionPackage: {
               subagentId: "descoberta",
               objectiveDirective: "pursue",
+              bestHook: "motocross como hobby recorrente",
+              relevantPersonaFacts: [{
+                fact: "Larissa acha motocross muito legal e radical, mas tem medo de pilotar",
+                memoryId: "sports.motocross",
+                origin: "persona_memory",
+                reason: "conexão pessoal sustentada com o hobby revelado",
+              }],
               turnContract: {
                 directQuestions: [],
                 mustAnswerFirst: false,
@@ -220,6 +227,12 @@ test("4. Execução ponta a ponta: Turno com Tool persona_memory_search (Cenári
     assert.ok(turnResult.telemetry.toolsRequested.includes("persona_memory_search"));
     assert.ok(turnResult.telemetry.sourcesUsed.includes("persona_memory"));
     assert.equal(turnResult.telemetry.toolExecutionsCount, 1);
+    assert.deepEqual(turnResult.plan.missionPackage.relevantPersonaFacts, [{
+      fact: "Larissa acha motocross muito legal e radical, mas tem medo de pilotar",
+      memoryId: "sports.motocross",
+      origin: "persona_memory",
+      reason: "conexão pessoal sustentada com o hobby revelado",
+    }], "Plano leva somente o fato recuperado e sua proveniência/relevância");
 
     // 2. Validação dos logs obrigatórios exigidos pela especificação
     const logsStr = logs.join("\n");

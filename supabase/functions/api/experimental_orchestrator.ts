@@ -45,6 +45,7 @@ import {
 } from "./LarissaChatStyle.ts";
 import {
   buildTurnContract,
+  normalizeBrainTurnContract,
   runConversationQualityGate,
   safeHighConfidenceFallback,
   type TurnContract,
@@ -62,7 +63,7 @@ export {
   type StyleLintResult,
   type EmojiBudgetResult,
 };
-export { buildTurnContract, runConversationQualityGate, safeHighConfidenceFallback };
+export { buildTurnContract, normalizeBrainTurnContract, runConversationQualityGate, safeHighConfidenceFallback };
 export type { TurnContract };
 
 import {
@@ -335,6 +336,18 @@ export interface MissionPackage {
   } | null;
   relevantMemoryContext: string;
   liveStateContext: string;
+  conversationIntent?: string;
+  emotionalTone?: string;
+  currentTopic?: string;
+  bestHook?: string;
+  curiosityOpportunity?: string;
+  questionRecommendation?: string;
+  relevantPersonaFacts?: Array<{
+    fact: string;
+    memoryId?: string;
+    origin: "persona_memory";
+    reason: string;
+  }>;
   candidateAudios?: Array<{
     audioId: string;
     title: string;
@@ -2875,6 +2888,17 @@ ${styleStateSnippet ? `\n### ESTILO RECENTE\n${styleStateSnippet}\n` : ""}
 ### DIRETRIZ ESTRATÉGICA DO TURNO (RECEBIDA DO BRAIN)
 ${objectiveDirectiveText}
 
+### INTENÇÃO E FATOS MÍNIMOS DO BRAIN
+${JSON.stringify({
+  conversationIntent: missionPackage.conversationIntent,
+  emotionalTone: missionPackage.emotionalTone,
+  currentTopic: missionPackage.currentTopic,
+  bestHook: missionPackage.bestHook,
+  curiosityOpportunity: missionPackage.curiosityOpportunity,
+  questionRecommendation: missionPackage.questionRecommendation,
+  relevantPersonaFacts: missionPackage.relevantPersonaFacts || [],
+}, null, 2)}
+
 ### CONTEXTO MASTIGADO E FATOS RELEVANTES
 ${missionPackage.relevantMemoryContext || "Nenhum fato extra necessário."}
 
@@ -4373,6 +4397,19 @@ export interface SpontaneousObjectiveMatch {
   value: any;
   evidenceMessageId?: string;
   summary: string;
+}
+
+/** Converte uma heurística em contexto para o Brain, sem qualquer mutação de estado. */
+export function buildObjectiveCandidateEvidence(matches: SpontaneousObjectiveMatch[]): Array<{
+  objectiveId: string;
+  evidenceMessageId: string;
+  summary: string;
+}> {
+  return matches.map((match) => ({
+    objectiveId: match.objectiveId,
+    evidenceMessageId: match.evidenceMessageId || "",
+    summary: match.summary || `${match.field}: ${String(match.value).slice(0, 120)}`,
+  }));
 }
 
 /**
@@ -6402,72 +6439,15 @@ export async function runExperimentalOrchestration(
       pendingGoalIdsBefore
     );
 
-    const isShadowMode = orchState.mode === "shadow";
+    // Heurística é apenas fonte de evidência: não modifica estado, memória ou
+    // checklist. A conclusão pertence exclusivamente ao Brain.
     let workingCompletedGoalIds: string[] = [...completedGoalIds];
+    const candidateObjectiveEvidence = buildObjectiveCandidateEvidence(spontaneousMatches)
+      .map((e) => ({ ...e, evidenceMessageId: e.evidenceMessageId || newMessage.id }));
     const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
     const shadowWouldCompleteObjectives: string[] = [];
-
-    if (spontaneousMatches.length > 0) {
-      const newlyCompleted = spontaneousMatches.map((m) => m.objectiveId);
-      currentCycle.trace.push(`spontaneous_objectives_detected: ${newlyCompleted.join(",")}`);
-
-      if (isShadowMode) {
-        // MODO SHADOW: Isolamento estrito! NUNCA altera estado oficial e NUNCA salva em ContactMemory
-        shadowWouldCompleteObjectives.push(...newlyCompleted);
-        currentCycle.trace.push(`shadow_spontaneous_objectives_simulated: ${newlyCompleted.join(",")}`);
-
-        for (const m of spontaneousMatches) {
-          const entity = m.memoryEntity || "self";
-          const field = m.memoryField || m.field;
-          shadowDetectedFacts.push({
-            entity,
-            field,
-            value: m.value,
-            sourceMessageId: m.evidenceMessageId || newMessage.id,
-          });
-        }
-
-        // Para observabilidade do ciclo simulado atual, calcula checklist com os objetivos detectados sem persistência
-        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, ...newlyCompleted])];
-        stageChecklistForRouter = await resolveStageObjectives({
-          supabase,
-          conversationId,
-          stageNameOrId: currentStageId,
-          memoryProvider: cycleMemoryProvider,
-          completedGoalIds: workingCompletedGoalIds,
-          historyMessages: claimedMessages,
-        });
-      } else {
-        // MODO REAL/EXPERIMENTAL: Salva fatos no overlay em memória do turno e atualiza apenas workingCompletedGoalIds
-        // ZERO escritas no banco ou no memoryProvider base antes da confirmação do ciclo!
-        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, ...newlyCompleted])];
-        currentCycle.trace.push(`spontaneous_objectives_completed: ${newlyCompleted.join(",")}`);
-
-        // Registra fatos espontâneos no overlay em memória do ciclo com entidade canônica "self"
-        for (const m of spontaneousMatches) {
-          const entity = m.memoryEntity || "self";
-          const field = m.memoryField || m.field;
-          const factEntry: DetectedFactEntry = {
-            entity,
-            field,
-            value: m.value,
-            confidence: 1.0,
-            sourceMessageId: m.evidenceMessageId || newMessage.id,
-          };
-          cycleMemoryProvider.addOverlayFact(factEntry, conversationId);
-          currentCycle.trace.push(`spontaneous_fact_buffered: ${entity}.${field}`);
-        }
-
-        // Re-resolve os objetivos com os fatos locais do turno para uso LOCAL no ciclo atual
-        stageChecklistForRouter = await resolveStageObjectives({
-          supabase,
-          conversationId,
-          stageNameOrId: currentStageId,
-          memoryProvider: cycleMemoryProvider,
-          completedGoalIds: workingCompletedGoalIds,
-          historyMessages: claimedMessages,
-        });
-      }
+    if (candidateObjectiveEvidence.length) {
+      currentCycle.trace.push(`objective_candidate_evidence: ${candidateObjectiveEvidence.map((e) => e.objectiveId).join(",")}`);
     }
 
     const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
@@ -6483,6 +6463,12 @@ export async function runExperimentalOrchestration(
     // CONVERSATION BRAIN & ESCADA DE MEMÓRIA EM 6 NÍVEIS
     // ------------------------------------------------------------------------
     const compactSubagents = getCompactSubagentCatalog(availableSubagents);
+    const authorizedSubagentIds = new Set(
+      stageChecklistForRouter.currentObjective?.allowedSubagents?.length
+        ? stageChecklistForRouter.currentObjective.allowedSubagents
+        : [stageChecklistForRouter.responsibleSubagent]
+    );
+    const authorizedCompactSubagents = compactSubagents.filter((subagent: any) => authorizedSubagentIds.has(subagent.id));
 
     // NÍVEL 0: LiveState
     let currentLiveState: ConversationLiveState = orchState.liveState
@@ -6665,7 +6651,8 @@ export async function runExperimentalOrchestration(
           contactMemorySummary,
           landmarksSummary,
           liveStateContext: JSON.stringify(currentLiveState),
-          availableSubagents: compactSubagents,
+          availableSubagents: authorizedCompactSubagents,
+          candidateEvidence: candidateObjectiveEvidence,
           agentId,
           runtime,
           strictOpenAiPilot: isStrict,
@@ -6843,7 +6830,7 @@ export async function runExperimentalOrchestration(
         }
       } else if (rawBrainJson) {
         // Brain concluiu e delegou a missão
-        const rawTarget = rawBrainJson.responsibleSubagent || rawBrainJson.targetSubagent || stageChecklistForRouter.responsibleSubagent || "none";
+        const rawTarget = rawBrainJson.responsibleSubagent || rawBrainJson.targetSubagent || "none";
         brainPlan = {
           action: "delegate_mission",
           currentStage: currentStageId,
@@ -6876,6 +6863,14 @@ export async function runExperimentalOrchestration(
 
     // Atualiza o LiveState com o patch do Brain (com poda estrita de coleções)
     currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
+    const relevantPersonaFacts = brainPlan.missionPackage?.relevantPersonaFacts || [];
+    if (relevantPersonaFacts.length) {
+      currentCycle.trace.push(`brain_persona_facts_relevant=${relevantPersonaFacts.length}`);
+      for (const fact of relevantPersonaFacts) {
+        currentCycle.trace.push(`brain_persona_grounding: origin=${fact.origin || "persona_memory"}; memory=${fact.memoryId || "unknown"}; reason=${String(fact.reason || "unspecified").slice(0, 120)}`);
+      }
+    }
+    currentCycle.trace.push(`brain_semantic_plan: objective=${brainPlan.objectiveDecision}; hook=${String(brainPlan.missionPackage?.bestHook || "none").slice(0, 120)}; curiosity=${String(brainPlan.missionPackage?.curiosityOpportunity || "none").slice(0, 120)}`);
     // Validação estrita de already_satisfied (Item 10 dos ajustes)
     if (brainPlan.objectiveDecision === "already_satisfied") {
       const targetObj = stageChecklistForRouter.currentObjective;
@@ -6888,13 +6883,17 @@ export async function runExperimentalOrchestration(
         currentCycle.trace.push(`brain_already_satisfied_validated: ${targetObj.id}`);
       } else {
         currentCycle.trace.push("brain_already_satisfied_rejected_not_current_or_not_inbound");
-        brainPlan.objectiveDecision = "pursue";
+        throw new Error("BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
       }
     }
 
-    // REGRA DURA: A etapa atual manda no subagente executor responsável
-    const responsibleSubagent = stageChecklistForRouter.responsibleSubagent || "none";
-    if (responsibleSubagent === "none") currentCycle.trace.push("stage_owner_missing");
+    // O Brain escolhe dentro da autorização da etapa. O backend rejeita a
+    // escolha inválida; nunca a substitui silenciosamente pelo owner default.
+    const responsibleSubagent = brainPlan.responsibleSubagent;
+    if (!authorizedSubagentIds.has(responsibleSubagent)) {
+      currentCycle.trace.push(`brain_subagent_rejected_unauthorized: ${responsibleSubagent}`);
+      throw new Error(`BRAIN_PLAN_INVALID_SUBAGENT: ${responsibleSubagent}`);
+    }
     currentCycle.trace.push(`brain_objective_mode: ${brainPlan.objectiveDecision}`);
     currentCycle.trace.push(`brain_responsible_subagent: ${responsibleSubagent}`);
 
@@ -6934,10 +6933,12 @@ export async function runExperimentalOrchestration(
           ? requestedDirective
           : "pursue";
       const audioSelection = authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
-      const turnContract = buildTurnContract(
-        canonicalClaimed.map((message) => message.text),
-        brainPlan.missionPackage?.turnContract
-      );
+      const turnContract = isOpenAiAgentBrain
+        ? normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4)
+        : buildTurnContract(
+          canonicalClaimed.map((message) => message.text),
+          brainPlan.missionPackage?.turnContract
+        );
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
         subagentId: responsibleSubagent,
@@ -7116,7 +7117,7 @@ export async function runExperimentalOrchestration(
           lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
           isRetry: false,
         });
-        if (lintResult.requiresRetry) {
+        if (!isOpenAiAgentBrain && lintResult.requiresRetry) {
           currentCycle.trace.push(`style_lint_retry_triggered: ${lintResult.retryReason}`);
 
           const retryPrompt = `${executorPrompt}
@@ -7184,7 +7185,7 @@ Responda ESTRITAMENTE em JSON puro:
             finalSubDecision.responses = lintResult.cleanedBalloons;
             finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
           }
-        } else {
+        } else if (!isOpenAiAgentBrain) {
           finalSubDecision.responses = lintResult.cleanedBalloons;
           finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
           currentCycle.trace.push("style_lint_passed_first_try");
@@ -7204,7 +7205,7 @@ Responda ESTRITAMENTE em JSON puro:
         let qualityRetried = false;
         let qualityFallbackUsed = false;
 
-        if (!qualityResult.passed) {
+        if (!qualityResult.passed && !isOpenAiAgentBrain) {
           qualityRetried = true;
           const issueCodes = qualityResult.issues.map((issue) => issue.code);
           currentCycle.trace.push(`conversation_quality_retry_issues: ${issueCodes.join(",")}`);
@@ -7291,6 +7292,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         currentCycle.trace.push(`parrot_score=${qualityResult.parrotScore.toFixed(3)}`);
         currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
+        if (isOpenAiAgentBrain) currentCycle.trace.push("conversation_quality_observe_only=true");
+
+        // Limite físico de payload: é o único aspecto de balões que pode
+        // bloquear o caminho OpenAI, sem reescrever a conversa.
+        if (isOpenAiAgentBrain && (finalSubDecision.responses || []).length > turnContract.maxBalloons) {
+          finalSubDecision.action = "wait";
+          finalSubDecision.responses = [];
+          finalSubDecision.suggestedResponse = "";
+          finalSubDecision.requiredTools = [];
+          currentCycle.trace.push("technical_balloon_limit_blocked_dispatch");
+        }
 
         // ------------------------------------------------------------------
         // ANTI-REPEAT + QUALITY GATE FINAL (autoridade absoluta de despacho)
@@ -7308,9 +7320,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               `anti_repeat_gate_blocked: pruned=${antiRepeatResult.blockedBalloons.length}, remaining=${finalAfterAntiRepeat.length}`
             );
           }
-          const normalizedAfterAntiRepeat = finalAfterAntiRepeat
-            .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
-            .filter(Boolean);
+          const normalizedAfterAntiRepeat = isOpenAiAgentBrain
+            ? finalAfterAntiRepeat.filter(Boolean)
+            : finalAfterAntiRepeat
+              .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+              .filter(Boolean);
           let finalQualityResult = runConversationQualityGate({
             inboundMessages: inboundTexts,
             candidateBalloons: normalizedAfterAntiRepeat,
@@ -7319,7 +7333,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           currentCycle.trace.push(`post_antirepeat_quality_passed=${finalQualityResult.passed}`);
           currentCycle.trace.push(`post_antirepeat_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
           let authoritativeBalloons = normalizedAfterAntiRepeat;
-          if (!finalQualityResult.passed && !qualityFallbackUsed) {
+          if (!finalQualityResult.passed && !qualityFallbackUsed && !isOpenAiAgentBrain) {
             const finalFallback = safeHighConfidenceFallback(inboundTexts, turnContract);
             if (finalFallback) {
               const finalFallbackLint = runStyleLint(finalFallback, {
@@ -7348,16 +7362,18 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           currentCycle.trace.push(`final_quality_passed=${finalQualityResult.passed}`);
           currentCycle.trace.push(`final_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
 
-          if (!finalQualityResult.passed) {
+          if (!finalQualityResult.passed && !isOpenAiAgentBrain) {
             finalSubDecision.action = "wait";
             finalSubDecision.responses = [];
             finalSubDecision.suggestedResponse = "";
             finalSubDecision.requiredTools = [];
             currentCycle.trace.push("post_antirepeat_quality_blocked_dispatch");
           } else {
-            authoritativeBalloons = authoritativeBalloons
-              .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
-              .filter(Boolean);
+            authoritativeBalloons = isOpenAiAgentBrain
+              ? authoritativeBalloons.filter(Boolean)
+              : authoritativeBalloons
+                .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+                .filter(Boolean);
             finalSubDecision.responses = authoritativeBalloons;
             finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
           }
@@ -7594,6 +7610,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         simulatedObjectiveProgress: stageProgression.updatedObjectiveProgress,
         detectedFacts: shadowDetectedFacts,
         wouldCompleteObjectives: shadowWouldCompleteObjectives,
+        candidateObjectiveEvidence,
       };
       currentCycle.shadowSimulation = shadowSimulation;
 

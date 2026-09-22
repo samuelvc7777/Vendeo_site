@@ -409,7 +409,7 @@ serve(async (req: Request) => {
       limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
     }
 
-    console.log(`[MCP] persona_query="${query}"`);
+    console.log(`[MCP] persona_query_received length=${query.length}`);
 
     // Obtencao do cliente Supabase para consulta segura a tabela oficial public.persona_memory
     if (!supabaseUrl || !supabaseServiceKey) {
@@ -436,7 +436,7 @@ serve(async (req: Request) => {
         personaId: "larissa",
         query,
         limit,
-        allowLegacyFallback: true,
+        allowLegacyFallback: false,
       });
     } catch (err) {
       console.error("[MCP] Erro ao consultar searchPersonaMemory:", err);
@@ -448,17 +448,7 @@ serve(async (req: Request) => {
     console.log(`[MCP] persona_results=${toolOutput.results.length}`);
     console.log("[MCP] response_completed");
 
-    try {
-      await supabase.from("instagram_config").upsert({
-        id: "last_mcp_output",
-        app_secret: JSON.stringify({
-          at: new Date().toISOString(),
-          id,
-          resultsCount: toolOutput.results.length,
-          output: toolOutput,
-        }),
-      });
-    } catch (_e) {}
+    // Não persiste fatos pessoais em instagram_config; a telemetria é somente operacional.
 
     return new Response(
       JSON.stringify({
