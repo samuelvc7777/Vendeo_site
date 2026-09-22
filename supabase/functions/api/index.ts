@@ -1103,6 +1103,7 @@ serve(async (req: Request) => {
                       await supabase
                         .from("instagram_conversations")
                         .update({
+                          ai_auto_respond: true,
                           ai_debounce_until: scheduledUntil,
                         })
                         .eq("id", conversationId);
@@ -4019,6 +4020,7 @@ serve(async (req: Request) => {
         if (isFromThem) {
           // Limpa agendamento e travas manuais antigas para que o ciclo execute imediatamente
           await supabase.from("instagram_conversations").update({
+            ai_auto_respond: true,
             ai_debounce_until: null,
           }).eq("id", conversationId);
           // Limpa travas manuais antigas para que o ciclo possa enviar os balões
