@@ -447,7 +447,7 @@ export interface RunOpenAiBrainParams {
   currentObjectiveKind?: string | null;
   inboundMessages: string[];
   currentInboundMessages?: Array<{ id: string; text: string }>;
-  recentMessages: Array<{ sender: "user" | "larissa"; text: string; createdAt?: string }>;
+  recentMessages: Array<{ id?: string; sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;
   landmarksSummary?: string;
   liveStateContext?: string;
@@ -463,6 +463,7 @@ export interface RunOpenAiBrainParams {
   recentStyleStateSnippet?: string;
   memoryScopeId?: string;
   recentQuestionIntentsSnippet?: string;
+  nextObjectives?: Array<{ id: string; label: string; description?: string; kind?: string }>;
 }
 
 export interface OpenAiBrainTurnResult {
@@ -519,6 +520,13 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
 
+  if (params.nextObjectives && params.nextObjectives.length > 0) {
+    sections.push(
+      `PRÓXIMOS OBJETIVOS PENDENTES DA ETAPA (usar como gancho natural de continuidade SE o objetivo atual for satisfeito neste turno e não houver assunto mais rico):\n` +
+        params.nextObjectives.map((o) => `• ${o.id} ("${o.label}")${o.description ? ` - ${o.description}` : ""}`).join("\n")
+    );
+  }
+
   if (memoryScopeId) {
     sections.push(`MEMORY_SCOPE_ID: "${memoryScopeId}" (Obrigatório usar como parâmetro 'scope' ao chamar contact_memory_search ou conversation_memory_search)`);
   }
@@ -542,12 +550,44 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     sections.push(`\n## MARCOS HISTÓRICOS DA CONVERSA\n${landmarksSummary}`);
   }
 
-  const historyLines = recentMessages.slice(-6).map((m) => {
-    const role = m.sender === "user" ? "Pretendente" : "Larissa";
-    return `[${role}]: ${m.text}`;
+  // ------------------------------------------------------------------------
+  // JANELA CONVERSACIONAL RECENTE (Últimas 20 mensagens reais Pretendente + Larissa)
+  // ------------------------------------------------------------------------
+  const inboundIdSet = new Set<string>();
+  if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
+    for (const m of params.currentInboundMessages) {
+      if (m.id) inboundIdSet.add(String(m.id));
+    }
+  }
+
+  // Filtra mensagens que pertencem ao lote atual de inbounds para evitar duplicação
+  const priorMessages = recentMessages.filter((m) => {
+    if (m.id && inboundIdSet.has(String(m.id))) return false;
+    return true;
   });
-  if (historyLines.length > 0) {
-    sections.push(`\n## HISTÓRICO RECENTE\n${historyLines.join("\n")}`);
+
+  // Seleciona as últimas 20 mensagens totais (Pretendente + Larissa somados)
+  const last20Messages = priorMessages.slice(-20);
+
+  if (last20Messages.length > 0) {
+    // Formata cada mensagem preservando autor, id e texto real (com proteção simples contra mensagens gigantes)
+    const windowLines = last20Messages.map((m) => {
+      const role = m.sender === "user" ? "Pretendente" : "Larissa";
+      const idSnippet = m.id ? ` | id="${m.id}"` : "";
+      let cleanText = String(m.text || "").trim();
+      if (cleanText.length > 600) {
+        cleanText = cleanText.slice(0, 600) + " [...]";
+      }
+      return `[${role}${idSnippet}]:\n${cleanText}`;
+    });
+
+    // Controle de tamanho: preserva prioritariamente as mais recentes se exceder 9000 caracteres
+    const MAX_WINDOW_CHARS = 9000;
+    while (windowLines.length > 5 && windowLines.join("\n\n").length > MAX_WINDOW_CHARS) {
+      windowLines.shift();
+    }
+
+    sections.push(`\n## JANELA CONVERSACIONAL RECENTE\n${windowLines.join("\n\n")}`);
   }
 
   let inboundsText = "[Nenhuma mensagem nova]";
@@ -568,10 +608,21 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   sections.push(
     `\n## INSTRUÇÃO OPERACIONAL DO TURNO
 Você opera em TURNO ÚNICO seguindo rigorosamente suas instruções persistentes e o LARISSA_INTERACTION_DNA.
+
+PRIORIDADE CONVERSACIONAL DE CONTINUIDADE:
+Para decidir a resposta e a condução, considere prioritariamente nesta ordem:
+1. NOVAS MENSAGENS RECEBIDAS NESTE TURNO (responder obrigatoriamente ao que ele falou agora);
+2. JANELA CONVERSACIONAL RECENTE (acompanhar o ritmo, assunto vivo, brincadeiras, perguntas e respostas das últimas mensagens);
+3. LiveState (tom emocional e tópico corrente);
+4. Recent Question Intents (não repetir perguntas e honrar resoluções);
+5. Fatos Conhecidos do Pretendente;
+6. Objetivos da Etapa (orientam a direção, mas NUNCA devem apagar um assunto vivo presente nas últimas mensagens);
+7. Ferramentas MCP sob demanda se houver dúvida factual ou gancho de afinidade.
+
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
 DIRETRIZ DE EVIDÊNCIA:
-Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS. O evidenceMessageId DEVE ser exatamente o ID de uma das mensagens de [MENSAGEM id="..."] deste turno. Para pursue, defer ou none, evidenceMessageId deve ser null.
+Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS. O evidenceMessageId DEVE ser exatamente o ID de uma das mensagens de [MENSAGEM id="..."] deste turno. Para pursue, defer ou none, evidenceMessageId deve ser null.`
 
 CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:

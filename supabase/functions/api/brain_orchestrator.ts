@@ -144,8 +144,8 @@ export type { QuestionIntentAnnotation };
  * Defaults centralizados e configuráveis via opções de ciclo / config de autopiloto.
  */
 export const BRAIN_ORCHESTRATION_BUDGETS = {
-  recent_message_limit: 12,
-  recent_context_token_budget: 1500,
+  recent_message_limit: 25,
+  recent_context_token_budget: 3500,
   brain_max_memory_searches: 2,
   brain_history_search_results: 6,
 } as const;
@@ -6085,7 +6085,7 @@ export async function runBrainOrchestration(
         .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
-        .limit(recentMessageLimit);
+        .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);
 
       if (recentDbRows && Array.isArray(recentDbRows)) {
         const claimedSet = new Set(claimedMessageIds);
@@ -6282,6 +6282,7 @@ export async function runBrainOrchestration(
             .map((m: any) => ({ id: String(m.id || ""), text: String(m.text || "") }))
             .filter((m: any) => m.id && m.text),
           recentMessages: finalRecentMessages.map((m) => ({
+            id: m.id,
             sender: (m.sender === "pretendente" ? "user" : "larissa") as "user" | "larissa",
             text: m.text,
             createdAt: m.createdAt,
@@ -6296,6 +6297,9 @@ export async function runBrainOrchestration(
           recentStyleStateSnippet: recentStyleSnippet,
           memoryScopeId: currentMemoryScopeId,
           recentQuestionIntentsSnippet: formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
+          nextObjectives: (stageChecklistForRouter.goals || [])
+            .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
+            .map((g) => ({ id: g.id, label: g.label, description: g.description, kind: g.kind })),
         });
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {

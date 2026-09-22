@@ -314,7 +314,7 @@ function extractUsedEmojis(messages?: { sender?: string; isMine?: boolean; text?
   if (!Array.isArray(messages)) return [];
   const myMessages = messages
     .filter((m) => m.isMine === true || m.sender === "me")
-    .slice(-8);
+    .slice(-2);
 
   const used: string[] = [];
   for (const m of myMessages) {

@@ -190,7 +190,7 @@ export function buildTurnContract(
     avoidEchoPhrases: Array.isArray(requested?.avoidEchoPhrases) ? requested!.avoidEchoPhrases!.map(String) : detectedQuestions,
     avoidTopics: Array.isArray(requested?.avoidTopics) ? requested!.avoidTopics!.map(String) : [],
     maxBalloons: Math.max(1, Math.min(4, Number(requested?.maxBalloons || (greeting ? 1 : 4)))),
-    preferNoEmoji: requested?.preferNoEmoji ?? greeting,
+    preferNoEmoji: requested?.preferNoEmoji ?? false,
   };
 }
 
