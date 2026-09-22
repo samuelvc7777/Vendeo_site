@@ -1544,16 +1544,38 @@ serve(async (req: Request) => {
           ? stageRules.stage_objectives
           : (STAGE_DEFAULT_OBJECTIVES[currentStageId] || STAGE_DEFAULT_OBJECTIVES.descoberta);
 
+        const dbFacts = allFactsByConv[String(conv.id)] || [];
+        const dbQuotes = allQuotesByConv[String(conv.id)] || [];
+
         const resolvedGoals = customStageObjectives.map((g: any) => {
           const entityKey = g.memoryEntity || "self";
           const entity = entities[entityKey] || {};
           let fact = g.memoryField ? entity[g.memoryField] : undefined;
-          if (!fact && g.memoryField === "job") fact = entity.profession;
-          const hasFact = fact !== undefined && fact !== null && (fact.value !== undefined ? fact.value !== null : true);
+          if (!fact && g.memoryField === "job") fact = entity.profession || entity.profissao;
+          if (!fact && (g.memoryField === "city" || g.memoryField === "cidade")) fact = entity.city || entity.cidade;
+
+          // Reconciliação direta com contact_memory_facts
+          let dbFactMatch = null;
+          if (g.memoryField) {
+            const normFld = g.memoryField.toLowerCase();
+            dbFactMatch = dbFacts.find((df: any) => {
+              const dfFld = (df.field || "").toLowerCase();
+              if (df.entity && df.entity.toLowerCase() !== entityKey.toLowerCase()) return false;
+              if (dfFld === normFld) return true;
+              if ((normFld === "city" || normFld === "cidade") && (dfFld === "city" || dfFld === "cidade")) return true;
+              if ((normFld === "job" || normFld === "occupation" || normFld === "profissao" || normFld === "profession") &&
+                  (dfFld === "job" || dfFld === "occupation" || dfFld === "profissao" || dfFld === "profession")) return true;
+              if ((normFld === "age" || normFld === "idade") && (dfFld === "age" || dfFld === "idade")) return true;
+              return false;
+            });
+          }
+
+          const hasFact = (fact !== undefined && fact !== null && (fact.value !== undefined ? fact.value !== null : true)) ||
+                          Boolean(dbFactMatch && dbFactMatch.value !== undefined && dbFactMatch.value !== null && dbFactMatch.value !== "");
           const isExplicit = completedGoalIds.includes(g.id);
           const isDone = hasFact || isExplicit;
           const isCurrent = currentObjective ? (currentObjective.id === g.id) : false;
-          const val = hasFact ? (fact.value !== undefined ? fact.value : fact) : null;
+          const val = hasFact ? (dbFactMatch?.value ?? (fact?.value !== undefined ? fact.value : fact)) : null;
           return {
             id: g.id,
             label: g.label || g.title || g.id,
@@ -1562,9 +1584,6 @@ serve(async (req: Request) => {
             value: isDone ? val : null,
           };
         });
-
-        const dbFacts = allFactsByConv[String(conv.id)] || [];
-        const dbQuotes = allQuotesByConv[String(conv.id)] || [];
 
         return {
           id: String(conv.id || ""),

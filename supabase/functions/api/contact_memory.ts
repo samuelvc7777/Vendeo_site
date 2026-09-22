@@ -359,9 +359,17 @@ export async function commitContactMemoryWrites(params: {
     }
 
     const entity = (rawFact.entity || "self").toLowerCase().trim();
-    const field = rawFact.field.toLowerCase().trim();
+    let field = rawFact.field.toLowerCase().trim();
     const normalizedVal = normalizeFactValue(rawFact.value);
     const temporalStatus = rawFact.temporalStatus || "durable";
+
+    // Proteção Semântica Cidade vs Bairro:
+    // Se o campo for city/cidade mas o valor for claramente um bairro/localidade (ex: "centro", "matosinhos"),
+    // redireciona o campo para "neighborhood" para não superseder nem sobrescrever a cidade real.
+    const isNeighborhoodValue = /^(centro|matosinhos|colonia|colônia|vila|zona sul|zona norte|zona leste|zona oeste|bairro\b)/i.test(normalizedVal);
+    if ((field === "city" || field === "cidade") && isNeighborhoodValue) {
+      field = "neighborhood";
+    }
 
     const factFingerprint = generateContactFactFingerprint({
       conversation_id: conversationId,

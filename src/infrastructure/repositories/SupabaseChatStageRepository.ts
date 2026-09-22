@@ -497,17 +497,26 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         const rules = row.stage_completed_rules;
         if (!convId || !rules) continue;
 
+        const orch = rules.orchestration || {};
         const chatProgress = rules.chat_progress || rules;
-        if (chatProgress && (chatProgress.currentStageId || chatProgress.completedGoalIds || chatProgress.completedItemIds)) {
-          result[convId] = {
-            conversationId: convId,
-            currentStageId: chatProgress.currentStageId || "stage_1_conexao",
-            completedItemIds: Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [],
-            completedGoalIds: Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : [],
-            isConverted: Boolean(chatProgress.isConverted),
-            updatedAt: chatProgress.updatedAt || row.updated_at,
-          };
-        }
+        const currentStageId = orch.currentStageId || chatProgress.currentStageId || rules.current_stage_id || row.current_stage_id || "stage_1_conexao";
+        const completedGoalIds = Array.isArray(orch.completedGoalIds)
+          ? orch.completedGoalIds
+          : (Array.isArray(rules.completed_goals)
+            ? rules.completed_goals
+            : (Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : []));
+        const objectiveProgress = orch.objectiveProgress || rules.objective_progress || chatProgress.objectiveProgress || {};
+        const completedItemIds = Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [];
+
+        result[convId] = {
+          conversationId: convId,
+          currentStageId,
+          completedItemIds,
+          completedGoalIds,
+          objectiveProgress,
+          isConverted: Boolean(chatProgress.isConverted || orch.isConverted),
+          updatedAt: chatProgress.updatedAt || row.updated_at,
+        };
       }
     } catch (err) {
       console.warn("[SupabaseChatStageRepository] Erro ao carregar progressos das conversas:", err);
@@ -523,21 +532,31 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     try {
       const { data, error } = await client
         .from("instagram_conversations")
-        .select("id, contact_id, stage_completed_rules, updated_at")
+        .select("id, contact_id, current_stage_id, stage_completed_rules, updated_at")
         .or(`id.eq.${conversationId},contact_id.eq.${conversationId}`)
         .maybeSingle();
 
       if (error || !data?.stage_completed_rules) return null;
 
       const rules = data.stage_completed_rules;
+      const orch = rules.orchestration || {};
       const chatProgress = rules.chat_progress || rules;
+      const currentStageId = orch.currentStageId || chatProgress.currentStageId || rules.current_stage_id || data.current_stage_id || "stage_1_conexao";
+      const completedGoalIds = Array.isArray(orch.completedGoalIds)
+        ? orch.completedGoalIds
+        : (Array.isArray(rules.completed_goals)
+          ? rules.completed_goals
+          : (Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : []));
+      const objectiveProgress = orch.objectiveProgress || rules.objective_progress || chatProgress.objectiveProgress || {};
+      const completedItemIds = Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [];
 
       return {
         conversationId,
-        currentStageId: chatProgress.currentStageId || "stage_1_conexao",
-        completedItemIds: Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [],
-        completedGoalIds: Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : [],
-        isConverted: Boolean(chatProgress.isConverted),
+        currentStageId,
+        completedItemIds,
+        completedGoalIds,
+        objectiveProgress,
+        isConverted: Boolean(chatProgress.isConverted || orch.isConverted),
         updatedAt: chatProgress.updatedAt || data.updated_at,
       };
     } catch (err) {

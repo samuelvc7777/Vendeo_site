@@ -3090,6 +3090,8 @@ export interface ResolvedStageGoal {
   primarySubagent?: string;
   description?: string;
   completionPolicy?: "conversation_evidence" | "fact_only";
+  evidenceMessageId?: string;
+  source?: string;
 }
 
 export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
@@ -3321,6 +3323,71 @@ export interface StageResolutionResult {
   remainingObjectives: ResolvedStageGoal[];
   stageComplete: boolean;
   responsibleSubagent: string;
+}
+
+/**
+ * Validação segura de evidência inbound histórica (Gate de Reconciliação Histórica).
+ * Garante que a mensagem de origem:
+ * 1. Pertence à MESMA conversa (bloqueio cross-conversation);
+ * 2. É comprovadamente inbound do pretendente (is_mine === false, rejeitando outbound de Larissa);
+ * 3. Existe no histórico (RAM ou instagram_messages).
+ */
+export async function validateHistoricalInboundEvidence(params: {
+  supabase: any;
+  conversationId: string;
+  sourceMessageId?: string;
+  historyMessages?: any[];
+}): Promise<{ valid: boolean; message?: any; reason?: string }> {
+  const { supabase, conversationId, sourceMessageId, historyMessages = [] } = params;
+  if (!sourceMessageId || typeof sourceMessageId !== "string" || !sourceMessageId.trim()) {
+    return { valid: false, reason: "missing_source_message_id" };
+  }
+  const cleanSourceId = sourceMessageId.trim();
+
+  // 1. Checa se a mensagem já está nos historyMessages fornecidos (em RAM)
+  if (Array.isArray(historyMessages) && historyMessages.length > 0) {
+    const memMsg = historyMessages.find((m: any) => String(m.id) === cleanSourceId);
+    if (memMsg) {
+      const msgConvId = String(memMsg.conversation_id || memMsg.conversationId || conversationId);
+      if (msgConvId !== String(conversationId)) {
+        return { valid: false, reason: "cross_conversation_detected" };
+      }
+      const isOutbound = memMsg.is_mine === true || memMsg.sender === "me" || memMsg.sender_id === "me";
+      if (isOutbound) {
+        return { valid: false, reason: "outbound_message_rejected" };
+      }
+      return { valid: true, message: memMsg };
+    }
+  }
+
+  // 2. Consulta autoritativa no banco de dados (instagram_messages)
+  if (supabase && typeof supabase.from === "function") {
+    try {
+      const { data, error } = await supabase
+        .from("instagram_messages")
+        .select("id, conversation_id, is_mine, text, created_at")
+        .eq("id", cleanSourceId)
+        .maybeSingle();
+
+      if (error || !data) {
+        return { valid: false, reason: "message_not_found_in_db" };
+      }
+
+      if (String(data.conversation_id) !== String(conversationId)) {
+        return { valid: false, reason: "cross_conversation_detected" };
+      }
+
+      if (data.is_mine === true) {
+        return { valid: false, reason: "outbound_message_rejected" };
+      }
+
+      return { valid: true, message: data };
+    } catch (err: any) {
+      return { valid: false, reason: `db_lookup_error: ${err.message || String(err)}` };
+    }
+  }
+
+  return { valid: false, reason: "unverifiable_provenance" };
 }
 
 export async function resolveStageChecklistGoals(params: {
@@ -3558,11 +3625,38 @@ export async function resolveStageChecklistGoals(params: {
     const factRes = await memoryProvider.getFact(conversationId, entity, field);
     const policy = goal.completionPolicy || "conversation_evidence";
 
+    let factSatisfied = false;
+    let provenEvidenceId: string | undefined = undefined;
+
     if (factRes.found && factRes.value !== undefined && factRes.value !== null && factRes.value !== "") {
+      const sourceMsgId = factRes.fact?.sourceMessageId;
+      if (policy === "conversation_evidence") {
+        const provRes = await validateHistoricalInboundEvidence({
+          supabase,
+          conversationId,
+          sourceMessageId: sourceMsgId,
+          historyMessages: params.historyMessages,
+        });
+
+        if (provRes.valid) {
+          factSatisfied = true;
+          provenEvidenceId = sourceMsgId;
+        } else {
+          factSatisfied = false;
+        }
+      } else {
+        factSatisfied = true;
+        provenEvidenceId = sourceMsgId;
+      }
+    }
+
+    if (factSatisfied) {
       resolvedGoals.push({
         ...baseResolved,
         status: "completed",
         value: factRes.value,
+        evidenceMessageId: provenEvidenceId,
+        source: "contact_memory_reconciliation",
       });
     } else if (completedGoalIds.includes(goal.id)) {
       resolvedGoals.push({
@@ -3601,6 +3695,8 @@ export async function resolveStageChecklistGoals(params: {
       kind: g.kind || "fact",
       status: g.status,
       value: g.value,
+      evidenceMessageId: g.evidenceMessageId,
+      source: g.source,
       required: g.required !== false,
       allowedSubagents: g.allowedSubagents,
       primarySubagent: g.primarySubagent,
@@ -5053,12 +5149,63 @@ export class SupabaseMemoryProvider implements MemoryProvider {
   }
 
   async getFact(contactId: string, entity: string, field: string): Promise<{ found: boolean; fact?: MemoryFact; value?: any }> {
-    const { store } = await this.getStore(contactId);
     const normEntity = (entity || "self").toLowerCase().trim();
     const normField = (field || "").toLowerCase().trim();
-    const fact = store.entities?.[normEntity]?.[normField];
-    if (fact) {
-      return { found: true, fact, value: fact.value };
+
+    // Sinonímias de campo: mapeamos o campo solicitado para todos os aliases possíveis
+    const FIELD_SYNONYMS: Record<string, string[]> = {
+      city:       ["city", "cidade"],
+      cidade:     ["city", "cidade"],
+      job:        ["job", "occupation", "profissao", "profession"],
+      occupation: ["job", "occupation", "profissao", "profession"],
+      profissao:  ["job", "occupation", "profissao", "profession"],
+      profession: ["job", "occupation", "profissao", "profession"],
+      age:        ["age", "idade"],
+      idade:      ["age", "idade"],
+    };
+    const fieldAliases: string[] = FIELD_SYNONYMS[normField] ?? [normField];
+
+    // --- 1ª tentativa: contact_memory_facts (tabela relacional, fonte autoritativa) ---
+    try {
+      const { data: cmRows, error: cmErr } = await this.supabase
+        .from("contact_memory_facts")
+        .select("field, value, source_message_ids, created_at")
+        .eq("conversation_id", contactId)
+        .eq("entity", normEntity)
+        .in("field", fieldAliases)
+        .neq("temporal_status", "superseded")
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (!cmErr && cmRows && cmRows.length > 0) {
+        const row = cmRows[0];
+        const sourceMessageId: string | undefined =
+          Array.isArray(row.source_message_ids) && row.source_message_ids.length > 0
+            ? row.source_message_ids[0]
+            : undefined;
+
+        const memFact: MemoryFact = {
+          entity: normEntity,
+          field:  row.field,
+          value:  row.value,
+          confidence: 1.0,
+          sourceMessageId,
+          updatedAt: row.created_at,
+        };
+        return { found: true, fact: memFact, value: row.value };
+      }
+    } catch {
+      // Falha silenciosa — cai no fallback JSONB legado
+    }
+
+    // --- 2ª tentativa: JSONB legado (stage_completed_rules.orchestration.memory) ---
+    const { store } = await this.getStore(contactId);
+    // Tenta todos os aliases no store legado
+    for (const alias of fieldAliases) {
+      const fact = store.entities?.[normEntity]?.[alias];
+      if (fact) {
+        return { found: true, fact, value: fact.value };
+      }
     }
     return { found: false, value: undefined };
   }
