@@ -4151,9 +4151,10 @@ export async function processDeterministicStageProgression(params: {
         if (g.status === "completed") {
           const goalDef = activeGoals.find((ag: any) => ag.id === g.id);
           const policy = goalDef?.completionPolicy || (g as any).completionPolicy;
-          // Se for explicitamente conversation_evidence, não conclui checkpoint de workflow sem evidência no turno
+          // Se for explicitamente conversation_evidence, exige evidência válida (do turno atual ou reconciliação histórica comprovada)
           const requiresConversationEvidence = policy === "conversation_evidence";
-          if (!requiresConversationEvidence || updatedCompletedGoals.includes(g.id)) {
+          const hasHistoricalEvidence = (g as any).source === "contact_memory_reconciliation" && Boolean((g as any).evidenceMessageId);
+          if (!requiresConversationEvidence || hasHistoricalEvidence || updatedCompletedGoals.includes(g.id)) {
             if (!updatedCompletedGoals.includes(g.id)) {
               updatedCompletedGoals.push(g.id);
             }
@@ -4164,8 +4165,9 @@ export async function processDeterministicStageProgression(params: {
                 objectiveId: g.id,
                 status: "completed",
                 value: g.value !== undefined && g.value !== null ? g.value : true,
+                evidenceMessageId: (g as any).evidenceMessageId,
                 completedAt: new Date().toISOString(),
-                source: "memory_fact_sync",
+                source: (g as any).source || "memory_fact_sync",
               };
             }
           }
@@ -6653,7 +6655,10 @@ export async function runExperimentalOrchestration(
 
     // Heurística é apenas fonte de evidência: não modifica estado, memória ou
     // checklist. A conclusão pertence exclusivamente ao Brain.
-    let workingCompletedGoalIds: string[] = [...completedGoalIds];
+    let workingCompletedGoalIds: string[] = [
+      ...completedGoalIds,
+      ...(stageChecklistForRouter.completedObjectives || []).map((o: any) => o.id),
+    ];
     const candidateObjectiveEvidence = buildObjectiveCandidateEvidence(spontaneousMatches)
       .map((e) => ({ ...e, evidenceMessageId: e.evidenceMessageId || newMessage.id }));
     const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
