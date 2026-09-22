@@ -1721,7 +1721,7 @@ serve(async (req: Request) => {
 
       let query = supabase
         .from("conversation_episodic_memory")
-        .select("id, conversation_id, actor, event_type, memory_class, summary, details, emotional_tone, relevance_score, message_id, loop_status, resolved_at, resolution_message_id, importance, created_at")
+        .select("id, conversation_id, actor, event_type, topic, summary, source_message_id, metadata, loop_status, resolved_at, resolution_message_id, importance, created_at")
         .eq("conversation_id", conversationId);
 
       if (before) {
@@ -1744,21 +1744,23 @@ serve(async (req: Request) => {
       const openLoops: any[] = [];
 
       for (const e of list) {
+        const meta = (typeof e.metadata === "object" && e.metadata !== null) ? e.metadata : {};
         const item = {
           id: String(e.id || ""),
           conversationId: String(e.conversation_id || conversationId),
           actor: e.actor || "desconhecido",
           eventType: e.event_type || "message",
-          memoryClass: e.memory_class || (e.event_type === "life_event" || e.event_type === "preference" || e.event_type === "boundary" || e.event_type === "landmark" ? "landmark" : "speech_act"),
+          topic: e.topic || meta.topic || null,
+          memoryClass: meta.memory_class || (["life_event", "preference", "boundary", "landmark"].includes(e.event_type) ? "landmark" : "speech_act"),
           summary: e.summary || "",
-          details: e.details || null,
-          emotionalTone: e.emotional_tone || "neutro",
-          relevanceScore: typeof e.relevance_score === "number" ? e.relevance_score : 1.0,
-          importance: typeof e.importance === "number" ? e.importance : 0.7,
+          details: meta.details || e.summary || null,
+          emotionalTone: meta.emotional_tone || "neutro",
+          relevanceScore: typeof meta.relevance_score === "number" ? meta.relevance_score : 1.0,
+          importance: typeof e.importance === "number" ? e.importance : (typeof meta.importance === "number" ? meta.importance : 0.7),
           loopStatus: e.loop_status || null,
           resolvedAt: e.resolved_at || null,
           resolutionMessageId: e.resolution_message_id || null,
-          messageId: e.message_id || null,
+          messageId: e.source_message_id || null,
           createdAt: e.created_at || new Date().toISOString(),
         };
 

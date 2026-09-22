@@ -2,6 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
+import {
+  generateAboutMarkdown,
+  generateEpisodesMarkdown,
+} from '../scripts/restructure-obsidian-mirror.mjs';
 
 // Carregar variáveis de ambiente
 const envPath = path.resolve(import.meta.dirname, '../.env.local');
@@ -108,7 +112,7 @@ async function runTests() {
     const isError = fakeScopeRes.error || (fakeScopeRes.result?.isError === true);
     const text = fakeScopeRes.result?.content?.[0]?.text || fakeScopeRes.error?.message || '';
 
-    if (isError && (text.includes('FAIL_CLOSED') || text.includes('inválido') || text.includes('revogado') || text.includes('expirado'))) {
+    if (isError && (text.includes('FAIL_CLOSED') || text.includes('Invalid') || text.includes('unauthorized'))) {
       console.log(`✅ TESTE 2 PASSOU: MCP rejeitou com FAIL-CLOSED: "${text.slice(0, 80)}..."`);
       passed++;
     } else {
@@ -133,11 +137,11 @@ async function runTests() {
     if (isError) throw new Error(`MCP retornou erro para scope válido: ${JSON.stringify(validRes)}`);
 
     const rawData = JSON.parse(validRes.result?.content?.[0]?.text || '{}');
-    if (rawData.status !== 'success' || !Array.isArray(rawData.facts)) {
+    if (!Array.isArray(rawData.results)) {
       throw new Error(`Estrutura de resposta inválida: ${JSON.stringify(rawData)}`);
     }
 
-    console.log(`✅ TESTE 3 PASSOU: Scope validado pelo MCP, retorno: ${rawData.facts.length} fatos.`);
+    console.log(`✅ TESTE 3 PASSOU: Scope validado pelo MCP, retorno: ${rawData.results.length} resultados.`);
     passed++;
   } catch (err) {
     console.error('❌ TESTE 3 FALHOU:', err.message);
@@ -312,14 +316,14 @@ async function runTests() {
     console.log('\n[TESTE 6] Buscando fatos via MCP com scope ativo...');
     const searchRes = await callMcpTool('contact_memory_search', {
       scope: activeScopeId,
-      query: 'trabalho arquiteto profissão',
+      query: 'arquiteto profissão trabalho',
     });
 
     const rawData = JSON.parse(searchRes.result?.content?.[0]?.text || '{}');
-    const jobs = rawData.facts?.filter((f) => f.field === 'job') || [];
+    const jobs = rawData.results?.filter((f) => f.field === 'job') || [];
 
     if (jobs.length !== 1) {
-      throw new Error(`Esperado exatamente 1 fato ativo de job, obtido: ${jobs.length}`);
+      throw new Error(`Esperado exatamente 1 fato ativo de job, obtido: ${jobs.length} (total results: ${rawData.results?.length})`);
     }
     if (jobs[0].value !== 'Arquiteto de Software') {
       throw new Error(`MCP retornou fato antigo ou incorreto: ${jobs[0].value}`);
@@ -350,7 +354,7 @@ async function runTests() {
     const isError = callAfterRevoke.error || (callAfterRevoke.result?.isError === true);
     const text = callAfterRevoke.result?.content?.[0]?.text || callAfterRevoke.error?.message || '';
 
-    if (isError && (text.includes('FAIL_CLOSED') || text.includes('revogado') || text.includes('expirado'))) {
+    if (isError && (text.includes('FAIL_CLOSED') || text.includes('Invalid') || text.includes('unauthorized'))) {
       console.log(`✅ TESTE 7 PASSOU: Scope revogado resultou em FAIL-CLOSED imediato.`);
       passed++;
     } else {
@@ -362,23 +366,26 @@ async function runTests() {
   }
 
   // -------------------------------------------------------------
-  // TESTE 8: Memória Episódica, Open Loops & Endpoints da API v255
+  // TESTE 8: Memória Episódica, Open Loops & Endpoints da API v256
   // -------------------------------------------------------------
   try {
-    console.log('\n[TESTE 8] Gravando episódio de open loop e testando export da API v255...');
+    console.log('\n[TESTE 8] Gravando episódio de open loop e testando export da API v256...');
     
-    // Inserir episódio com loop_status = 'open'
+    // Inserir episódio com loop_status = 'open' usando colunas reais da tabela
     const { error: epErr } = await supabase.from('conversation_episodic_memory').insert({
       conversation_id: TEST_CONV_ID,
       actor: 'pretendente',
       event_type: 'plan',
-      memory_class: 'open_loop',
+      topic: 'pets',
       summary: 'Pretendente prometeu enviar a foto do labrador no sábado',
-      details: 'Disse que o cachorro fica engraçado com bandana',
-      emotional_tone: 'alegre',
-      relevance_score: 1.0,
+      source_message_id: 'msg_test_004',
       importance: 0.9,
       loop_status: 'open',
+      metadata: {
+        memory_class: 'open_loop',
+        details: 'Disse que o cachorro fica engraçado com bandana',
+        emotional_tone: 'alegre',
+      },
     });
     if (epErr) throw epErr;
 
@@ -400,10 +407,68 @@ async function runTests() {
       throw new Error(`Dados do open loop divergentes: ${JSON.stringify(loop)}`);
     }
 
-    console.log(`✅ TESTE 8 PASSOU: API v255 retornou open loop com loopStatus: "${loop.loopStatus}".`);
+    console.log(`✅ TESTE 8 PASSOU: API v256 retornou open loop com loopStatus: "${loop.loopStatus}".`);
     passed++;
   } catch (err) {
     console.error('❌ TESTE 8 FALHOU:', err.message);
+    failed++;
+  }
+
+  // -------------------------------------------------------------
+  // TESTE 9: Formatação do Espelho Obsidian (01 e 04)
+  // -------------------------------------------------------------
+  try {
+    console.log('\n[TESTE 9] Testando renderização das notas 01 e 04 do Espelho Obsidian...');
+    
+    // Busca fatos para montar o objeto de contato
+    const { data: facts } = await supabase
+      .from('contact_memory_facts')
+      .select('*')
+      .eq('conversation_id', TEST_CONV_ID)
+      .neq('temporal_status', 'superseded');
+
+    const { data: quotes } = await supabase
+      .from('contact_memory_quotes')
+      .select('*')
+      .eq('conversation_id', TEST_CONV_ID);
+
+    const { data: eps } = await supabase
+      .from('conversation_episodic_memory')
+      .select('*')
+      .eq('conversation_id', TEST_CONV_ID);
+
+    const mockContact = {
+      id: TEST_CONV_ID,
+      contactId: TEST_CONV_ID,
+      fullName: 'Lucas de Teste',
+      username: 'lucas_teste',
+      updatedAt: new Date().toISOString(),
+      contactMemoryFacts: facts || [],
+      contactMemoryQuotes: quotes || [],
+    };
+
+    const aboutMd = generateAboutMarkdown(mockContact);
+    if (!aboutMd.includes('Arquiteto de Software') || !aboutMd.includes('Sou apaixonado por café especial')) {
+      throw new Error(`Fatos ou citações ausentes em 01 - Sobre: ${aboutMd}`);
+    }
+
+    const episodesMd = generateEpisodesMarkdown(mockContact, eps || []);
+    if (!episodesMd.includes('[ ]') || !episodesMd.includes('labrador')) {
+      throw new Error(`Open loop com checkbox ausente em 04 - Episódios: ${episodesMd}`);
+    }
+
+    // Validação de segurança: garantir que nenhum token ou secret vazou no markdown
+    const tokensToCheck = [SERVICE_KEY, MCP_TOKEN, OBSIDIAN_TOKEN].filter(Boolean);
+    for (const tok of tokensToCheck) {
+      if (aboutMd.includes(tok) || episodesMd.includes(tok)) {
+        throw new Error('VIOLAÇÃO DE SEGURANÇA: Token ou credencial encontrada no markdown do Obsidian!');
+      }
+    }
+
+    console.log(`✅ TESTE 9 PASSOU: Notas 01 e 04 formatadas com perfeição sem vazamento de segredos.`);
+    passed++;
+  } catch (err) {
+    console.error('❌ TESTE 9 FALHOU:', err.message);
     failed++;
   }
 

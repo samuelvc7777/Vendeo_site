@@ -562,13 +562,13 @@ serve(async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify({
-                    error: "Invalid, expired, or unauthorized memory scope",
+                    error: "Invalid, expired, or unauthorized memory scope (FAIL_CLOSED)",
                     found: false,
                     results: [],
                   }),
                 },
               ],
-              isError: false,
+              isError: true,
             },
           }),
           { status: 200, headers: responseHeaders }
@@ -625,13 +625,13 @@ serve(async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify({
-                    error: "Invalid, expired, or unauthorized memory scope",
+                    error: "Invalid, expired, or unauthorized memory scope (FAIL_CLOSED)",
                     found: false,
                     results: [],
                   }),
                 },
               ],
-              isError: false,
+              isError: true,
             },
           }),
           { status: 200, headers: responseHeaders }
