@@ -45,7 +45,6 @@ import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
 import {
   LARISSA_CHAT_STYLE_V2,
-  LARISSA_COMPACT_SUBAGENT_PROMPT,
   LARISSA_CONVERSATION_EXAMPLES_V1,
   computeDynamicEmojiBudget,
   extractRecentStyleState,
@@ -65,7 +64,6 @@ import {
 } from "./ConversationQualityGate.ts";
 export {
   LARISSA_CHAT_STYLE_V2,
-  LARISSA_COMPACT_SUBAGENT_PROMPT,
   LARISSA_CONVERSATION_EXAMPLES_V1,
   computeDynamicEmojiBudget,
   extractRecentStyleState,
@@ -352,8 +350,8 @@ export function serializeLiveStateForPrompt(liveState: ConversationLiveState): s
 }
 
 export interface MissionPackage {
-  subagentId: string;
-  subagentName: string;
+  subagentId?: string;
+  subagentName?: string;
   objectiveDirective: "pursue" | "defer" | "already_satisfied" | "none";
   targetObjective?: {
     id: string;
@@ -456,11 +454,10 @@ export function enforceAuthorizedAudioDecision(
 }
 
 export interface ConversationBrainPlan {
-  action: "delegate_mission" | "call_tool" | "reply" | "wait";
+  action: "reply" | "call_tool" | "wait";
   tool?: "conversation_history_search" | "persona_memory_search" | "episodic_memory_search" | "cofre_audio_search";
   parameters?: Record<string, any>;
   currentStage?: string;
-  responsibleSubagent: string;
   objectiveDecision: "pursue" | "defer" | "already_satisfied" | "none";
   satisfiedObjectiveId?: string;
   evidenceMessageId?: string;
@@ -479,21 +476,8 @@ export interface ConversationBrainPlan {
   relevantPersonaFacts?: Array<{ fact: string; memoryId?: string; origin?: string; reason?: string }>;
 }
 
-export interface CompactSubagentCard {
-  id: string;
-  name: string;
-  description: string;
-  stageIds: string[];
-}
-
 export type OrchestrationPhase = "conexao_inicial" | "descoberta" | "compatibilidade" | (string & {});
 export type OrchestrationAction = "reply" | "send_audio" | "wait" | "advance_phase" | "escalate";
-export type SubagentTarget =
-  | "conexao_inicial"
-  | "descoberta"
-  | "compatibilidade"
-  | "none"
-  | (string & {});
 export type ProcessingStatus =
   | "idle"
   | "analyzing"
@@ -548,7 +532,7 @@ export interface AudioDeliveryHistory {
 }
 
 export interface ConversationRoutingDecision {
-  targetSubagent: SubagentTarget;
+  targetSubagent: string;
   action: "delegate" | "wait" | "pause";
   reason: string;
 }
@@ -592,7 +576,6 @@ export interface OrchestratorDecision {
   responses?: string[];
   requiredTools: string[];
   reasoning: string;
-  routedSubagent?: SubagentTarget;
   audioId?: string;
   audioUrl?: string;
   objectiveCompletion?: {
@@ -683,7 +666,6 @@ export interface ConversationOrchestrationState {
   brainProvider?: "internal" | "openai_agent";
   currentPhase: OrchestrationPhase;
   currentStageId?: string;
-  responsibleSubagentId?: string;
   completedGoalIds?: string[];
   objectiveProgress?: Record<string, any>;
   checkpoint: string;
@@ -807,138 +789,6 @@ export interface MemoryProvider {
 }
 
 
-export interface SubagentDefinition {
-  id: string;
-  name: string;
-  mission: string;
-  enabled?: boolean;
-  isSystem?: boolean;
-  stageIds?: string[];
-  description?: string;
-  objectiveFamilies?: string[];
-  capabilities?: string[];
-  restrictions?: string[];
-  createdAt?: string;
-  updatedAt?: string;
-  missionSource?: "db" | "canonical_fallback";
-}
-
-export const CANONICAL_SUBAGENTS: Record<string, SubagentDefinition> = {
-  conexao_inicial: {
-    id: "conexao_inicial",
-    name: "Conexão Inicial",
-    mission: "Criar conforto, reciprocidade e um começo natural de conversa, sem transformar o contato em entrevista nem antecipar assuntos profundos.",
-    enabled: true,
-    isSystem: true,
-    missionSource: "canonical_fallback",
-  },
-  descoberta: {
-    id: "descoberta",
-    name: "Descoberta",
-    mission: "Conhecer organicamente quem o pretendente é, sua rotina, vida, trabalho, gostos e contexto pessoal, aproveitando naturalmente os assuntos que surgem.",
-    enabled: true,
-    isSystem: true,
-    missionSource: "canonical_fallback",
-  },
-  compatibilidade: {
-    id: "compatibilidade",
-    name: "Compatibilidade",
-    mission: "Entender valores, momento de vida, visão de relacionamento, família, planos e compatibilidade com Larissa, somente quando houver abertura natural para assuntos mais pessoais.",
-    enabled: true,
-    isSystem: true,
-    missionSource: "canonical_fallback",
-  },
-};
-
-let _subagentsCatalogCache: { data: SubagentDefinition[]; fetchedAt: number } | null = null;
-const SUBAGENTS_CATALOG_CACHE_TTL_MS = 60000;
-
-/**
- * Carrega catálogo de subagentes diretamente da tabela dedicada `public.subagent_definitions` no Supabase
- * como Fonte de Verdade Única, com cache em memória (TTL 60s) e fallback seguro em memória para os 3 canônicos.
- */
-export async function loadSubagentsCatalog(params?: {
-  supabase?: any;
-  forceRefresh?: boolean;
-  includeDisabled?: boolean;
-}): Promise<SubagentDefinition[]> {
-  const now = Date.now();
-  if (
-    !params?.forceRefresh &&
-    _subagentsCatalogCache &&
-    now - _subagentsCatalogCache.fetchedAt < SUBAGENTS_CATALOG_CACHE_TTL_MS
-  ) {
-    if (params?.includeDisabled) {
-      return _subagentsCatalogCache.data;
-    }
-    return _subagentsCatalogCache.data.filter((s) => s.enabled !== false);
-  }
-
-  const fallbackList = Object.values(CANONICAL_SUBAGENTS);
-
-  if (!params?.supabase) {
-    _subagentsCatalogCache = { data: fallbackList, fetchedAt: now };
-    return params?.includeDisabled ? fallbackList : fallbackList.filter((s) => s.enabled !== false);
-  }
-
-  try {
-    const { data, error } = await params.supabase
-      .from("subagent_definitions")
-      .select("*")
-      .order("is_system", { ascending: false })
-      .order("name", { ascending: true });
-
-    if (error || !data || !Array.isArray(data) || data.length === 0) {
-      // Fallback seguro em memória caso banco ou tabela estejam indisponíveis
-      _subagentsCatalogCache = { data: fallbackList, fetchedAt: now };
-      return params?.includeDisabled ? fallbackList : fallbackList.filter((s) => s.enabled !== false);
-    }
-
-    const parsedSubagents: SubagentDefinition[] = data.map((row: any) => ({
-      id: row.id,
-      name: row.name,
-      mission: row.mission,
-      enabled: row.enabled ?? true,
-      isSystem: Boolean(row.is_system),
-      description: row.description || undefined,
-      stageIds: Array.isArray(row.stage_ids) ? row.stage_ids : [],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      missionSource: "db",
-    }));
-
-    // Merge resiliente garantindo que os 3 canônicos existam e mantenham isSystem: true
-    const mergedMap = new Map<string, SubagentDefinition>();
-    for (const canon of fallbackList) {
-      mergedMap.set(canon.id, { ...canon });
-    }
-    for (const sub of parsedSubagents) {
-      if (sub && typeof sub.id === "string") {
-        const existing = mergedMap.get(sub.id);
-        if (existing) {
-          mergedMap.set(sub.id, {
-            ...existing,
-            ...sub,
-            isSystem: existing.isSystem, // canônicos sempre preservam isSystem: true
-          });
-        } else {
-          mergedMap.set(sub.id, {
-            ...sub,
-            isSystem: Boolean(sub.isSystem),
-          });
-        }
-      }
-    }
-
-    const resultList = Array.from(mergedMap.values());
-    _subagentsCatalogCache = { data: resultList, fetchedAt: now };
-    return params?.includeDisabled ? resultList : resultList.filter((s) => s.enabled !== false);
-  } catch (err) {
-    _subagentsCatalogCache = { data: fallbackList, fetchedAt: now };
-    return params?.includeDisabled ? fallbackList : fallbackList.filter((s) => s.enabled !== false);
-  }
-}
-
 export interface ConversationAgentInput {
   conversationId: string;
   currentPhase: OrchestrationPhase;
@@ -952,7 +802,6 @@ export interface ConversationAgentInput {
   };
   recentHistory?: string;
   openGoalsSummary?: string;
-  availableSubagents?: SubagentDefinition[];
 }
 
 export interface SubagentInput {
@@ -1161,8 +1010,7 @@ export function validateRoutingDecision(
 // ----------------------------------------------------------------------------
 export function validateSubagentDecision(
   data: unknown,
-  currentPhase: OrchestrationPhase,
-  allowedSubagents?: string[]
+  currentPhase: OrchestrationPhase
 ): SubagentDecision {
   if (!data || typeof data !== "object") {
     throw new Error("Decisão do subagente inválida: payload não é um objeto.");
@@ -1188,7 +1036,6 @@ export function validateSubagentDecision(
   const isAllowedPhase =
     rawNext &&
     (standardPhases.includes(rawNext) ||
-      (allowedSubagents && allowedSubagents.includes(rawNext)) ||
       rawNext.startsWith("stage_"));
   const nextPhase: OrchestrationPhase = isAllowedPhase ? rawNext : currentPhase;
 
@@ -1333,7 +1180,6 @@ export function validateOrchestratorDecision(data: unknown, allowedPhases?: stri
     responses: Array.isArray(obj.responses) ? obj.responses.map(String) : undefined,
     requiredTools: obj.requiredTools.map(String),
     reasoning: obj.reasoning.trim(),
-    routedSubagent: obj.routedSubagent,
     audioId: typeof obj.audioId === "string" ? obj.audioId : undefined,
     audioUrl: typeof obj.audioUrl === "string" ? obj.audioUrl : undefined,
     objectiveCompletion,
@@ -2834,85 +2680,6 @@ export async function dispatchOutboxEntry(
 }
 
 
-// ----------------------------------------------------------------------------
-// 6. Construtor de Prompt do Agente da Conversa (Camada 1 - Roteador Enxuto)
-// ----------------------------------------------------------------------------
-export function buildConversationAgentPrompt(input: ConversationAgentInput): string {
-  const contextBlock =
-    input.contextText ||
-    (input.newMessage
-      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
-      : input.recentHistory || "Início da interação");
-
-  // Carrega subagentes ativos do catálogo recebido ou fallback para os 3 canônicos
-  const activeSubagents = (
-    input.availableSubagents && input.availableSubagents.length > 0
-      ? input.availableSubagents
-      : Object.values(CANONICAL_SUBAGENTS)
-  ).filter((s) => s.enabled !== false);
-
-  const subagentsSnippet = activeSubagents
-    .map((s, idx) => {
-      // Limite estrito de tokens: condensado em no máximo 300 caracteres
-      const cleanMission = s.mission?.trim() || "";
-      const compactMission =
-        cleanMission.length > 300 ? cleanMission.substring(0, 297) + "..." : cleanMission;
-      return `${idx + 1}. "${s.id}" (${s.name}):\n   Missão: ${compactMission}`;
-    })
-    .join("\n");
-
-  const noneOptionNumber = activeSubagents.length + 1;
-  const targetSubagentOptions = activeSubagents.map((s) => `"${s.id}"`).join(" | ");
-
-  return `Você é o Agente da Conversa da Larissa no Vendeo.
-Sua missão é estritamente de roteamento: analisar o estágio do diálogo e decidir qual subagente especializado deve responder ao pretendente.
-Você NÃO gera a resposta final da Larissa; apenas seleciona o especialista mais adequado.
-
-### SUBAGENTES E SUAS MISSÕES:
-${subagentsSnippet}
-${noneOptionNumber}. "none": Mensagem não exige resposta imediata ou deve aguardar.
-
-### CONTEXTO DA CONVERSA
-${contextBlock}
-${input.openGoalsSummary ? `\n### TEMAS/OBJETIVOS EM ABERTO DA ETAPA:\n${input.openGoalsSummary}\n` : ""}
-
-### AUTORIDADE DE WORKFLOW
-
-A etapa atual e o subagente responsável são fornecidos pelo backend.
-Você não altera a etapa.
-Você não escolhe outro especialista baseado no tema da mensagem.
-O assunto pode mudar; o workflow não muda até os checkpoints ativos terminarem.
-
-Sua responsabilidade neste turno é apenas:
-- responder/delegar
-- aguardar
-- pausar
-- analisar tom/contexto
-
-O backend determina subagente e progressão.
-
-Responda ESTRITAMENTE em JSON puro com as seguintes chaves:
-{
-  "targetSubagent": ${targetSubagentOptions ? `${targetSubagentOptions} | ` : ""}"none",
-  "action": "delegate" | "wait" | "pause",
-  "reason": "explicação curta da escolha do subagente"
-}`;
-}
-
-/**
- * Converte a lista de subagentes em catálogo compacto para o Conversation Brain
- * sem vazar prompts longos ou desperdiçar tokens.
- */
-export function getCompactSubagentCatalog(subagents?: SubagentDefinition[]): CompactSubagentCard[] {
-  const list = Array.isArray(subagents) && subagents.length > 0 ? subagents : Object.values(CANONICAL_SUBAGENTS);
-  return list.map((s) => ({
-    id: s.id,
-    name: s.name,
-    description: s.description || (s.mission ? s.mission.slice(0, 140) : s.name),
-    stageIds: s.stageIds || [],
-  }));
-}
-
 /**
  * Constrói o prompt do CONVERSATION BRAIN (Mente da Conversa e Planejador da Larissa).
  * Apresenta a Escada de Memória em 6 Níveis e catálogo condensado de subagentes.
@@ -2928,7 +2695,6 @@ export function buildConversationBrainPrompt(params: {
   personaMemorySummary: string;
   stageObjectives: StageObjective[];
   currentObjective?: StageObjective | null;
-  compactSubagents: CompactSubagentCard[];
   toolResultsHistory?: string[];
 }): string {
   const {
@@ -2942,7 +2708,6 @@ export function buildConversationBrainPrompt(params: {
     personaMemorySummary,
     stageObjectives,
     currentObjective,
-    compactSubagents,
     toolResultsHistory = [],
   } = params;
 
@@ -2954,10 +2719,6 @@ export function buildConversationBrainPrompt(params: {
       return `${senderLabel} | ${m.id} | ${m.createdAt || ""}\n${m.text}`;
     })
     .join("\n\n");
-
-  const subagentsBlock = compactSubagents
-    .map((s) => `- id: "${s.id}" | nome: "${s.name}" | descrição: "${s.description}" | etapas: [${s.stageIds.join(", ")}]`)
-    .join("\n");
 
   const objBlock = stageObjectives
     .map((o) => {
@@ -3005,9 +2766,6 @@ ${toolsHistoryBlock}
 ### OBJETIVOS DA ETAPA ATUAL ("${currentStage}")
 ${objBlock || "Nenhum objetivo cadastrado."}
 
-### CATÁLOGO DE SUBAGENTES DISPONÍVEIS
-${subagentsBlock}
-
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA (MÁXIMO 2 DE MEMÓRIA + 1 DE COFRE)
 Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mensagens triviais, NÃO use ferramentas.
 - conversation_history_search: busca no histórico bruto desta conversa por mensagens passadas ou detalhes esquecidos. Parâmetro: {"query": "..."}.
@@ -3032,11 +2790,10 @@ Se precisar chamar uma ferramenta:
   "parameters": { "query": "..." }
 }
 
-Quando estiver pronto para delegar ao subagente executor:
+Quando estiver pronto para formular a resposta:
 {
-  "action": "delegate_mission",
+  "action": "reply",
   "currentStage": "${currentStage}",
-  "responsibleSubagent": "id_do_subagente_da_etapa",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": "id_do_objetivo_se_already_satisfied",
   "evidenceMessageId": "id_da_msg_inbound_se_already_satisfied",
@@ -3201,7 +2958,7 @@ export function buildConexaoInicialPrompt(input: SubagentInput): string {
       ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
       : input.recentHistory || "Início da conversa");
 
-  const missionText = input.mission || CANONICAL_SUBAGENTS.conexao_inicial.mission;
+  const missionText = input.mission || "Criar conforto, reciprocidade e um começo natural de conversa, sem transformar o contato em entrevista nem antecipar assuntos profundos.";
 
   return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
 SUA MISSÃO: ${missionText}
@@ -3280,10 +3037,6 @@ export interface SemanticGoalDefinition {
   required?: boolean;
   order?: number;
   enabled?: boolean;
-  /** Subagentes autorizados a perseguir ou interagir com este objetivo */
-  allowedSubagents?: string[];
-  /** Subagente prioritário de referência (opcional) */
-  primarySubagent?: string;
   /** Política de conclusão: "conversation_evidence" ou "fact_only" */
   completionPolicy?: "conversation_evidence" | "fact_only";
 }
@@ -3295,8 +3048,6 @@ export interface ResolvedStageGoal {
   status: "completed" | "pending";
   value: any;
   required?: boolean;
-  allowedSubagents?: string[];
-  primarySubagent?: string;
   description?: string;
   completionPolicy?: "conversation_evidence" | "fact_only";
   evidenceMessageId?: string;
@@ -3315,8 +3066,6 @@ export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 1,
     enabled: true,
-    allowedSubagents: ["conexao_inicial"],
-    primarySubagent: "conexao_inicial",
   },
   {
     id: "goal_city",
@@ -3329,8 +3078,6 @@ export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 2,
     enabled: true,
-    allowedSubagents: ["conexao_inicial", "descoberta"],
-    primarySubagent: "conexao_inicial",
   },
   {
     id: "goal_job",
@@ -3343,8 +3090,6 @@ export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 3,
     enabled: true,
-    allowedSubagents: ["conexao_inicial", "descoberta"],
-    primarySubagent: "conexao_inicial",
   },
 ];
 
@@ -3360,8 +3105,6 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 1,
     enabled: true,
-    allowedSubagents: ["descoberta"],
-    primarySubagent: "descoberta",
   },
   {
     id: "goal_routine",
@@ -3374,8 +3117,6 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 2,
     enabled: true,
-    allowedSubagents: ["descoberta"],
-    primarySubagent: "descoberta",
   },
   {
     id: "goal_hobbies",
@@ -3388,8 +3129,6 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 3,
     enabled: true,
-    allowedSubagents: ["descoberta"],
-    primarySubagent: "descoberta",
   },
   {
     id: "goal_social_style",
@@ -3402,8 +3141,6 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 4,
     enabled: true,
-    allowedSubagents: ["descoberta", "compatibilidade"],
-    primarySubagent: "descoberta",
   },
   {
     id: "goal_discovery_depth",
@@ -3416,8 +3153,6 @@ export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 5,
     enabled: true,
-    allowedSubagents: ["descoberta"],
-    primarySubagent: "descoberta",
   },
 ];
 
@@ -3433,8 +3168,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 1,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
   {
     id: "goal_relationship_intent",
@@ -3447,8 +3180,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 2,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
   {
     id: "goal_has_children",
@@ -3461,8 +3192,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 3,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
   {
     id: "goal_wants_children",
@@ -3475,8 +3204,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 4,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
   {
     id: "goal_family_values",
@@ -3489,8 +3216,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 5,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
   {
     id: "goal_future_plans",
@@ -3503,8 +3228,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 6,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
   {
     id: "goal_faith_values",
@@ -3517,8 +3240,6 @@ export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
     required: true,
     order: 7,
     enabled: true,
-    allowedSubagents: ["compatibilidade"],
-    primarySubagent: "compatibilidade",
   },
 ];
 
@@ -3531,7 +3252,6 @@ export interface StageResolutionResult {
   completedObjectives: ResolvedStageGoal[];
   remainingObjectives: ResolvedStageGoal[];
   stageComplete: boolean;
-  responsibleSubagent: string;
 }
 
 /**
@@ -3612,7 +3332,6 @@ export async function resolveStageChecklistGoals(params: {
   const targetStageQuery = (stageNameOrId || "descoberta").trim().toLowerCase();
 
   let stagesList: any[] = [];
-  let subagentsList: any[] = [];
   try {
     if (supabase && typeof supabase.from === "function") {
       let stagesRaw: any = null;
@@ -3656,16 +3375,6 @@ export async function resolveStageChecklistGoals(params: {
           }));
         }
       }
-
-      try {
-        const subagentsRes = await supabase
-          .from("subagent_definitions")
-          .select("*")
-          .order("is_system", { ascending: false });
-        if (subagentsRes?.data && Array.isArray(subagentsRes.data)) {
-          subagentsList = subagentsRes.data;
-        }
-      } catch (_subErr) {}
     }
   } catch (err) {
     // Fail-safe silencioso
@@ -3696,36 +3405,6 @@ export async function resolveStageChecklistGoals(params: {
       : targetStageQuery
   );
 
-  // Determinação determinística do subagente responsável pela etapa (1:1 no fluxo principal)
-  let responsibleSubagent = "";
-  if (subagentsList.length > 0) {
-    const matchingSubs = subagentsList.filter(
-      (sub: any) =>
-        sub.enabled !== false &&
-        Array.isArray(sub.stage_ids) &&
-        sub.stage_ids.includes(resolvedStageId)
-    );
-    if (matchingSubs.length > 1) {
-      responsibleSubagent = matchingSubs[0].id;
-    } else if (matchingSubs.length === 1) {
-      responsibleSubagent = matchingSubs[0].id;
-    }
-  }
-
-  if (!responsibleSubagent) {
-    const stageNameLower = (matchedStage?.name || "").toLowerCase();
-    if (resolvedStageId === "stage_1_conexao" || targetStageQuery.includes("conex") || stageNameLower.includes("conex")) {
-      responsibleSubagent = "conexao_inicial";
-    } else if (resolvedStageId === "stage_2_descoberta" || targetStageQuery.includes("descoberta") || targetStageQuery.includes("desc") || stageNameLower.includes("descoberta") || stageNameLower.includes("desc")) {
-      responsibleSubagent = "descoberta";
-    } else if (resolvedStageId === "stage_3_compatibilidade" || targetStageQuery.includes("compat") || stageNameLower.includes("compat")) {
-      responsibleSubagent = "compatibilidade";
-    } else {
-      // Fallback seguro para o agente único canônico
-      responsibleSubagent = "openai_agent";
-    }
-  }
-
   let rawGoals: SemanticGoalDefinition[] = [];
   if (matchedStage?.objectives && Array.isArray(matchedStage.objectives) && matchedStage.objectives.length > 0) {
     rawGoals = matchedStage.objectives.map((o: any) => ({
@@ -3739,8 +3418,6 @@ export async function resolveStageChecklistGoals(params: {
       required: true,
       order: Number(o.order ?? 0),
       enabled: o.enabled !== false,
-      allowedSubagents: o.allowedSubagents || [responsibleSubagent],
-      primarySubagent: o.primarySubagent || responsibleSubagent,
       completionPolicy: o.completionPolicy,
     }));
   } else if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
@@ -3751,8 +3428,6 @@ export async function resolveStageChecklistGoals(params: {
       required: true,
       order: Number(g.order ?? 0),
       enabled: g.enabled !== false,
-      allowedSubagents: g.allowedSubagents || [responsibleSubagent],
-      primarySubagent: g.primarySubagent || responsibleSubagent,
       completionPolicy: g.completionPolicy,
     }));
   } else if (resolvedStageId === "stage_1_conexao") {
@@ -3781,8 +3456,6 @@ export async function resolveStageChecklistGoals(params: {
       label: goal.label,
       kind: isStateGoal ? ("conversation_state" as const) : ("fact" as const),
       required: goal.required !== false,
-      allowedSubagents: goal.allowedSubagents || [responsibleSubagent],
-      primarySubagent: goal.primarySubagent || responsibleSubagent,
       description: goal.description,
       completionPolicy: goal.completionPolicy,
     };
@@ -3907,142 +3580,16 @@ export async function resolveStageChecklistGoals(params: {
       evidenceMessageId: g.evidenceMessageId,
       source: g.source,
       required: g.required !== false,
-      allowedSubagents: g.allowedSubagents,
-      primarySubagent: g.primarySubagent,
       description: g.description,
     })),
     currentObjective,
     completedObjectives,
     remainingObjectives,
     stageComplete,
-    responsibleSubagent,
   };
 }
 
 export const resolveStageObjectives = resolveStageChecklistGoals;
-
-/**
- * Filtra os objetivos da etapa autorizados para a responsabilidade do subagente (Many-to-Many).
- * Preserva retrocompatibilidade total: se allowedSubagents for null, undefined ou vazio,
- * o objetivo é considerado acessível para todos os subagentes da etapa.
- */
-export function filterGoalsForSubagent(
-  goals: ResolvedStageGoal[],
-  subagentId: string
-): { openGoals: ResolvedStageGoal[]; completedGoals: ResolvedStageGoal[] } {
-  const authorized = goals.filter((g) => {
-    if (!g.allowedSubagents || !Array.isArray(g.allowedSubagents) || g.allowedSubagents.length === 0) {
-      return true;
-    }
-    return g.allowedSubagents.includes(subagentId);
-  });
-
-  return {
-    openGoals: authorized.filter((g) => g.status === "pending"),
-    completedGoals: authorized.filter((g) => g.status === "completed"),
-  };
-}
-
-/**
- * Formata um snippet compacto de Missão e Objetivos autorizados para injeção no prompt do subagente.
- * Suporta assinatura sobrecarregada (objeto ou parâmetros soltos) para retrocompatibilidade total.
- */
-export function formatGoalsSnippetForSubagent(
-  subagentIdOrParams:
-    | string
-    | {
-        subagentId: string;
-        stageName?: string;
-        mission?: string;
-        currentObjective?: ResolvedStageGoal | null;
-        completedObjectives?: ResolvedStageGoal[];
-        remainingObjectives?: ResolvedStageGoal[];
-        knownFacts?: Record<string, any>;
-      },
-  mission?: string,
-  openGoals?: ResolvedStageGoal[],
-  completedGoals?: ResolvedStageGoal[]
-): string {
-  let subagentId = typeof subagentIdOrParams === "string" ? subagentIdOrParams : subagentIdOrParams.subagentId;
-  let subMission = typeof subagentIdOrParams === "string" ? (mission || "") : (subagentIdOrParams.mission || mission || "");
-  let stageName = typeof subagentIdOrParams === "object" ? subagentIdOrParams.stageName : undefined;
-  let currentObj =
-    typeof subagentIdOrParams === "object"
-      ? subagentIdOrParams.currentObjective
-      : openGoals && openGoals[0]
-      ? openGoals[0]
-      : null;
-  let completedList =
-    typeof subagentIdOrParams === "object"
-      ? subagentIdOrParams.completedObjectives || []
-      : completedGoals || [];
-  let remainingList =
-    typeof subagentIdOrParams === "object"
-      ? subagentIdOrParams.remainingObjectives || []
-      : openGoals && openGoals.length > 1
-      ? openGoals.slice(1)
-      : [];
-  let knownFacts = typeof subagentIdOrParams === "object" ? subagentIdOrParams.knownFacts : undefined;
-
-  const parts: string[] = [];
-  if (stageName) {
-    parts.push(`### ETAPA ATUAL: ${stageName.toUpperCase()} (Subagente Responsável: ${subagentId})`);
-  }
-  parts.push(`### SUA MISSÃO NESTE TURNO`);
-  parts.push(subMission);
-  parts.push(``);
-
-  parts.push(`### CHECKPOINT ATUAL OBRIGATÓRIO (FOCO IMEDIATO)`);
-  if (currentObj) {
-    const desc = currentObj.description ? `\n  Missão: ${currentObj.description}` : "";
-    parts.push(`• [ATIVO OBRIGATÓRIO] ${currentObj.label}${desc}`);
-    parts.push(
-      `  Diretriz: Este é o seu destino obrigatório imediato na conversa. Busque cumpri-lo com naturalidade, afeto e organicidade caso o homem dê abertura, sem forçar nem fazer entrevista.`
-    );
-  } else {
-    parts.push(`• Todos os checkpoints desta etapa foram concluídos! Conduza o diálogo com leveza e acolhimento.`);
-  }
-  parts.push(``);
-
-  if (completedList.length > 0) {
-    parts.push(`### CHECKPOINTS JÁ CONCLUÍDOS (PROIBIDO REPETIR OU PERGUNTAR)`);
-    for (const g of completedList) {
-      const valStr = g.value !== undefined && g.value !== null && g.value !== true ? `: ${g.value}` : "";
-      parts.push(`• ${g.label}${valStr}`);
-    }
-    parts.push(``);
-  }
-
-  if (knownFacts && Object.keys(knownFacts).length > 0) {
-    parts.push(`### FATOS CONHECIDOS DO CONTATO NA MEMÓRIA (NÃO PERGUNTE NOVAMENTE)`);
-    for (const [k, v] of Object.entries(knownFacts)) {
-      if (v !== undefined && v !== null && v !== "") {
-        parts.push(`• ${k}: ${v}`);
-      }
-    }
-    parts.push(``);
-  }
-
-  if (remainingList.length > 0) {
-    parts.push(`### PRÓXIMOS CHECKPOINTS DA ETAPA (HORIZONTE - NÃO ANTECIPAR)`);
-    for (const g of remainingList) {
-      parts.push(`• ${g.label}`);
-    }
-    parts.push(`(Aviso estrito: NÃO antecipe perguntas destes tópicos antes de superar o checkpoint atual).`);
-    parts.push(``);
-  }
-
-  parts.push(`### REGRAS DE PROGRESSÃO CONVERSACIONAL`);
-  parts.push(`1. Responder o que ele falou e acolher o momento emocional dele tem PRIORIDADE MÁXIMA.`);
-  parts.push(`2. NUNCA faça mais de uma pergunta por turno. Perguntas não são obrigatórias em todo turno.`);
-  parts.push(`3. Quando ele fornecer a evidência necessária para o checkpoint atual, inclua no JSON:`);
-  parts.push(
-    `   "objectiveCompletion": { "objectiveId": "${currentObj ? currentObj.id : "id_do_objetivo"}", "evidenceMessageId": "id_da_msg", "value": "dado_descoberto" }`
-  );
-  parts.push(`4. Se o momento não tiver gancho natural para o checkpoint, NÃO force; apenas continue a conversa com calor humano.`);
-
-  return parts.join("\n");
-}
 
 /**
  * Processamento determinístico de conclusão de checkpoints e progressão sequencial de etapas.
@@ -4073,7 +3620,6 @@ export async function processDeterministicStageProgression(params: {
   nextPhase: OrchestrationPhase;
   currentStageId: string;
   nextStageId: string;
-  responsibleSubagentId: string;
   stageAdvanced: boolean;
   advancementReason?: string;
 }> {
@@ -4100,26 +3646,16 @@ export async function processDeterministicStageProgression(params: {
     ...resolveOfficialObjectiveProgress(stageRules, orchState),
   };
 
-  // 1. Busca lista ordenada de etapas (chat_stages) e subagentes (subagent_definitions)
+  // 1. Busca lista ordenada de etapas (chat_stages)
   let stagesList: any[] = [];
-  let subagentsList: any[] = [];
   try {
     if (supabase) {
-      const [stgRes, subRes] = await Promise.all([
-        supabase
-          .from("chat_stages")
-          .select("*")
-          .order("stage_order", { ascending: true }),
-        supabase
-          .from("subagent_definitions")
-          .select("*")
-          .order("is_system", { ascending: false }),
-      ]);
+      const stgRes = await supabase
+        .from("chat_stages")
+        .select("*")
+        .order("stage_order", { ascending: true });
       if (stgRes.data && Array.isArray(stgRes.data) && stgRes.data.length > 0) {
         stagesList = stgRes.data;
-      }
-      if (subRes.data && Array.isArray(subRes.data)) {
-        subagentsList = subRes.data;
       }
     }
   } catch {}
@@ -4151,15 +3687,6 @@ export async function processDeterministicStageProgression(params: {
       (candidateStageId === "compatibilidade" && (s.id === "stage_3_compatibilidade" || s.name?.toLowerCase().includes("compat")))
   );
 
-  if (currentStageIndex === -1) {
-    // Tenta encontrar pelo subagente vinculado via stage_ids
-    const subWithStage = subagentsList.find(
-      (sub) => sub.id === candidateStageId && Array.isArray(sub.stage_ids) && sub.stage_ids.length > 0
-    );
-    if (subWithStage) {
-      currentStageIndex = stagesList.findIndex((s) => s.id === subWithStage.stage_ids[0]);
-    }
-  }
 
   let currentStage: any = null;
   if (currentStageIndex !== -1) {
@@ -4181,32 +3708,6 @@ export async function processDeterministicStageProgression(params: {
     } else {
       currentStageIndex = 0;
       currentStage = stagesList[0];
-    }
-  }
-
-  // Resolve o subagente responsável atual da etapa
-  let currentResponsibleSubagent = "";
-  if (subagentsList.length > 0) {
-    const matchingSubs = subagentsList.filter(
-      (sub: any) =>
-        sub.enabled !== false &&
-        Array.isArray(sub.stage_ids) &&
-        sub.stage_ids.includes(currentStage.id)
-    );
-    if (matchingSubs.length > 0) {
-      currentResponsibleSubagent = matchingSubs[0].id;
-    }
-  }
-
-  if (!currentResponsibleSubagent) {
-    if (currentStage.id === "stage_1_conexao" || currentStage.name?.toLowerCase().includes("conex")) {
-      currentResponsibleSubagent = "conexao_inicial";
-    } else if (currentStage.id === "stage_2_descoberta" || currentStage.name?.toLowerCase().includes("descoberta")) {
-      currentResponsibleSubagent = "descoberta";
-    } else if (currentStage.id === "stage_3_compatibilidade" || currentStage.name?.toLowerCase().includes("compat")) {
-      currentResponsibleSubagent = "compatibilidade";
-    } else {
-      currentResponsibleSubagent = "openai_agent";
     }
   }
 
@@ -4389,7 +3890,6 @@ export async function processDeterministicStageProgression(params: {
 
   let nextPhase: OrchestrationPhase = currentPhase;
   let nextStageId: string = currentStage.id;
-  let responsibleSubagentId: string = currentResponsibleSubagent;
   let stageAdvanced = false;
   let advancementReason: string | undefined;
 
@@ -4401,30 +3901,16 @@ export async function processDeterministicStageProgression(params: {
       nextStageId = nextStage.id;
       advancementReason = `Todos os ${activeGoals.length} checkpoints da etapa "${currentStage.name}" foram concluídos. Avançando deterministicamente para "${nextStage.name}".`;
 
-      // Resolve subagente responsável da próxima etapa
-      let nextResponsibleSub = "";
-      const matchingNextSubs = subagentsList.filter(
-        (sub: any) =>
-          sub.enabled !== false &&
-          Array.isArray(sub.stage_ids) &&
-          sub.stage_ids.includes(nextStage.id)
-      );
-      if (matchingNextSubs.length > 0) {
-        nextResponsibleSub = matchingNextSubs[0].id;
+      // Determina nextPhase pelo id da próxima etapa
+      if (nextStage.id === "stage_1_conexao" || nextStage.name?.toLowerCase().includes("conex")) {
+        nextPhase = "conexao_inicial" as OrchestrationPhase;
+      } else if (nextStage.id === "stage_2_descoberta" || nextStage.name?.toLowerCase().includes("descoberta")) {
+        nextPhase = "descoberta" as OrchestrationPhase;
+      } else if (nextStage.id === "stage_3_compatibilidade" || nextStage.name?.toLowerCase().includes("compat")) {
+        nextPhase = "compatibilidade" as OrchestrationPhase;
       } else {
-        if (nextStage.id === "stage_1_conexao" || nextStage.name?.toLowerCase().includes("conex")) {
-          nextResponsibleSub = "conexao_inicial";
-        } else if (nextStage.id === "stage_2_descoberta" || nextStage.name?.toLowerCase().includes("descoberta")) {
-          nextResponsibleSub = "descoberta";
-        } else if (nextStage.id === "stage_3_compatibilidade" || nextStage.name?.toLowerCase().includes("compat")) {
-          nextResponsibleSub = "compatibilidade";
-        } else {
-          nextResponsibleSub = "openai_agent";
-        }
+        nextPhase = nextStage.id as OrchestrationPhase;
       }
-
-      responsibleSubagentId = nextResponsibleSub;
-      nextPhase = nextResponsibleSub as OrchestrationPhase;
 
       if (currentCycle?.trace) {
         currentCycle.trace.push(`deterministic_stage_advanced: ${nextPhase}`);
@@ -4432,7 +3918,6 @@ export async function processDeterministicStageProgression(params: {
     } else {
       // Última etapa: permanece na etapa sem regredir
       nextStageId = currentStage.id;
-      responsibleSubagentId = currentResponsibleSubagent;
       nextPhase = currentPhase;
       if (currentCycle?.trace) {
         currentCycle.trace.push("deterministic_last_stage_retained");
@@ -4450,14 +3935,12 @@ export async function processDeterministicStageProgression(params: {
       }
     }
     nextStageId = currentStage.id;
-    responsibleSubagentId = currentResponsibleSubagent;
     nextPhase = currentPhase;
   }
 
   // 6. Traces de observabilidade padronizados
   if (currentCycle?.trace) {
     currentCycle.trace.push(`current_stage_id: ${currentStage.id}`);
-    currentCycle.trace.push(`responsible_subagent: ${responsibleSubagentId}`);
     currentCycle.trace.push(`current_objective_id: ${currentObjective?.id || "none"}`);
     currentCycle.trace.push(`stage_complete: ${stageComplete}`);
     currentCycle.trace.push(`next_stage_id: ${nextStageId}`);
@@ -4470,7 +3953,6 @@ export async function processDeterministicStageProgression(params: {
     nextPhase,
     currentStageId: currentStage.id,
     nextStageId,
-    responsibleSubagentId,
     stageAdvanced,
     advancementReason,
   };
@@ -4990,7 +4472,7 @@ export function buildDescobertaPrompt(input: SubagentInput): string {
       ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_pergunta_sobre_ele"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
       : input.recentHistory || "Início da conversa");
 
-  const missionText = input.mission || CANONICAL_SUBAGENTS.descoberta.mission;
+  const missionText = input.mission || "Conhecer organicamente quem o pretendente é, sua rotina, vida, trabalho, gostos e contexto pessoal, aproveitando naturalmente os assuntos que surgem.";
 
   return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
 SUA MISSÃO: ${missionText}
@@ -5091,7 +4573,7 @@ export function buildSubagentPrompt(
   const missionText =
     input.mission ||
     (targetId === "compatibilidade"
-      ? CANONICAL_SUBAGENTS.compatibilidade.mission
+      ? "Entender valores, momento de vida, visão de relacionamento, família, planos e compatibilidade com Larissa, somente quando houver abertura natural para assuntos mais pessoais."
       : `Atuar com foco especializado em ${displayName}, mantendo conversa natural e acolhedora.`);
 
   return `Você é a subagente especialista em ${displayName.toUpperCase()} da Larissa (23 anos, moça meiga de Minas Gerais).
@@ -6693,23 +6175,8 @@ export async function runBrainOrchestration(
       : undefined;
 
     // ------------------------------------------------------------------------
-    // CARREGAMENTO DO CATÁLOGO DE SUBAGENTES & CAMADA 1: ROTEADOR
-    // ------------------------------------------------------------------------
-    const availableSubagents = await loadSubagentsCatalog({ supabase });
-    // ------------------------------------------------------------------------
     // CONVERSATION BRAIN & ESCADA DE MEMÓRIA EM 6 NÍVEIS
     // ------------------------------------------------------------------------
-    const compactSubagents = getCompactSubagentCatalog(availableSubagents);
-    const authorizedSubagentIds = new Set([
-      ...(stageChecklistForRouter.currentObjective?.allowedSubagents?.length
-        ? stageChecklistForRouter.currentObjective.allowedSubagents
-        : [stageChecklistForRouter.responsibleSubagent]),
-      "openai_agent",
-      "conexao_inicial",
-      "descoberta",
-      "compatibilidade",
-    ].filter(Boolean));
-    const authorizedCompactSubagents = compactSubagents.filter((subagent: any) => authorizedSubagentIds.has(subagent.id));
 
     // NÍVEL 0: LiveState
     let currentLiveState: ConversationLiveState = orchState.liveState
@@ -6932,7 +6399,6 @@ export async function runBrainOrchestration(
           contactMemorySummary,
           landmarksSummary,
           liveStateContext: JSON.stringify(currentLiveState),
-          availableSubagents: authorizedCompactSubagents,
           candidateEvidence: candidateObjectiveEvidence,
           agentId,
           runtime,
@@ -7033,7 +6499,6 @@ export async function runBrainOrchestration(
         personaMemorySummary,
         stageObjectives: stageChecklistForRouter.goals as any,
         currentObjective: stageChecklistForRouter.currentObjective as any,
-        compactSubagents,
         toolResultsHistory,
       });
       const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: params.model });
@@ -7133,12 +6598,10 @@ export async function runBrainOrchestration(
           toolResultsHistory.push(`[TOOL: ${toolName}] Ferramenta não suportada pelo Brain.`);
         }
       } else if (rawBrainJson) {
-        // Brain concluiu e delegou a missão
-        const rawTarget = rawBrainJson.responsibleSubagent || rawBrainJson.targetSubagent || "none";
+        // Brain concluiu (modo legado)
         brainPlan = {
-          action: "delegate_mission",
+          action: "reply",
           currentStage: currentStageId,
-          responsibleSubagent: String(rawTarget).trim(),
           objectiveDecision: (rawBrainJson.objectiveDecision as any) || "pursue",
           satisfiedObjectiveId: rawBrainJson.satisfiedObjectiveId || undefined,
           evidenceMessageId: rawBrainJson.evidenceMessageId || undefined,
@@ -7150,12 +6613,11 @@ export async function runBrainOrchestration(
     }
     brainToolResultTokens = estimateTextTokens(toolResultsHistory.join("\n"));
 
-    // Fallback seguro caso o Brain esgote iterações sem emitir delegate_mission
+    // Fallback seguro caso o Brain esgote iterações sem emitir plano
     if (!brainPlan) {
       brainPlan = {
-        action: "delegate_mission",
+        action: "reply",
         currentStage: currentStageId,
-        responsibleSubagent: stageChecklistForRouter.responsibleSubagent || "none",
         objectiveDecision: "pursue",
         liveStatePatch: {
           lastUserEmotionalTone: "tranquilo",
@@ -7204,13 +6666,7 @@ export async function runBrainOrchestration(
       }
     }
 
-    // O Brain opera sob o agente unificado (ou subagente delegado)
-    const responsibleSubagent = brainPlan.responsibleSubagent || "openai_agent";
-    if (authorizedSubagentIds.size > 0 && !authorizedSubagentIds.has(responsibleSubagent)) {
-      currentCycle.trace.push(`brain_subagent_unauthorized_tolerated: ${responsibleSubagent}`);
-    }
     currentCycle.trace.push(`brain_objective_mode: ${brainPlan.objectiveDecision}`);
-    currentCycle.trace.push(`brain_responsible_subagent: ${responsibleSubagent}`);
 
     // ------------------------------------------------------------------------
     // FRESHNESS GATE 1: Revalidação imediatamente após o ConversationAgent / Brain
@@ -7229,7 +6685,7 @@ export async function runBrainOrchestration(
 
     let finalSubDecision: SubagentDecision | null = null;
 
-    if (brainPlan.action === "wait" || responsibleSubagent === "none") {
+    if (brainPlan.action === "wait") {
       finalSubDecision = {
         action: "wait",
         checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
@@ -7260,8 +6716,6 @@ export async function runBrainOrchestration(
         );
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
-        subagentId: responsibleSubagent,
-        subagentName: responsibleSubagent,
         objectiveDirective: normalizedDirective,
         targetObjective: stageChecklistForRouter.currentObjective
           ? { id: stageChecklistForRouter.currentObjective.id, label: stageChecklistForRouter.currentObjective.label }
@@ -7277,24 +6731,6 @@ export async function runBrainOrchestration(
         preferAudio: audioSelection.preferAudio,
         turnContract,
       };
-      // Subagente selecionado (definição do catálogo ou canônico)
-      const catalogSub = availableSubagents.find((s: any) => s.id === responsibleSubagent);
-      const subagentDef: SubagentDefinition = catalogSub || CANONICAL_SUBAGENTS[responsibleSubagent] || {
-        id: responsibleSubagent,
-        name: responsibleSubagent,
-        mission: responsibleSubagent === "descoberta"
-          ? CANONICAL_SUBAGENTS.descoberta.mission
-          : responsibleSubagent === "compatibilidade"
-          ? CANONICAL_SUBAGENTS.compatibilidade.mission
-          : CANONICAL_SUBAGENTS.conexao_inicial.mission,
-        missionSource: "canonical_fallback",
-      };
-      const subagentMissionSource = subagentDef.missionSource || (catalogSub ? "db" : "canonical_fallback");
-      const subagentMissionHash = stableDiagnosticHash(subagentDef.mission || "");
-      currentCycle.trace.push(`subagent_definition_id=${subagentDef.id}`);
-      currentCycle.trace.push(`subagent_definition_name=${subagentDef.name}`);
-      currentCycle.trace.push(`subagent_mission_source=${subagentMissionSource}`);
-      currentCycle.trace.push(`subagent_mission_hash=${subagentMissionHash}`);
       const candidateAudiosSnippet = missionPkg.candidateAudios?.map((audio) =>
         `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
       ).join("\n") || "";
@@ -7382,11 +6818,11 @@ export async function runBrainOrchestration(
         currentCycle.executorModel = "same_agent (gpt-5.6-luna)";
         currentCycle.trace.push("executor_model: same_agent (gpt-5.6-luna)");
       } else {
-        // Constrói prompt do subagente executor enxuto
+        // Constrói prompt do executor enxuto (modo legado)
         const executorPrompt = buildSubagentExecutorPrompt({
-          subagentId: responsibleSubagent,
-          subagentName: subagentDef.name,
-          mission: subagentDef.mission || "Conduzir a conversa com afeto e organicidade",
+          subagentId: "openai_agent",
+          subagentName: "Larissa",
+          mission: "Conduzir a conversa com afeto e organicidade",
           missionPackage: missionPkg,
           recentMessages: finalRecentMessages,
           emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
@@ -7397,16 +6833,16 @@ export async function runBrainOrchestration(
           status: "processing",
           activity: activity(
             "brain",
-            `Subagente: ${subagentDef.name || responsibleSubagent}`,
-            `Formulando resposta com ${subagentDef.name || responsibleSubagent}...`,
+            `Formulando resposta...`,
+            `Formulando resposta...`,
             {
-              brainThought: `Executando com ${subagentDef.name || responsibleSubagent}...`,
+              brainThought: `Executando turno...`,
               currentPhase,
             }
           ),
         });
 
-        // Resolução explícita do modelo do subagente executor (sem fallback silencioso para gpt-4o-mini)
+        // Resolução explícita do modelo do executor (sem fallback silencioso para gpt-4o-mini)
         const executorModel =
           (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_EXECUTOR_MODEL") : process.env.OPENAI_EXECUTOR_MODEL) ||
           stageRules.openaiExecutorModel ||
@@ -7434,7 +6870,7 @@ export async function runBrainOrchestration(
           currentCycle.trace.push("subagent_tool_request_rejected");
           finalSubDecision = {
             action: "wait",
-            checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
             summary: "Saída inválida do executor",
             suggestedResponse: "",
             nextPhase: currentPhase,
@@ -7443,7 +6879,7 @@ export async function runBrainOrchestration(
           };
         } else {
           finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
-          currentCycle.trace.push(`subagent_executed: ${responsibleSubagent}`);
+          currentCycle.trace.push("agent_executed: openai_agent");
         }
       }
 
@@ -7863,7 +7299,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       responses: finalSubDecision.responses,
       requiredTools: finalSubDecision.requiredTools || ["send_text"],
       reasoning: finalSubDecision.reasoning,
-      routedSubagent: (responsibleSubagent || "none") as SubagentTarget,
       audioId: finalSubDecision.audioId,
       audioUrl: finalSubDecision.audioUrl,
       objectiveCompletion: finalSubDecision.objectiveCompletion || brainObjectiveCompletion || null,
@@ -8076,7 +7511,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 mode: "experimental",
                 currentPhase: orchState.currentPhase || currentPhase,
                 currentStageId: orchState.currentStageId || currentStageId,
-                responsibleSubagentId: orchState.responsibleSubagentId || responsibleSubagent,
                 checkpoint: decision.checkpoint,
                 lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
                 lastProcessedAt: new Date().toISOString(),
@@ -8556,7 +7990,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           mode: "experimental",
           currentPhase: finalPhaseForExp,
           currentStageId: stageProgression.nextStageId,
-          responsibleSubagentId: stageProgression.responsibleSubagentId,
           checkpoint: decision.checkpoint,
           lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
           lastProcessedAt: new Date().toISOString(),
@@ -8827,7 +8260,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       }
 
       console.log(
-        `[Orchestrator] [EXPERIMENTAL] Execução concluída para ${conversationId} (subagente=${decision.routedSubagent}, ação=${decision.action}, fase=${validatedNextPhase}).`
+        `[Orchestrator] Execução concluída para ${conversationId} (ação=${decision.action}, fase=${validatedNextPhase}).`
       );
 
       // Verificação pós-ciclo: se chegaram mensagens novas do pretendente durante este ciclo, agenda follow-up imediato

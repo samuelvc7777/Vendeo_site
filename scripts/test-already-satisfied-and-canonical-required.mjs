@@ -247,7 +247,7 @@ async function runTests() {
   assert("Ambos objetivos ativos estão concluídos", fullProgression.updatedCompletedGoals.includes("goal_city") && fullProgression.updatedCompletedGoals.includes("goal_job"));
   assert("Etapa avançou deterministicamente", fullProgression.stageAdvanced === true);
   assert("Avançou para stage_2_descoberta", fullProgression.nextStageId === "stage_2_descoberta");
-  assert("ResponsibleSubagent resolvido sem erro para a próxima etapa", Boolean(fullProgression.responsibleSubagentId));
+  assert("ResponsibleSubagentId expurgado do retorno da progressão determinística", fullProgression.responsibleSubagentId === undefined);
 
   // ---------------------------------------------------------------------------
   // RESULTADO FINAL

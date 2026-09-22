@@ -1379,7 +1379,6 @@ serve(async (req: Request) => {
         const mem = orch.memory || {};
         const entities = mem.entities || {};
         const currentStageId = String(orch.currentStageId || orch.currentPhase || "conexao_inicial").trim();
-        const responsibleSubagent = String(orch.responsibleSubagent || (currentStageId === "descoberta" ? "descoberta" : currentStageId === "compatibilidade" ? "compatibilidade" : "conexao_inicial")).trim();
         const currentObjective = orch.currentObjective || null;
         const objectiveProgress = orch.objectiveProgress || {};
         const liveState = orch.liveState || null;
@@ -1445,7 +1444,6 @@ serve(async (req: Request) => {
           updatedAt: conv.updated_at || new Date(0).toISOString(),
           currentPhase: orch.currentPhase || "conexao_inicial",
           currentStageId,
-          responsibleSubagent,
           currentObjective,
           objectiveProgress,
           liveState,

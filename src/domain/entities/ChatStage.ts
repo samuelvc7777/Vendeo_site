@@ -19,10 +19,6 @@ export interface StageObjective {
   memoryField?: string;  // Ex: "age", "city", "occupation"
   /** Política de conclusão: "conversation_evidence" (padrão conversacional) ou "fact_only" (auto-completa se já souber o fato) */
   completionPolicy?: "conversation_evidence" | "fact_only";
-  /** @deprecated Mantido opcional temporariamente para migração defensiva sem quebrar consumers legados */
-  allowedSubagents?: string[];
-  /** @deprecated Mantido opcional temporariamente para migração defensiva sem quebrar consumers legados */
-  primarySubagent?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -353,8 +349,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 7,
         memoryEntity: "self",
         memoryField: "faith_values",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
     ],
   },

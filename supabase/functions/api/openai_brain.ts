@@ -151,24 +151,20 @@ export interface PlanValidationResult {
 }
 
 export function validateConversationBrainPlan(
-  plan: any,
-  availableSubagents?: Array<{ id: string; name?: string; mission?: string }>
+  plan: any
 ): PlanValidationResult {
   if (!plan || typeof plan !== "object") {
     return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
   }
-  const validActions = ["reply", "delegate_mission", "wait"];
+  const validActions = ["reply", "wait"];
   if (!validActions.includes(plan.action)) {
     return {
       valid: false,
-      error: `Ação do plano deve ser 'reply', 'delegate_mission' ou 'wait', recebido: '${plan.action}'`,
+      error: `Ação do plano deve ser 'reply' ou 'wait', recebido: '${plan.action}'`,
     };
   }
   if (plan.action === "wait") {
     return { valid: true };
-  }
-  if (!plan.responsibleSubagent || typeof plan.responsibleSubagent !== "string") {
-    plan.responsibleSubagent = "openai_agent";
   }
 
   // Validação estrita de evidenceMessageId e satisfiedObjectiveId para already_satisfied
@@ -211,7 +207,6 @@ export function validateConversationBrainPlan(
   // Síntese defensiva retrocompatível: se missionPackage estiver ausente, sintetiza a partir da raiz
   if (!plan.missionPackage || typeof plan.missionPackage !== "object") {
     plan.missionPackage = {
-      subagentId: plan.responsibleSubagent,
       objectiveDirective: plan.objectiveDecision || "none",
       draftResponse: Array.isArray(plan.responses) ? plan.responses.join("\n\n") : "",
       relevantPersonaFacts: plan.relevantPersonaFacts || [],
@@ -413,10 +408,8 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
 }
 
 export function buildFallbackBrainPlan(
-  rawResponseText: string,
-  _availableSubagents?: Array<{ id: string }>
+  rawResponseText: string
 ): any {
-  const targetSubagent = "openai_agent";
   const defaultText = (rawResponseText || "oi, tudo bem?").trim();
   const defaultContract = {
     directQuestions: [],
@@ -428,7 +421,6 @@ export function buildFallbackBrainPlan(
   };
   return {
     action: "reply",
-    responsibleSubagent: targetSubagent,
     objectiveDecision: "none",
     satisfiedObjectiveId: null,
     evidenceMessageId: null,
@@ -437,7 +429,6 @@ export function buildFallbackBrainPlan(
     responses: [defaultText || "oi, tudo bem?"],
     turnContract: defaultContract,
     missionPackage: {
-      subagentId: targetSubagent,
       objectiveDirective: "none",
       draftResponse: defaultText,
       turnContract: defaultContract,
@@ -460,7 +451,6 @@ export interface RunOpenAiBrainParams {
   contactMemorySummary?: string;
   landmarksSummary?: string;
   liveStateContext?: string;
-  availableSubagents?: Array<{ id: string; name: string; mission: string }>;
   agentId?: string;
   apiKey?: string;
   signal?: AbortSignal;
@@ -512,7 +502,6 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     contactMemorySummary,
     landmarksSummary,
     liveStateContext,
-    availableSubagents,
     recentStyleStateSnippet,
     memoryScopeId,
     recentQuestionIntentsSnippet,
@@ -571,13 +560,6 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   }
   sections.push(`\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}`);
 
-  if (availableSubagents && availableSubagents.length > 0) {
-    const subagentCards = availableSubagents.map(
-      (s) => `- ID: "${s.id}" | Nome: "${s.name}" | Missão: ${s.mission}`
-    );
-    sections.push(`\n## SUBAGENTES DISPONÍVEIS\n${subagentCards.join("\n")}`);
-  }
-
   if (recentStyleStateSnippet && recentStyleStateSnippet.trim()) {
     sections.push(`\n${recentStyleStateSnippet.trim()}`);
   }
@@ -595,7 +577,6 @@ CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
   "action": "reply",
-  "responsibleSubagent": "openai_agent",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,
@@ -774,7 +755,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry.totalTokens = mockResult.tokens || 100;
       telemetry.sessionId = mockResult.sessionId || `sess_runtime_${Date.now()}`;
 
-      const basicValidation = validateConversationBrainPlan(mockResult.plan, params.availableSubagents);
+      const basicValidation = validateConversationBrainPlan(mockResult.plan);
       const invariantValidation = validatePersonaMemoryExecutionInvariant(mockResult.plan, telemetry.actualMemoryToolCalled);
       const responseGenValidation = validateResponseGenerationInvariant(mockResult.plan);
       const validation = !basicValidation.valid
@@ -803,7 +784,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         if (!mockResult.plan || !validation.valid) {
           telemetry.finalPlanParsed = false;
           console.warn(`[OpenAI Agent Mock] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
-          mockResult.plan = buildFallbackBrainPlan(typeof mockResult.plan === "string" ? mockResult.plan : "", params.availableSubagents);
+          mockResult.plan = buildFallbackBrainPlan(typeof mockResult.plan === "string" ? mockResult.plan : "");
         } else {
           telemetry.finalPlanParsed = true;
         }
@@ -1010,7 +991,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     let parsedPlan = extractJsonFromText(rawResponseText);
-    const basicValidation = validateConversationBrainPlan(parsedPlan, params.availableSubagents);
+    const basicValidation = validateConversationBrainPlan(parsedPlan);
     const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
     const responseGenValidation = validateResponseGenerationInvariant(parsedPlan);
     const questionIntentsValidation = validateQuestionIntentsInvariant(parsedPlan);
@@ -1040,15 +1021,15 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         };
       }
       telemetry.finalPlanParsed = true;
-      console.log(`[OpenAI Agent] plan_validated: responsibleSubagent=${parsedPlan.responsibleSubagent}`);
+      console.log(`[OpenAI Agent] plan_validated`);
     } else {
       if (!parsedPlan || !validation.valid) {
         telemetry.finalPlanParsed = false;
         console.warn(`[OpenAI Agent] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
-        parsedPlan = buildFallbackBrainPlan(rawResponseText, params.availableSubagents);
+        parsedPlan = buildFallbackBrainPlan(rawResponseText);
       } else {
         telemetry.finalPlanParsed = true;
-        console.log(`[OpenAI Agent] plan_validated: responsibleSubagent=${parsedPlan.responsibleSubagent}`);
+        console.log(`[OpenAI Agent] plan_validated`);
       }
     }
     telemetry.durationMs = Date.now() - startTime;

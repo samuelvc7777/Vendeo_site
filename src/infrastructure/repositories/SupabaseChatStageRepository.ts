@@ -151,8 +151,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
         // No modelo canônico determinístico, todo objetivo ativo é checkpoint obrigatório
         copy.required = copy.enabled !== false;
-        delete copy.allowedSubagents;
-        delete copy.primarySubagent;
 
         if (copy.id === "goal_age") {
           copy.kind = "fact";
