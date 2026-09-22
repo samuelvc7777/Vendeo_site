@@ -164,6 +164,80 @@ async function testTargetedCasoC() {
   return { result, sessionDetails };
 }
 
+async function testTargetedCasoOnDemand() {
+  console.log('\n===============================================================');
+  console.log(' TESTANDO CASO SOB DEMANDA: SEM PEDÁGIO DE CONVERSATION MEMORY');
+  console.log('===============================================================');
+  const convId = `test_case_ondemand_${Date.now()}`;
+  const scopeId = await createTestScope(convId);
+
+  // Informação de cidade já está visível nas recentMessages imediatas
+  const result = await runOpenAiBrainTurn({
+    supabase,
+    conversationId: convId,
+    memoryScopeId: scopeId,
+    currentStageId: 'descoberta',
+    currentObjectiveId: 'goal_city',
+    currentObjectiveLabel: 'Cidade',
+    currentObjectiveRequired: false,
+    inboundMessages: ['e vc mora onde?'],
+    currentInboundMessages: [
+      { id: 'msg_city_query_1', text: 'e vc mora onde?' },
+    ],
+    recentMessages: [
+      { sender: 'larissa', text: 'vc é de onde?' },
+      { sender: 'user', text: 'Barbacena' },
+    ],
+    availableSubagents: subagents,
+    agentId: AGENT_ID,
+    apiKey: OPENAI_KEY,
+    strictOpenAiPilot: true,
+  });
+
+  const sessionDetails = result.telemetry?.sessionId
+    ? await fetchSessionToolDetails(result.telemetry.sessionId)
+    : { toolCalls: [] };
+
+  await supabase.from('agent_memory_scopes').delete().eq('conversation_id', convId);
+
+  return { result, sessionDetails };
+}
+
+async function testTargetedCasoGreeting() {
+  console.log('\n===============================================================');
+  console.log(' TESTANDO CASO SAUDAÇÃO: ZERO TOOLS EM SAUDAÇÃO SIMPLES');
+  console.log('===============================================================');
+  const convId = `test_case_greeting_${Date.now()}`;
+  const scopeId = await createTestScope(convId);
+
+  const result = await runOpenAiBrainTurn({
+    supabase,
+    conversationId: convId,
+    memoryScopeId: scopeId,
+    currentStageId: 'conexao_inicial',
+    currentObjectiveId: 'goal_greeting',
+    currentObjectiveLabel: 'Saudação e Conexão',
+    currentObjectiveRequired: false,
+    inboundMessages: ['Oii, tudo bem?'],
+    currentInboundMessages: [
+      { id: 'msg_greet_1', text: 'Oii, tudo bem?' },
+    ],
+    recentMessages: [],
+    availableSubagents: subagents,
+    agentId: AGENT_ID,
+    apiKey: OPENAI_KEY,
+    strictOpenAiPilot: true,
+  });
+
+  const sessionDetails = result.telemetry?.sessionId
+    ? await fetchSessionToolDetails(result.telemetry.sessionId)
+    : { toolCalls: [] };
+
+  await supabase.from('agent_memory_scopes').delete().eq('conversation_id', convId);
+
+  return { result, sessionDetails };
+}
+
 async function run() {
   const b = await testTargetedCasoB();
   console.log('\n================== RESULTADOS CASO B ==================');
@@ -187,19 +261,37 @@ async function run() {
   console.log('Output Tokens:', c.result.telemetry?.outputTokens);
   console.log('Total Tokens:', c.result.telemetry?.totalTokens);
 
+  const onDemand = await testTargetedCasoOnDemand();
+  console.log('\n================== RESULTADOS SOB DEMANDA ==================');
+  console.log('Status:', onDemand.result.success ? 'SUCCESS' : 'FAILED');
+  console.log('Tool calls:', JSON.stringify(onDemand.sessionDetails.toolCalls, null, 2));
+  console.log('Responses:', onDemand.result.plan?.responses);
+
+  const greeting = await testTargetedCasoGreeting();
+  console.log('\n================== RESULTADOS SAUDAÇÃO ==================');
+  console.log('Status:', greeting.result.success ? 'SUCCESS' : 'FAILED');
+  console.log('Tool calls:', JSON.stringify(greeting.sessionDetails.toolCalls, null, 2));
+  console.log('Responses:', greeting.result.plan?.responses);
+
   const bHasConvSearch = b.sessionDetails.toolCalls.some(t => t.name.includes('conversation_memory_search'));
   const bResponsesStr = (b.result.plan?.responses || []).join(' ').toLowerCase();
   const bDidNotAskJob = !bResponsesStr.includes('trabalha com oq') && !bResponsesStr.includes('qual área') && !bResponsesStr.includes('trabalha em qual');
   const antiRepeatPass = bHasConvSearch && bDidNotAskJob;
 
   const cHasConvSearch = c.sessionDetails.toolCalls.some(t => t.name.includes('conversation_memory_search'));
-  const cResponsesStr = (c.result.plan?.responses || []).join(' ').toLowerCase();
-  const cRecognizedPriorDisclosure = cResponsesStr.includes('enfermagem') && (cResponsesStr.includes('esqueceu') || cResponsesStr.includes('lembra') || cResponsesStr.includes('já') || cResponsesStr.includes('falei') || cResponsesStr.includes('tinha'));
   const selfDisclosurePass = cHasConvSearch;
+
+  const onDemandNoConvSearch = !onDemand.sessionDetails.toolCalls.some(t => t.name.includes('conversation_memory_search'));
+  const memoryOnDemandPass = onDemandNoConvSearch;
+
+  const greetingNoTools = greeting.sessionDetails.toolCalls.length === 0;
+  const greetingPass = greetingNoTools;
 
   console.log('\n================== STATUS FINAL ==================');
   console.log(`ANTI_REPEAT_LONG_TERM_MEMORY = ${antiRepeatPass ? 'PASS' : 'FAIL'} (hasConvSearch=${bHasConvSearch}, didNotAskJob=${bDidNotAskJob})`);
   console.log(`SELF_DISCLOSURE_LONG_TERM_MEMORY = ${selfDisclosurePass ? 'PASS' : 'FAIL'} (hasConvSearch=${cHasConvSearch})`);
+  console.log(`MEMORY_SEARCH_ON_DEMAND = ${memoryOnDemandPass ? 'PASS' : 'FAIL'} (noMechanicConvSearch=${onDemandNoConvSearch})`);
+  console.log(`GREETING_ZERO_TOOLS = ${greetingPass ? 'PASS' : 'FAIL'} (zeroTools=${greetingNoTools})`);
 }
 
 run().catch(console.error);
