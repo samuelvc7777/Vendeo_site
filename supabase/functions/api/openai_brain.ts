@@ -622,7 +622,7 @@ Para decidir a resposta e a condução, considere prioritariamente nesta ordem:
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
 DIRETRIZ DE EVIDÊNCIA:
-Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS. O evidenceMessageId DEVE ser exatamente o ID de uma das mensagens de [MENSAGEM id="..."] deste turno. Para pursue, defer ou none, evidenceMessageId deve ser null.`
+Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS. O evidenceMessageId DEVE ser exatamente o ID de uma das mensagens de [MENSAGEM id="..."] deste turno. Para pursue, defer ou none, evidenceMessageId deve ser null.
 
 CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
