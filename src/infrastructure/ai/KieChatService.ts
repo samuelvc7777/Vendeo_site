@@ -39,8 +39,8 @@ export class KieChatService {
       console.warn("[KieChatService] Erro ao buscar kie_api_key no Supabase:", err);
     }
 
-    // Fallback padrão configurado
-    return "467f4240bdb260cfed28f392c08d6771";
+    // Fallback padrão configurado via variável de ambiente
+    return process.env.KIE_API_KEY || "";
   }
 
   /**

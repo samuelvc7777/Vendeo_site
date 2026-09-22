@@ -21,12 +21,10 @@ import {
   CheckCircle2,
   CircleDot,
   Power,
-  Bot,
 } from "lucide-react";
 import { ChatStage, ConversationGoal } from "@/domain/entities/ChatStage";
 import { VaultFolderWithStats } from "@/domain/entities/Vault";
 import { useVault } from "@/presentation/hooks/useVault";
-import { useSubagents } from "@/presentation/hooks/useSubagents";
 import { toast } from "sonner";
 
 interface ChatStagesManagerProps {
@@ -60,8 +58,6 @@ interface ChatStagesManagerProps {
       kind?: "fact" | "conversation_state";
       required?: boolean;
       enabled?: boolean;
-      allowedSubagents?: string[];
-      primarySubagent?: string;
     }
   ) => Promise<any>;
   onUpdateGoal?: (
@@ -113,7 +109,6 @@ export function ChatStagesManager({
   const [expandedStageGoals, setExpandedStageGoals] = useState<Record<string, boolean>>({});
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
   const [activeGoalStageId, setActiveGoalStageId] = useState<string | null>(null);
-  const { subagents, updateSubagent } = useSubagents();
   const [editingGoal, setEditingGoal] = useState<ConversationGoal | null>(null);
 
   const [goalLabel, setGoalLabel] = useState("");
@@ -121,48 +116,12 @@ export function ChatStagesManager({
   const [goalMemoryEntity, setGoalMemoryEntity] = useState("self");
   const [goalMemoryField, setGoalMemoryField] = useState("");
   const [goalDescription, setGoalDescription] = useState("");
-  const [goalRequired, setGoalRequired] = useState(true);
   const [goalEnabled, setGoalEnabled] = useState(true);
-  const [goalAllowedSubagents, setGoalAllowedSubagents] = useState<string[]>([]);
-  const [goalPrimarySubagent, setGoalPrimarySubagent] = useState<string>("");
   const [isGoalSubmitting, setIsGoalSubmitting] = useState(false);
 
   useEffect(() => {
     refreshFolders();
   }, [refreshFolders]);
-
-  const getResponsibleSubagentId = (stage: ChatStage) => {
-    const found = subagents.find(
-      (s) => s.enabled !== false && Array.isArray(s.stageIds) && s.stageIds.includes(stage.id)
-    );
-    if (found) return found.id;
-    if (stage.id === "stage_1_conexao" || stage.name.toLowerCase().includes("conex")) return "conexao_inicial";
-    if (stage.id === "stage_3_compatibilidade" || stage.name.toLowerCase().includes("compat")) return "compatibilidade";
-    return "descoberta";
-  };
-
-  const handleChangeResponsibleSubagent = async (stageId: string, newSubagentId: string) => {
-    try {
-      // Remove a etapa de qualquer outro subagente que a possua
-      for (const sub of subagents) {
-        if (sub.id !== newSubagentId && sub.stageIds?.includes(stageId)) {
-          const newStageIds = (sub.stageIds || []).filter((id) => id !== stageId);
-          await updateSubagent(sub.id, { stageIds: newStageIds });
-        }
-      }
-      // Atribui ao novo subagente selecionado
-      const targetSub = subagents.find((s) => s.id === newSubagentId);
-      if (targetSub) {
-        const currentStageIds = targetSub.stageIds || [];
-        if (!currentStageIds.includes(stageId)) {
-          await updateSubagent(newSubagentId, { stageIds: [...currentStageIds, stageId] });
-        }
-      }
-      toast.success("Subagente responsável atualizado para a etapa!");
-    } catch (err: any) {
-      toast.error(`Erro ao vincular subagente à etapa: ${err.message}`);
-    }
-  };
 
   const toggleStageGoals = (stageId: string) => {
     setExpandedStageGoals((prev) => ({
@@ -179,12 +138,7 @@ export function ChatStagesManager({
     setGoalMemoryEntity("self");
     setGoalMemoryField("");
     setGoalDescription("");
-    setGoalRequired(true);
     setGoalEnabled(true);
-    // Por padrão, seleciona os subagentes ativos
-    const activeIds = subagents.filter((s) => s.enabled !== false).map((s) => s.id);
-    setGoalAllowedSubagents(activeIds);
-    setGoalPrimarySubagent(activeIds[0] || "");
     setIsGoalModalOpen(true);
   };
 
@@ -196,10 +150,7 @@ export function ChatStagesManager({
     setGoalMemoryEntity(goal.memoryEntity || (goal.kind === "conversation_state" ? "conversation" : "self"));
     setGoalMemoryField(goal.memoryField || "");
     setGoalDescription(goal.description || "");
-    setGoalRequired(goal.required ?? false);
     setGoalEnabled(goal.enabled ?? true);
-    setGoalAllowedSubagents(goal.allowedSubagents || []);
-    setGoalPrimarySubagent(goal.primarySubagent || "");
     setIsGoalModalOpen(true);
   };
 
@@ -207,8 +158,6 @@ export function ChatStagesManager({
     setIsGoalModalOpen(false);
     setActiveGoalStageId(null);
     setEditingGoal(null);
-    setGoalAllowedSubagents([]);
-    setGoalPrimarySubagent("");
   };
 
   const handleGoalSubmit = async (e: React.FormEvent) => {
@@ -236,10 +185,8 @@ export function ChatStagesManager({
             memoryEntity: finalEntity,
             memoryField: finalField,
             description: goalDescription.trim(),
-            required: goalRequired,
+            required: true,
             enabled: goalEnabled,
-            allowedSubagents: goalAllowedSubagents,
-            primarySubagent: goalPrimarySubagent || undefined,
           });
         } else {
           // Fallback via onUpdateStage
@@ -255,10 +202,8 @@ export function ChatStagesManager({
                     memoryEntity: finalEntity,
                     memoryField: finalField,
                     description: goalDescription.trim(),
-                    required: goalRequired,
+                    required: true,
                     enabled: goalEnabled,
-                    allowedSubagents: goalAllowedSubagents,
-                    primarySubagent: goalPrimarySubagent || undefined,
                   }
                 : g
             );
@@ -273,10 +218,8 @@ export function ChatStagesManager({
             memoryEntity: finalEntity,
             memoryField: finalField,
             description: goalDescription.trim(),
-            required: goalRequired,
+            required: true,
             enabled: goalEnabled,
-            allowedSubagents: goalAllowedSubagents,
-            primarySubagent: goalPrimarySubagent || undefined,
           });
         } else {
           // Fallback via onUpdateStage
@@ -292,11 +235,9 @@ export function ChatStagesManager({
               memoryEntity: finalEntity,
               memoryField: finalField,
               description: goalDescription.trim(),
-              required: goalRequired,
+              required: true,
               order: currentGoals.length,
               enabled: goalEnabled,
-              allowedSubagents: goalAllowedSubagents,
-              primarySubagent: goalPrimarySubagent || undefined,
             };
             await onUpdateStage(activeGoalStageId, { goals: [...currentGoals, newG] });
           }
@@ -438,7 +379,6 @@ export function ChatStagesManager({
           memoryEntity: sug.memoryEntity,
           memoryField: sug.memoryField,
           description: sug.description,
-          required: sug.required,
           enabled: true,
         });
       }
@@ -642,7 +582,7 @@ export function ChatStagesManager({
                     </div>
                   </div>
 
-                  {/* Linha 2: Metadados do Cofre e Subagente Responsável */}
+                  {/* Linha 2: Metadados do Cofre */}
                   <div className="flex items-center gap-3 text-xs text-zinc-400 pl-0 sm:pl-7 flex-wrap">
                     <span className="flex items-center gap-1 truncate text-zinc-300">
                       <Folder className="w-3 h-3 text-sky-400 shrink-0" />
@@ -650,23 +590,6 @@ export function ChatStagesManager({
                     </span>
                     <span>•</span>
                     <span className="text-zinc-400">{itemCount} itens no cofre</span>
-                    <span>•</span>
-                    <div className="flex items-center gap-1.5">
-                      <Bot className="w-3 h-3 text-emerald-400 shrink-0" />
-                      <span className="text-zinc-400">Subagente:</span>
-                      <select
-                        value={getResponsibleSubagentId(stage)}
-                        onChange={(e) => handleChangeResponsibleSubagent(stage.id, e.target.value)}
-                        className="bg-zinc-900 border border-zinc-700/70 rounded px-1.5 py-0.5 text-xs text-emerald-300 font-medium focus:outline-none focus:border-emerald-500 cursor-pointer"
-                        title="Subagente especializado responsável pela condução desta etapa"
-                      >
-                        {subagents.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
                   </div>
 
                   {/* Linha 3: Barra de Acesso aos Checkpoints da Etapa */}
@@ -791,31 +714,6 @@ export function ChatStagesManager({
                                     <div className="p-2 rounded-lg bg-zinc-950/70 border border-zinc-800/80 text-[11px] text-zinc-300 break-words leading-relaxed">
                                       <span className="font-semibold text-sky-400">Missão do Checkpoint: </span>
                                       {goal.description}
-                                    </div>
-                                  )}
-                                  {goal.allowedSubagents && goal.allowedSubagents.length > 0 && (
-                                    <div className="flex items-center gap-1 mt-1 flex-wrap">
-                                      <span className="text-[10px] text-zinc-500 flex items-center gap-0.5">
-                                        <Bot className="w-2.5 h-2.5" /> Subagentes:
-                                      </span>
-                                      {goal.allowedSubagents.map((subId) => {
-                                        const subDef = subagents.find((s) => s.id === subId);
-                                        const isPrimary = goal.primarySubagent === subId;
-                                        return (
-                                          <span
-                                            key={subId}
-                                            className={`px-1.5 py-0.5 rounded text-[10px] border ${
-                                              isPrimary
-                                                ? "bg-sky-500/15 text-sky-300 border-sky-500/30 font-medium"
-                                                : "bg-zinc-800/90 text-zinc-400 border-zinc-700/60"
-                                            }`}
-                                            title={subDef ? subDef.mission : subId}
-                                          >
-                                            {subDef ? subDef.name : subId}
-                                            {isPrimary && " ★"}
-                                          </span>
-                                        );
-                                      })}
                                     </div>
                                   )}
                                 </div>
@@ -1173,127 +1071,6 @@ export function ChatStagesManager({
                 />
               </div>
 
-              {/* Vínculo com Subagentes (allowedSubagents & primarySubagent) */}
-              <div className="space-y-2 pt-1 border-t border-zinc-800">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
-                    <Bot className="w-3.5 h-3.5 text-sky-400" />
-                    Subagentes Autorizados *
-                  </label>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setGoalAllowedSubagents(
-                          subagents.filter((s) => s.enabled !== false).map((s) => s.id)
-                        )
-                      }
-                      className="text-[10px] text-sky-400 hover:text-sky-300 font-medium px-2 py-1 rounded bg-sky-500/10 cursor-pointer active:scale-95"
-                    >
-                      Todos
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setGoalAllowedSubagents([]);
-                        setGoalPrimarySubagent("");
-                      }}
-                      className="text-[10px] text-zinc-400 hover:text-zinc-300 font-medium px-2 py-1 rounded bg-zinc-800 cursor-pointer active:scale-95"
-                    >
-                      Limpar
-                    </button>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  Selecione quais subagentes podem conduzir ou avançar este objetivo quando assumirem o turno.
-                </p>
-
-                {subagents.length === 0 ? (
-                  <div className="p-2.5 rounded-lg border border-zinc-800 bg-zinc-900/50 text-xs text-zinc-500">
-                    Carregando catálogo de subagentes...
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pr-1">
-                    {subagents
-                      .filter((s) => s.enabled !== false)
-                      .map((sub) => {
-                        const isSelected = goalAllowedSubagents.includes(sub.id);
-                        return (
-                          <button
-                            key={sub.id}
-                            type="button"
-                            onClick={() => {
-                              if (isSelected) {
-                                const next = goalAllowedSubagents.filter((id) => id !== sub.id);
-                                setGoalAllowedSubagents(next);
-                                if (goalPrimarySubagent === sub.id) {
-                                  setGoalPrimarySubagent(next[0] || "");
-                                }
-                              } else {
-                                const next = [...goalAllowedSubagents, sub.id];
-                                setGoalAllowedSubagents(next);
-                                if (!goalPrimarySubagent) {
-                                  setGoalPrimarySubagent(sub.id);
-                                }
-                              }
-                            }}
-                            className={`flex items-center justify-between p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
-                              isSelected
-                                ? "bg-sky-500/10 border-sky-500/40 text-white"
-                                : "bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:bg-zinc-800/60"
-                            }`}
-                          >
-                            <div className="min-w-0 pr-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs font-semibold truncate">{sub.name}</span>
-                                <span className="text-[9px] px-1 py-0.2 rounded bg-zinc-800 text-zinc-400">
-                                  {sub.isSystem ? "Sistema" : "Custom"}
-                                </span>
-                              </div>
-                              <p className="text-[10px] text-zinc-500 truncate mt-0.5">
-                                {sub.id}
-                              </p>
-                            </div>
-                            <div
-                              className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
-                                isSelected
-                                  ? "bg-sky-500 border-sky-500 text-white"
-                                  : "border-zinc-700 bg-zinc-900"
-                              }`}
-                            >
-                              {isSelected && <Check className="w-3 h-3" />}
-                            </div>
-                          </button>
-                        );
-                      })}
-                  </div>
-                )}
-
-                {goalAllowedSubagents.length > 0 && (
-                  <div className="space-y-1 pt-1">
-                    <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1">
-                      Agente Principal (Opcional)
-                    </label>
-                    <select
-                      value={goalPrimarySubagent}
-                      onChange={(e) => setGoalPrimarySubagent(e.target.value)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500 cursor-pointer"
-                    >
-                      <option value="">Nenhum (todos os autorizados têm o mesmo peso)</option>
-                      {goalAllowedSubagents.map((subId) => {
-                        const sub = subagents.find((s) => s.id === subId);
-                        return (
-                          <option key={subId} value={subId}>
-                            {sub ? sub.name : subId} ({subId})
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                )}
-              </div>
-
               {/* Status do Checkpoint: Todo ativo é obrigatório no fluxo sequencial */}
               <div className="pt-1 flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800">
                 <div className="space-y-0.5">
@@ -1309,7 +1086,6 @@ export function ChatStagesManager({
                     checked={goalEnabled}
                     onChange={(e) => {
                       setGoalEnabled(e.target.checked);
-                      setGoalRequired(e.target.checked);
                     }}
                     className="w-4 h-4 rounded text-emerald-500 bg-zinc-900 border-zinc-700 focus:ring-0 focus:ring-offset-0"
                   />

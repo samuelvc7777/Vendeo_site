@@ -1,5 +1,3 @@
-export type OrchestrationMode = "legacy" | "shadow" | "experimental";
-
 export type OrchestrationPhase = "conexao_inicial" | "descoberta";
 
 export type OrchestrationAction = "reply" | "wait" | "advance_phase" | "escalate";
@@ -9,7 +7,6 @@ export type ProcessingStatus =
   | "analyzing"
   | "decided"
   | "sent"
-  | "shadow_logged"
   | "failed";
 
 export interface OrchestratorDecision {
@@ -25,7 +22,6 @@ export interface OrchestratorDecision {
 
 export interface ConversationOrchestrationState {
   version: 1;
-  mode: OrchestrationMode;
   currentPhase: OrchestrationPhase;
   checkpoint: string;
   lastProcessedMessageId: string | null;
@@ -41,7 +37,6 @@ export interface ConversationOrchestrationState {
 
 export const DEFAULT_ORCHESTRATION_STATE: ConversationOrchestrationState = {
   version: 1,
-  mode: "legacy",
   currentPhase: "conexao_inicial",
   checkpoint: "inicio",
   lastProcessedMessageId: null,

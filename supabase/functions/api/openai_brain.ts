@@ -168,16 +168,7 @@ export function validateConversationBrainPlan(
     return { valid: true };
   }
   if (!plan.responsibleSubagent || typeof plan.responsibleSubagent !== "string") {
-    return { valid: false, error: "responsibleSubagent ausente ou não é string" };
-  }
-  if (availableSubagents && availableSubagents.length > 0) {
-    const validIds = availableSubagents.map((s) => s.id);
-    if (!validIds.includes(plan.responsibleSubagent)) {
-      return {
-        valid: false,
-        error: `responsibleSubagent '${plan.responsibleSubagent}' não pertence aos subagentes disponíveis: [${validIds.join(", ")}]`,
-      };
-    }
+    plan.responsibleSubagent = "openai_agent";
   }
 
   // Validação estrita de evidenceMessageId e satisfiedObjectiveId para already_satisfied
@@ -423,9 +414,9 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
 
 export function buildFallbackBrainPlan(
   rawResponseText: string,
-  availableSubagents?: Array<{ id: string }>
+  _availableSubagents?: Array<{ id: string }>
 ): any {
-  const targetSubagent = availableSubagents?.[0]?.id || "subagent_conexao_inicial";
+  const targetSubagent = "openai_agent";
   const defaultText = (rawResponseText || "oi, tudo bem?").trim();
   const defaultContract = {
     directQuestions: [],
@@ -469,7 +460,7 @@ export interface RunOpenAiBrainParams {
   contactMemorySummary?: string;
   landmarksSummary?: string;
   liveStateContext?: string;
-  availableSubagents: Array<{ id: string; name: string; mission: string }>;
+  availableSubagents?: Array<{ id: string; name: string; mission: string }>;
   agentId?: string;
   apiKey?: string;
   signal?: AbortSignal;
@@ -516,7 +507,6 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     currentObjectiveId,
     currentObjectiveLabel,
     currentObjectiveDescription,
-    currentObjectiveRequired,
     inboundMessages,
     recentMessages,
     contactMemorySummary,
@@ -529,7 +519,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   } = params;
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
-  const objectiveType = currentObjectiveRequired === false ? "[OPCIONAL / OPORTUNÍSTICO]" : "[OBRIGATÓRIO]";
+  const objectiveType = "[OBRIGATÓRIO]";
   const objectiveLine = currentObjectiveId
     ? `${currentObjectiveId} ("${currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
     : "Nenhum objetivo pendente";
@@ -581,10 +571,12 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   }
   sections.push(`\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}`);
 
-  const subagentCards = availableSubagents.map(
-    (s) => `- ID: "${s.id}" | Nome: "${s.name}" | Missão: ${s.mission}`
-  );
-  sections.push(`\n## SUBAGENTES DISPONÍVEIS\n${subagentCards.join("\n")}`);
+  if (availableSubagents && availableSubagents.length > 0) {
+    const subagentCards = availableSubagents.map(
+      (s) => `- ID: "${s.id}" | Nome: "${s.name}" | Missão: ${s.mission}`
+    );
+    sections.push(`\n## SUBAGENTES DISPONÍVEIS\n${subagentCards.join("\n")}`);
+  }
 
   if (recentStyleStateSnippet && recentStyleStateSnippet.trim()) {
     sections.push(`\n${recentStyleStateSnippet.trim()}`);
@@ -594,7 +586,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   sections.push(
     `\n## INSTRUÇÃO OPERACIONAL DO TURNO
 Você opera em TURNO ÚNICO seguindo rigorosamente suas instruções persistentes e o LARISSA_INTERACTION_DNA.
-Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none), assuma o subagente responsável e gere responses[].
+Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
 DIRETRIZ DE EVIDÊNCIA:
 Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS. O evidenceMessageId DEVE ser exatamente o ID de uma das mensagens de [MENSAGEM id="..."] deste turno. Para pursue, defer ou none, evidenceMessageId deve ser null.
@@ -603,7 +595,7 @@ CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
   "action": "reply",
-  "responsibleSubagent": "id_do_subagente",
+  "responsibleSubagent": "openai_agent",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,

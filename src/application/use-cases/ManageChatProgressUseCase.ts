@@ -112,7 +112,7 @@ export class ManageChatProgressUseCase {
       const isCompleted = completedGoalSet.has(obj.id) || prog?.status === "completed";
       return {
         ...obj,
-        required: obj.required !== false,
+        required: true,
         title: obj.title || obj.label || "Objetivo",
         status: isCompleted ? "completed" : "pending",
         value: prog?.value ?? null,
@@ -123,8 +123,8 @@ export class ManageChatProgressUseCase {
 
     const totalObjectives = objectives.length;
     const completedObjectivesCount = objectives.filter((o) => o.status === "completed").length;
-    const requiredPendingCount = objectives.filter((o) => o.required && o.status !== "completed").length;
-    const optionalPendingCount = objectives.filter((o) => !o.required && o.status !== "completed").length;
+    const requiredPendingCount = objectives.filter((o) => o.status !== "completed").length;
+    const optionalPendingCount = 0;
 
     // Busca os itens legados da pasta do cofre vinculada (se folderId existir)
     let checklist: StageChecklistItem[] = [];
@@ -151,10 +151,10 @@ export class ManageChatProgressUseCase {
     const totalItems = checklist.length;
     const completedItemsCount = checklist.filter((i) => i.isCompleted).length;
 
-    // A etapa é 100% apta quando todos os objetivos obrigatórios foram atingidos
+    // A etapa é 100% apta quando todos os objetivos ativos foram atingidos
     const is100Percent =
       totalObjectives > 0
-        ? requiredPendingCount === 0
+        ? completedObjectivesCount === totalObjectives
         : totalItems > 0 && completedItemsCount === totalItems;
 
     return {

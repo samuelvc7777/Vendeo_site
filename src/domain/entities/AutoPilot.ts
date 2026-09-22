@@ -27,6 +27,7 @@ export type AutoPilotActivityPhase =
   | "context"
   | "search"
   | "reanalyzing"
+  | "brain"
   | "atria"
   | "sol"
   | "checklist"
@@ -42,6 +43,7 @@ export interface AutoPilotActivity {
   currentBalloon?: number;
   totalBalloons?: number;
   updatedAt: string;
+  brainThought?: string;
   atriaThought?: string;
   solThought?: string;
   previewResponses?: string[];
@@ -50,6 +52,7 @@ export interface AutoPilotActivity {
 }
 
 export interface AutoPilotLastThoughts {
+  brainThought?: string;
   atriaThought?: string;
   solThought?: string;
   previewResponses?: string[];

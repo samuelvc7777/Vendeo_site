@@ -151,29 +151,23 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
         // No modelo canônico determinístico, todo objetivo ativo é checkpoint obrigatório
         copy.required = copy.enabled !== false;
+        delete copy.allowedSubagents;
+        delete copy.primarySubagent;
 
         if (copy.id === "goal_age") {
           copy.kind = "fact";
-          if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["descoberta"];
-          copy.primarySubagent = copy.primarySubagent || "descoberta";
         }
         if (copy.id === "goal_city") {
           copy.kind = "fact";
-          if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["conexao_inicial", "descoberta"];
-          copy.primarySubagent = copy.primarySubagent || "conexao_inicial";
         }
         if (copy.id === "goal_job") {
           copy.kind = "fact";
-          if (!copy.allowedSubagents || copy.allowedSubagents.length === 0) copy.allowedSubagents = ["conexao_inicial", "descoberta"];
-          copy.primarySubagent = copy.primarySubagent || "conexao_inicial";
         }
         if (copy.id === "goal_relationship") {
           copy.kind = "fact";
           copy.title = "Status de relacionamento";
           copy.label = "Status de relacionamento";
           copy.description = "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.";
-          copy.allowedSubagents = ["compatibilidade"];
-          copy.primarySubagent = "compatibilidade";
         }
 
         if (!copy.kind) {
@@ -399,7 +393,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       stageId,
       order: goalData.order ?? currentGoals.length,
       enabled: goalData.enabled ?? true,
-      required: goalData.required ?? false,
+      required: true,
       kind: goalData.kind ?? "fact",
     };
 
@@ -487,15 +481,15 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       const { data, error } = await client
         .from("instagram_conversations")
         .select("id, contact_id, stage_completed_rules")
-        .not("id", "like", "__%")
-        .not("contact_id", "like", "__%");
+        .not("id", "like", "\\_\\_%")
+        .not("contact_id", "like", "\\_\\_%");
 
       if (error || !data) return result;
 
       for (const row of data) {
         const convId = row.id || row.contact_id;
         const rules = row.stage_completed_rules;
-        if (!convId || !rules) continue;
+        if (!convId || !rules || convId.startsWith("__")) continue;
 
         const orch = rules.orchestration || {};
         const chatProgress = rules.chat_progress || rules;

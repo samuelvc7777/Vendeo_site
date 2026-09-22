@@ -104,7 +104,7 @@ export class ManageChatStagesUseCase {
         memoryEntity: (data.memoryEntity || "self").trim().toLowerCase(),
         memoryField: data.memoryField.trim().toLowerCase(),
         description: data.description?.trim(),
-        required: data.required ?? false,
+        required: true,
         order: 0,
         enabled: data.enabled ?? true,
       });
@@ -122,14 +122,13 @@ export class ManageChatStagesUseCase {
       memoryEntity: (data.memoryEntity || "self").trim().toLowerCase(),
       memoryField: data.memoryField.trim().toLowerCase(),
       description: data.description?.trim(),
-      required: data.required ?? false,
+      required: true,
       order: currentGoals.length,
       enabled: data.enabled ?? true,
     };
     stage.goals = [...currentGoals, newGoal];
     await this.stageRepository.updateStage(stageId, { goals: stage.goals });
     return newGoal;
-
   }
 
   async updateGoal(

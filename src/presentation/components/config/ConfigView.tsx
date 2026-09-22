@@ -27,7 +27,6 @@ import { InstagramConnectModal } from "@/presentation/components/instagram/Insta
 import { InstagramAccount } from "@/domain/entities/Instagram";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { ChatStagesManager } from "./ChatStagesManager";
-import { SubagentsManager } from "./SubagentsManager";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 
@@ -743,13 +742,6 @@ export function ConfigView() {
               onMoveGoalUp={moveGoalUp}
               onMoveGoalDown={moveGoalDown}
             />
-          </div>
-        </div>
-
-        {/* SEÇÃO: SUBAGENTES DA PERSONA (CATÁLOGO & MISSÕES) */}
-        <div className="space-y-2.5">
-          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-3.5 sm:p-5 shadow-sm">
-            <SubagentsManager />
           </div>
         </div>
 

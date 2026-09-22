@@ -11,17 +11,18 @@ export interface StageObjective {
   label?: string; // Compatibilidade com v231 (alias para title)
   description?: string;
   kind?: "fact" | "conversation_state"; // "fact": biográfico durável | "conversation_state": checkpoint de evolução
-  required: boolean;
+  /** @deprecated No Vendeo todo objetivo ativo (enabled !== false) é obrigatório por definição */
+  required?: boolean;
   enabled: boolean;
   order: number;
   memoryEntity?: string; // Ex: "self", "familia"
   memoryField?: string;  // Ex: "age", "city", "occupation"
-  /** Subagentes autorizados a perseguir ou interagir com este objetivo */
-  allowedSubagents?: string[];
-  /** Subagente prioritário de referência (opcional) */
-  primarySubagent?: string;
   /** Política de conclusão: "conversation_evidence" (padrão conversacional) ou "fact_only" (auto-completa se já souber o fato) */
   completionPolicy?: "conversation_evidence" | "fact_only";
+  /** @deprecated Mantido opcional temporariamente para migração defensiva sem quebrar consumers legados */
+  allowedSubagents?: string[];
+  /** @deprecated Mantido opcional temporariamente para migração defensiva sem quebrar consumers legados */
+  primarySubagent?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -150,8 +151,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         required: true,
         enabled: true,
         order: 1,
-        allowedSubagents: ["conexao_inicial"],
-        primarySubagent: "conexao_inicial",
       },
       {
         id: "goal_city",
@@ -165,8 +164,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 2,
         memoryEntity: "self",
         memoryField: "city",
-        allowedSubagents: ["conexao_inicial", "descoberta"],
-        primarySubagent: "conexao_inicial",
       },
       {
         id: "goal_job",
@@ -180,8 +177,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 3,
         memoryEntity: "self",
         memoryField: "job",
-        allowedSubagents: ["conexao_inicial", "descoberta"],
-        primarySubagent: "conexao_inicial",
       },
     ],
   },
@@ -206,8 +201,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 1,
         memoryEntity: "self",
         memoryField: "age",
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
       },
       {
         id: "goal_routine",
@@ -221,8 +214,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 2,
         memoryEntity: "self",
         memoryField: "routine",
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
       },
       {
         id: "goal_hobbies",
@@ -236,8 +227,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 3,
         memoryEntity: "self",
         memoryField: "hobbies",
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
       },
       {
         id: "goal_social_style",
@@ -251,8 +240,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 4,
         memoryEntity: "self",
         memoryField: "social_style",
-        allowedSubagents: ["descoberta", "compatibilidade"],
-        primarySubagent: "descoberta",
       },
       {
         id: "goal_discovery_depth",
@@ -264,8 +251,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         required: true,
         enabled: true,
         order: 5,
-        allowedSubagents: ["descoberta"],
-        primarySubagent: "descoberta",
       },
     ],
   },
@@ -290,8 +275,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 1,
         memoryEntity: "self",
         memoryField: "relationship_status",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
       {
         id: "goal_relationship_intent",
@@ -305,8 +288,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 2,
         memoryEntity: "self",
         memoryField: "relationship_intent",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
       {
         id: "goal_has_children",
@@ -320,8 +301,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 3,
         memoryEntity: "self",
         memoryField: "has_children",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
       {
         id: "goal_wants_children",
@@ -335,8 +314,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 4,
         memoryEntity: "self",
         memoryField: "wants_children",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
       {
         id: "goal_family_values",
@@ -350,8 +327,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 5,
         memoryEntity: "self",
         memoryField: "family_values",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
       {
         id: "goal_future_plans",
@@ -365,8 +340,6 @@ export const CANONICAL_CHAT_STAGES_MATRIX: ChatStage[] = [
         order: 6,
         memoryEntity: "self",
         memoryField: "future_plans",
-        allowedSubagents: ["compatibilidade"],
-        primarySubagent: "compatibilidade",
       },
       {
         id: "goal_faith_values",

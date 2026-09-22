@@ -4,10 +4,8 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { buildTinderAiPromptForBackend } from "./tinder_ai.ts";
 import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
-import { runCloudAutoPilot, publishAutoPilotState, activity } from "./cloud_autopilot.ts";
-import { createCloudAutoPilotSupport } from "./cloud_autopilot_support.ts";
-import { recordAutoPilotTrace } from "./autopilot_trace.ts";
-import { runExperimentalOrchestration, requestExperimentalCyclePreemptionAtomic } from "./experimental_orchestrator.ts";
+import { runBrainOrchestration, requestBrainCyclePreemptionAtomic } from "./brain_orchestrator.ts";
+import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -163,8 +161,8 @@ async function getKieApiKey(supabase: any): Promise<string | null> {
   const envKey = (Deno.env.get("KIE_API_KEY") || "").trim();
   if (envKey) return envKey;
 
-  // 3. Fallback padrão ativo do projeto (Sol - Larissa)
-  return "467f4240bdb260cfed28f392c08d6771";
+  // 3. Fallback via variável de ambiente
+  return (Deno.env.get("KIE_API_FALLBACK_KEY") || "").trim();
 }
 
 /**
@@ -577,16 +575,6 @@ async function resolveInstagramContactProfile(
     igsid,
   };
 }
-
-const cloudAutopilotSupport = createCloudAutoPilotSupport({
-  getGroqApiKey,
-  getKieApiKey,
-  getOpenAiApiKey,
-  getTokenHarborApiKey,
-  getAtriaApiKey,
-  extractKieResponseText,
-  sanitizeResponses,
-});
 
 serve(async (req: Request) => {
   const url = new URL(req.url);
@@ -1024,249 +1012,113 @@ serve(async (req: Request) => {
                   convRules.status === "paused_guardrail" ||
                   convRow?.is_restricted === true;
 
-                const orchMode = convRules.orchestration?.mode || "legacy";
-
-                // Se a conversa estiver em modo SHADOW, executa a análise silenciosa sem alterar o fluxo nem enviar mensagens
-                if (orchMode === "shadow") {
-                  console.log(`[Orchestrator] Executando em modo SHADOW para conversa ${conversationId}`);
-                  const shadowPromise = runExperimentalOrchestration({
-                    supabase,
-                    conversationId,
-                    newMessage: {
-                      id: messageId,
-                      text: text || "",
-                      timestamp: timestamp || new Date().toISOString(),
-                      sender: senderId || "them",
-                    },
-                  });
-                  if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                    (globalThis as any).EdgeRuntime.waitUntil(shadowPromise);
-                  } else {
-                    void shadowPromise;
-                  }
-                }
-
-                // Se a conversa estiver em modo EXPERIMENTAL, executa o novo orquestrador naquele chat
-                if (orchMode === "experimental") {
-                  if (!isPaused) {
-                    const delayMinutes =
-                      typeof apConfig?.responseDelayMinutes === "number"
-                        ? apConfig.responseDelayMinutes
-                        : typeof convRules?.orchestration?.responseDelayMinutes === "number"
-                        ? convRules.orchestration.responseDelayMinutes
-                        : 0;
-
-                    const hasActiveCycle = Boolean(
-                      convRules?.orchestration?.activeCycle?.cycleToken &&
-                      convRules?.orchestration?.activeCycle?.expiresAt &&
-                      new Date(convRules.orchestration.activeCycle.expiresAt).getTime() > Date.now()
-                    );
-
-                    const quietPeriodMs = Math.round(delayMinutes * 60 * 1000);
-
-                    if (hasActiveCycle) {
-                      // 1. request_experimental_cycle_preemption
-                      // 2. ciclo atual perde autoridade
-                      // 3. não pode mandar mais balões
-                      // 4. nova mensagem fica pending
-                      // 5. novo ai_debounce_until deve ser: now + responseDelayMinutes
-                      const newDebounceUntil = new Date(Date.now() + (quietPeriodMs || 2500)).toISOString();
-                      console.log(
-                        `[Orchestrator] Concorrência/Ciclo ativo detectado em ${conversationId}. Sinalizando preempção atômica e novo debounce de ${delayMinutes}m (${newDebounceUntil}).`
-                      );
-                      await requestExperimentalCyclePreemptionAtomic({
-                        supabase,
-                        conversationId,
-                        messageId: messageId || null,
-                        debounceUntil: newDebounceUntil,
-                      });
-                      await publishAutoPilotState(supabase, conversationId, {
-                        status: "scheduled",
-                        activity: activity(
-                          "scheduled",
-                          `Ciclo preemptado por nova mensagem. Novo quiet period (${delayMinutes}m)...`,
-                          "Aguardando período de silêncio para responder com o contexto atualizado.",
-                          {
-                            mode: "experimental",
-                            scheduledAt: newDebounceUntil,
-                            quietPeriodMinutes: delayMinutes,
-                          }
-                        ),
-                        scheduledResponseAt: newDebounceUntil,
-                      });
-                    } else if (delayMinutes > 0) {
-                      // DEBOUNCE = período de silêncio (quiet period) desde a ÚLTIMA inbound
-                      const scheduledUntil = new Date(Date.now() + quietPeriodMs).toISOString();
-                      console.log(
-                        `[Orchestrator] Inbound recebida em ${conversationId}. Agendando quiet period de ${delayMinutes}m (ai_debounce_until = ${scheduledUntil}).`
-                      );
-                      await supabase
-                        .from("instagram_conversations")
-                        .update({
-                          ai_auto_respond: true,
-                          ai_debounce_until: scheduledUntil,
-                        })
-                        .eq("id", conversationId);
-
-                      await publishAutoPilotState(supabase, conversationId, {
-                        status: "scheduled",
-                        activity: activity(
-                          "scheduled",
-                          `Aguardando quiet period (${delayMinutes}m)...`,
-                          "Respeitando o tempo de silêncio configurado após a mensagem inbound.",
-                          {
-                            mode: "experimental",
-                            scheduledAt: scheduledUntil,
-                            quietPeriodMinutes: delayMinutes,
-                          }
-                        ),
-                        scheduledResponseAt: scheduledUntil,
-                      });
-                    } else {
-                      // responseDelayMinutes = 0: pode iniciar imediatamente
-                      console.log(`[Orchestrator] responseDelayMinutes=0. Executando imediatamente em modo EXPERIMENTAL para conversa ${conversationId}`);
-                      const expPromise = (async () => {
-                        const res = await runExperimentalOrchestration({
-                          supabase,
-                          conversationId,
-                          newMessage: {
-                            id: messageId,
-                            text: text || "",
-                            timestamp: timestamp || new Date().toISOString(),
-                            sender: senderId || "them",
-                          },
-                        });
-
-                        // Em caso de concorrência com ciclo ativo, sinaliza preempção atômica no PostgreSQL
-                        if (!res.handled && res.error === "Lock ativo concorrente") {
-                          const newDebounceUntil = new Date(Date.now() + 2500).toISOString();
-                          console.log(`[Orchestrator] Concorrência detectada em ${conversationId}. Sinalizando preempção atômica.`);
-                          await requestExperimentalCyclePreemptionAtomic({
-                            supabase,
-                            conversationId,
-                            messageId: messageId || null,
-                            debounceUntil: newDebounceUntil,
-                          });
-                        }
-
-                        // BLOQUEIO EXPLÍCITO DO FALLBACK LEGADO
-                        if (res.blockLegacyFallback === true || res.sentToMeta || res.handled || res.skippedDuplicate) {
-                          console.log(
-                            `[Orchestrator] Fallback legado BLOQUEADO explicitamente para ${conversationId} (blockLegacyFallback=${res.blockLegacyFallback}, handled=${res.handled}, sentToMeta=${res.sentToMeta})`
-                          );
-                          return;
-                        }
-
-                        if (!res.handled && res.error) {
-                          console.warn(`[Orchestrator] Erro no modo experimental (${res.error}) com fallback legado liberado. Acionando legado.`);
-                          await runCloudAutoPilot({
-                            supabase,
-                            conversationId,
-                            triggerMessageId: messageId,
-                            triggerTimestamp: timestamp,
-                            triggerText: text,
-                            skipDebounce: true,
-                            runtime: {
-                              apiBase: API_BASE,
-                              transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                              ...cloudAutopilotSupport,
-                            },
-                          });
-                        }
-                      })();
-
-                      if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                        (globalThis as any).EdgeRuntime.waitUntil(expPromise);
-                      } else {
-                        void expPromise;
-                      }
-                    }
-                  }
-                } else if (orchMode === "legacy") {
-                  // FLUXO LEGADO 100% PRESERVADO PARA CONVERSAS NÃO MARCADAS
-                  if (isEnabledGlobally && !isManual && !isPaused) {
-                    const delayMinutes =
-                      typeof apConfig?.responseDelayMinutes === "number"
-                        ? apConfig.responseDelayMinutes
-                        : 1;
-
-                  if (delayMinutes <= 0) {
-                    console.log(`[TRACE-AUTOPILOT] webhook:trigger_immediate conversation=${conversationId} message=${messageId}`);
-                    await recordAutoPilotTrace(supabase, "webhook:trigger_immediate", conversationId, `message=${messageId}`);
-                    const runPromise = runCloudAutoPilot({
-                      supabase,
-                      conversationId,
-                      triggerMessageId: messageId,
-                      triggerTimestamp: timestamp,
-                      triggerText: text,
-                      skipDebounce: true,
-                      runtime: {
-                        apiBase: API_BASE,
-                        transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                        ...cloudAutopilotSupport,
-                      },
-                    });
-                    if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                      (globalThis as any).EdgeRuntime.waitUntil(runPromise);
-                    } else {
-                      void runPromise;
-                    }
-                  } else {
-                    // Debounce Inteligente com Teto Máximo:
-                    // Se o cliente já estava aguardando resposta e enviou mais mensagens em rajada,
-                    // estendemos suavemente (25s) para ele concluir a frase, sem empurrar o tempo indefinidamente.
-                    const now = Date.now();
-                    const baseWaitMs = Math.round(delayMinutes * 60 * 1000);
-                    const existingUntilMs = convRow?.ai_debounce_until
-                      ? new Date(convRow.ai_debounce_until).getTime()
+                // BRAIN: Único orquestrador oficial de produção (fail-closed)
+                if (!isPaused && isEnabledGlobally && !isManual) {
+                  const delayMinutes =
+                    typeof apConfig?.responseDelayMinutes === "number"
+                      ? apConfig.responseDelayMinutes
+                      : typeof convRules?.orchestration?.responseDelayMinutes === "number"
+                      ? convRules.orchestration.responseDelayMinutes
                       : 0;
 
-                    let finalScheduledMs: number;
-                    if (existingUntilMs > now) {
-                      // Mensagem em rajada: estende em 25s até um teto máximo de (agora + delay base + 45s)
-                      const burstExtensionMs = existingUntilMs + 25000;
-                      const maxBurstCapMs = now + baseWaitMs + 45000;
-                      finalScheduledMs = Math.min(burstExtensionMs, maxBurstCapMs);
-                    } else {
-                      // Primeira mensagem do bloco
-                      finalScheduledMs = now + baseWaitMs;
-                    }
+                  const hasActiveCycle = Boolean(
+                    convRules?.orchestration?.activeCycle?.cycleToken &&
+                    convRules?.orchestration?.activeCycle?.expiresAt &&
+                    new Date(convRules.orchestration.activeCycle.expiresAt).getTime() > Date.now()
+                  );
 
-                    const waitSeconds = Math.max(5, Math.round((finalScheduledMs - now) / 1000));
-                    const scheduledAt = new Date(finalScheduledMs).toISOString();
-                    const waitDisplay = waitSeconds >= 60
-                      ? `${Math.round(waitSeconds / 60)} min`
-                      : `${waitSeconds}s`;
+                  const quietPeriodMs = Math.round(delayMinutes * 60 * 1000);
 
-                    console.log(`[TRACE-AUTOPILOT] webhook:schedule conversation=${conversationId} delay=${waitDisplay} until=${scheduledAt}`);
-                    await recordAutoPilotTrace(supabase, "webhook:schedule", conversationId, `delay=${waitDisplay};until=${scheduledAt}`);
-
-                    // Registra na conversa a data limite do debounce
+                  if (hasActiveCycle) {
+                    const newDebounceUntil = new Date(Date.now() + (quietPeriodMs || 2500)).toISOString();
+                    console.log(
+                      `[Brain] Concorrência/Ciclo ativo detectado em ${conversationId}. Sinalizando preempção atômica e novo debounce de ${delayMinutes}m (${newDebounceUntil}).`
+                    );
+                    await requestBrainCyclePreemptionAtomic({
+                      supabase,
+                      conversationId,
+                      messageId: messageId || null,
+                      debounceUntil: newDebounceUntil,
+                    });
+                    await publishAutoPilotState(supabase, conversationId, {
+                      status: "scheduled",
+                      activity: activity(
+                        "scheduled",
+                        `Ciclo preemptado por nova mensagem. Novo quiet period (${delayMinutes}m)...`,
+                        "Aguardando período de silêncio para responder com o contexto atualizado.",
+                        {
+                          scheduledAt: newDebounceUntil,
+                          quietPeriodMinutes: delayMinutes,
+                        }
+                      ),
+                      scheduledResponseAt: newDebounceUntil,
+                    });
+                  } else if (delayMinutes > 0) {
+                    const scheduledUntil = new Date(Date.now() + quietPeriodMs).toISOString();
+                    console.log(
+                      `[Brain] Inbound recebida em ${conversationId}. Agendando quiet period de ${delayMinutes}m (ai_debounce_until = ${scheduledUntil}).`
+                    );
                     await supabase
                       .from("instagram_conversations")
                       .update({
                         ai_auto_respond: true,
-                        ai_debounce_until: scheduledAt,
+                        ai_debounce_until: scheduledUntil,
                       })
                       .eq("id", conversationId);
 
-                    // Publica estado visual com contagem regressiva para a UI
                     await publishAutoPilotState(supabase, conversationId, {
-                      status: "waiting_delay",
-                      scheduledResponseAt: scheduledAt,
+                      status: "scheduled",
                       activity: activity(
-                        "waiting",
-                        "IA aguardando tempo pra agir",
-                        `Aguardando ${waitDisplay} para o cliente terminar de escrever.`,
+                        "scheduled",
+                        `Aguardando quiet period (${delayMinutes}m)...`,
+                        "Respeitando o tempo de silêncio configurado após a mensagem inbound.",
                         {
-                          countdownSeconds: waitSeconds,
-                          scheduledResponseAt: scheduledAt,
-                        },
+                          scheduledAt: scheduledUntil,
+                          quietPeriodMinutes: delayMinutes,
+                        }
                       ),
+                      scheduledResponseAt: scheduledUntil,
                     });
+                  } else {
+                    // responseDelayMinutes = 0: inicia imediatamente
+                    console.log(`[Brain] responseDelayMinutes=0. Executando Brain imediatamente para conversa ${conversationId}`);
+                    const brainPromise = (async () => {
+                      const res = await runBrainOrchestration({
+                        supabase,
+                        conversationId,
+                        newMessage: {
+                          id: messageId,
+                          text: text || "",
+                          timestamp: timestamp || new Date().toISOString(),
+                          sender: senderId || "them",
+                        },
+                      });
+
+                      // Em caso de concorrência com ciclo ativo, sinaliza preempção atômica no PostgreSQL
+                      if (!res.handled && res.error === "Lock ativo concorrente") {
+                        const newDebounceUntil = new Date(Date.now() + 2500).toISOString();
+                        console.log(`[Brain] Concorrência detectada em ${conversationId}. Sinalizando preempção atômica.`);
+                        await requestBrainCyclePreemptionAtomic({
+                          supabase,
+                          conversationId,
+                          messageId: messageId || null,
+                          debounceUntil: newDebounceUntil,
+                        });
+                      }
+
+                      // FAIL-CLOSED: Nenhum fallback para legado
+                      if (!res.handled && res.error) {
+                        console.error(`[Brain] FAIL CLOSED: Erro no Brain para ${conversationId} (${res.error}). Nenhum fallback acionado.`);
+                      }
+                    })();
+
+                    if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                      (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
+                    } else {
+                      void brainPromise;
+                    }
                   }
                 }
-              }
               } catch (apErr) {
                 console.error("[Cloud AutoPilot] Erro ao agendar resposta no webhook:", apErr);
               }
@@ -3990,49 +3842,24 @@ serve(async (req: Request) => {
 
             if (isFromThem) {
               const convRules = conv.stage_completed_rules || {};
-              const orchMode = convRules.orchestration?.mode || "legacy";
 
-              if (orchMode === "experimental") {
-                console.log(`[Orchestrator] cron:tick roteando para modo EXPERIMENTAL em ${conv.id}`);
-                const expPromise = runExperimentalOrchestration({
-                  supabase,
-                  conversationId: conv.id,
-                  newMessage: {
-                    id: lastMsg.id,
-                    text: lastMsg.text || "",
-                    timestamp: lastMsg.timestamp || lastMsg.created_at,
-                    sender: lastMsg.sender_id || "them",
-                  },
-                });
+              // BRAIN: Único orquestrador oficial (fail-closed)
+              console.log(`[Brain] cron:tick roteando para Brain em ${conv.id}`);
+              const brainPromise = runBrainOrchestration({
+                supabase,
+                conversationId: conv.id,
+                newMessage: {
+                  id: lastMsg.id,
+                  text: lastMsg.text || "",
+                  timestamp: lastMsg.timestamp || lastMsg.created_at,
+                  sender: lastMsg.sender_id || "them",
+                },
+              });
 
-                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                  (globalThis as any).EdgeRuntime.waitUntil(expPromise);
-                } else {
-                  void expPromise;
-                }
+              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
               } else {
-                console.log(`[TRACE-AUTOPILOT] cron:tick_trigger conversation=${conv.id} msg=${lastMsg.id} (skipDebounce=true)`);
-                await recordAutoPilotTrace(supabase, "cron:tick_trigger", conv.id, `msg=${lastMsg.id}`);
-
-                const runPromise = runCloudAutoPilot({
-                  supabase,
-                  conversationId: conv.id,
-                  triggerMessageId: lastMsg.id,
-                  triggerTimestamp: lastMsg.timestamp || lastMsg.created_at,
-                  triggerText: lastMsg.text || "",
-                  skipDebounce: true,
-                  runtime: {
-                    apiBase: API_BASE,
-                    transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                    ...cloudAutopilotSupport,
-                  },
-                });
-
-                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                  (globalThis as any).EdgeRuntime.waitUntil(runPromise);
-                } else {
-                  void runPromise;
-                }
+                void brainPromise;
               }
 
               processed.push(conv.id);
@@ -4116,60 +3943,23 @@ serve(async (req: Request) => {
             }
           } catch {}
 
-          const orchMode = cRow?.stage_completed_rules?.orchestration?.mode || "legacy";
-          if (orchMode === "experimental") {
-            console.log(`[Orchestrator] trigger roteando para modo EXPERIMENTAL em ${conversationId}`);
-            const expPromise = runExperimentalOrchestration({
-              supabase,
-              conversationId,
-              newMessage: {
-                id: lastMsg.id,
-                text: lastMsg.text || "",
-                timestamp: lastMsg.timestamp,
-                sender: lastMsg.sender_id || "them",
-              },
-            });
+          // BRAIN: Único orquestrador oficial (fail-closed)
+          console.log(`[Brain] activation_trigger roteando para Brain em ${conversationId}`);
+          const brainPromise = runBrainOrchestration({
+            supabase,
+            conversationId,
+            newMessage: {
+              id: lastMsg.id,
+              text: lastMsg.text || "",
+              timestamp: lastMsg.timestamp,
+              sender: lastMsg.sender_id || "them",
+            },
+          });
 
-            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-              (globalThis as any).EdgeRuntime.waitUntil(expPromise);
-            } else {
-              void expPromise;
-            }
+          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+            (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
           } else {
-            console.log(`[TRACE-AUTOPILOT] activation_trigger:start conversation=${conversationId} msg=${lastMsg.id} (skipDebounce=true)`);
-            await recordAutoPilotTrace(supabase, "activation:trigger", conversationId, `msg=${lastMsg.id};skipDebounce=true`);
-
-            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-              (globalThis as any).EdgeRuntime.waitUntil(
-                runCloudAutoPilot({
-                  supabase,
-                  conversationId,
-                  triggerMessageId: lastMsg.id,
-                  triggerTimestamp: lastMsg.timestamp,
-                  triggerText: lastMsg.text || "",
-                  skipDebounce: true,
-                  runtime: {
-                    apiBase: API_BASE,
-                    transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                    ...cloudAutopilotSupport,
-                  },
-                })
-              );
-            } else {
-              void runCloudAutoPilot({
-                supabase,
-                conversationId,
-                triggerMessageId: lastMsg.id,
-                triggerTimestamp: lastMsg.timestamp,
-                triggerText: lastMsg.text || "",
-                skipDebounce: true,
-                runtime: {
-                  apiBase: API_BASE,
-                  transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                  ...cloudAutopilotSupport,
-                },
-              });
-            }
+            void brainPromise;
           }
 
           return new Response(JSON.stringify({
@@ -4426,44 +4216,23 @@ serve(async (req: Request) => {
             .limit(1);
           const lastMsg = lastMsgs?.[0];
           if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
-            const orchMode = currentRules?.orchestration?.mode || "legacy";
-            if (orchMode === "experimental") {
-              console.log(`[Orchestrator] send-now roteando para modo EXPERIMENTAL em ${conversationId}`);
-              const expPromise = runExperimentalOrchestration({
-                supabase,
-                conversationId,
-                newMessage: {
-                  id: lastMsg.id,
-                  text: lastMsg.text || "",
-                  timestamp: lastMsg.timestamp,
-                  sender: lastMsg.sender_id || "them",
-                },
-              });
+            // BRAIN: Único orquestrador oficial (fail-closed)
+            console.log(`[Brain] send-now roteando para Brain em ${conversationId}`);
+            const brainPromise = runBrainOrchestration({
+              supabase,
+              conversationId,
+              newMessage: {
+                id: lastMsg.id,
+                text: lastMsg.text || "",
+                timestamp: lastMsg.timestamp,
+                sender: lastMsg.sender_id || "them",
+              },
+            });
 
-              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                (globalThis as any).EdgeRuntime.waitUntil(expPromise);
-              } else {
-                void expPromise;
-              }
+            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+              (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
             } else {
-              const runPromise = runCloudAutoPilot({
-                supabase,
-                conversationId,
-                triggerMessageId: lastMsg.id,
-                triggerTimestamp: lastMsg.timestamp,
-                triggerText: lastMsg.text || "",
-                skipDebounce: true,
-                runtime: {
-                  apiBase: API_BASE,
-                  transcribeAudio: (mediaUrl: string) => transcribeWithGroqCloud(supabase, mediaUrl),
-                  ...cloudAutopilotSupport,
-                },
-              });
-              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                (globalThis as any).EdgeRuntime.waitUntil(runPromise);
-              } else {
-                void runPromise;
-              }
+              void brainPromise;
             }
           }
         }
@@ -4599,194 +4368,8 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
-    // 8.6. ROTAS DE ORQUESTRAÇÃO EXPERIMENTAL POR CONVERSA
+    // 8.6. CONSULTA DO ESTADO DE ORQUESTRAÇÃO BRAIN
     // ==========================================
-    // Atualiza o modo da orquestração para uma conversa específica
-    if (
-      (path === "/autopilot/orchestration/mode" || path === "/api/autopilot/orchestration/mode") &&
-      req.method === "POST"
-    ) {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const { conversationId, mode, phase, fallbackToLegacyOnError } = body || {};
-
-        if (!conversationId || typeof conversationId !== "string") {
-          return new Response(
-            JSON.stringify({ error: "conversationId é obrigatório" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const validModes = ["legacy", "shadow", "experimental"];
-        if (!mode || !validModes.includes(mode)) {
-          return new Response(
-            JSON.stringify({ error: `mode inválido. Esperado: ${validModes.join(", ")}` }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const { data: conv, error: convErr } = await supabase
-          .from("instagram_conversations")
-          .select("id, stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        if (convErr) {
-          return new Response(
-            JSON.stringify({ error: `Erro ao buscar conversa: ${convErr.message}` }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const currentRules = conv?.stage_completed_rules || {};
-        const existingOrch = currentRules.orchestration || {};
-
-        const updatedOrchestration = {
-          mode,
-          phase: phase || existingOrch.phase || "conexao_inicial",
-          checkpoints: existingOrch.checkpoints || {},
-          lastDecision: existingOrch.lastDecision || null,
-          lastProcessedMessageId: existingOrch.lastProcessedMessageId || null,
-          active_cycle_token: mode === "legacy" ? null : existingOrch.active_cycle_token || null,
-          fallbackToLegacyOnError: typeof fallbackToLegacyOnError === "boolean" ? fallbackToLegacyOnError : (existingOrch.fallbackToLegacyOnError ?? true),
-          last_error: mode === "legacy" ? null : existingOrch.last_error || null,
-          version: 1,
-          updated_at: new Date().toISOString(),
-          brainProvider: mode === "legacy" ? undefined : (existingOrch.brainProvider || "openai_agent"),
-          strictOpenAiPilot: mode === "legacy" ? undefined : (existingOrch.strictOpenAiPilot ?? true),
-        };
-
-        const updatedRules = {
-          ...currentRules,
-          orchestration: updatedOrchestration,
-        };
-
-        const { error: updateErr } = await supabase
-          .from("instagram_conversations")
-          .update({
-            stage_completed_rules: updatedRules,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", conversationId);
-
-        if (updateErr) {
-          return new Response(
-            JSON.stringify({ error: `Erro ao salvar orquestração: ${updateErr.message}` }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        try {
-          await supabase.channel("vendeo_realtime_chat").send({
-            type: "broadcast",
-            event: "orchestration_mode_changed",
-            payload: {
-              conversationId,
-              orchestration: updatedOrchestration,
-            },
-          });
-        } catch (bErr) {
-          console.warn("Aviso ao emitir broadcast orchestration_mode_changed:", bErr);
-        }
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            conversationId,
-            orchestration: updatedOrchestration,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      } catch (err: unknown) {
-        return new Response(
-          JSON.stringify({
-            error: err instanceof Error ? err.message : "Erro ao alterar modo da orquestração",
-          }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // Reset imediato para o modo Legado (Botão de Pânico / Desarme)
-    if (
-      (path === "/autopilot/orchestration/reset" || path === "/api/autopilot/orchestration/reset") &&
-      req.method === "POST"
-    ) {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const { conversationId } = body || {};
-
-        if (!conversationId || typeof conversationId !== "string") {
-          return new Response(
-            JSON.stringify({ error: "conversationId é obrigatório" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const { data: conv } = await supabase
-          .from("instagram_conversations")
-          .select("id, stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        const currentRules = conv?.stage_completed_rules || {};
-        const resetOrchestration = {
-          mode: "legacy",
-          phase: "conexao_inicial",
-          checkpoints: {},
-          lastDecision: null,
-          lastProcessedMessageId: null,
-          active_cycle_token: null,
-          fallbackToLegacyOnError: true,
-          last_error: null,
-          version: 1,
-          updated_at: new Date().toISOString(),
-        };
-
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            stage_completed_rules: {
-              ...currentRules,
-              orchestration: resetOrchestration,
-            },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", conversationId);
-
-        try {
-          await supabase.channel("vendeo_realtime_chat").send({
-            type: "broadcast",
-            event: "orchestration_mode_changed",
-            payload: {
-              conversationId,
-              orchestration: resetOrchestration,
-            },
-          });
-        } catch (bErr) {
-          console.warn("Aviso ao emitir broadcast de reset da orquestração:", bErr);
-        }
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            conversationId,
-            orchestration: resetOrchestration,
-            message: "Orquestração revertida com sucesso para o modo Legado.",
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      } catch (err: unknown) {
-        return new Response(
-          JSON.stringify({
-            error: err instanceof Error ? err.message : "Erro ao resetar orquestração",
-          }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // Consulta do estado de orquestração de uma conversa
     if (
       (path === "/autopilot/orchestration/state" || path === "/api/autopilot/orchestration/state") &&
       req.method === "GET"
@@ -4806,16 +4389,17 @@ serve(async (req: Request) => {
           .eq("id", conversationId)
           .maybeSingle();
 
-        const orchestration = conv?.stage_completed_rules?.orchestration || {
-          mode: "legacy",
-          phase: "conexao_inicial",
-          checkpoints: {},
-          lastDecision: null,
-          lastProcessedMessageId: null,
-          active_cycle_token: null,
-          fallbackToLegacyOnError: true,
-          last_error: null,
-          version: 1,
+        const orchData = conv?.stage_completed_rules?.orchestration || {};
+        const orchestration = {
+          version: orchData.version || 1,
+          currentPhase: orchData.currentPhase || orchData.phase || "conexao_inicial",
+          checkpoint: orchData.checkpoint || "inicio",
+          lastProcessedMessageId: orchData.lastProcessedMessageId || null,
+          lastProcessedAt: orchData.lastProcessedAt || null,
+          lastProcessingStatus: orchData.lastProcessingStatus || "idle",
+          lastCorrelationId: orchData.lastCorrelationId || null,
+          lastError: orchData.lastError || null,
+          updatedAt: orchData.updatedAt || orchData.updated_at || null,
         };
 
         return new Response(
@@ -4829,7 +4413,7 @@ serve(async (req: Request) => {
       } catch (err: unknown) {
         return new Response(
           JSON.stringify({
-            error: err instanceof Error ? err.message : "Erro ao consultar estado da orquestração",
+            error: err instanceof Error ? err.message : "Erro ao consultar estado do Brain",
           }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
@@ -4837,23 +4421,54 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
-    // 8.7. SIMULADOR: mesmo ciclo Atria -> Sol, sem enviar para o Instagram
+    // 8.7. SIMULADOR BRAIN: Test Chat usa o Brain oficial com bypass test-safe
+    // O Brain já possui bypass para IDs que começam com "test_" ou "sandbox_"
+    // Não há despacho para a Meta Graph API nesse modo.
     if (path === "/ai/test-autopilot" && req.method === "POST") {
       try {
         const body = await req.json().catch(() => ({}));
-        const history = Array.isArray(body?.currentMessages) ? body.currentMessages : [];
-        const refs = (await supabase.from("ai_persona_references").select("category, them_message, larissa_response, notes").eq("is_active", true).limit(20)).data || [];
-        const prompt = new GenerateAiPromptUseCase().execute({
-          mode: "markdown", pretendente: { id: body?.conversationId || "test_larissa_sandbox", platform: "instagram", username: "pretendente_sandbox", name: "Pretendente" },
-          instagramHistory: history, personaReferences: refs,
-        }).prompt;
-        const base = cloudAutopilotSupport.decideConversationStep([], null);
-        const decision = await cloudAutopilotSupport.atriaControlStep(base, { conversationPrompt: prompt, stageName: "Simulador", checklist: [] }, supabase);
-        if (decision.action === "pause_handoff" || decision.action === "pause_guardrail") throw new Error(decision.pauseReason || "Atria pausou o simulador.");
-        const result = await cloudAutopilotSupport.generatePersonaResponse(supabase, prompt);
-        return new Response(JSON.stringify({ ...result, decision: decision.action }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        let conversationId = String(body?.conversationId || "").trim();
+        // SEGURANÇA: Garante que o conversationId no sandbox sempre comece com test_ ou sandbox_
+        // Isso impede que qualquer requisição externa envie um ID real para disparar à Meta Graph API
+        if (!conversationId.startsWith("test_") && !conversationId.startsWith("sandbox_")) {
+          conversationId = `test_${conversationId || Date.now()}`;
+        }
+        const currentMessages = Array.isArray(body?.currentMessages) ? body.currentMessages : [];
+
+        const res = await runBrainOrchestration({
+          supabase,
+          conversationId,
+          newMessage: {
+            id: `test_msg_${Date.now()}`,
+            text: currentMessages[currentMessages.length - 1]?.text || "",
+            timestamp: new Date().toISOString(),
+            sender: "them",
+          },
+        });
+
+        if (!res.handled && res.error) {
+          return new Response(
+            JSON.stringify({ error: res.error }),
+            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        const decision = (res as any)?.decision;
+        const responses = Array.isArray(decision?.responses) && decision.responses.length > 0
+          ? decision.responses
+          : (Array.isArray((res as any)?.balloons)
+            ? (res as any).balloons
+            : (decision?.suggestedResponse ? [decision.suggestedResponse] : []));
+
+        return new Response(
+          JSON.stringify({ responses, decision }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       } catch (error) {
-        return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Falha no simulador" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(
+          JSON.stringify({ error: error instanceof Error ? error.message : "Falha no simulador Brain" }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
     }
 

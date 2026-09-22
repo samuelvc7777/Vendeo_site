@@ -145,7 +145,7 @@ export function ChatStageBar({
               Objetivos da Etapa ({completedObjectivesCount}/{totalObjectives})
               {requiredPendingCount > 0 && (
                 <span className="text-[10px] text-amber-400 font-semibold ml-1">
-                  • {requiredPendingCount} obrigatório{requiredPendingCount > 1 ? "s" : ""}
+                  • {requiredPendingCount} pendente{requiredPendingCount > 1 ? "s" : ""}
                 </span>
               )}
             </span>
@@ -243,15 +243,6 @@ export function ChatStageBar({
                           >
                             {obj.title}
                           </p>
-                          {obj.required ? (
-                            <span className="px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 text-[10px] font-bold border border-amber-500/20">
-                              Obrigatório
-                            </span>
-                          ) : (
-                            <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 text-[10px] font-medium">
-                              Opcional
-                            </span>
-                          )}
                         </div>
 
                         {/* Valor descoberto pela memória */}

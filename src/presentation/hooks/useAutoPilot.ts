@@ -158,7 +158,7 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
     try {
       const res = await fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/ai/test-autopilot", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "gpt-5-6-sol", platform: "instagram", conversationId, conversationName: "Pretendente", currentMessages }),
+        body: JSON.stringify({ platform: "instagram", conversationId, conversationName: "Pretendente", currentMessages }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.responses) || data.responses.length === 0) throw new Error(data.error || "A IA não retornou resposta.");

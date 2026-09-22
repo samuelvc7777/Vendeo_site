@@ -8,7 +8,7 @@ import {
   buildOpenAiBrainContextMessage,
 } from "../supabase/functions/api/openai_brain.ts";
 import { normalizeBrainTurnContract } from "../supabase/functions/api/ConversationQualityGate.ts";
-import { buildObjectiveCandidateEvidence } from "../supabase/functions/api/experimental_orchestrator.ts";
+import { buildObjectiveCandidateEvidence } from "../supabase/functions/api/brain_orchestrator.ts";
 
 const subagents = [
   { id: "descoberta", name: "Descoberta", mission: "Aprofundar assuntos" },

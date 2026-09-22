@@ -166,9 +166,8 @@ function ActivityIcon({ state, className }: { state: AutoPilotChatState; classNa
   const phase = state.activity?.phase;
   if (phase === "completed") return <Check className={className} />;
   if (phase === "waiting" || !phase) return <Clock3 className={className} />;
-  if (phase === "atria" || phase === "context") return <BrainCircuit className={`${className} animate-pulse`} />;
-  if (phase === "sending") return <Send className={`${className} animate-pulse`} />;
-  if (phase === "sol" || phase === "checklist") return <Sparkles className={`${className} animate-pulse`} />;
+  if (phase === "brain" || phase === "atria" || phase === "context") return <BrainCircuit className={`${className} animate-pulse text-purple-400`} />;
+  if (phase === "sending" || phase === "typing") return <Send className={`${className} animate-pulse text-emerald-400`} />;
   return <Loader2 className={`${className} animate-spin`} />;
 }
 
@@ -260,39 +259,44 @@ export function AutoPilotActivityIndicator({
   const phase = activity?.phase;
   const isFailed = phase === "failed" || state.status === "failed";
 
-  // Pensamentos limpos e estruturados (recupera da atividade atual ou do histórico persistido apenas se NÃO falhou)
-  const rawAtria = activity?.atriaThought || (!isFailed ? state.lastThoughts?.atriaThought : undefined);
-  const rawSol = activity?.solThought || (!isFailed ? state.lastThoughts?.solThought : undefined);
-  const validAtriaThought = getValidThought(rawAtria);
-  const validSolThought = getValidThought(rawSol);
-  const hasThoughts = Boolean(validAtriaThought || validSolThought);
+  // Pensamento/raciocínio único do Brain (com tolerância a chaves legadas preservadas no histórico)
+  const rawBrainThought =
+    (activity as any)?.brainThought ||
+    activity?.atriaThought ||
+    activity?.solThought ||
+    (!isFailed
+      ? (state.lastThoughts as any)?.brainThought ||
+        state.lastThoughts?.atriaThought ||
+        state.lastThoughts?.solThought
+      : undefined);
+  const validBrainThought = getValidThought(rawBrainThought);
+  const hasThoughts = Boolean(validBrainThought);
   const isCompleted = phase === "completed" || (!isAutoPilotActivelyWorking(state) && hasThoughts);
-  const isAtriaActive = phase === "atria" || phase === "context" || (phase as string) === "search" || (phase as string) === "reanalyzing";
-  const isAtriaDone = isCompleted || (!isAtriaActive && (Boolean(validAtriaThought) || phase === "sol" || phase === "typing" || phase === "sending" || phase === "checklist"));
 
-  const isSolActive = phase === "sol";
-  const isSolDone = isCompleted || (!isSolActive && (Boolean(validSolThought) || phase === "typing" || phase === "sending"));
+  const isBrainActive =
+    phase === "brain" ||
+    phase === "atria" ||
+    phase === "context" ||
+    phase === "sol" ||
+    (phase as string) === "search" ||
+    (phase as string) === "analyzing" ||
+    (phase as string) === "reanalyzing";
 
   const isTypingOrSending = phase === "typing" || phase === "sending";
   const isSendingDone = isCompleted;
+  const isBrainDone = isCompleted || (!isBrainActive && (Boolean(validBrainThought) || isTypingOrSending));
+
   const isWorking = isAutoPilotWorking(state);
-  const isActivelyThinking = isAtriaActive || isSolActive || (phase as string) === "search";
+  const isActivelyThinking = isBrainActive || (phase as string) === "search";
 
-  // Auto-scroll suave para seguir o streaming ao vivo
-  const atriaThoughtRef = useRef<HTMLDivElement>(null);
-  const solThoughtRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isAtriaActive && atriaThoughtRef.current) {
-      atriaThoughtRef.current.scrollTop = atriaThoughtRef.current.scrollHeight;
-    }
-  }, [validAtriaThought, isAtriaActive]);
+  // Auto-scroll suave para seguir o streaming ao vivo do raciocínio do Brain
+  const brainThoughtRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isSolActive && solThoughtRef.current) {
-      solThoughtRef.current.scrollTop = solThoughtRef.current.scrollHeight;
+    if (isBrainActive && brainThoughtRef.current) {
+      brainThoughtRef.current.scrollTop = brainThoughtRef.current.scrollHeight;
     }
-  }, [validSolThought, isSolActive]);
+  }, [validBrainThought, isBrainActive]);
 
   // Reatividade estilo Antigravity: aberto por padrão durante atividade de raciocínio
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(true);
@@ -300,19 +304,18 @@ export function AutoPilotActivityIndicator({
   const lastThoughtsRef = useRef<string>("");
 
   useEffect(() => {
-    // Quando uma nova fase ativa começar ou novos pensamentos chegarem, auto-expande reativamente
     const currentPhase = activity?.phase;
-    const thoughtsKey = `${validAtriaThought || ""}_${validSolThought || ""}`;
+    const thoughtsKey = validBrainThought || "";
 
     if (
-      (currentPhase && currentPhase !== lastPhaseRef.current && ["atria", "sol", "search", "typing"].includes(currentPhase)) ||
+      (currentPhase && currentPhase !== lastPhaseRef.current && ["brain", "atria", "sol", "search", "typing"].includes(currentPhase)) ||
       (thoughtsKey && thoughtsKey !== lastThoughtsRef.current)
     ) {
       lastPhaseRef.current = currentPhase;
       lastThoughtsRef.current = thoughtsKey;
       setIsThinkingExpanded(true);
     }
-  }, [activity?.phase, validAtriaThought, validSolThought]);
+  }, [activity?.phase, validBrainThought]);
 
   useEffect(() => {
     setRemainingSeconds(calcInitialCountdown());
@@ -473,7 +476,7 @@ export function AutoPilotActivityIndicator({
 
   // VARIANTE FLOATING (Cápsula Flutuante sobre o Chat - Estilo Antigravity Reativo)
   const isAudioPreview = currentPreview?.startsWith("[audio:");
-  const shouldShowReasoningSection = Boolean(hasThoughts || isAtriaActive || isSolActive || validAtriaThought || validSolThought);
+  const shouldShowReasoningSection = Boolean(hasThoughts || isBrainActive || validBrainThought);
 
   return (
     <div className="w-full select-none animate-in fade-in slide-in-from-bottom-2 duration-200">
@@ -485,10 +488,8 @@ export function AutoPilotActivityIndicator({
             <span
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border transition-all duration-300",
-                isAtriaActive
-                  ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300 shadow-sm shadow-cyan-500/20"
-                  : isSolActive
-                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm shadow-amber-500/20"
+                isBrainActive
+                  ? "bg-purple-500/20 border-purple-500/50 text-purple-300 shadow-sm shadow-purple-500/20"
                   : isTypingOrSending
                   ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300 shadow-sm shadow-emerald-500/20"
                   : isCompleted
@@ -563,11 +564,11 @@ export function AutoPilotActivityIndicator({
                   "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-semibold active:scale-95 transition-all cursor-pointer border",
                   isThinkingExpanded
                     ? "bg-zinc-800/80 text-zinc-300 border-zinc-700 hover:bg-zinc-700"
-                    : "bg-cyan-500/15 text-cyan-300 border-cyan-500/35 hover:bg-cyan-500/25"
+                    : "bg-purple-500/15 text-purple-300 border-purple-500/35 hover:bg-purple-500/25"
                 )}
-                title="Alternar visão de raciocínio da Atria e do Sol"
+                title="Alternar visão de raciocínio do Brain"
               >
-                <BrainCircuit className="h-3 w-3 text-cyan-400" />
+                <BrainCircuit className="h-3 w-3 text-purple-400" />
                 <span>{isThinkingExpanded ? "Recolher" : "Raciocínio"}</span>
                 {isThinkingExpanded ? (
                   <ChevronUp className="h-2.5 w-2.5 ml-0.5" />
@@ -579,46 +580,28 @@ export function AutoPilotActivityIndicator({
           </div>
         </div>
 
-        {/* Stepper Cognitivo dos Agentes - Estilo Antigravity */}
+        {/* Stepper Cognitivo do Brain - Fluxo Canônico Brain -> Envio */}
         {isWorking && (
-          <div className="grid grid-cols-3 gap-1.5 p-1 bg-black/50 rounded-xl border border-zinc-800/70 mt-2.5 text-[10px]">
-            {/* Etapa 1: Atria */}
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/50 rounded-xl border border-zinc-800/70 mt-2.5 text-[10px]">
+            {/* Etapa 1: Brain */}
             <div
               className={cn(
                 "flex items-center justify-center gap-1 py-1 px-1.5 rounded-lg font-medium transition-all text-center truncate",
-                isAtriaActive
-                  ? "bg-cyan-500/20 text-cyan-200 border border-cyan-500/50 font-bold animate-pulse"
-                  : isAtriaDone
-                  ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/25"
+                isBrainActive
+                  ? "bg-purple-500/20 text-purple-200 border border-purple-500/50 font-bold animate-pulse"
+                  : isBrainDone
+                  ? "bg-purple-500/10 text-purple-300 border border-purple-500/25"
                   : "text-zinc-500"
               )}
             >
               <BrainCircuit className="h-3 w-3 shrink-0" />
-              <span className="truncate">1. Atria</span>
-              {isAtriaDone && !isAtriaActive && (
-                <Check className="h-2.5 w-2.5 text-cyan-400 shrink-0 ml-0.5" />
+              <span className="truncate">1. Brain</span>
+              {isBrainDone && !isBrainActive && (
+                <Check className="h-2.5 w-2.5 text-purple-400 shrink-0 ml-0.5" />
               )}
             </div>
 
-            {/* Etapa 2: Sol */}
-            <div
-              className={cn(
-                "flex items-center justify-center gap-1 py-1 px-1.5 rounded-lg font-medium transition-all text-center truncate",
-                isSolActive
-                  ? "bg-amber-500/20 text-amber-200 border border-amber-500/50 font-bold animate-pulse"
-                  : isSolDone
-                  ? "bg-amber-500/10 text-amber-300 border border-amber-500/25"
-                  : "text-zinc-500"
-              )}
-            >
-              <Sparkles className="h-3 w-3 shrink-0" />
-              <span className="truncate">2. Sol</span>
-              {isSolDone && !isSolActive && (
-                <Check className="h-2.5 w-2.5 text-amber-400 shrink-0 ml-0.5" />
-              )}
-            </div>
-
-            {/* Etapa 3: Envio */}
+            {/* Etapa 2: Envio */}
             <div
               className={cn(
                 "flex items-center justify-center gap-1 py-1 px-1.5 rounded-lg font-medium transition-all text-center truncate",
@@ -630,7 +613,7 @@ export function AutoPilotActivityIndicator({
               )}
             >
               <Send className="h-3 w-3 shrink-0" />
-              <span className="truncate">3. Envio</span>
+              <span className="truncate">2. Envio</span>
               {isSendingDone && !isTypingOrSending && (
                 <Check className="h-2.5 w-2.5 text-emerald-400 shrink-0 ml-0.5" />
               )}
@@ -718,114 +701,62 @@ export function AutoPilotActivityIndicator({
           </div>
         )}
 
-        {/* Pensamentos Reativos da Atria e do Sol (Estilo Antigravity) */}
+        {/* Pensamento Reativo do Brain (Estilo Antigravity) */}
         {shouldShowReasoningSection && isThinkingExpanded && (
           <div className="mt-2.5 space-y-2 border-t border-zinc-800/80 pt-2.5 text-xs animate-in fade-in duration-200">
-            
-            {/* Bloco Atria (Estrategista) */}
-            {(isAtriaActive || validAtriaThought) && (
+            {/* Bloco Brain (Raciocínio & Decisão) */}
+            {(isBrainActive || validBrainThought) && (
               <div
                 className={cn(
                   "rounded-xl border p-2.5 transition-all duration-200",
-                  isAtriaActive
-                    ? "border-cyan-500/40 bg-cyan-950/20 shadow-inner"
-                    : "border-cyan-500/25 bg-cyan-950/15"
+                  isBrainActive
+                    ? "border-purple-500/40 bg-purple-950/20 shadow-inner"
+                    : "border-purple-500/25 bg-purple-950/15"
                 )}
               >
                 <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-cyan-300 text-[10px] uppercase tracking-wider">
-                    <Bot className="h-3.5 w-3.5 text-cyan-400" />
-                    <span>Atria • Estrategista</span>
+                  <div className="flex items-center gap-1.5 font-bold text-purple-300 text-[10px] uppercase tracking-wider">
+                    <BrainCircuit className="h-3.5 w-3.5 text-purple-400" />
+                    <span>Brain • Raciocínio & Decisão</span>
                   </div>
-                  {isAtriaActive ? (
-                    <span className="text-[9px] font-semibold text-cyan-300 bg-cyan-500/20 px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse">
+                  {isBrainActive ? (
+                    <span className="text-[9px] font-semibold text-purple-300 bg-purple-500/20 px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse">
                       <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                      {validAtriaThought ? "Analisando ao vivo..." : "Analisando..."}
+                      {validBrainThought ? "Raciocinando ao vivo..." : "Processando..."}
                     </span>
-                  ) : isFailed && validAtriaThought ? (
+                  ) : isFailed && validBrainThought ? (
                     <span className="text-[9px] font-medium text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <X className="h-2.5 w-2.5 text-rose-400" />
-                      Rascunho descartado
+                      Falha na execução
                     </span>
-                  ) : validAtriaThought ? (
-                    <span className="text-[9px] font-medium text-cyan-400/90 bg-cyan-500/10 border border-cyan-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <Check className="h-2.5 w-2.5 text-cyan-400" />
-                      Estratégia traçada
+                  ) : validBrainThought ? (
+                    <span className="text-[9px] font-medium text-purple-400/90 bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Check className="h-2.5 w-2.5 text-purple-400" />
+                      Decisão formulada
                     </span>
                   ) : null}
                 </div>
 
-                {validAtriaThought ? (
+                {validBrainThought ? (
                   <div
-                    ref={atriaThoughtRef}
+                    ref={brainThoughtRef}
                     className="text-[11px] leading-relaxed text-zinc-300 whitespace-pre-wrap font-sans max-h-40 overflow-y-auto pr-1 select-text scrollbar-thin scrollbar-thumb-zinc-700"
                   >
-                    {validAtriaThought}
-                    {isAtriaActive && (
-                      <span className="inline-block w-1.5 h-3 ml-1 bg-cyan-400 animate-pulse align-middle rounded-sm" />
+                    {validBrainThought}
+                    {isBrainActive && (
+                      <span className="inline-block w-1.5 h-3 ml-1 bg-purple-400 animate-pulse align-middle rounded-sm" />
                     )}
                   </div>
-                ) : isAtriaActive ? (
-                  <p className="text-[11px] leading-relaxed text-cyan-200/80 italic">
+                ) : isBrainActive ? (
+                  <p className="text-[11px] leading-relaxed text-purple-200/80 italic">
                     {phase === "search" ? (
-                      <span className="flex items-center gap-1 text-cyan-300">
+                      <span className="flex items-center gap-1 text-purple-300">
                         <Search className="h-3 w-3 animate-spin" />
-                        Pesquisando informações na web sobre termos citados pelo pretendente...
+                        Consultando memórias remotas e contexto para fundamentar a decisão...
                       </span>
                     ) : (
-                      "Analisando histórico, contexto do pretendente e definindo diretrizes..."
+                      "Analisando contexto, memórias e formulando resposta em turno único..."
                     )}
-                  </p>
-                ) : null}
-              </div>
-            )}
-
-            {/* Bloco Sol (Voz da Larissa) */}
-            {(isSolActive || validSolThought) && (
-              <div
-                className={cn(
-                  "rounded-xl border p-2.5 transition-all duration-200",
-                  isSolActive
-                    ? "border-amber-500/40 bg-amber-950/20 shadow-inner"
-                    : "border-amber-500/25 bg-amber-950/15"
-                )}
-              >
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-300 text-[10px] uppercase tracking-wider">
-                    <Zap className="h-3.5 w-3.5 text-amber-400" />
-                    <span>Sol • Voz da Larissa</span>
-                  </div>
-                  {isSolActive ? (
-                    <span className="text-[9px] font-semibold text-amber-300 bg-amber-500/20 px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse">
-                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                      {validSolThought ? "Redigindo ao vivo..." : "Redigindo..."}
-                    </span>
-                  ) : isFailed && validSolThought ? (
-                    <span className="text-[9px] font-medium text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <X className="h-2.5 w-2.5 text-rose-400" />
-                      Rascunho descartado
-                    </span>
-                  ) : validSolThought ? (
-                    <span className="text-[9px] font-medium text-amber-400/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <Check className="h-2.5 w-2.5 text-amber-400" />
-                      Persona calibrada
-                    </span>
-                  ) : null}
-                </div>
-
-                {validSolThought ? (
-                  <div
-                    ref={solThoughtRef}
-                    className="text-[11px] leading-relaxed text-zinc-300 whitespace-pre-wrap font-sans max-h-40 overflow-y-auto pr-1 select-text scrollbar-thin scrollbar-thumb-zinc-700"
-                  >
-                    {validSolThought}
-                    {isSolActive && (
-                      <span className="inline-block w-1.5 h-3 ml-1 bg-amber-400 animate-pulse align-middle rounded-sm" />
-                    )}
-                  </div>
-                ) : isSolActive ? (
-                  <p className="text-[11px] leading-relaxed text-amber-200/80 italic">
-                    Incorporando o estilo e o vocabulário da Larissa, calibrando gírias e respostas humanas...
                   </p>
                 ) : null}
               </div>

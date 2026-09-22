@@ -6,6 +6,7 @@ import { SupabaseVaultRepository } from "@/infrastructure/repositories/SupabaseV
 import { ManageChatStagesUseCase } from "@/application/use-cases/ManageChatStagesUseCase";
 import { ManageChatProgressUseCase, ChatStageDetail } from "@/application/use-cases/ManageChatProgressUseCase";
 import { ChatStage, ChatProgress } from "@/domain/entities/ChatStage";
+import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { toast } from "sonner";
 
 const stageRepository = new SupabaseChatStageRepository();
@@ -70,12 +71,42 @@ export function useChatStages(activeConversationId?: string) {
   }, [refresh]);
 
   useEffect(() => {
-    if (activeConversationId) {
-      fetchChatDetail(activeConversationId);
-    } else {
+    if (!activeConversationId) {
       setChatDetail(null);
+      return;
     }
-  }, [activeConversationId, fetchChatDetail]);
+
+    fetchChatDetail(activeConversationId);
+
+    // Subscrição Realtime para atualizar instantaneamente o progresso da etapa na conversa ativa
+    if (typeof window === "undefined") return;
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+
+    const channelName = `realtime-chat-stage-${activeConversationId}`;
+    const channel = client
+      .channel(channelName)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "instagram_conversations",
+        },
+        (payload: { new: Record<string, any> }) => {
+          const row = payload.new;
+          if (row && (row.id === activeConversationId || row.contact_id === activeConversationId)) {
+            fetchChatDetail(activeConversationId);
+            fetchAllProgresses();
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, [activeConversationId, fetchChatDetail, fetchAllProgresses]);
 
   // Ações de Gestão de Etapas
   const createStage = async (data: {
@@ -264,13 +295,14 @@ export function useChatStages(activeConversationId?: string) {
           );
           const totalObjs = newObjs.length;
           const compCount = newObjs.filter((o) => o.status === "completed").length;
-          const reqPending = newObjs.filter((o) => o.required && o.status !== "completed").length;
+          const reqPending = newObjs.filter((o) => o.status !== "completed").length;
           return {
             ...prev,
             objectives: newObjs,
             completedObjectivesCount: compCount,
             requiredPendingCount: reqPending,
-            is100Percent: totalObjs > 0 ? reqPending === 0 : prev.is100Percent,
+            optionalPendingCount: 0,
+            is100Percent: totalObjs > 0 ? compCount === totalObjs : prev.is100Percent,
           };
         });
       }

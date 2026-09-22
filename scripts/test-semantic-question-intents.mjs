@@ -26,7 +26,7 @@ import {
   validateBackendQuestionIntentGuard,
   normalizeQuestionTextForExactRepeat,
   formatRecentQuestionIntentsSnippet,
-} from "../supabase/functions/api/experimental_orchestrator.ts";
+} from "../supabase/functions/api/brain_orchestrator.ts";
 import {
   validateQuestionIntentsInvariant,
   buildOpenAiBrainContextMessage,
@@ -357,7 +357,7 @@ async function runSuite() {
   // ---------------------------------------------------------------------------
   console.log("\n--- 10. INSTRUÇÕES DO AGENT E PRESERVAÇÃO DE GATES ---");
   const instructions = buildCanonicalAgentInstructions();
-  assert("Instruções contêm versão 2.2.0", instructions.includes("2.2.0"));
+  assert(`Instruções contêm versão ${VENDEO_AGENT_INSTRUCTIONS_VERSION}`, instructions.includes(VENDEO_AGENT_INSTRUCTIONS_VERSION));
   assert("Instruções contêm IMMEDIATE-TURN CONTINUITY GATE", instructions.includes("IMMEDIATE-TURN CONTINUITY GATE"));
   assert("Instruções contêm SEMANTIC QUESTION INTENTS", instructions.includes("SEMANTIC QUESTION INTENTS"));
   assert("Instruções preservam DISCOVERY-QUESTION MEMORY GATE", instructions.includes("DISCOVERY-QUESTION MEMORY GATE"));

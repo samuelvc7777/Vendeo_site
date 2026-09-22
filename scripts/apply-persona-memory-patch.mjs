@@ -39,13 +39,13 @@ const SUPABASE_PROJECTS = [
     id: 'wsdualhvopidgqcumonr',
     name: 'App Principal (Vendeo Social)',
     url: process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://wsdualhvopidgqcumonr.supabase.co',
-    serviceKey: process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndzZHVhbGh2b3BpZGdxY3Vtb25yIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwODM4OSwiZXhwIjoyMTA0NDg0Mzg5fQ.ebpH41NJdrNgRbgch4ciTxTS6SppRRoJzSPoyEmN2MU',
+    serviceKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   },
   {
     id: 'pdhtgzwfbqygflzbwdkt',
     name: 'Edge Functions / Worker (vendeo_site)',
     url: 'https://pdhtgzwfbqygflzbwdkt.supabase.co',
-    serviceKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkaHRnendmYnF5Z2ZsemJ3ZGt0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwMjE5NiwiZXhwIjoyMTA0NDc4MTk2fQ.uq18UHD5WbOPIV7zEFh0EvLI9sO0I74WpBo-0SEuPa8',
+    serviceKey: process.env.LEGACY_SUPABASE_SERVICE_ROLE_KEY || '',
   }
 ];
 
