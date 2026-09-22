@@ -110,11 +110,18 @@ import {
   buildOpenAiBrainContextMessage,
   type OpenAiBrainTurnResult,
 } from "./openai_brain.ts";
+import {
+  LARISSA_INTERACTION_DNA_VERSION,
+  LARISSA_INTERACTION_DNA_HASH,
+  formatRecentStyleStateForPrompt,
+} from "./larissa_interaction_dna.ts";
 export {
   runOpenAiBrainTurn,
   executePersonaMemoryTool,
   PERSONA_MEMORY_TOOL_DEFINITION,
   buildOpenAiBrainContextMessage,
+  LARISSA_INTERACTION_DNA_VERSION,
+  LARISSA_INTERACTION_DNA_HASH,
 };
 
 /**
@@ -6655,7 +6662,32 @@ export async function runExperimentalOrchestration(
     const tokenMeasurements = new Set<"provider" | "estimated">();
 
     if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
-    if (brainUsedContactMemory) brainMemorySourcesUsed.add("contact_memory");
+    // Estilo e orçamentos de emoji antecipados para alimentar o Agent Terra no turno único
+    const recentLarissaOutbounds: string[] = [];
+    try {
+      const { data: recentMsgs } = await supabase
+        .from("instagram_messages")
+        .select("message, text, is_from_me, sender_id, created_at")
+        .eq("conversation_id", conversationId)
+        .or("is_from_me.eq.true,sender_id.eq.me,sender_id.eq.larissa")
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      if (recentMsgs && recentMsgs.length > 0) {
+        for (const m of recentMsgs) {
+          const txt = m.text || m.message || "";
+          if (txt && typeof txt === "string" && txt.trim()) {
+            recentLarissaOutbounds.push(txt.trim());
+          }
+        }
+      }
+    } catch {}
+
+    const recentStyleState = extractRecentStyleState(recentLarissaOutbounds);
+    const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds, {
+      emojiRecentHistory: recentStyleState.emoji_recent_history,
+    });
+    const recentStyleSnippet = formatRecentStyleStateForPrompt(recentStyleState, emojiBudgetInfo);
 
     // Loop do Brain (máximo 2 buscas de memória/histórico + máximo 1 de cofre)
     const MAX_BRAIN_SEARCHES = BRAIN_ORCHESTRATION_BUDGETS.brain_max_memory_searches;
@@ -6699,12 +6731,16 @@ export async function runExperimentalOrchestration(
           agentId,
           runtime,
           strictOpenAiPilot: isStrict,
+          recentStyleStateSnippet: recentStyleSnippet,
         });
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
           brainPlan = openAiBrainTurn.plan;
           currentCycle.brainModel = "gpt-5.6-terra";
           currentCycle.trace.push("brain_model: gpt-5.6-terra");
+          currentCycle.trace.push(`interaction_dna_version: ${LARISSA_INTERACTION_DNA_VERSION}`);
+          currentCycle.trace.push(`interaction_dna_hash: ${LARISSA_INTERACTION_DNA_HASH}`);
+          currentCycle.trace.push(`recent_style_state_applied: ${Boolean(recentStyleSnippet)}`);
           brainInputTokens += openAiBrainTurn.telemetry.inputTokens;
           brainOutputTokens += openAiBrainTurn.telemetry.outputTokens;
           totalTokens += openAiBrainTurn.telemetry.totalTokens;
@@ -7021,32 +7057,6 @@ export async function runExperimentalOrchestration(
       currentCycle.trace.push(`subagent_definition_name=${subagentDef.name}`);
       currentCycle.trace.push(`subagent_mission_source=${subagentMissionSource}`);
       currentCycle.trace.push(`subagent_mission_hash=${subagentMissionHash}`);
-      // Estilo e orçamentos de emoji para a execução
-      const recentLarissaOutbounds: string[] = [];
-      try {
-        const { data: recentMsgs } = await supabase
-          .from("instagram_messages")
-          .select("message, text, is_from_me, sender_id, created_at")
-          .eq("conversation_id", conversationId)
-          .or("is_from_me.eq.true,sender_id.eq.me,sender_id.eq.larissa")
-          .order("created_at", { ascending: false })
-          .limit(5);
-
-        if (recentMsgs && recentMsgs.length > 0) {
-          for (const m of recentMsgs) {
-            const txt = m.text || m.message || "";
-            if (txt && typeof txt === "string" && txt.trim()) {
-              recentLarissaOutbounds.push(txt.trim());
-            }
-          }
-        }
-      } catch {}
-
-      const recentStyleState = extractRecentStyleState(recentLarissaOutbounds);
-      const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds, {
-        emojiRecentHistory: recentStyleState.emoji_recent_history,
-      });
-
       const candidateAudiosSnippet = missionPkg.candidateAudios?.map((audio) =>
         `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
       ).join("\n") || "";

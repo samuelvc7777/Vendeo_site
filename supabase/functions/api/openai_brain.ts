@@ -8,6 +8,10 @@ import {
   formatPersonaMemoryForToolOutput,
   type PersonaMemoryCompactToolOutput,
 } from "./persona_memory.ts";
+import {
+  LARISSA_INTERACTION_DNA_VERSION,
+  LARISSA_INTERACTION_DNA_HASH,
+} from "./larissa_interaction_dna.ts";
 
 export interface OpenAiBrainToolDefinition {
   type: "function";
@@ -268,6 +272,7 @@ export interface RunOpenAiBrainParams {
   candidateEvidence?: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }>;
   schemaRetryCount?: number;
   schemaFeedback?: string;
+  recentStyleStateSnippet?: string;
 }
 
 export interface OpenAiBrainTurnResult {
@@ -288,6 +293,10 @@ export interface OpenAiBrainTurnResult {
     totalTokens: number;
     sourcesUsed: string[];
     finalPlanParsed?: boolean;
+    interactionDnaApplied?: boolean;
+    interactionDnaVersion?: string;
+    interactionDnaHash?: string;
+    recentStyleStateApplied?: boolean;
   };
 }
 
@@ -303,6 +312,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     landmarksSummary,
     liveStateContext,
     availableSubagents,
+    recentStyleStateSnippet,
   } = params;
 
   const sections: string[] = [
@@ -341,6 +351,10 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     (s) => `- ID: "${s.id}" | Nome: "${s.name}" | Missão: ${s.mission}`
   );
   sections.push(`\n## SUBAGENTES DISPONÍVEIS\n${subagentCards.join("\n")}`);
+
+  if (recentStyleStateSnippet && recentStyleStateSnippet.trim()) {
+    sections.push(`\n${recentStyleStateSnippet.trim()}`);
+  }
 
   sections.push(
     `\n## INSTRUÇÃO DE DECISÃO E REGRAS MANDATÓRIAS
@@ -471,6 +485,10 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     totalTokens: 0,
     sourcesUsed: [],
     actualMemoryToolCalled: false,
+    interactionDnaApplied: true,
+    interactionDnaVersion: LARISSA_INTERACTION_DNA_VERSION,
+    interactionDnaHash: LARISSA_INTERACTION_DNA_HASH,
+    recentStyleStateApplied: Boolean(params.recentStyleStateSnippet),
   };
 
   const contextMessage = buildOpenAiBrainContextMessage(params);
