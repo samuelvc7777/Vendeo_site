@@ -27,11 +27,15 @@ export async function publishAutoPilotState(
       isEnabled: true,
       status: "idle",
     };
-    const stateUpdatedAt = new Date().toISOString();
     const updated = {
       ...current,
-      isEnabled: patch.isEnabled !== undefined ? patch.isEnabled : true,
       ...patch,
+      isEnabled:
+        patch.isEnabled !== undefined
+          ? patch.isEnabled
+          : current.isEnabled !== undefined
+          ? current.isEnabled
+          : true,
       conversationId,
       stateUpdatedAt,
     };

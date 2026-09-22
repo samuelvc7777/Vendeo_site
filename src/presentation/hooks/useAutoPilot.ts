@@ -86,12 +86,23 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
 
   const toggleAutoPilotForChat = useCallback(async (conversationId: string, forceState?: boolean) => {
     const isEnabled = forceState ?? !chatStatesRef.current[conversationId]?.isEnabled;
+    const nowIso = new Date().toISOString();
     const updated = await autoPilotRepo.saveChatState(conversationId, {
-      isEnabled, enabledAt: isEnabled ? new Date().toISOString() : undefined,
-      status: isEnabled ? "idle" : "disabled", pauseReason: undefined, pausedAt: undefined,
+      isEnabled,
+      enabledAt: isEnabled ? nowIso : undefined,
+      status: isEnabled ? "idle" : "disabled",
+      pauseReason: isEnabled ? undefined : "paused_manual",
+      pausedAt: isEnabled ? undefined : nowIso,
     });
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-    toast.success(isEnabled ? "Piloto Automático ativado no backend." : "Piloto Automático desativado.");
+    toast.success(isEnabled ? "Piloto Automático ativado neste chat." : "Piloto Automático desativado neste chat.");
+
+    // Sincroniza via endpoint oficial do backend para garantir travas atômicas na nuvem
+    void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId, isEnabled }),
+    }).catch((err) => console.warn("Aviso ao notificar toggle-chat:", err));
 
     if (isEnabled) {
       void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/trigger", {
@@ -104,6 +115,12 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
           toast.info("A IA já começou a responder a mensagem pendente deste contato!");
         }
       }).catch((err) => console.warn("Aviso ao disparar trigger de ativação:", err));
+    } else {
+      void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/pause", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId }),
+      }).catch((err) => console.warn("Aviso ao pausar no backend:", err));
     }
 
     return updated;

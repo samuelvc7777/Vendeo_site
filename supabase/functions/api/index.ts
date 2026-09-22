@@ -1001,16 +1001,43 @@ serve(async (req: Request) => {
                 // 2. Busca estado da conversa para checar pausas e restrições
                 const { data: convRow } = await supabase
                   .from("instagram_conversations")
-                  .select("status, is_restricted, stage_completed_rules, ai_debounce_until")
+                  .select("status, is_restricted, stage_completed_rules, ai_debounce_until, ai_auto_respond")
                   .eq("id", conversationId)
                   .maybeSingle();
+
+                // 2.1 Também checa no __autopilot_states__ para garantir que desativações no chat sejam honradas
+                const { data: statesRow } = await supabase
+                  .from("instagram_conversations")
+                  .select("stage_completed_rules")
+                  .eq("id", "__autopilot_states__")
+                  .maybeSingle();
+                const chatStateInCloud = statesRow?.stage_completed_rules?.states?.[conversationId];
+                const isExplicitlyDisabled =
+                  chatStateInCloud?.isEnabled === false ||
+                  chatStateInCloud?.status === "disabled" ||
+                  chatStateInCloud?.status === "paused_manual";
 
                 const convRules = convRow?.stage_completed_rules || {};
                 const isPaused =
                   convRules.status === "paused_manual" ||
                   convRules.status === "paused_handoff" ||
                   convRules.status === "paused_guardrail" ||
+                  convRules.status === "disabled" ||
+                  convRow?.ai_auto_respond === false ||
+                  isExplicitlyDisabled ||
                   convRow?.is_restricted === true;
+
+                if (isPaused) {
+                  console.log(
+                    `[AutoPilot] Conversa ${conversationId} está desativada/pausada manualmente (ai_auto_respond=${convRow?.ai_auto_respond}, status=${convRules.status}, isExplicitlyDisabled=${isExplicitlyDisabled}). Não respondendo.`
+                  );
+                  if (convRow?.ai_debounce_until) {
+                    await supabase
+                      .from("instagram_conversations")
+                      .update({ ai_debounce_until: null })
+                      .eq("id", conversationId);
+                  }
+                }
 
                 // BRAIN: Único orquestrador oficial de produção (fail-closed)
                 if (!isPaused && isEnabledGlobally && !isManual) {
@@ -4060,19 +4087,24 @@ serve(async (req: Request) => {
           .eq("id", "__autopilot_states__")
           .maybeSingle();
         const states = statesRow?.stage_completed_rules?.states || {};
-        const current = states[conversationId] || { conversationId, isEnabled: true };
+        const current = states[conversationId] || { conversationId, isEnabled: false };
+        const nowIso = new Date().toISOString();
         const updated = {
           ...current,
-          status: "idle",
+          isEnabled: false,
+          status: "disabled",
+          pauseReason: "paused_manual",
+          pausedAt: nowIso,
           activity: null,
-          updatedAt: new Date().toISOString(),
+          scheduledResponseAt: null,
+          updatedAt: nowIso,
         };
         states[conversationId] = updated;
         await supabase.from("instagram_conversations").upsert({
           id: "__autopilot_states__",
           username: "system_autopilot_states",
-          stage_completed_rules: { states, updated_at: new Date().toISOString() },
-          updated_at: new Date().toISOString(),
+          stage_completed_rules: { states, updated_at: nowIso },
+          updated_at: nowIso,
         });
 
         // 3. Emite broadcast Realtime
@@ -4080,7 +4112,7 @@ serve(async (req: Request) => {
         await rt.send({
           type: "broadcast",
           event: "autopilot_state_update",
-          payload: { ...updated, timestamp: new Date().toISOString() },
+          payload: { ...updated, timestamp: nowIso },
         });
 
         return new Response(JSON.stringify({ success: true, detail: "Ciclo pausado pelo operador." }), {
@@ -4088,6 +4120,107 @@ serve(async (req: Request) => {
         });
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro ao pausar" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Rota atômica para ATIVAR OU DESATIVAR o Piloto Automático em um chat específico
+    if ((path === "/autopilot/toggle-chat" || path === "/api/autopilot/toggle-chat") && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = body?.conversationId;
+        const isEnabled = Boolean(body?.isEnabled);
+        if (!conversationId) {
+          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: convRow } = await supabase
+          .from("instagram_conversations")
+          .select("stage_completed_rules")
+          .eq("id", conversationId)
+          .maybeSingle();
+
+        const currentRules = convRow?.stage_completed_rules || {};
+
+        if (!isEnabled) {
+          // Desativar: trava atômica imediata
+          await supabase
+            .from("instagram_conversations")
+            .update({
+              ai_debounce_until: null,
+              ai_auto_respond: false,
+              stage_completed_rules: {
+                ...currentRules,
+                cancel_current_cycle: true,
+                status: "paused_manual",
+              },
+            })
+            .eq("id", conversationId);
+        } else {
+          // Ativar: remove pausas manuais
+          const cleanRules = { ...currentRules };
+          if (cleanRules.status === "paused_manual") {
+            delete cleanRules.status;
+          }
+          delete cleanRules.cancel_current_cycle;
+
+          await supabase
+            .from("instagram_conversations")
+            .update({
+              ai_auto_respond: true,
+              stage_completed_rules: cleanRules,
+            })
+            .eq("id", conversationId);
+        }
+
+        // Atualiza __autopilot_states__
+        const { data: statesRow } = await supabase
+          .from("instagram_conversations")
+          .select("stage_completed_rules")
+          .eq("id", "__autopilot_states__")
+          .maybeSingle();
+
+        const states = statesRow?.stage_completed_rules?.states || {};
+        const current = states[conversationId] || { conversationId, isEnabled: !isEnabled };
+        const nowIso = new Date().toISOString();
+        const updated = {
+          ...current,
+          isEnabled,
+          status: isEnabled ? "idle" : "disabled",
+          pauseReason: isEnabled ? undefined : "paused_manual",
+          pausedAt: isEnabled ? undefined : nowIso,
+          enabledAt: isEnabled ? nowIso : current.enabledAt,
+          activity: isEnabled ? current.activity : null,
+          scheduledResponseAt: isEnabled ? current.scheduledResponseAt : null,
+          updatedAt: nowIso,
+        };
+        states[conversationId] = updated;
+
+        await supabase.from("instagram_conversations").upsert({
+          id: "__autopilot_states__",
+          username: "system_autopilot_states",
+          stage_completed_rules: { states, updated_at: nowIso },
+          updated_at: nowIso,
+        });
+
+        // Broadcast Realtime para sincronizar imediatamente todas as abas
+        const rt = supabase.channel("vendeo_realtime_chat");
+        await rt.send({
+          type: "broadcast",
+          event: "autopilot_state_update",
+          payload: { ...updated, timestamp: nowIso },
+        });
+
+        return new Response(JSON.stringify({ success: true, isEnabled, detail: isEnabled ? "Piloto ativado no chat." : "Piloto desativado no chat." }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: unknown) {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no toggle-chat" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

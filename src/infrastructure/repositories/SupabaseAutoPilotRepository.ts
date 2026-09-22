@@ -352,6 +352,50 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
 
     all[conversationId] = updated;
     await this.persistStatesToCloud(all);
+
+    // Sincroniza atomicamente a linha individual da conversa para o webhook do backend honrar
+    const client = this.getClient();
+    if (client && typeof state.isEnabled === "boolean") {
+      try {
+        const { data: convRow } = await client
+          .from("instagram_conversations")
+          .select("stage_completed_rules")
+          .eq("id", conversationId)
+          .maybeSingle();
+
+        const currentRules = convRow?.stage_completed_rules || {};
+        if (state.isEnabled === false) {
+          await client
+            .from("instagram_conversations")
+            .update({
+              ai_auto_respond: false,
+              ai_debounce_until: null,
+              stage_completed_rules: {
+                ...currentRules,
+                status: "paused_manual",
+                cancel_current_cycle: true,
+              },
+            })
+            .eq("id", conversationId);
+        } else {
+          const cleanRules = { ...currentRules };
+          if (cleanRules.status === "paused_manual" || cleanRules.status === "disabled") {
+            delete cleanRules.status;
+          }
+          delete cleanRules.cancel_current_cycle;
+          await client
+            .from("instagram_conversations")
+            .update({
+              ai_auto_respond: true,
+              stage_completed_rules: cleanRules,
+            })
+            .eq("id", conversationId);
+        }
+      } catch (syncErr) {
+        console.warn("[AutoPilotRepo] Aviso ao sincronizar linha individual da conversa:", syncErr);
+      }
+    }
+
     return updated;
   }
 
