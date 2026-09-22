@@ -196,29 +196,48 @@ export function extractRecentStyleState(
   };
 }
 
+export interface EmojiBudgetOptions {
+  isSeriousContext?: boolean;
+  isAffectionateOrFlirtyOrComplex?: boolean;
+  emojiRecentHistory?: Array<string | null>;
+}
+
 /**
- * Calcula deterministicamente o orçamento de emoji com base nos últimos envios confirmados da Larissa.
+ * Calcula deterministicamente o orçamento de emoji com base no contexto do turno e histórico recente.
  * Regras:
- * A. Se o último outbound contém emoji: budget = 0
- * B. Se o último outbound não contém emoji: budget = 1 no máximo
- * C. Coleta recentEmojis dos turnos recentes
- * D. Se budget = 1, evita repetir emoji recente
- * E. Na maioria dos turnos, zero emoji continua sendo o comportamento padrão
+ * A. Se contexto for sério/delicado: budget = 0
+ * B. Se contexto for afetivo, flerte leve ou lote composto (2 a 4 balões): budget = 2 (teto máximo)
+ * C. Contexto normal: budget = 1 (padrão)
+ * D. REMOVIDO o hard block do turno anterior: ter emoji no último outbound NÃO zera o budget
+ * E. recentEmojis é mantido para garantir VARIEDADE (evitar repetir mecanicamente o mesmo emoji)
  */
 export function computeDynamicEmojiBudget(
-  recentOutbounds: Array<{ text?: string; content?: string; message?: string } | string>
+  recentOutbounds: Array<{ text?: string; content?: string; message?: string } | string>,
+  options?: EmojiBudgetOptions
 ): EmojiBudgetResult {
   const styleState = extractRecentStyleState(recentOutbounds);
-  const latestHadEmoji = styleState.emoji_recent_history.length > 0 && styleState.emoji_recent_history[0] !== null;
 
-  const budget = latestHadEmoji ? 0 : 1;
+  let budget = 1;
+  if (options?.isSeriousContext) {
+    budget = 0;
+  } else if (options?.isAffectionateOrFlirtyOrComplex) {
+    budget = 2;
+  } else {
+    budget = 1;
+  }
 
   let promptSnippet = `EMOJI_BUDGET=${budget}`;
   if (styleState.recent_emojis.length > 0) {
-    promptSnippet += `\nRECENT_EMOJIS=[${styleState.recent_emojis.join(", ")}]`;
+    promptSnippet += `\nRECENT_EMOJIS=[${styleState.recent_emojis.join(", ")}] (varie; evite repetir mecanicamente os mesmos emojis)`;
   }
   promptSnippet += `\nEMOJI_RECENT_HISTORY=${JSON.stringify(styleState.emoji_recent_history)}`;
-  promptSnippet += `\nEmoji é opcional neste turno. Máximo 1 se combinar naturalmente com a emoção/contexto. Não force e não repita mecanicamente emoji recente.`;
+  if (budget === 0) {
+    promptSnippet += `\nContexto sério ou delicado: zero emoji neste turno.`;
+  } else if (budget >= 2) {
+    promptSnippet += `\nEmoji é opcional neste turno. Podem aparecer até 2 emojis no turno se for momento afetivo, brincadeira, flerte leve ou lote composto de 2-4 balões. Não force e varie em relação aos recentes.`;
+  } else {
+    promptSnippet += `\nEmoji é opcional neste turno. Máximo 1 se combinar naturalmente com a emoção/contexto. Varie em relação aos recentes.`;
+  }
 
   return {
     budget,
@@ -463,17 +482,18 @@ export function runStyleLint(
   }
 
   // Regra 2: Violações de Emoji
+  const maxAllowedEmojis = Math.min(2, Math.max(1, emojiBudget));
   if (emojiBudget === 0 && totalEmojiCount > 0) {
     markRetry("EMOJI_BUDGET_ZERO", `Emoji usado (${emojisFoundInTurn.join(", ")}) com EMOJI_BUDGET=0.`);
-  } else if (totalEmojiCount > 1) {
-    markRetry("EXCESSO_EMOJIS", `Mais de 1 emoji detectado no turno (total: ${totalEmojiCount}).`);
+  } else if (totalEmojiCount > maxAllowedEmojis) {
+    markRetry("EXCESSO_EMOJIS", `Mais de ${maxAllowedEmojis} emoji(s) detectado no turno (total: ${totalEmojiCount}; teto do turno: ${maxAllowedEmojis}).`);
   }
 
-  // Regra 3: Emoji recente repetido
+  // Regra 3: Emoji recente repetido (evitar repetição mecânica do mesmo emoji)
   if (recentEmojis.length > 0 && emojisFoundInTurn.length > 0) {
     for (const em of emojisFoundInTurn) {
       if (recentEmojis.includes(em)) {
-        markRetry("EMOJI_REPETIDO", `Emoji recente repetido detectado: ${em}`);
+        markRetry("EMOJI_REPETIDO", `Emoji recente repetido detectado: ${em} (varie o emoji ou envie sem emoji).`);
         break;
       }
     }
@@ -576,8 +596,8 @@ export function runStyleLint(
            .replace(/\btrampo\b/gi, "trabalho")
            .replace(/\btrampar\b/gi, "trabalhar");
 
-      // Remove emojis se budget = 0, se for repetido ou se for excessivo
-      if (emojiBudget === 0 || i > 0) {
+      // Remove emojis se budget = 0 ou limpa emojis que estejam em recentEmojis
+      if (emojiBudget === 0) {
         b = b.replace(EMOJI_REGEX, "").trim();
       } else if (recentEmojis.length > 0) {
         for (const em of recentEmojis) {
