@@ -3,10 +3,12 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { searchPersonaMemory, formatPersonaMemoryForToolOutput } from "./_shared/persona_memory.ts";
+import { sanitizeMcpTelemetry, type SanitizedMcpTelemetry } from "./_shared/telemetry.ts";
+export { sanitizeMcpTelemetry, type SanitizedMcpTelemetry };
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, mcp-session-id, accept, x-vendeo-token",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, mcp-session-id, accept",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
 };
 
@@ -50,24 +52,6 @@ async function getExpectedMcpToken(supabaseUrl?: string, supabaseServiceKey?: st
 }
 
 serve(async (req: Request) => {
-  // Telemetria de auditoria em tempo real
-  try {
-    const sbUrl = Deno.env.get("SUPABASE_URL");
-    const sbKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (sbUrl && sbKey) {
-      const sb = createClient(sbUrl, sbKey);
-      await sb.from("instagram_config").upsert({
-        id: "last_mcp_telemetry",
-        app_secret: JSON.stringify({
-          at: new Date().toISOString(),
-          method: req.method,
-          url: req.url,
-          headers: Object.fromEntries(req.headers.entries()),
-        }),
-      });
-    }
-  } catch (_e) {}
-
   // 1. Tratamento de CORS Preflight
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -99,24 +83,33 @@ serve(async (req: Request) => {
     });
   }
 
-  // 3. Autenticacao Estrita: Headers prioritarios (Authorization Bearer ou X-Vendeo-Token)
-  // Fallback seguro via query string (?token=) para clientes remotos (como OpenAI Agents API) que nao propagam headers HTTP customizados
-  const authHeader = req.headers.get("Authorization") || req.headers.get("authorization") || "";
-  const customHeader = req.headers.get("X-Vendeo-Token") || req.headers.get("x-vendeo-token") || "";
+  // 3. Autenticação Estrita: ÚNICA SUPERFÍCIE (Authorization: Bearer <TOKEN>)
+  // Se vier ?token= na URL, rejeitar imediatamente com 401 (não processar nem logar o valor)
+  try {
+    const parsedUrl = new URL(req.url);
+    if (parsedUrl.searchParams.has("token")) {
+      console.warn("[MCP] Tentativa de acesso com ?token= rejeitada com 401 (proibido).");
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Unauthorized: query token authentication is deprecated and prohibited",
+          },
+          id: null,
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+  } catch (_e) {}
 
+  const authHeader = req.headers.get("Authorization") || req.headers.get("authorization") || "";
   let incomingToken = "";
   if (authHeader.startsWith("Bearer ")) {
     incomingToken = authHeader.slice(7).trim();
-  } else if (customHeader) {
-    incomingToken = customHeader.trim();
-  } else {
-    try {
-      const parsedUrl = new URL(req.url);
-      const queryToken = parsedUrl.searchParams.get("token") || "";
-      if (queryToken) {
-        incomingToken = queryToken.trim();
-      }
-    } catch {}
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -124,9 +117,9 @@ serve(async (req: Request) => {
 
   const expectedToken = await getExpectedMcpToken(supabaseUrl, supabaseServiceKey);
 
-  // Fail-closed: se o token de seguranca nao estiver configurado no servidor, rejeita com 500
+  // Fail-closed: se o token de segurança não estiver configurado no servidor, rejeita com 500
   if (!expectedToken) {
-    console.error("[MCP] Seguranca violada: VENDEO_BRAIN_MCP_TOKEN nao configurado no servidor.");
+    console.error("[MCP] Segurança violada: VENDEO_BRAIN_MCP_TOKEN não configurado no servidor.");
     return new Response(
       JSON.stringify({
         jsonrpc: "2.0",
@@ -143,15 +136,15 @@ serve(async (req: Request) => {
     );
   }
 
-  // Validacao de token recebido (timing-safe sem logar credenciais)
+  // Validação estrita: se não for Bearer token válido correspondente, rejeita com 401
   if (!incomingToken || incomingToken !== expectedToken) {
-    console.warn("[MCP] Tentativa de acesso nao autorizada ou token invalido detectada.");
+    console.warn("[MCP] Tentativa de acesso não autorizada (Bearer token ausente ou inválido).");
     return new Response(
       JSON.stringify({
         jsonrpc: "2.0",
         error: {
           code: -32000,
-          message: "Unauthorized: Invalid or missing Bearer token",
+          message: "Unauthorized: Valid Authorization Bearer token required",
         },
         id: null,
       }),
@@ -198,21 +191,16 @@ serve(async (req: Request) => {
 
   console.log(`[MCP] Request received: method=${method}, id=${id}`);
 
-  // Grava corpo detalhado da requisição na telemetria
+  // Grava telemetria ESTRITAMENTE SANITIZADA (NUNCA grava req.headers, fullBody ou URL com query)
   try {
     const sbUrl = Deno.env.get("SUPABASE_URL");
     const sbKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (sbUrl && sbKey) {
       const sb = createClient(sbUrl, sbKey);
+      const safeTelemetry = sanitizeMcpTelemetry(req, rpcBody);
       await sb.from("instagram_config").upsert({
         id: "last_mcp_telemetry_body",
-        app_secret: JSON.stringify({
-          at: new Date().toISOString(),
-          method,
-          id,
-          params,
-          fullBody: rpcBody,
-        }),
+        app_secret: JSON.stringify(safeTelemetry),
       });
     }
   } catch (_e) {}

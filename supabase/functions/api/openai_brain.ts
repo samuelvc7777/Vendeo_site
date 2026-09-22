@@ -69,6 +69,79 @@ export async function executePersonaMemoryTool(
   return output;
 }
 
+export interface PlanValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+export function validateConversationBrainPlan(
+  plan: any,
+  availableSubagents?: Array<{ id: string; name?: string; mission?: string }>
+): PlanValidationResult {
+  if (!plan || typeof plan !== "object") {
+    return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
+  }
+  if (plan.action !== "delegate_mission") {
+    return { valid: false, error: `Ação do plano deve ser 'delegate_mission', recebido: '${plan.action}'` };
+  }
+  if (!plan.responsibleSubagent || typeof plan.responsibleSubagent !== "string") {
+    return { valid: false, error: "responsibleSubagent ausente ou não é string" };
+  }
+  if (availableSubagents && availableSubagents.length > 0) {
+    const validIds = availableSubagents.map((s) => s.id);
+    if (!validIds.includes(plan.responsibleSubagent)) {
+      return {
+        valid: false,
+        error: `responsibleSubagent '${plan.responsibleSubagent}' não pertence aos subagentes disponíveis: [${validIds.join(", ")}]`,
+      };
+    }
+  }
+  if (!plan.missionPackage || typeof plan.missionPackage !== "object") {
+    return { valid: false, error: "missionPackage ausente ou inválido no plano" };
+  }
+  const turnContract = plan.missionPackage.turnContract;
+  if (!turnContract || typeof turnContract !== "object") {
+    return { valid: false, error: "turnContract ausente ou inválido em missionPackage" };
+  }
+  if (typeof turnContract.mustAnswerFirst !== "boolean") {
+    return { valid: false, error: "turnContract.mustAnswerFirst deve ser booleano" };
+  }
+  if (typeof turnContract.newQuestionBudget !== "number" || isNaN(turnContract.newQuestionBudget)) {
+    return { valid: false, error: "turnContract.newQuestionBudget deve ser numérico" };
+  }
+  if (!turnContract.responseShape || typeof turnContract.responseShape !== "string") {
+    return { valid: false, error: "turnContract.responseShape deve ser string não vazia" };
+  }
+  return { valid: true };
+}
+
+export function buildFallbackBrainPlan(
+  rawResponseText: string,
+  availableSubagents?: Array<{ id: string }>
+): any {
+  const targetSubagent = availableSubagents?.[0]?.id || "subagent_conexao_inicial";
+  return {
+    action: "delegate_mission",
+    responsibleSubagent: targetSubagent,
+    objectiveDecision: "none",
+    reasoning: (rawResponseText || "").slice(0, 300),
+    liveStatePatch: {},
+    missionPackage: {
+      subagentId: targetSubagent,
+      objectiveDirective: "none",
+      draftResponse: rawResponseText || "",
+      turnContract: {
+        directQuestions: [],
+        mustAnswerFirst: true,
+        newQuestionBudget: 1,
+        responseShape: "answer_and_reciprocate",
+        preferNoEmoji: false,
+        maxBalloons: 2,
+      },
+    },
+  };
+}
+
 export interface RunOpenAiBrainParams {
   supabase: any;
   conversationId: string;
@@ -85,6 +158,8 @@ export interface RunOpenAiBrainParams {
   apiKey?: string;
   signal?: AbortSignal;
   runtime?: any;
+  strictOpenAiPilot?: boolean;
+  vaultIds?: string[];
 }
 
 export interface OpenAiBrainTurnResult {
@@ -156,11 +231,16 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   sections.push(`\n## SUBAGENTES DISPONÍVEIS\n${subagentCards.join("\n")}`);
 
   sections.push(
-    `\n## INSTRUÇÃO DE DECISÃO
+    `\n## INSTRUÇÃO DE DECISÃO E REGRAS MANDATÓRIAS
 Você é o Conversation Brain da Larissa. Sua função é:
 1. Avaliar a intenção do pretendente nas novas mensagens.
 2. Se precisar de fatos sobre a vida, rotina, gostos, memórias ou opiniões da Larissa para reagir com autenticidade, USE A FERRAMENTA persona_memory_search. NÃO invente fatos.
-3. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
+3. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
+   - NUNCA declare nem deduza que a Larissa NÃO faz algo, NÃO gosta, NUNCA foi ou NÃO pratica uma atividade apenas pela ausência de fatos na PersonaMemory.
+   - Ausência de evidência NÃO é fato negativo!
+   - Se o pretendente mencionar ou convidar para um assunto que não consta nos fatos pesquisados (ex: motocross, aula de dança, esporte específico), oriente o subagente a reagir com curiosidade autêntica, receptividade ou charme descontraído (ex: 'nunca comentei disso por aqui!', 'me conta mais', 'acho o maior barato quem faz').
+   - JAMAIS declare categoricamente negações falsas como 'nunca andei de moto', 'não gosto disso' ou 'não pratico nada disso'.
+4. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
 {
   "action": "delegate_mission",
   "responsibleSubagent": "id_do_subagente",
@@ -243,7 +323,31 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry.durationMs = Date.now() - startTime;
       telemetry.totalTokens = mockResult.tokens || 100;
       telemetry.sessionId = mockResult.sessionId || `sess_runtime_${Date.now()}`;
-      telemetry.finalPlanParsed = true;
+
+      const validation = validateConversationBrainPlan(mockResult.plan, params.availableSubagents);
+      if (params.strictOpenAiPilot) {
+        if (!mockResult.plan || !validation.valid) {
+          const errMsg = `[OpenAI Agent Strict Mode Mock] Plano inválido ou ausente: ${validation.error || "plan_null"}`;
+          console.error(errMsg);
+          telemetry.finalPlanParsed = false;
+          telemetry.status = "failed";
+          return {
+            success: false,
+            plan: null,
+            error: errMsg,
+            telemetry,
+          };
+        }
+        telemetry.finalPlanParsed = true;
+      } else {
+        if (!mockResult.plan || !validation.valid) {
+          telemetry.finalPlanParsed = false;
+          console.warn(`[OpenAI Agent Mock] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
+          mockResult.plan = buildFallbackBrainPlan(typeof mockResult.plan === "string" ? mockResult.plan : "", params.availableSubagents);
+        } else {
+          telemetry.finalPlanParsed = true;
+        }
+      }
 
       return {
         success: true,
@@ -285,8 +389,19 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     console.log(`[OpenAI Agent] session_created: agentId=${agentId}`);
 
-    // Cria a sessão com o contexto compacto do turno
-    const sessionPayload = {
+    const defaultVaultId =
+      (typeof Deno !== "undefined"
+        ? Deno.env.get("OPENAI_MCP_VAULT_ID")
+        : process.env.OPENAI_MCP_VAULT_ID) ||
+      "vault_06e9b5cb8d2d4b0a9fb5bfcbd8700af3cfbe57dc729c4c4e8f";
+
+    const sessionVaultIds =
+      params.vaultIds && params.vaultIds.length > 0
+        ? params.vaultIds
+        : (defaultVaultId ? [defaultVaultId] : undefined);
+
+    // Cria a sessão com o contexto compacto do turno e associa o Vault para autenticação MCP
+    const sessionPayload: any = {
       agent_id: agentId,
       environment: { type: "none" },
       input: [
@@ -301,6 +416,10 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         },
       ],
     };
+
+    if (sessionVaultIds && sessionVaultIds.length > 0) {
+      sessionPayload.vault_ids = sessionVaultIds;
+    }
 
     const sessionRes = await fetch("https://api.openai.com/v1/agents/sessions", {
       method: "POST",
@@ -413,38 +532,34 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     let parsedPlan = extractJsonFromText(rawResponseText);
-    if (!parsedPlan || typeof parsedPlan !== "object" || !parsedPlan.action) {
-      // Se o Agent retornou texto conversacional autêntico em vez de JSON estruturado,
-      // sintetiza defensivamente o plano de delegação mantendo a resposta gerada
-      const targetSubagent =
-        params.availableSubagents?.[0]?.id || "subagent_conexao_inicial";
-      console.log(
-        `[OpenAI Agent] Resposta textual direta do Brain; sintetizando plano para subagente '${targetSubagent}'`
-      );
-      parsedPlan = {
-        action: "delegate_mission",
-        responsibleSubagent: targetSubagent,
-        objectiveDecision: "none",
-        reasoning: rawResponseText.slice(0, 300),
-        liveStatePatch: {},
-        missionPackage: {
-          subagentId: targetSubagent,
-          objectiveDirective: "none",
-          draftResponse: rawResponseText,
-          turnContract: {
-            directQuestions: [],
-            mustAnswerFirst: true,
-            newQuestionBudget: 1,
-            responseShape: "answer_and_reciprocate",
-            preferNoEmoji: false,
-            maxBalloons: 2,
-          },
-        },
-      };
-    }
+    const validation = validateConversationBrainPlan(parsedPlan, params.availableSubagents);
 
-    telemetry.finalPlanParsed = true;
-    console.log(`[OpenAI Agent] plan_validated: responsibleSubagent=${parsedPlan.responsibleSubagent || "indefinido"}`);
+    if (params.strictOpenAiPilot) {
+      if (!parsedPlan || !validation.valid) {
+        const errorMsg = `[OpenAI Agent Strict Mode] Plano inválido ou ausente retornado pelo Brain: ${validation.error || "JSON estruturado não encontrado"}`;
+        console.error(errorMsg);
+        telemetry.finalPlanParsed = false;
+        telemetry.status = "failed";
+        telemetry.durationMs = Date.now() - startTime;
+        return {
+          success: false,
+          plan: null,
+          error: errorMsg,
+          telemetry,
+        };
+      }
+      telemetry.finalPlanParsed = true;
+      console.log(`[OpenAI Agent] plan_validated: responsibleSubagent=${parsedPlan.responsibleSubagent}`);
+    } else {
+      if (!parsedPlan || !validation.valid) {
+        telemetry.finalPlanParsed = false;
+        console.warn(`[OpenAI Agent] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
+        parsedPlan = buildFallbackBrainPlan(rawResponseText, params.availableSubagents);
+      } else {
+        telemetry.finalPlanParsed = true;
+        console.log(`[OpenAI Agent] plan_validated: responsibleSubagent=${parsedPlan.responsibleSubagent}`);
+      }
+    }
     telemetry.durationMs = Date.now() - startTime;
 
     return {

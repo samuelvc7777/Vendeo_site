@@ -6642,6 +6642,13 @@ export async function runExperimentalOrchestration(
         stageRules.openaiBrainAgentId ||
         "agent_brain_default";
 
+      const isStrict = Boolean(
+        stageRules.strictOpenAiPilot ||
+        orchState.strictOpenAiPilot ||
+        (params as any)?.strictOpenAiPilot ||
+        (params as any)?.options?.strictOpenAiPilot
+      );
+
       try {
         const openAiBrainTurn = await runOpenAiBrainTurn({
           supabase,
@@ -6661,6 +6668,7 @@ export async function runExperimentalOrchestration(
           availableSubagents: compactSubagents,
           agentId,
           runtime,
+          strictOpenAiPilot: isStrict,
         });
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
@@ -6691,7 +6699,7 @@ export async function runExperimentalOrchestration(
             `[Brain] OpenAI Agent Brain não concluiu plano (${openAiBrainTurn.error || "plan_null"}).`
           );
           currentCycle.trace.push(`openai_brain_turn_fallback: ${openAiBrainTurn.error || "plan_null"}`);
-          if (stageRules.strictOpenAiPilot || orchState.strictOpenAiPilot || (params as any).strictOpenAiPilot) {
+          if (isStrict) {
             currentCycle.trace.push("OPENAI_AGENT_FAILED");
             throw new Error(`OPENAI_AGENT_FAILED: ${openAiBrainTurn.error || "plan_null"}`);
           }
@@ -6699,7 +6707,7 @@ export async function runExperimentalOrchestration(
       } catch (err: any) {
         console.error(`[Brain] Exceção durante turno do OpenAI Agent Brain:`, err);
         currentCycle.trace.push(`openai_brain_turn_error: ${err?.message || String(err)}`);
-        if (stageRules.strictOpenAiPilot || orchState.strictOpenAiPilot || (params as any).strictOpenAiPilot) {
+        if (isStrict) {
           currentCycle.trace.push("OPENAI_AGENT_FAILED");
           throw new Error(`OPENAI_AGENT_FAILED: ${err?.message || String(err)}`);
         }
