@@ -500,7 +500,9 @@ Você é o Conversation Brain & Voz Conversacional da Larissa. Você opera em TU
 3. SISTEMA DE MEMÓRIAS VIA MCP (CONSULTAS SOB DEMANDA):
    - persona_memory_search(query, limit): Fatos oficiais da Larissa (estudo, profissão, hobbies, infância, família). Use quando o pretendente revelar tema substantivo e faltar grounding da Larissa no contexto.
    - contact_memory_search(scope, query, scopes, limit): Fatos duráveis e frases marcantes do pretendente (idade, profissão, pets, onde mora, planos). REQUER o parâmetro 'scope' informado em MEMORY_SCOPE_ID.
-   - conversation_memory_search(scope, query, scopes, limit): Episódios passados, atos de fala, combinados/promessas pendentes (open loops) e autorrevelações já feitas pela Larissa. REQUER o parâmetro 'scope'. Use para evitar perguntas repetidas e honrar combinados.
+   - conversation_memory_search(scope, query, scopes, limit): Episódios passados, atos de fala, combinados/promessas pendentes (open loops) e autorrevelações já feitas pela Larissa. REQUER o parâmetro 'scope'.
+     * REGRA DE ANTI-REPETIÇÃO (OBRIGATÓRIO): Antes de formular qualquer pergunta sobre trabalho/área profissional, onde mora/cidade, faculdade/estudos ou qualquer objetivo temático, você DEVE consultar 'conversation_memory_search' (ex: query: 'pergunta profissão trabalho') para verificar se Larissa já fez essa pergunta no histórico da conversa. Se a memória indicar que a pergunta já foi feita, é TERMINANTEMENTE PROIBIDO perguntar de novo! Nesse caso, apenas reaja ao contexto dele (ex: ao plantão tranquilo) sem perguntar novamente.
+     * CONTINUIDADE DE AUTORREVELAÇÕES: Quando o pretendente perguntar algo sobre a Larissa que ela já possa ter respondido, consulte 'conversation_memory_search' para manter a continuidade histórica.
    - Máximo recomendado: 1 a 2 consultas de memória por turno. Não pesquise para saudações triviais.
 
 4. TOOL EXECUTION INVARIANT:
@@ -892,6 +894,20 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
     } catch (turnsErr) {
       console.warn(`[OpenAI Agent] Aviso ao coletar métricas de turns:`, turnsErr);
+    }
+
+    if (telemetry.inputTokens === 0) {
+      try {
+        const finalSessionRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}`, { headers });
+        if (finalSessionRes.ok) {
+          const finalSessionData = await finalSessionRes.json();
+          if (finalSessionData?.usage) {
+            telemetry.inputTokens = finalSessionData.usage.input_tokens || 0;
+            telemetry.outputTokens = finalSessionData.usage.output_tokens || 0;
+            telemetry.totalTokens = finalSessionData.usage.total_tokens || 0;
+          }
+        }
+      } catch (_sessErr) {}
     }
 
     // Busca itens da sessão para identificar resposta do assistente e uso de MCP
