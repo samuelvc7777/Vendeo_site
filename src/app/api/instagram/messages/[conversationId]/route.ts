@@ -7,7 +7,7 @@ import { formatMessageTime } from "@/lib/utils";
 
 export const dynamic = "force-static";
 export function generateStaticParams() {
-  return [{ conversationId: "default" }, { conversationId: "test_larissa_sandbox" }];
+  return [{ conversationId: "default" }];
 }
 
 interface RouteParams {
@@ -21,10 +21,6 @@ export async function GET(req: NextRequest, context: RouteParams) {
     const { conversationId } = await context.params;
     if (!conversationId) {
       return NextResponse.json({ error: "ID da conversa obrigatório." }, { status: 400 });
-    }
-
-    if (conversationId.startsWith("test_")) {
-      return NextResponse.json({ messages: [] });
     }
 
     const repo = new SupabaseInstagramRepository();
@@ -271,24 +267,6 @@ export async function POST(req: NextRequest, context: RouteParams) {
     }
 
     const delaySeconds = typeof body?.delaySeconds === "number" ? Math.max(0, Math.min(300, Math.round(body.delaySeconds))) : 0;
-
-    if (conversationId.startsWith("test_")) {
-      return NextResponse.json({
-        success: true,
-        isTest: true,
-        message: {
-          id: `test_msg_${Date.now()}`,
-          conversationId,
-          senderId: "me",
-          text: textToSave,
-          mediaUrl: audioUrl || mediaUrl || undefined,
-          mediaType,
-          timestamp: new Date().toISOString(),
-          isMine: true,
-          status: "sent",
-        },
-      });
-    }
 
     const repo = new SupabaseInstagramRepository();
     const config = await repo.getConfig();

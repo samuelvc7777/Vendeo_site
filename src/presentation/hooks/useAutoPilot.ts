@@ -169,26 +169,5 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  const forceProcessChat = useCallback(async (conversationId?: string, currentMessages: any[] = []) => {
-    if (!conversationId) return;
-    setCurrentProcessingId(conversationId);
-    try {
-      const res = await fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/ai/test-autopilot", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform: "instagram", conversationId, conversationName: "Pretendente", currentMessages }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !Array.isArray(data.responses) || data.responses.length === 0) throw new Error(data.error || "A IA não retornou resposta.");
-      for (const response of data.responses) await onSendMessage(conversationId, response);
-      const completedState = await autoPilotRepo.saveChatState(conversationId, { status: "idle", pauseReason: undefined, pausedAt: undefined, lastResponseSentAt: new Date().toISOString() });
-      setChatStates((previous) => ({ ...previous, [conversationId]: completedState }));
-      toast.success("Resposta da IA gerada no simulador!");
-    } catch (error) {
-      const pausedState = await autoPilotRepo.saveChatState(conversationId, { status: "paused_guardrail", pauseReason: error instanceof Error ? error.message : "Falha ao gerar resposta." });
-      setChatStates((previous) => ({ ...previous, [conversationId]: pausedState }));
-      toast.error(error instanceof Error ? error.message : "Falha ao gerar resposta.");
-    } finally { setCurrentProcessingId(null); }
-  }, [onSendMessage]);
-
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, forceProcessChat, refreshState, applyRemoteStateUpdate };
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }

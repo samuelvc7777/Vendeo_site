@@ -58,12 +58,6 @@ import {
 import { FloatingVaultModal } from "./FloatingVaultModal";
 import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
-import {
-  useTestChatSimulator,
-  TEST_CONVERSATION,
-  isTestConversationId,
-} from "@/presentation/hooks/useTestChatSimulator";
-import { TestChatControlsBar } from "./TestChatControlsBar";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
 import {
@@ -639,9 +633,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   const [selectedProfileForModal, setSelectedProfileForModal] = useState<DirectConversation | null>(null);
 
-  // Ambiente de testes da IA autônoma (Sandbox): simula mensagens do
-  // pretendente e acelera (turbo) os timers do Piloto Automático.
-  const testSim = useTestChatSimulator();
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
   const [isInstagramConnected, setIsInstagramConnected] = useState(false);
   const [showFilterBar, setShowFilterBar] = useState(true);
@@ -668,32 +659,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Envio de mensagem automática disparado pelo Piloto Automático
   const handleSendAutoPilotMessage = async (conversationId: string, text: string) => {
-    // Ambiente de testes (Sandbox): a resposta da IA é apenas local, sem bater
-    // na Meta Graph API. Assim o Piloto pode ser testado isoladamente.
-    if (isTestConversationId(conversationId)) {
-      const isAudioMsg = text.startsWith("[audio:");
-      const nowIso = new Date().toISOString();
-      const aiMsg: DirectMessage = {
-        id: `test_ai_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        senderId: "me",
-        text,
-        audioTranscript: isAudioMsg ? "🎙️ Mensagem de voz" : undefined,
-        mediaType: isAudioMsg ? "audio" : undefined,
-        mediaUrl: isAudioMsg ? text.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1] : undefined,
-        timestamp: Date.now(),
-        sentDate: nowIso,
-        createdAt: formatMessageTime(new Date()),
-        isMine: true,
-        status: "sent",
-      };
-      setMessages((prev) => ({
-        ...prev,
-        [conversationId]: [...(prev[conversationId] || []), aiMsg],
-      }));
-      testSim.setTestMessages([...(testSim.testMessages || []), aiMsg]);
-      return;
-    }
-
     const targetConv =
       conversations.find((c) => c.id === conversationId) ||
       (activeChat?.id === conversationId ? activeChat : null);
@@ -1180,15 +1145,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const supabase = getSupabaseBrowserClient();
       let rawConversations: any[] = [];
 
-      // Ambiente de testes da IA autônoma (Sandbox): sempre presente no topo da
-      // lista, independentemente de haver conversas reais ou Instagram conectado.
-      // É por aqui que se testa o Piloto Automático sem cliente real.
-      const withSandbox = (instaList: any[]): any[] => {
-        const cleaned = instaList.filter((c) => !isTestConversationId(c.id));
-        // Timestamp "agora" garante o topo na ordenação por mais recentes.
-        return [{ ...TEST_CONVERSATION, lastMessageAt: new Date().toISOString() }, ...cleaned];
-      };
-
       // 1. Tenta carregar diretamente do banco Supabase para latência ultra baixa e colunas completas
       if (supabase) {
         const { data, error } = await supabase
@@ -1237,7 +1193,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         }
       }
 
-      // 3. Mescla com restrições locais e status de leitura (Sandbox sempre no topo)
+      // 3. Mescla com restrições locais e status de leitura
       setConversations((prev) => {
         const tinderOnly = prev.filter((c) => c.type === "tinder");
         const updatedInsta = rawConversations.map((c: any) => {
@@ -1262,16 +1218,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             status: isRestr ? "restricted" : (c.status === "restricted" ? "active" : (c.status || "active")),
           };
         });
-        return [...withSandbox(updatedInsta), ...tinderOnly];
+        return [...updatedInsta, ...tinderOnly];
       });
     } catch (err) {
       console.error("Erro ao carregar conversas do Instagram:", err);
-      // Mesmo em caso de erro, garante o Sandbox visível para testes.
-      setConversations((prev) => {
-        const tinderOnly = prev.filter((c) => c.type === "tinder");
-        const instaOnly = prev.filter((c) => c.type === "instagram" && !isTestConversationId(c.id));
-        return [TEST_CONVERSATION, ...instaOnly, ...tinderOnly];
-      });
     }
   }, []);
 
@@ -2078,14 +2028,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 }
                 return merged;
               });
-              // O Sandbox de testes da IA não vem da API: preservamos o que já
-              // existe localmente para ele não sumir a cada ciclo de polling.
-              const sandboxConv = prev.find((c) => isTestConversationId(c.id));
-              return [
-                ...(sandboxConv ? [{ ...sandboxConv, lastMessageAt: new Date().toISOString() }] : []),
-                ...mergedInstagram,
-                ...tinderOnly,
-              ];
+              return [...mergedInstagram, ...tinderOnly];
             });
           }
         }
@@ -2643,62 +2586,22 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     const scheduledTime = deliverAt ? new Date(deliverAt) : now;
     const tempId = `temp-${Date.now()}`;
-    const sandboxIsThem =
-      isTestConversationId(activeChat.id) && testSim.senderRole === "them";
     const newMsg: DirectMessage = {
       id: tempId,
-      senderId: sandboxIsThem ? "them" : "me",
+      senderId: "me",
       text: messageText,
       mediaType: isAudioMsg ? "audio" : isImageMsg ? "image" : undefined,
       mediaUrl: audioUrl || imageUrl,
       createdAt: formatMessageTime(scheduledTime),
       timestamp: scheduledTime.getTime(),
       sentDate: scheduledTime.toISOString(),
-      isMine: !sandboxIsThem,
-      status: sandboxIsThem ? "sent" : "sending",
+      isMine: true,
+      status: "sending",
       deliverAt: queue.hasScheduled ? deliverAt : undefined,
       delaySeconds: queue.hasScheduled ? effectiveDelay : undefined,
       replyTo: currentReply,
       replyToMessageId: currentReply?.id || null,
     };
-
-    // Ambiente de testes (Sandbox): a mensagem é apenas local (sem Meta API).
-    // Se estiver digitando como PRETENDENTE ("them"), ela entra como cliente e
-    // dispara o Piloto Automático — exatamente o cenário que queremos testar.
-    if (isTestConversationId(activeChat.id)) {
-      setMessages((prev) => ({
-        ...prev,
-        [activeChat.id]: [...(prev[activeChat.id] || []), newMsg],
-      }));
-      setConversations((prev) => {
-        const others = prev.filter((c) => c.id !== activeChat.id);
-        const updated: DirectConversation = {
-          ...activeChat,
-          lastMessage: sandboxIsThem ? previewText : `Você: ${previewText}`,
-          lastActive: formatMessageTime(scheduledTime),
-          lastMessageAt: scheduledTime.toISOString(),
-          unread: sandboxIsThem,
-          lastSender: sandboxIsThem ? "them" : "me",
-          lastStatus: "sent",
-          seenAt: undefined,
-          isNewMatch: false,
-        };
-        return [updated, ...others];
-      });
-      testSim.setTestMessages([
-        ...(testSim.testMessages || []),
-        newMsg,
-      ]);
-      // Avisou o Piloto que chegou mensagem do cliente (zera o debounce)
-      if (sandboxIsThem) {
-        void autoPilot.registerClientMessage(activeChat.id, scheduledTime.toISOString());
-        void autoPilot.forceProcessChat(activeChat.id, [
-          ...(messages[activeChat.id] || []),
-          newMsg,
-        ]);
-      }
-      return;
-    }
 
     // 1. Atualização otimista imediata na UI com status 'sending'
     setMessages((prev) => ({
@@ -3336,19 +3239,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       setIsLoadingMessages(true);
     }
 
-    // Ambiente de testes (Sandbox): mensagens são locais (localStorage), não
-    // vêm da API. Apenas hidrata o estado e pronto.
-    if (isTestConversationId(conv.id)) {
-      setMessages((prev) => ({
-        ...prev,
-        [conv.id]: testSim.testMessages.length > 0 ? testSim.testMessages : prev[conv.id] || [],
-      }));
-      setIsLoadingMessages(false);
-      // Liga o Piloto Automático para este chat de teste (turbo: timers curtos).
-      void autoPilot.toggleAutoPilotForChat(conv.id, true);
-      return;
-    }
-
     // Carrega mensagens do Supabase/API
     const endpoint = getApiUrl(
       conv.type === "tinder"
@@ -3551,8 +3441,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     })
     .filter((c) => {
       // Filtragem por etapa do funil (Check-ups) é exclusiva do Instagram Direct.
-      // O Sandbox de testes da IA ignora esse filtro (sempre visível).
-      if (chatPlatform !== "instagram" || isTestConversationId(c.id)) return true;
+      if (chatPlatform !== "instagram") return true;
 
       if (stageFilter === "concluidos") {
         return Boolean(allProgresses[c.id]?.isConverted);
@@ -3574,11 +3463,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     });
 
   // Ordenação Temporal: Mais Recentes Primeiro (padrão) ou Mais Antigas Primeiro
-  // O Sandbox de testes da IA fica sempre no topo, independentemente da ordem.
   const sortedConversations = [...filteredConversations].sort((a, b) => {
-    if (isTestConversationId(a.id)) return -1;
-    if (isTestConversationId(b.id)) return 1;
-
     const timeA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
     const timeB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
 
@@ -3742,7 +3627,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               </button>
             )}
 
-            {activeChat.type === "instagram" && !isTestConversationId(activeChat.id) && (
+            {activeChat.type === "instagram" && (
               <button
                 type="button"
                 onClick={() => autoPilot.toggleAutoPilotForChat(activeChat.id)}
@@ -3772,29 +3657,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             onSetStage={setStage}
             onToggleConverted={toggleConverted}
             onQuickSendItem={handleQuickSendChecklistItem}
-          />
-        )}
-
-        {/* Barra de Controle do Ambiente de Testes (Sandbox) da IA Autônoma */}
-        {isTestConversationId(activeChat.id) && (
-          <TestChatControlsBar
-            senderRole={testSim.senderRole}
-            onRoleChange={testSim.setSenderRole}
-            onForceProcessAi={() => autoPilot.forceProcessChat(activeChat.id, messages[activeChat.id] || [])}
-            onSimulatePhoto={() =>
-              sendMessageWithText("[image:https://images.unsplash.com/photo-1518791841217-8f162f1e1131?w=400]")
-            }
-            onSimulateSensitive={() =>
-              sendMessageWithText("Nossa, me mandou uma foto pelada agora, viu?")
-            }
-            onResetChat={() => {
-              const fresh = testSim.resetTestMessages();
-              setMessages((prev) => ({ ...prev, [activeChat.id]: fresh }));
-            }}
-            onAdvanceStage={advanceStage}
-            autoPilotStatus={autoPilot.chatStates[activeChat.id]?.status}
-            pauseReason={autoPilot.chatStates[activeChat.id]?.pauseReason}
-            isProcessing={autoPilot.currentProcessingId === activeChat.id}
           />
         )}
 

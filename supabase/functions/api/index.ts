@@ -4541,59 +4541,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // ==========================================
-    // 8.7. SIMULADOR BRAIN: Test Chat usa o Brain oficial com bypass test-safe
-    // O Brain já possui bypass para IDs que começam com "test_" ou "sandbox_"
-    // Não há despacho para a Meta Graph API nesse modo.
-    if (path === "/ai/test-autopilot" && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        let conversationId = String(body?.conversationId || "").trim();
-        // SEGURANÇA: Garante que o conversationId no sandbox sempre comece com test_ ou sandbox_
-        // Isso impede que qualquer requisição externa envie um ID real para disparar à Meta Graph API
-        if (!conversationId.startsWith("test_") && !conversationId.startsWith("sandbox_")) {
-          conversationId = `test_${conversationId || Date.now()}`;
-        }
-        const currentMessages = Array.isArray(body?.currentMessages) ? body.currentMessages : [];
-
-        const res = await runBrainOrchestration({
-          supabase,
-          conversationId,
-          newMessage: {
-            id: `test_msg_${Date.now()}`,
-            text: currentMessages[currentMessages.length - 1]?.text || "",
-            timestamp: new Date().toISOString(),
-            sender: "them",
-          },
-        });
-
-        if (!res.handled && res.error) {
-          return new Response(
-            JSON.stringify({ error: res.error }),
-            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const decision = (res as any)?.decision;
-        const responses = Array.isArray(decision?.responses) && decision.responses.length > 0
-          ? decision.responses
-          : (Array.isArray((res as any)?.balloons)
-            ? (res as any).balloons
-            : (decision?.suggestedResponse ? [decision.suggestedResponse] : []));
-
-        return new Response(
-          JSON.stringify({ responses, decision }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      } catch (error) {
-        return new Response(
-          JSON.stringify({ error: error instanceof Error ? error.message : "Falha no simulador Brain" }),
-          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // 8.8. MOTOR DE IA GENERATIVA GROQ (/ai/generate)
+    // 8.7. MOTOR DE IA GENERATIVA GROQ (/ai/generate)
     // ==========================================
     if (path === "/ai/generate") {
       if (req.method === "GET") {

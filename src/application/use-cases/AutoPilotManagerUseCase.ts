@@ -68,9 +68,8 @@ export class AutoPilotManagerUseCase {
       return { isEligible: false, isPaused: true, pauseReason: state.pauseReason };
     }
 
-    // 1. Verifica tempo mínimo de 1 minuto após ativar antes de começar (ignorado em chats de teste)
-    const isTestChat = conversationId.startsWith("test_");
-    if (state.enabledAt && !isTestChat) {
+    // 1. Verifica tempo mínimo após ativar antes de começar
+    if (state.enabledAt) {
       const activationTime = new Date(state.enabledAt).getTime();
       const now = Date.now();
       const minActivationWaitMs = (config.activationWaitMinutes || 1) * 60 * 1000;
@@ -154,7 +153,7 @@ export class AutoPilotManagerUseCase {
       ? new Date(lastMessage.sentDate).getTime()
       : Date.now();
 
-    const delayMs = isTestChat ? 3000 : config.responseDelayMinutes * 60 * 1000;
+    const delayMs = config.responseDelayMinutes * 60 * 1000;
     const scheduledResponseMs = clientMessageTime + delayMs;
     const now = Date.now();
 

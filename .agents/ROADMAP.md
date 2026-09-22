@@ -130,24 +130,6 @@
   - Remoção de clichês artificiais de assistente de IA ("Que bacana saber disso!", "Com certeza!", "Compreendo perfeitamente", "Trocar uma ideia contigo", "Super entendo", "Que incrível!").
   - Calibração de fala limpa, meiga, feminina e autêntica de uma jovem mineira de 23 anos com exemplos grounded de naturalidade.
 
-## Fase 11: Ambiente de Testes & Simulador da IA Autônoma (Concluída)
-- [x] Chat Fake / Sandbox da Larissa (`test_larissa_sandbox`):
-  - Criada conversa de teste isolada com badge visual destacada `[ 🧪 SIMULADOR ]` e avatar realista.
-  - Banner de acesso rápido no topo da lista do Instagram Direct para abrir o simulador com 1 toque.
-  - Interceptação de envio sem chamar APIs externas (Meta/Tinder), eliminando erros 400/404 e preservando dados de produção.
-- [x] Alternância de Papel (Dual-Role Switcher):
-  - Barra de controle de testes (`TestChatControlsBar.tsx`) acima do composer no chat fake.
-  - Permite digitar como **Pretendente (Cliente)** para disparar o ciclo autônomo da IA, ou como **Larissa (Dona)** para intervenção manual.
-- [x] Ciclo Autônomo da IA Acelerado & Cenários em 1 Toque:
-  - Resposta ágil com debounce rápido de 3s (ou imediato) e cadência de 2s em ambiente de teste.
-  - Botão **"Disparar IA Agora" (⚡)** para processamento instantâneo via Groq/Llama com persona da Larissa e avanço de etapas.
-  - Botão **"Simular Foto" (📸)** para testar o Guardrail de segurança e pausa por foto recebida.
-  - Botão **"Simular Sensível" (⚠️)** para testar o Guardrail de conteúdo suspeito/ofensivo.
-  - Botão **"Resetar Chat" (🔄)** com confirmação de segurança, limpando o histórico e voltando as etapas e checklist para o início.
-  - Botão **"Avançar Etapa" (⏩)** para avançar no funil e testar momentos avançados (incluindo hand-off da Rifa).
-- [x] Verificação e Build:
-  - TypeScript em modo estrito (`strict: true`) validado com zero erros (`npx tsc --noEmit`).
-  - Build otimizado Next.js 16 (Turbopack) validado com sucesso.
 
 ## Fase 12: Modelo ChatGPT Terra com Raciocínio Alto & Envio Inteligente de Áudios (Concluída)
 - [x] Integração do Modelo `gpt-5-6-terra` com Raciocínio Alto (`reasoning: { effort: "high" }`):
@@ -307,5 +289,4 @@
   - Banco de dados Supabase verificado com 0 duplicidades restantes.
   - Suíte de 39 testes do piloto automático 100% verde (`scripts/test-cloud-autopilot.cjs`).
   - TypeScript estrito validado com 0 erros (`npx tsc --noEmit`).
-
 
