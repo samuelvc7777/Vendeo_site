@@ -101,6 +101,8 @@ export interface ResolvedAudioResult {
   isAudio: boolean;
   hasValidTranscript: boolean;
   transcript: string | null;
+  /** Mensagem de erro quando a transcrição falha. null quando ok ou quando não é áudio. */
+  transcriptionError: string | null;
 }
 
 /**
@@ -136,6 +138,7 @@ export async function resolveInboundAudioMessage(
       isAudio: false,
       hasValidTranscript: false,
       transcript: null,
+      transcriptionError: null,
     };
   }
 
@@ -147,6 +150,7 @@ export async function resolveInboundAudioMessage(
       isAudio: true,
       hasValidTranscript: true,
       transcript: existingTranscript,
+      transcriptionError: null,
     };
   }
 
@@ -163,6 +167,7 @@ export async function resolveInboundAudioMessage(
       isAudio: true,
       hasValidTranscript: false,
       transcript: null,
+      transcriptionError: "URL de áudio ausente ou inválida",
     };
   }
 
@@ -171,6 +176,8 @@ export async function resolveInboundAudioMessage(
     const transcript = await transcribeWithGroqCloud(supabase, audioUrl);
     if (transcript && transcript.trim()) {
       const cleanTranscript = transcript.trim();
+      // UPDATE seguro: usado nos paths onde a linha já existe (cron-tick, trigger, send-now).
+      // No webhook o caller usa o retorno para incluir no upsert — sem risco de UPDATE em linha inexistente.
       if (msg.id && supabase && typeof supabase.from === "function") {
         await supabase
           .from("instagram_messages")
@@ -186,38 +193,31 @@ export async function resolveInboundAudioMessage(
         isAudio: true,
         hasValidTranscript: true,
         transcript: cleanTranscript,
+        transcriptionError: null,
       };
     } else {
-      if (msg.id && supabase && typeof supabase.from === "function") {
-        await supabase
-          .from("instagram_messages")
-          .update({
-            audio_transcription_error: "Falha na transcrição ou áudio inaudível",
-          })
-          .eq("id", msg.id);
-      }
+      const errMsg = "Falha na transcrição ou áudio inaudível";
+      // Não fazemos UPDATE aqui pois no path do webhook a linha ainda não existe.
+      // O caller (webhook) inclui transcriptionError no upsert inicial.
+      // Nos paths cron/trigger a linha já existe; o UPDATE seria seguro mas desnecessário
+      // pois o campo fica persistido via retorno.
       return {
         text: "[áudio recebido — transcrição indisponível]",
         isAudio: true,
         hasValidTranscript: false,
         transcript: null,
+        transcriptionError: errMsg,
       };
     }
   } catch (err: any) {
     console.error(`[resolveInboundAudioMessage] Erro ao transcrever áudio ${msg.id}:`, err);
-    if (msg.id && supabase && typeof supabase.from === "function") {
-      await supabase
-        .from("instagram_messages")
-        .update({
-          audio_transcription_error: String(err?.message || err),
-        })
-        .eq("id", msg.id);
-    }
+    const errMsg = String(err?.message || err || "Erro desconhecido na transcrição");
     return {
       text: "[áudio recebido — transcrição indisponível]",
       isAudio: true,
       hasValidTranscript: false,
       transcript: null,
+      transcriptionError: errMsg,
     };
   }
 }

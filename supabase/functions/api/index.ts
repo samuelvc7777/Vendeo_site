@@ -844,6 +844,7 @@ serve(async (req: Request) => {
               null;
 
             let audioTranscript: string | null = null;
+            let audioTranscriptionError: string | null = null;
             if (isAudioMsg && !isEcho && audioUrl) {
               try {
                 const resolved = await resolveInboundAudioMessage(supabase, {
@@ -855,8 +856,11 @@ serve(async (req: Request) => {
                 if (resolved.hasValidTranscript && resolved.transcript) {
                   audioTranscript = resolved.transcript;
                 }
+                // Captura erro de transcrição para persistir no upsert abaixo
+                audioTranscriptionError = resolved.transcriptionError ?? null;
               } catch (aErr) {
                 console.warn("[Webhook] Erro na transcrição imediata do áudio:", aErr);
+                audioTranscriptionError = String((aErr as any)?.message || aErr || "Erro inesperado");
               }
             }
 
@@ -875,6 +879,7 @@ serve(async (req: Request) => {
               direction: isEcho ? "outbound" : "inbound",
               audio_transcript: audioTranscript,
               audio_transcribed_at: audioTranscript ? new Date().toISOString() : null,
+              audio_transcription_error: audioTranscriptionError,
             });
 
             if (msgSaveErr) {
