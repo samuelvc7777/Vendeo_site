@@ -6,10 +6,10 @@
 // ============================================================================
 import { publishAutoPilotState, activity } from "./cloud_autopilot.ts";
 import {
-  ConversationEpisode,
-  EpisodeActor,
-  EpisodeEventType,
-  EpisodicSearchResult,
+  type ConversationEpisode,
+  type EpisodeActor,
+  type EpisodeEventType,
+  type EpisodicSearchResult,
   extractEpisodesFromLarissaMessage,
   extractEpisodesFromPretendenteMessage,
   createAudioDeliveredEpisode,
@@ -123,6 +123,8 @@ import {
   PERSONA_MEMORY_TOOL_DEFINITION,
   buildOpenAiBrainContextMessage,
   type OpenAiBrainTurnResult,
+  type QuestionIntentAnnotation,
+  validateQuestionIntentsInvariant,
 } from "./openai_brain.ts";
 import {
   LARISSA_INTERACTION_DNA_VERSION,
@@ -136,7 +138,9 @@ export {
   buildOpenAiBrainContextMessage,
   LARISSA_INTERACTION_DNA_VERSION,
   LARISSA_INTERACTION_DNA_HASH,
+  validateQuestionIntentsInvariant,
 };
+export type { QuestionIntentAnnotation };
 
 /**
  * Configurações e limites orçamentários centrais do Conversation Brain e ContextBuilder.
@@ -711,6 +715,18 @@ export interface ConversationOrchestrationState {
   messageLedger?: Record<string, MessageProcessingStatus>;
   memory?: ContactMemoryStore;
   liveState?: ConversationLiveState;
+  recentQuestionIntents?: RecentQuestionIntentEntry[];
+}
+
+export interface RecentQuestionIntentEntry {
+  intentKey: string;
+  canonicalMeaning: string;
+  questionText: string;
+  status: "asked" | "answered";
+  askedAt: string;
+  sourceMessageId?: string;
+  answeredAt?: string;
+  answerMessageIds?: string[];
 }
 
 /**
@@ -765,6 +781,7 @@ export interface ConversationContextPayload {
   newMessages: StructuredConversationMessage[];
   referencedMessages?: Record<string, StructuredConversationMessage>;
   knownFacts?: Record<string, string>;
+  recentQuestionIntents?: RecentQuestionIntentEntry[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1470,6 +1487,15 @@ export function formatConversationContextForModel(
     }
   }
 
+  // 1.2 [RECENT_QUESTION_INTENTS] (Histórico curto de intenções de perguntas para continuidade imediata)
+  if (payload.recentQuestionIntents && payload.recentQuestionIntents.length > 0) {
+    lines.push("");
+    lines.push("[RECENT_QUESTION_INTENTS]");
+    for (const q of payload.recentQuestionIntents.slice(-8)) {
+      lines.push(`• intentKey: "${q.intentKey}" | status: ${q.status} | pergunta: "${q.questionText}" | sentido: "${q.canonicalMeaning}"`);
+    }
+  }
+
   // 2. [FATOS_CONHECIDOS] - apenas se solicitado ou na camada 'descoberta'
   const shouldIncludeFacts =
     options?.includeKnownFacts ??
@@ -1598,6 +1624,7 @@ export interface BuildContextParams {
   claimedMessages: CanonicalMessage[];
   supabase: any;
   knownFacts?: Record<string, string>;
+  recentQuestionIntents?: RecentQuestionIntentEntry[];
 }
 
 export async function buildConversationContextForCycle(
@@ -1606,7 +1633,7 @@ export async function buildConversationContextForCycle(
   payload: ConversationContextPayload;
   trace: string[];
 }> {
-  const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts } = params;
+  const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts, recentQuestionIntents } = params;
   const trace: string[] = [];
 
   // 0. Busca o último bloco CONTÍGUO de mensagens outbound enviadas pela Larissa (sem limites arbitrários)
@@ -1767,6 +1794,7 @@ export async function buildConversationContextForCycle(
     newMessages: structuredNewMessages,
     referencedMessages: referencedMap,
     knownFacts: knownFacts || {},
+    recentQuestionIntents: recentQuestionIntents || [],
   };
 
   return { payload, trace };
@@ -1787,6 +1815,179 @@ export function splitIntoBalloons(text: string): string[] {
     }
   }
   return result.length > 0 ? result : [text.trim()];
+}
+
+/**
+ * Formata as intenções recentes de perguntas de forma ultra-compacta para injeção no prompt do Brain.
+ */
+export function formatRecentQuestionIntentsSnippet(entries?: RecentQuestionIntentEntry[]): string {
+  if (!entries || !Array.isArray(entries) || entries.length === 0) return "";
+  return entries
+    .slice(-8)
+    .map((e) => {
+      const statusStr = e.status === "answered" ? "answered" : "asked";
+      return `• intentKey: "${e.intentKey}" | status: ${statusStr} | pergunta: "${e.questionText}" | sentido: "${e.canonicalMeaning}"`;
+    })
+    .join("\n");
+}
+
+/**
+ * Normalizador estrito para checagem exata de repetição de texto.
+ * Semântica ZERO: apenas lowercase, sem acentos, sem pontuação e espaços normalizados.
+ */
+export function normalizeQuestionTextForExactRepeat(text: string): string {
+  if (!text || typeof text !== "string") return "";
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export interface BackendQuestionIntentGuardParams {
+  candidateBalloons: string[];
+  questionIntents?: QuestionIntentAnnotation[];
+  recentQuestionIntents?: RecentQuestionIntentEntry[];
+  recentLarissaOutbounds?: string[];
+  lastLarissaTurn?: Array<{ text?: string }> | string | null;
+}
+
+export interface BackendQuestionIntentGuardResult {
+  allowedBalloons: string[];
+  prunedBalloons: string[];
+  prunedIndices: number[];
+  isBlocked: boolean;
+  reasons: string[];
+  failClosed: boolean;
+}
+
+/**
+ * Validador e Guard Determinístico do Backend para Anti-Repetição de Perguntas.
+ * REGRA INEGOCIÁVEL:
+ * - O Backend NUNCA classifica semântica nem faz parsing NLP.
+ * - Compara estritamente candidate.intentKey === existing.intentKey.
+ * - Compara texto normalizado sem acentos/pontuação contra turnos recentes.
+ * - Poda seletivamente o balão repetido.
+ * - Fail Closed se todos os balões forem podados.
+ */
+export function validateBackendQuestionIntentGuard(
+  params: BackendQuestionIntentGuardParams
+): BackendQuestionIntentGuardResult {
+  const {
+    candidateBalloons,
+    questionIntents = [],
+    recentQuestionIntents = [],
+    recentLarissaOutbounds = [],
+    lastLarissaTurn,
+  } = params;
+
+  const prunedIndices = new Set<number>();
+  const reasons: string[] = [];
+
+  // Mapeia anotação do Brain por responseIndex
+  const intentByIndex = new Map<number, QuestionIntentAnnotation>();
+  for (const q of questionIntents) {
+    if (typeof q?.responseIndex === "number") {
+      intentByIndex.set(q.responseIndex, q);
+    }
+  }
+
+  // 1. Coleta e normaliza textos anteriores da Larissa para checagem textual exata
+  const pastLarissaNormalized = new Set<string>();
+  for (const out of recentLarissaOutbounds) {
+    const norm = normalizeQuestionTextForExactRepeat(out);
+    if (norm) pastLarissaNormalized.add(norm);
+  }
+
+  if (Array.isArray(lastLarissaTurn)) {
+    for (const m of lastLarissaTurn) {
+      if (m?.text) {
+        const norm = normalizeQuestionTextForExactRepeat(m.text);
+        if (norm) pastLarissaNormalized.add(norm);
+      }
+    }
+  } else if (typeof lastLarissaTurn === "string" && lastLarissaTurn.trim()) {
+    const norm = normalizeQuestionTextForExactRepeat(lastLarissaTurn);
+    if (norm) pastLarissaNormalized.add(norm);
+  }
+
+  for (const entry of recentQuestionIntents) {
+    const normQ = normalizeQuestionTextForExactRepeat(entry.questionText);
+    if (normQ) pastLarissaNormalized.add(normQ);
+  }
+
+  // 2. Mapeia recentQuestionIntents por intentKey
+  const existingIntents = new Map<string, RecentQuestionIntentEntry>();
+  for (const item of recentQuestionIntents) {
+    if (item?.intentKey) {
+      existingIntents.set(item.intentKey, item);
+    }
+  }
+
+  // 3. Avalia cada balão candidato
+  candidateBalloons.forEach((balloon, idx) => {
+    const isQuestion = balloon.includes("?");
+    const normBalloon = normalizeQuestionTextForExactRepeat(balloon);
+    const intentAnnotation = intentByIndex.get(idx);
+
+    // Checagem A: Exact Text Repeat Guard
+    if (isQuestion && normBalloon && pastLarissaNormalized.has(normBalloon)) {
+      prunedIndices.add(idx);
+      reasons.push(
+        `EXACT_TEXT_REPEAT_GUARD: Balão [${idx}] "${balloon}" é textualmente idêntico a uma pergunta recente da Larissa`
+      );
+      return;
+    }
+
+    // Checagem B: Intent Repeat Guard
+    if (intentAnnotation && intentAnnotation.intentKey) {
+      const existing = existingIntents.get(intentAnnotation.intentKey);
+      if (existing) {
+        // Se a intenção já foi respondida pelo pretendente
+        if (existing.status === "answered") {
+          prunedIndices.add(idx);
+          reasons.push(
+            `INTENT_REPEAT_GUARD: Balão [${idx}] possui intentKey "${intentAnnotation.intentKey}" que já foi respondida (${existing.canonicalMeaning})`
+          );
+          return;
+        }
+
+        // Se a intenção foi feita recentemente (status asked e já registrada no ledger)
+        if (existing.status === "asked") {
+          prunedIndices.add(idx);
+          reasons.push(
+            `INTENT_REPEAT_GUARD: Balão [${idx}] possui intentKey "${intentAnnotation.intentKey}" já perguntada recentemente e pendente de resposta`
+          );
+          return;
+        }
+      }
+    }
+  });
+
+  const allowedBalloons: string[] = [];
+  const prunedBalloons: string[] = [];
+
+  candidateBalloons.forEach((b, idx) => {
+    if (prunedIndices.has(idx)) {
+      prunedBalloons.push(b);
+    } else {
+      allowedBalloons.push(b);
+    }
+  });
+
+  const isBlocked = prunedBalloons.length > 0;
+  const failClosed = allowedBalloons.length === 0 && candidateBalloons.length > 0;
+
+  return {
+    allowedBalloons,
+    prunedBalloons,
+    prunedIndices: Array.from(prunedIndices),
+    isBlocked,
+    reasons,
+    failClosed,
+  };
 }
 
 export interface FreshnessCheckParams {
@@ -6597,6 +6798,13 @@ export async function runExperimentalOrchestration(
       };
     }
 
+    const currentRecentQuestionIntents: RecentQuestionIntentEntry[] =
+      Array.isArray(orchState.recentQuestionIntents)
+        ? [...orchState.recentQuestionIntents]
+        : Array.isArray(stageRules.orchestration?.recentQuestionIntents)
+        ? [...stageRules.orchestration.recentQuestionIntents]
+        : [];
+
     const currentCheckpoint =
       orchState.checkpoint ||
       (currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita");
@@ -6610,6 +6818,7 @@ export async function runExperimentalOrchestration(
         claimedMessages,
         supabase,
         knownFacts: stageRules.known_facts || {},
+        recentQuestionIntents: currentRecentQuestionIntents,
       });
 
     currentCycle.trace.push(...contextTrace);
@@ -6937,10 +7146,26 @@ export async function runExperimentalOrchestration(
           strictOpenAiPilot: isStrict,
           recentStyleStateSnippet: recentStyleSnippet,
           memoryScopeId: currentMemoryScopeId,
+          recentQuestionIntentsSnippet: formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
         });
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
           brainPlan = openAiBrainTurn.plan;
+
+          // Processamento determinístico das resoluções semânticas decididas pelo Brain
+          if (Array.isArray(brainPlan.resolvedQuestionIntentIds)) {
+            for (const rId of brainPlan.resolvedQuestionIntentIds) {
+              for (const item of currentRecentQuestionIntents) {
+                if (item.intentKey === rId && item.status === "asked") {
+                  item.status = "answered";
+                  item.answeredAt = new Date().toISOString();
+                  item.answerMessageIds = claimedMessageIds;
+                  currentCycle.trace.push(`question_intent_resolved: ${rId}`);
+                }
+              }
+            }
+          }
+
           currentCycle.brainModel = "gpt-5.6-terra";
           currentCycle.trace.push("brain_model: gpt-5.6-terra");
           currentCycle.trace.push(`interaction_dna_version: ${LARISSA_INTERACTION_DNA_VERSION}`);
@@ -7271,21 +7496,78 @@ export async function runExperimentalOrchestration(
 
       if (isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0) {
         // EXECUÇÃO EM TURNO ÚNICO DO GPT-5.6-TERRA: Brain unificado com Executor
-        const chosenResponses = brainPlan.responses
+        const rawResponses = brainPlan.responses
           .map((r: any) => String(r || "").trim())
           .filter(Boolean);
-        const suggestedText = chosenResponses.join("\n\n");
 
-        finalSubDecision = {
-          action: "reply",
-          checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-          summary: `Executado em turno único pelo Agent Brain (${responsibleSubagent})`,
-          suggestedResponse: suggestedText,
-          responses: chosenResponses,
-          nextPhase: currentPhase,
-          reasoning: brainPlan.reasoning || `Execução direta do subagente ${responsibleSubagent} pelo Agent Brain`,
-          requiredTools: [],
-        };
+        const intentGuard = validateBackendQuestionIntentGuard({
+          candidateBalloons: rawResponses,
+          questionIntents: brainPlan.questionIntents || [],
+          recentQuestionIntents: currentRecentQuestionIntents,
+          recentLarissaOutbounds,
+          lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+        });
+
+        if (intentGuard.isBlocked) {
+          currentCycle.trace.push(
+            `backend_intent_guard_blocked: pruned=${intentGuard.prunedBalloons.length}, reasons=${intentGuard.reasons.join(" | ")}`
+          );
+        }
+
+        if (intentGuard.failClosed) {
+          currentCycle.trace.push("backend_intent_guard_fail_closed");
+          finalSubDecision = {
+            action: "wait",
+            checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            summary: `Turno bloqueado por repetição de pergunta (Fail Closed): ${intentGuard.reasons.join(", ")}`,
+            suggestedResponse: "",
+            responses: [],
+            nextPhase: currentPhase,
+            reasoning: "Bloqueio determinístico de repetição de pergunta pelo backend",
+            requiredTools: [],
+          };
+        } else {
+          const chosenResponses = intentGuard.allowedBalloons;
+          const suggestedText = chosenResponses.join("\n\n");
+
+          finalSubDecision = {
+            action: "reply",
+            checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            summary: `Executado em turno único pelo Agent Brain (${responsibleSubagent})`,
+            suggestedResponse: suggestedText,
+            responses: chosenResponses,
+            nextPhase: currentPhase,
+            reasoning: brainPlan.reasoning || `Execução direta do subagente ${responsibleSubagent} pelo Agent Brain`,
+            requiredTools: [],
+          };
+
+          // Registra novas perguntas aprovadas no ledger de intenções
+          if (Array.isArray(brainPlan.questionIntents)) {
+            for (const q of brainPlan.questionIntents) {
+              if (
+                !intentGuard.prunedIndices.includes(q.responseIndex) &&
+                finalSubDecision.responses &&
+                finalSubDecision.responses.length > 0
+              ) {
+                const balloonText = finalSubDecision.responses[q.responseIndex] || finalSubDecision.responses[0];
+                const alreadyInList = currentRecentQuestionIntents.some(
+                  (item) => item.intentKey === q.intentKey && item.status === "asked"
+                );
+                if (!alreadyInList) {
+                  currentRecentQuestionIntents.push({
+                    intentKey: q.intentKey,
+                    canonicalMeaning: q.canonicalMeaning,
+                    questionText: balloonText,
+                    status: "asked",
+                    askedAt: new Date().toISOString(),
+                    sourceMessageId: claimedMessageIds[claimedMessageIds.length - 1],
+                  });
+                  currentCycle.trace.push(`question_intent_recorded: ${q.intentKey}`);
+                }
+              }
+            }
+          }
+        }
 
         currentCycle.trace.push(`single_turn_agent_execution_used: ${responsibleSubagent}`);
         currentCycle.trace.push(`subagent_executed: ${responsibleSubagent}`);
@@ -7683,14 +7965,37 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             finalSubDecision.suggestedResponse = "";
             finalSubDecision.requiredTools = [];
             currentCycle.trace.push("post_antirepeat_quality_blocked_dispatch");
-          } else {
             authoritativeBalloons = isOpenAiAgentBrain
               ? authoritativeBalloons.filter(Boolean)
               : authoritativeBalloons
                 .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
                 .filter(Boolean);
-            finalSubDecision.responses = authoritativeBalloons;
-            finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+
+            const secondPassGuard = validateBackendQuestionIntentGuard({
+              candidateBalloons: authoritativeBalloons,
+              questionIntents: brainPlan?.questionIntents || [],
+              recentQuestionIntents: currentRecentQuestionIntents,
+              recentLarissaOutbounds,
+              lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+            });
+
+            if (secondPassGuard.isBlocked) {
+              currentCycle.trace.push(
+                `second_pass_intent_guard_blocked: pruned=${secondPassGuard.prunedBalloons.length}, reasons=${secondPassGuard.reasons.join(" | ")}`
+              );
+              authoritativeBalloons = secondPassGuard.allowedBalloons;
+            }
+
+            if (secondPassGuard.failClosed || authoritativeBalloons.length === 0) {
+              finalSubDecision.action = "wait";
+              finalSubDecision.responses = [];
+              finalSubDecision.suggestedResponse = "";
+              finalSubDecision.requiredTools = [];
+              currentCycle.trace.push("second_pass_intent_guard_fail_closed");
+            } else {
+              finalSubDecision.responses = authoritativeBalloons;
+              finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+            }
           }
         }
       }
@@ -8096,6 +8401,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 recentCycles: [currentCycle, ...(orchState.recentCycles || [])].slice(0, 5),
                 outbox: outboxMap,
                 messageLedger: ledger,
+                recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
               };
               (updatedState as any).completedGoalIds = officialCompletedGoalIdsAtCycleStart;
               (updatedState as any).objectiveProgress = officialObjectiveProgressAtCycleStart;
@@ -8577,6 +8883,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           messageLedger: ledger,
           memory: mergedMemory,
           liveState: currentLiveState,
+          recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
         };
         (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
         (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
@@ -8661,6 +8968,46 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             });
           } catch (epErr: any) {
             console.warn("[EpisodeWriter] Erro fail-safe ao persistir episódios da conversa:", epErr);
+          }
+
+          // Gravação determinística das intenções de perguntas enviadas como speech_act na memória episódica
+          if (Array.isArray(brainPlan?.questionIntents) && brainPlan.questionIntents.length > 0) {
+            try {
+              const questionEpisodes: ConversationEpisode[] = [];
+              for (const q of brainPlan.questionIntents) {
+                const bText = (balloons || [])[q.responseIndex] || q.canonicalMeaning;
+                questionEpisodes.push({
+                  conversation_id: conversationId,
+                  actor: "larissa" as const,
+                  event_type: "question_asked" as any,
+                  memory_class: "speech_act" as const,
+                  topic: q.intentKey,
+                  summary: `Larissa perguntou: "${bText}" (${q.canonicalMeaning})`,
+                  original_text: bText,
+                  source_message_id: `out_${correlationId}_${q.responseIndex}`,
+                  semantic_keys: [q.intentKey, "question"],
+                  metadata: {
+                    intentKey: q.intentKey,
+                    canonicalMeaning: q.canonicalMeaning,
+                    kind: q.kind,
+                    target: q.target || "pretendente",
+                    status: "asked",
+                    memory_class: "speech_act",
+                    importance: 0.8,
+                  },
+                });
+              }
+              if (questionEpisodes.length > 0) {
+                await saveConversationEpisodes({
+                  supabase,
+                  conversationId,
+                  episodes: questionEpisodes,
+                });
+                currentCycle.trace.push(`question_intents_saved_to_episodes: ${questionEpisodes.length}`);
+              }
+            } catch (qErr: any) {
+              console.warn("[Orchestrator] Erro ao persistir questionEpisodes:", qErr);
+            }
           }
 
           // Gravação determinística de episódios da conversa a partir dos memoryCandidates pós-CAS

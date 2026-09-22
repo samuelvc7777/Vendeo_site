@@ -308,6 +308,119 @@ export function validatePersonaMemoryExecutionInvariant(
   return { valid: true };
 }
 
+export interface QuestionIntentAnnotation {
+  responseIndex: number;
+  intentKey: string;
+  canonicalMeaning: string;
+  kind: "discovery" | "continuity" | "follow_up" | "callback";
+  target?: "pretendente" | "terceiro";
+}
+
+/**
+ * Validação estrutural do ledger de intenções semânticas de perguntas:
+ * - Se fornecido, valida integridade de questionIntents e resolvedQuestionIntentIds
+ * - Se responses contiver '?', garante que o balão correspondente possui anotação em questionIntents
+ */
+export function validateQuestionIntentsInvariant(plan: any): PlanValidationResult {
+  if (!plan || typeof plan !== "object") {
+    return { valid: false, error: "Plano inválido para validação de questionIntents" };
+  }
+  if (plan.action === "wait") {
+    return { valid: true };
+  }
+
+  // resolvedQuestionIntentIds (se presente, deve ser array de strings)
+  if (plan.resolvedQuestionIntentIds !== undefined && plan.resolvedQuestionIntentIds !== null) {
+    if (!Array.isArray(plan.resolvedQuestionIntentIds)) {
+      return {
+        valid: false,
+        error: "PLAN_INVALID_QUESTION_INTENTS: 'resolvedQuestionIntentIds' deve ser um array de strings",
+      };
+    }
+    for (const id of plan.resolvedQuestionIntentIds) {
+      if (typeof id !== "string" || !id.trim()) {
+        return {
+          valid: false,
+          error: "PLAN_INVALID_QUESTION_INTENTS: cada item em 'resolvedQuestionIntentIds' deve ser string não vazia",
+        };
+      }
+    }
+  }
+
+  // questionIntents (se presente, deve ser array de anotações)
+  const questionIntents = plan.questionIntents;
+  if (questionIntents !== undefined && questionIntents !== null) {
+    if (!Array.isArray(questionIntents)) {
+      return {
+        valid: false,
+        error: "PLAN_INVALID_QUESTION_INTENTS: 'questionIntents' deve ser um array de anotações",
+      };
+    }
+    const responses = Array.isArray(plan.responses) ? plan.responses : [];
+    for (let i = 0; i < questionIntents.length; i++) {
+      const q = questionIntents[i];
+      if (!q || typeof q !== "object") {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}] não é um objeto válido`,
+        };
+      }
+      if (
+        typeof q.responseIndex !== "number" ||
+        !Number.isInteger(q.responseIndex) ||
+        q.responseIndex < 0 ||
+        q.responseIndex >= responses.length
+      ) {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].responseIndex (${q.responseIndex}) fora dos limites de responses (tamanho ${responses.length})`,
+        };
+      }
+      if (typeof q.intentKey !== "string" || !q.intentKey.trim()) {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].intentKey deve ser string não vazia`,
+        };
+      }
+      if (typeof q.canonicalMeaning !== "string" || !q.canonicalMeaning.trim()) {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].canonicalMeaning deve ser string não vazia`,
+        };
+      }
+    }
+  }
+
+  // Validação de correspondência: balões com '?' devem ter anotação em questionIntents
+  const responses = Array.isArray(plan.responses) ? plan.responses : [];
+  const questionIndexesWithMark: number[] = [];
+  responses.forEach((resp: string, idx: number) => {
+    if (typeof resp === "string" && resp.includes("?")) {
+      questionIndexesWithMark.push(idx);
+    }
+  });
+
+  if (questionIndexesWithMark.length > 0) {
+    if (!Array.isArray(questionIntents) || questionIntents.length === 0) {
+      return {
+        valid: false,
+        error: `PLAN_MISSING_QUESTION_INTENTS: Resposta contém balão com '?' no índice [${questionIndexesWithMark.join(", ")}], mas 'questionIntents' está ausente ou vazio`,
+      };
+    }
+    const annotatedIndices = new Set(questionIntents.map((q: any) => q.responseIndex));
+    for (const qIdx of questionIndexesWithMark) {
+      if (!annotatedIndices.has(qIdx)) {
+        return {
+          valid: false,
+          error: `PLAN_MISSING_QUESTION_INTENTS: Balão no índice ${qIdx} contém '?', mas não possui anotação em 'questionIntents'`,
+        };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
 export function buildFallbackBrainPlan(
   rawResponseText: string,
   availableSubagents?: Array<{ id: string }>
@@ -368,6 +481,7 @@ export interface RunOpenAiBrainParams {
   schemaFeedback?: string;
   recentStyleStateSnippet?: string;
   memoryScopeId?: string;
+  recentQuestionIntentsSnippet?: string;
 }
 
 export interface OpenAiBrainTurnResult {
@@ -411,6 +525,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     availableSubagents,
     recentStyleStateSnippet,
     memoryScopeId,
+    recentQuestionIntentsSnippet,
   } = params;
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
@@ -434,6 +549,10 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   }
   if (params.candidateEvidence?.length) {
     sections.push(`\n## EVIDÊNCIAS CANDIDATAS DE OBJETIVO (NÃO CONCLUEM NADA SOZINHAS)\n${params.candidateEvidence.map((e) => `- objetivo=${e.objectiveId}; mensagem=${e.evidenceMessageId}; evidência=${e.summary}`).join("\n")}`);
+  }
+
+  if (recentQuestionIntentsSnippet && recentQuestionIntentsSnippet.trim()) {
+    sections.push(`\n## PERGUNTAS RECENTES (SEMANTIC QUESTION INTENTS)\n${recentQuestionIntentsSnippet.trim()}`);
   }
 
   if (contactMemorySummary) {
@@ -506,6 +625,16 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "speechActs": [],
     "openLoops": []
   },
+  "resolvedQuestionIntentIds": ["feeling.miss_previous_place"],
+  "questionIntents": [
+    {
+      "responseIndex": 1,
+      "intentKey": "feeling.miss_previous_place",
+      "canonicalMeaning": "saber se o pretendente sente falta de morar no lugar anterior",
+      "kind": "continuity",
+      "target": "pretendente"
+    }
+  ],
   "turnContract": {
     "directQuestions": [],
     "mustAnswerFirst": true,
@@ -519,7 +648,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "balão 2"
   ]
 }
-Nota: "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado).`
+Nota: "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado).`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
@@ -892,11 +1021,14 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     const basicValidation = validateConversationBrainPlan(parsedPlan, params.availableSubagents);
     const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
     const responseGenValidation = validateResponseGenerationInvariant(parsedPlan);
+    const questionIntentsValidation = validateQuestionIntentsInvariant(parsedPlan);
     const validation = !basicValidation.valid
       ? basicValidation
       : !invariantValidation.valid
       ? invariantValidation
-      : responseGenValidation;
+      : !responseGenValidation.valid
+      ? responseGenValidation
+      : questionIntentsValidation;
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {
