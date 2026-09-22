@@ -81,8 +81,15 @@ export function validateConversationBrainPlan(
   if (!plan || typeof plan !== "object") {
     return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
   }
-  if (plan.action !== "delegate_mission") {
-    return { valid: false, error: `Ação do plano deve ser 'delegate_mission', recebido: '${plan.action}'` };
+  const validActions = ["reply", "delegate_mission", "wait"];
+  if (!validActions.includes(plan.action)) {
+    return {
+      valid: false,
+      error: `Ação do plano deve ser 'reply', 'delegate_mission' ou 'wait', recebido: '${plan.action}'`,
+    };
+  }
+  if (plan.action === "wait") {
+    return { valid: true };
   }
   if (!plan.responsibleSubagent || typeof plan.responsibleSubagent !== "string") {
     return { valid: false, error: "responsibleSubagent ausente ou não é string" };
@@ -96,12 +103,11 @@ export function validateConversationBrainPlan(
       };
     }
   }
-  if (!plan.missionPackage || typeof plan.missionPackage !== "object") {
-    return { valid: false, error: "missionPackage ausente ou inválido no plano" };
-  }
-  const turnContract = plan.missionPackage.turnContract;
+
+  // Validação de turnContract (aceita tanto na raiz quanto em missionPackage)
+  const turnContract = plan.turnContract || plan.missionPackage?.turnContract;
   if (!turnContract || typeof turnContract !== "object") {
-    return { valid: false, error: "turnContract ausente ou inválido em missionPackage" };
+    return { valid: false, error: "turnContract ausente ou inválido no plano" };
   }
   if (typeof turnContract.mustAnswerFirst !== "boolean") {
     return { valid: false, error: "turnContract.mustAnswerFirst deve ser booleano" };
@@ -117,6 +123,60 @@ export function validateConversationBrainPlan(
   }
   if (!Number.isInteger(turnContract.maxBalloons) || turnContract.maxBalloons < 1 || turnContract.maxBalloons > 4) {
     return { valid: false, error: "turnContract.maxBalloons deve ser inteiro entre 1 e 4" };
+  }
+
+  // Síntese defensiva retrocompatível: se missionPackage estiver ausente, sintetiza a partir da raiz
+  if (!plan.missionPackage || typeof plan.missionPackage !== "object") {
+    plan.missionPackage = {
+      subagentId: plan.responsibleSubagent,
+      objectiveDirective: plan.objectiveDecision || "none",
+      draftResponse: Array.isArray(plan.responses) ? plan.responses.join("\n\n") : "",
+      relevantPersonaFacts: plan.relevantPersonaFacts || [],
+      memoryConsulted: plan.memoryConsulted,
+      memoryRationale: plan.memoryRationale,
+      personaMemoryQuery: plan.personaMemoryQuery,
+      turnContract,
+    };
+  } else if (!plan.missionPackage.turnContract) {
+    plan.missionPackage.turnContract = turnContract;
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Validação estrutural do novo modelo unificado: garante que respostas prontas
+ * foram geradas pelo Agent no mesmo turno.
+ */
+export function validateResponseGenerationInvariant(plan: any): PlanValidationResult {
+  if (!plan || typeof plan !== "object") {
+    return { valid: false, error: "Plano inválido" };
+  }
+  if (plan.action === "wait") {
+    return { valid: true };
+  }
+  // Se for ação de reply ou tiver responses declarado
+  if (plan.action === "reply" || Array.isArray(plan.responses)) {
+    if (!Array.isArray(plan.responses) || plan.responses.length === 0) {
+      return {
+        valid: false,
+        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'responses' ausente ou vazio para action != wait",
+      };
+    }
+    if (plan.responses.length > 4) {
+      return {
+        valid: false,
+        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'responses' excede o limite máximo de 4 balões",
+      };
+    }
+    for (const b of plan.responses) {
+      if (typeof b !== "string" || !b.trim()) {
+        return {
+          valid: false,
+          error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: cada balão em 'responses' deve ser string não vazia",
+        };
+      }
+    }
   }
   return { valid: true };
 }
@@ -161,24 +221,28 @@ export function buildFallbackBrainPlan(
   availableSubagents?: Array<{ id: string }>
 ): any {
   const targetSubagent = availableSubagents?.[0]?.id || "subagent_conexao_inicial";
+  const defaultText = (rawResponseText || "oi, tudo bem?").trim();
+  const defaultContract = {
+    directQuestions: [],
+    mustAnswerFirst: true,
+    newQuestionBudget: 1,
+    responseShape: "answer_and_reciprocate",
+    preferNoEmoji: false,
+    maxBalloons: 2,
+  };
   return {
-    action: "delegate_mission",
+    action: "reply",
     responsibleSubagent: targetSubagent,
     objectiveDecision: "none",
-    reasoning: (rawResponseText || "").slice(0, 300),
+    reasoning: defaultText.slice(0, 300),
     liveStatePatch: {},
+    responses: [defaultText || "oi, tudo bem?"],
+    turnContract: defaultContract,
     missionPackage: {
       subagentId: targetSubagent,
       objectiveDirective: "none",
-      draftResponse: rawResponseText || "",
-      turnContract: {
-        directQuestions: [],
-        mustAnswerFirst: true,
-        newQuestionBudget: 1,
-        responseShape: "answer_and_reciprocate",
-        preferNoEmoji: false,
-        maxBalloons: 2,
-      },
+      draftResponse: defaultText,
+      turnContract: defaultContract,
     },
   };
 }
@@ -280,46 +344,76 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
 
   sections.push(
     `\n## INSTRUÇÃO DE DECISÃO E REGRAS MANDATÓRIAS
-Você é o Conversation Brain da Larissa. Sua função é:
-1. Avaliar a intenção do pretendente nas novas mensagens.
-2. AFFINITY CHECK (OBRIGATÓRIO): Você não conhece toda a PersonaMemory carregada de antemão. Portanto, ausência de um fato no contexto atual não prova que tal fato não existe na memória. Quando o pretendente revelar um fato pessoal substantivo sobre profissão, formação/estudo, hobby, viagem, rotina, gosto, preferência, comida, música, filmes, família, valores, religião, relacionamento, lugar, experiência marcante, plano futuro ou hábito, e o contexto não tiver informação suficiente da Larissa sobre o tema, faça UMA busca breve em persona_memory_search ANTES de concluir que não existe afinidade ou conexão pessoal relevante. Se houver mais de um gancho, pesquise o assunto principal em uma única query abrangente; máximo recomendado: 1 busca PersonaMemory por turno. Não use a ferramenta para saudações triviais, mensagens operacionais, nem quando emoção ou urgência exigir apenas acolhimento e a busca não agregar valor.
-3. TOOL EXECUTION INVARIANT: quando decidir que uma ferramenta é necessária para produzir o BrainPlan, EXECUTE a ferramenta antes de emitir o plano final. Nunca descreva uma chamada futura como texto. A sequência obrigatória é DECIDIR BUSCAR → EXECUTAR TOOL → RECEBER RESULTADO → ANALISAR → SELECIONAR FATOS → EMITIR BRAINPLAN FINAL. personaMemoryQuery é apenas telemetria de uma query já executada, nunca uma proposta futura. Se memoryConsulted=true ou personaMemoryQuery estiver preenchido, persona_memory_search já deve ter acontecido. O executor/subagente nunca consulta PersonaMemory: receba somente relevantPersonaFacts já resolvidos. Se não era necessário consultar, use memoryConsulted=false e dê uma memoryRationale concreta; nunca alegue que não existe fato da Larissa sem pesquisa.
+Você é o Conversation Brain & Voz Conversacional da Larissa. Você opera em TURNO ÚNICO: raciocina estrategicamente, consulta memórias via MCP quando necessário, escolhe o subagente responsável, executa a missão dele e formula os balões finais de resposta (responses) no mesmo turno.
+
+1. AVALIAÇÃO DE INTENÇÃO E CONTEXTO:
+   - Avalie as novas mensagens do pretendente, tom emocional, perguntas diretas ou desabafos.
+   - Responda primeiro a qualquer pergunta direta antes de introduzir um novo gancho. Máximo 1 nova pergunta por turno.
+
+2. AFFINITY CHECK (OBRIGATÓRIO):
+   - Você não conhece toda a PersonaMemory carregada de antemão. Ausência de fato no contexto imediato NÃO significa que a Larissa não possua aquela vivência.
+   - Quando o pretendente revelar fato pessoal substantivo sobre profissão, formação/estudos, hobby, viagens, rotina, gostos, preferência, comida, música, filmes, família, valores, religião, lugar ou planos futuros, e o contexto não tiver informação suficiente da Larissa sobre o tema, faça UMA busca breve e objetiva em persona_memory_search ANTES de concluir que não existe afinidade ou conexão.
+   - Máximo recomendado: 1 busca PersonaMemory por turno. Não pesquise para saudações triviais ou desabafos que exigem acolhimento imediato.
+
+3. TOOL EXECUTION INVARIANT:
+   - Se decidir que a ferramenta é necessária, EXECUTE a ferramenta antes de emitir a resposta final em JSON. Nunca descreva consultas futuras no texto.
+   - A sequência obrigatória é: DECIDIR BUSCAR → EXECUTAR TOOL → RECEBER FATOS → RACIOCINAR → GERAR RESPOSTA FINAL.
+   - personaMemoryQuery é telemetria da query já executada. Se memoryConsulted=true, persona_memory_search já deve ter sido executada. Se não for necessária, use memoryConsulted=false e forneça memoryRationale concreta.
+
 4. REGRA DE GROUNDING RIGOROSA (CRÍTICA):
    - NUNCA declare nem deduza que a Larissa NÃO faz algo, NÃO gosta, NUNCA foi ou NÃO pratica uma atividade apenas pela ausência de fatos na PersonaMemory.
-   - Ausência de evidência NÃO é fato negativo!
-   - Se não houver fato, trate como desconhecido e não atribua experiência, gosto, medo ou opinião à Larissa.
+   - Ausência de evidência NÃO é fato negativo! Se não houver fato, trate como desconhecido e não invente nem negue categoricamente.
    - JAMAIS declare categoricamente negações falsas como 'nunca andei de moto', 'não gosto disso' ou 'não pratico nada disso'.
-5. Priorize perguntas diretas e desabafos. Objetivos são intenções de longo prazo: adie-os quando o momento humano pedir acolhimento; marque already_satisfied apenas se a mensagem atual realmente trouxer a evidência. Pergunte somente quando houver gancho específico e curiosidade genuína — nunca para preencher checklist.
-6. Escolha responsibleSubagent somente entre os SUBAGENTES DISPONÍVEIS. Sua escolha será validada sem substituição automática.
-7. Ao concluir a estratégia, emita a decisão final delegando a missão para um subagente em JSON estruturado com o formato:
+
+5. ESCOLHA E EXECUÇÃO DO SUBAGENTE RESPONSÁVEL:
+   - Escolha responsibleSubagent SOMENTE entre os SUBAGENTES DISPONÍVEIS (ex: "conexao_inicial", "descoberta", "compatibilidade").
+   - Assuma internamente a missão do subagente escolhido para conduzir a conversa.
+
+6. FORMA DE DIGITAR & LINGUAGEM DE CELULAR (LARISSA_CHAT_STYLE_V2):
+   - LINGUAGEM DE SMARTPHONE: Português coloquial real do dia a dia, doce, meigo e ágil. Use abreviações: vc, tô, tá, pra, tbm, né, ué.
+   - PROIBIDO: NUNCA use "cê" (sempre "vc" ou o nome dele). NUNCA use "trampar", "trampo" ou "trampando" (use trabalho ou serviço).
+   - UAI RARO: "uai" é muito raro e opcional (máx 1 a cada 15 turnos). Nunca use como bordão.
+   - RISADAS: Apenas "kkk" ou "kkkk" com moderação quando houver graça real. Proibido: hahaha, rs, rsrs, hehe. Proibido kkk em desabafos sérios, cansaço ou agradecimento a Deus. Maioria das falas sem risada.
+   - PONTUAÇÃO DE CELULAR: Permitido SOMENTE vírgula (,) e interrogação (?). Proibido: ponto final (.), exclamação (!), reticências (...), ponto e vírgula (;), dois pontos (:), travessão (—). A maioria das falas termina solta sem ponto no final. Preserve "?" apenas em perguntas reais.
+   - MAIÚSCULA: Cada balão deve começar com o primeiro caractere alfabético em maiúsculo (ex: "Nossa que legal", "🥰 Que bom").
+   - ESTRUTURA DOS BALÕES (responses: []):
+     * Mensagem simples: 1 a 2 balões curtos.
+     * Mensagem maior: 2 a 4 balões rápidos.
+     * Densidade: 3 a 18 palavras por balão. Evite textão em bloco único. Máximo 1 nova pergunta por turno.
+   - ZERO SUJEIRA: Proibido markdown (sem negrito, sem itálico), sem prefixos ("Larissa:", "Resposta:") e sem explicações internas.
+
+<!-- EXTENSION_POINT: LARISSA_INTERACTION_DNA (Ponto único de extensão para DNA e dinâmicas avançadas de interação) -->
+
+7. CONTRATO DE SAÍDA JSON FINAL (TURNO ÚNICO):
+Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
-  "action": "delegate_mission",
+  "action": "reply",
   "responsibleSubagent": "id_do_subagente",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
-  "satisfiedObjectiveId": "id_se_cumprido",
+  "satisfiedObjectiveId": null,
+  "reasoning": "sua justificativa estratégica",
   "liveStatePatch": { "lastUserEmotionalTone": "...", "currentTopic": "..." },
-  "reasoning": "sua justificativa",
-  "missionPackage": {
-    "subagentId": "id_do_subagente",
-    "objectiveDirective": "pursue" | "defer" | "already_satisfied" | "none",
-    "conversationIntent": "...",
-    "emotionalTone": "...",
-    "currentTopic": "...",
-    "bestHook": "...",
-    "curiosityOpportunity": "...",
-    "questionRecommendation": "none | pergunta específica e natural",
-    "relevantPersonaFacts": [{ "fact": "...", "memoryId": "quando disponível", "origin": "persona_memory", "reason": "por que é relevante" }],
-    "memoryConsulted": true | false,
-    "memoryRationale": "se false em fato pessoal substantivo, explique uma prioridade concreta do turno; nunca alegue ausência de fato da Larissa sem ter pesquisado",
-    "turnContract": {
-      "directQuestions": [],
-      "mustAnswerFirst": true,
-      "newQuestionBudget": 1,
-      "responseShape": "answer_and_reciprocate",
-      "preferNoEmoji": false,
-      "maxBalloons": 2
-    }
-  }
+  "currentTopic": "tópico atual",
+  "bestHook": "gancho principal",
+  "curiosityOpportunity": "oportunidade de curiosidade",
+  "memoryConsulted": true | false,
+  "memoryRationale": "justificativa da consulta ou da não consulta",
+  "personaMemoryQuery": "query executada se memoryConsulted=true",
+  "relevantPersonaFacts": [
+    { "fact": "...", "memoryId": "quando disponível", "origin": "persona_memory", "reason": "por que é relevante" }
+  ],
+  "turnContract": {
+    "directQuestions": [],
+    "mustAnswerFirst": true,
+    "newQuestionBudget": 1,
+    "responseShape": "answer_and_reciprocate",
+    "preferNoEmoji": false,
+    "maxBalloons": 2
+  },
+  "responses": [
+    "balão 1",
+    "balão 2"
+  ]
 }`
   );
 
@@ -412,7 +506,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
       const basicValidation = validateConversationBrainPlan(mockResult.plan, params.availableSubagents);
       const invariantValidation = validatePersonaMemoryExecutionInvariant(mockResult.plan, telemetry.actualMemoryToolCalled);
-      const validation = !basicValidation.valid ? basicValidation : invariantValidation;
+      const responseGenValidation = validateResponseGenerationInvariant(mockResult.plan);
+      const validation = !basicValidation.valid
+        ? basicValidation
+        : !invariantValidation.valid
+        ? invariantValidation
+        : responseGenValidation;
       if (params.strictOpenAiPilot) {
         if (!mockResult.plan || !validation.valid) {
           if (!params.schemaRetryCount) {
@@ -626,7 +725,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     let parsedPlan = extractJsonFromText(rawResponseText);
     const basicValidation = validateConversationBrainPlan(parsedPlan, params.availableSubagents);
     const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
-    const validation = !basicValidation.valid ? basicValidation : invariantValidation;
+    const responseGenValidation = validateResponseGenerationInvariant(parsedPlan);
+    const validation = !basicValidation.valid
+      ? basicValidation
+      : !invariantValidation.valid
+      ? invariantValidation
+      : responseGenValidation;
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {

@@ -431,10 +431,10 @@ export function enforceAuthorizedAudioDecision(
 }
 
 export interface ConversationBrainPlan {
-  action: "delegate_mission" | "call_tool";
+  action: "delegate_mission" | "call_tool" | "reply" | "wait";
   tool?: "conversation_history_search" | "persona_memory_search" | "episodic_memory_search" | "cofre_audio_search";
   parameters?: Record<string, any>;
-  currentStage: string;
+  currentStage?: string;
   responsibleSubagent: string;
   objectiveDecision: "pursue" | "defer" | "already_satisfied" | "none";
   satisfiedObjectiveId?: string;
@@ -442,6 +442,16 @@ export interface ConversationBrainPlan {
   liveStatePatch: Partial<ConversationLiveState>;
   missionPackage?: MissionPackage;
   reasoning?: string;
+  responses?: string[];
+  suggestedResponse?: string;
+  currentTopic?: string;
+  bestHook?: string;
+  curiosityOpportunity?: string;
+  turnContract?: TurnContract;
+  memoryConsulted?: boolean;
+  memoryRationale?: string;
+  personaMemoryQuery?: string;
+  relevantPersonaFacts?: Array<{ fact: string; memoryId?: string; origin?: string; reason?: string }>;
 }
 
 export interface CompactSubagentCard {
@@ -7041,69 +7051,94 @@ export async function runExperimentalOrchestration(
         `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
       ).join("\n") || "";
 
-      // Constrói prompt do subagente executor enxuto
-      const executorPrompt = buildSubagentExecutorPrompt({
-        subagentId: responsibleSubagent,
-        subagentName: subagentDef.name,
-        mission: subagentDef.mission || "Conduzir a conversa com afeto e organicidade",
-        missionPackage: missionPkg,
-        recentMessages: finalRecentMessages,
-        emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
-        styleStateSnippet: `Última forma: ${recentStyleState.last_response_shape} | Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`,
-        candidateAudiosSnippet: candidateAudiosSnippet || undefined,
-      });
-      await publishAutoPilotState(supabase, conversationId, {
-        status: "processing",
-        activity: activity(
-          "atria",
-          orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${subagentDef.name || responsibleSubagent}`,
-          `Formulando resposta com ${subagentDef.name || responsibleSubagent}...`,
-          {
-            atriaThought: `Executando com ${subagentDef.name || responsibleSubagent}...`,
-            mode: orchState.mode,
-            currentPhase,
-          }
-        ),
-      });
+      if (isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0) {
+        // EXECUÇÃO EM TURNO ÚNICO DO GPT-5.6-TERRA: Brain unificado com Executor
+        const chosenResponses = brainPlan.responses
+          .map((r: any) => String(r || "").trim())
+          .filter(Boolean);
+        const suggestedText = chosenResponses.join("\n\n");
 
-      // Resolução explícita do modelo do subagente executor (sem fallback silencioso para gpt-4o-mini)
-      const executorModel =
-        (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_EXECUTOR_MODEL") : process.env.OPENAI_EXECUTOR_MODEL) ||
-        stageRules.openaiExecutorModel ||
-        orchState.executorModel ||
-        (params as any)?.executorModel ||
-        (params as any)?.options?.executorModel ||
-        OPENAI_EXECUTOR_DEFAULT_MODEL;
-
-      currentCycle.executorModel = executorModel;
-      currentCycle.trace.push(`executor_model: ${executorModel}`);
-
-      const execRes = await callModelOrOpenAi(executorPrompt, {
-        runtime,
-        supabase,
-        model: executorModel,
-        disallowDowngrade: true,
-      });
-      tokenMeasurements.add(execRes.tokenMeasurement);
-      totalTokens += execRes.tokens;
-      subagentInputTokens += execRes.inputTokens;
-      subagentOutputTokens += execRes.outputTokens;
-      finalGenerationTokens += execRes.outputTokens;
-      const rawSubJson = extractJsonFromText(execRes.content);
-      if (rawSubJson && (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)) {
-        currentCycle.trace.push("subagent_tool_request_rejected");
         finalSubDecision = {
-          action: "wait",
+          action: "reply",
           checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-          summary: "Saída inválida do executor",
-          suggestedResponse: "",
+          summary: `Executado em turno único pelo Agent Brain (${responsibleSubagent})`,
+          suggestedResponse: suggestedText,
+          responses: chosenResponses,
           nextPhase: currentPhase,
-          reasoning: "Executor tentou solicitar ferramenta, operação proibida no runtime experimental",
+          reasoning: brainPlan.reasoning || `Execução direta do subagente ${responsibleSubagent} pelo Agent Brain`,
           requiredTools: [],
         };
-      } else {
-        finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
+
+        currentCycle.trace.push(`single_turn_agent_execution_used: ${responsibleSubagent}`);
         currentCycle.trace.push(`subagent_executed: ${responsibleSubagent}`);
+        currentCycle.trace.push("second_model_inference_skipped: true");
+        currentCycle.executorModel = "same_agent (gpt-5.6-terra)";
+        currentCycle.trace.push("executor_model: same_agent (gpt-5.6-terra)");
+      } else {
+        // Constrói prompt do subagente executor enxuto
+        const executorPrompt = buildSubagentExecutorPrompt({
+          subagentId: responsibleSubagent,
+          subagentName: subagentDef.name,
+          mission: subagentDef.mission || "Conduzir a conversa com afeto e organicidade",
+          missionPackage: missionPkg,
+          recentMessages: finalRecentMessages,
+          emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
+          styleStateSnippet: `Última forma: ${recentStyleState.last_response_shape} | Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`,
+          candidateAudiosSnippet: candidateAudiosSnippet || undefined,
+        });
+        await publishAutoPilotState(supabase, conversationId, {
+          status: "processing",
+          activity: activity(
+            "atria",
+            orchState.mode === "shadow" ? "Subagente (Shadow)" : `Subagente: ${subagentDef.name || responsibleSubagent}`,
+            `Formulando resposta com ${subagentDef.name || responsibleSubagent}...`,
+            {
+              atriaThought: `Executando com ${subagentDef.name || responsibleSubagent}...`,
+              mode: orchState.mode,
+              currentPhase,
+            }
+          ),
+        });
+
+        // Resolução explícita do modelo do subagente executor (sem fallback silencioso para gpt-4o-mini)
+        const executorModel =
+          (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_EXECUTOR_MODEL") : process.env.OPENAI_EXECUTOR_MODEL) ||
+          stageRules.openaiExecutorModel ||
+          orchState.executorModel ||
+          (params as any)?.executorModel ||
+          (params as any)?.options?.executorModel ||
+          OPENAI_EXECUTOR_DEFAULT_MODEL;
+
+        currentCycle.executorModel = executorModel;
+        currentCycle.trace.push(`executor_model: ${executorModel}`);
+
+        const execRes = await callModelOrOpenAi(executorPrompt, {
+          runtime,
+          supabase,
+          model: executorModel,
+          disallowDowngrade: true,
+        });
+        tokenMeasurements.add(execRes.tokenMeasurement);
+        totalTokens += execRes.tokens;
+        subagentInputTokens += execRes.inputTokens;
+        subagentOutputTokens += execRes.outputTokens;
+        finalGenerationTokens += execRes.outputTokens;
+        const rawSubJson = extractJsonFromText(execRes.content);
+        if (rawSubJson && (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)) {
+          currentCycle.trace.push("subagent_tool_request_rejected");
+          finalSubDecision = {
+            action: "wait",
+            checkpoint: responsibleSubagent === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            summary: "Saída inválida do executor",
+            suggestedResponse: "",
+            nextPhase: currentPhase,
+            reasoning: "Executor tentou solicitar ferramenta, operação proibida no runtime experimental",
+            requiredTools: [],
+          };
+        } else {
+          finalSubDecision = validateSubagentDecision(rawSubJson, currentPhase);
+          currentCycle.trace.push(`subagent_executed: ${responsibleSubagent}`);
+        }
       }
 
       // Se o subagente gerou balões, aplica sanitização determinística mandatória

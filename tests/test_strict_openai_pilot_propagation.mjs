@@ -172,3 +172,47 @@ test("runOpenAiBrainTurn no strict mode (strictOpenAiPilot: true) TEM SUCESSO qu
   assert.deepEqual(result.plan, validPlan);
   assert.equal(result.telemetry.finalPlanParsed, true);
 });
+
+test("runOpenAiBrainTurn valida com sucesso o novo plano unificado de turno único (action: 'reply' e responses)", async () => {
+  const subagents = [{ id: "subagent_conexao_inicial", name: "Conexão", mission: "Conectar" }];
+
+  const singleTurnPlan = {
+    action: "reply",
+    responsibleSubagent: "subagent_conexao_inicial",
+    objectiveDecision: "none",
+    reasoning: "Acolhimento caloroso e reciprocidade",
+    turnContract: {
+      directQuestions: [],
+      mustAnswerFirst: true,
+      newQuestionBudget: 1,
+      responseShape: "answer_and_reciprocate",
+      preferNoEmoji: false,
+      maxBalloons: 2,
+    },
+    responses: ["Oi tudo bem", "Como vc tá por aí?"],
+  };
+
+  const mockRuntimeValid = {
+    callOpenAiAgent: async () => ({
+      plan: singleTurnPlan,
+      tokens: 95,
+    }),
+  };
+
+  const result = await runOpenAiBrainTurn({
+    supabase: {},
+    conversationId: "conv_test_single_turn",
+    currentStageId: "stage_01",
+    inboundMessages: ["Oi Larissa"],
+    recentMessages: [],
+    availableSubagents: subagents,
+    runtime: mockRuntimeValid,
+    strictOpenAiPilot: true,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.plan.action, "reply");
+  assert.deepEqual(result.plan.responses, ["Oi tudo bem", "Como vc tá por aí?"]);
+  assert.ok(result.plan.missionPackage, "missionPackage deve ser sintetizado automaticamente");
+  assert.equal(result.telemetry.finalPlanParsed, true);
+});

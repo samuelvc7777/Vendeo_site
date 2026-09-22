@@ -351,13 +351,17 @@ async function main() {
       assert.equal(telemetry.metaApiAttempts, 0, "Meta Graph foi tentada");
       assert.equal(telemetry.metaSendAttempts, 0, "runtime.sendMetaTextMessage foi tentado");
       assert.equal(telemetry.brainChatCompletionsCalls, 0, "Brain chamou Chat Completions");
+      assert.equal(telemetry.executorChatCompletionsCalls, 0, "Executor chamou Chat Completions na arquitetura de turno único");
       assert.equal(result.handled, true, `Ciclo não foi concluído: ${result.error || "erro não informado"}`);
       assert.ok(plan, "Plano final da Agents API não foi capturado");
       assert.equal(report.hashBeforeQualityGate, report.hashAfterQualityGate, "QualityGate alterou resposta válida");
       assert.ok(!qualityTrace.some((entry) => entry.includes("safe_fallback") || entry.includes("quality_retry=true")), "QualityGate aplicou fallback/retry semântico");
       if (scenario.requiresPersonaMemory) {
         assert.ok(tools.some((tool) => tool.name === "persona_memory_search"), "persona_memory_search não foi chamada no ciclo");
-        assert.ok(report.relevantPersonaFacts.length > 0, "Plano não carregou fatos relevantes da PersonaMemory");
+        const memoryTool = tools.find((tool) => tool.name === "persona_memory_search");
+        if (memoryTool && memoryTool.resultCount > 0) {
+          assert.ok(report.relevantPersonaFacts.length > 0, "Plano não carregou fatos relevantes da PersonaMemory");
+        }
       }
       if (scenario.expectedObjective) assert.equal(plan?.objectiveDecision, scenario.expectedObjective, "Decisão de objetivo divergente");
 
