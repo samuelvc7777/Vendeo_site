@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeMcpTelemetry } from "../supabase/functions/vendeo-brain-mcp/_shared/telemetry.ts";
+import { sanitizeMcpTelemetry } from "../supabase/functions/vendeo-brain-mcp/_shared/persona_memory.ts";
 
 test("sanitizeMcpTelemetry nunca vaza tokens, headers ou query string na telemetria", () => {
   const secretToken = "super-secret-mcp-token-xyz-12345678901234567890";

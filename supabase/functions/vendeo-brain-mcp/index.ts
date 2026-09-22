@@ -2,8 +2,12 @@
 // Implementa Model Context Protocol (MCP) sobre HTTP para o OpenAI Agent Brain
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
-import { searchPersonaMemory, formatPersonaMemoryForToolOutput } from "./_shared/persona_memory.ts";
-import { sanitizeMcpTelemetry, type SanitizedMcpTelemetry } from "./_shared/telemetry.ts";
+import {
+  searchPersonaMemory,
+  formatPersonaMemoryForToolOutput,
+  sanitizeMcpTelemetry,
+  type SanitizedMcpTelemetry,
+} from "./_shared/persona_memory.ts";
 export { sanitizeMcpTelemetry, type SanitizedMcpTelemetry };
 
 const corsHeaders = {
