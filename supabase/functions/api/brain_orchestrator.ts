@@ -5440,7 +5440,15 @@ async function callModelOrOpenAi(
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_object" },
       };
-      if (!currentModel.includes("terra") && !currentModel.startsWith("o1") && !currentModel.startsWith("o3")) {
+      const isReasoningOrGpt5Model =
+        currentModel.includes("luna") ||
+        currentModel.includes("terra") ||
+        currentModel.startsWith("gpt-5") ||
+        currentModel.startsWith("o1") ||
+        currentModel.startsWith("o3") ||
+        currentModel.startsWith("o4");
+
+      if (!isReasoningOrGpt5Model) {
         reqBody.temperature = options.temperature ?? 0.3;
       }
 
@@ -5477,6 +5485,14 @@ async function callModelOrOpenAi(
 
       const errText = await oaiRes.text();
       lastError = new Error(`OpenAI (${currentModel}) retornou erro HTTP ${oaiRes.status}: ${errText.slice(0, 200)}`);
+      
+      // Auto-recuperação defensiva: se o erro for de temperature não suportada, remove temperature e retenta imediatamente
+      if (oaiRes.status === 400 && errText.includes("temperature")) {
+        console.warn(`[Brain] Modelo ${currentModel} rejeitou parâmetro 'temperature'. Removendo temperature e retentando imediatamente...`);
+        delete reqBody.temperature;
+        continue;
+      }
+
       if ([500, 502, 503, 504, 429].includes(oaiRes.status)) {
         console.warn(`[Brain] OpenAI (${currentModel}) retornou status transitório ${oaiRes.status} na tentativa ${attempt}/${maxRetries}. Aguardando retry...`);
         await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
