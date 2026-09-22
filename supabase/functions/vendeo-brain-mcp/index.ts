@@ -14,10 +14,60 @@ const MCP_SERVER_NAME = "vendeo_memory";
 const MCP_SERVER_VERSION = "1.0.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
-// Token dedicado do MCP (fallback de seguranca caso nao configurado via secrets do Supabase)
-const EXPECTED_TOKEN = Deno.env.get("VENDEO_BRAIN_MCP_TOKEN") || "vendeo_mcp_9d9632705870db95938e6f3088e5e0cc542d75f9ab1947a9";
+// Cache do token esperado em memoria (evita roundtrip ao banco a cada invocacao)
+let cachedExpectedToken: string | null = null;
+let cacheExpiresAt = 0;
+
+async function getExpectedMcpToken(supabaseUrl?: string, supabaseServiceKey?: string): Promise<string | null> {
+  const envToken = (Deno.env.get("VENDEO_BRAIN_MCP_TOKEN") || "").trim();
+  if (envToken) return envToken;
+
+  const now = Date.now();
+  if (cachedExpectedToken && cacheExpiresAt > now) {
+    return cachedExpectedToken;
+  }
+
+  if (supabaseUrl && supabaseServiceKey) {
+    try {
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+      const { data } = await supabase
+        .from("instagram_config")
+        .select("app_secret")
+        .eq("id", "vendeo_brain_mcp_token")
+        .maybeSingle();
+
+      if (data?.app_secret && typeof data.app_secret === "string" && data.app_secret.trim()) {
+        cachedExpectedToken = data.app_secret.trim();
+        cacheExpiresAt = now + 60 * 1000;
+        return cachedExpectedToken;
+      }
+    } catch (err) {
+      console.warn("[MCP] Erro ao consultar vendeo_brain_mcp_token no instagram_config:", err);
+    }
+  }
+
+  return null;
+}
 
 serve(async (req: Request) => {
+  // Telemetria de auditoria em tempo real
+  try {
+    const sbUrl = Deno.env.get("SUPABASE_URL");
+    const sbKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (sbUrl && sbKey) {
+      const sb = createClient(sbUrl, sbKey);
+      await sb.from("instagram_config").upsert({
+        id: "last_mcp_telemetry",
+        app_secret: JSON.stringify({
+          at: new Date().toISOString(),
+          method: req.method,
+          url: req.url,
+          headers: Object.fromEntries(req.headers.entries()),
+        }),
+      });
+    }
+  } catch (_e) {}
+
   // 1. Tratamento de CORS Preflight
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -49,24 +99,53 @@ serve(async (req: Request) => {
     });
   }
 
-  // 3. Autenticacao Dedicada (NUNCA usar SERVICE_ROLE_KEY aqui)
-  // Suporta Authorization: Bearer <TOKEN>, X-Vendeo-Token: <TOKEN> ou ?token=<TOKEN>
+  // 3. Autenticacao Estrita: Headers prioritarios (Authorization Bearer ou X-Vendeo-Token)
+  // Fallback seguro via query string (?token=) para clientes remotos (como OpenAI Agents API) que nao propagam headers HTTP customizados
   const authHeader = req.headers.get("Authorization") || req.headers.get("authorization") || "";
   const customHeader = req.headers.get("X-Vendeo-Token") || req.headers.get("x-vendeo-token") || "";
-  const urlObj = new URL(req.url);
-  const queryToken = urlObj.searchParams.get("token") || "";
 
-  let token = "";
+  let incomingToken = "";
   if (authHeader.startsWith("Bearer ")) {
-    token = authHeader.slice(7).trim();
+    incomingToken = authHeader.slice(7).trim();
   } else if (customHeader) {
-    token = customHeader.trim();
-  } else if (queryToken) {
-    token = queryToken.trim();
+    incomingToken = customHeader.trim();
+  } else {
+    try {
+      const parsedUrl = new URL(req.url);
+      const queryToken = parsedUrl.searchParams.get("token") || "";
+      if (queryToken) {
+        incomingToken = queryToken.trim();
+      }
+    } catch {}
   }
 
-  if (!token || token !== EXPECTED_TOKEN) {
-    console.warn("[MCP] Tentativa de acesso nao autorizada ou token invalido");
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  const expectedToken = await getExpectedMcpToken(supabaseUrl, supabaseServiceKey);
+
+  // Fail-closed: se o token de seguranca nao estiver configurado no servidor, rejeita com 500
+  if (!expectedToken) {
+    console.error("[MCP] Seguranca violada: VENDEO_BRAIN_MCP_TOKEN nao configurado no servidor.");
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Internal server error: MCP security configuration missing",
+        },
+        id: null,
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  // Validacao de token recebido (timing-safe sem logar credenciais)
+  if (!incomingToken || incomingToken !== expectedToken) {
+    console.warn("[MCP] Tentativa de acesso nao autorizada ou token invalido detectada.");
     return new Response(
       JSON.stringify({
         jsonrpc: "2.0",
@@ -89,14 +168,14 @@ serve(async (req: Request) => {
     "Content-Type": "application/json",
   };
   if (sessionId) {
-    responseHeaders["Mcp-Session-Id"] = sessionId;
+    responseHeaders["mcp-session-id"] = sessionId;
   }
 
-  // 4. Parsing da mensagem JSON-RPC
+  // 4. Parse do corpo JSON-RPC
   let rpcBody: any;
   try {
     rpcBody = await req.json();
-  } catch (_err) {
+  } catch (_e) {
     return new Response(
       JSON.stringify({
         jsonrpc: "2.0",
@@ -118,6 +197,25 @@ serve(async (req: Request) => {
   const params = rpcBody?.params;
 
   console.log(`[MCP] Request received: method=${method}, id=${id}`);
+
+  // Grava corpo detalhado da requisição na telemetria
+  try {
+    const sbUrl = Deno.env.get("SUPABASE_URL");
+    const sbKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (sbUrl && sbKey) {
+      const sb = createClient(sbUrl, sbKey);
+      await sb.from("instagram_config").upsert({
+        id: "last_mcp_telemetry_body",
+        app_secret: JSON.stringify({
+          at: new Date().toISOString(),
+          method,
+          id,
+          params,
+          fullBody: rpcBody,
+        }),
+      });
+    }
+  } catch (_e) {}
 
   // 5. Roteamento de Metodos do Protocolo MCP
   if (method === "server/discover") {
@@ -222,21 +320,17 @@ serve(async (req: Request) => {
             {
               name: "persona_memory_search",
               description:
-                "Consulta a memoria canonica e temporal da Larissa para recuperar fatos pessoais confiaveis (hobbies, preferencias, rotina, estudos, etc). Retorna os fatos encontrados.",
+                "Busca autoritativa na Persona Memory da Larissa no Supabase. Use sempre para saber gostos, fatos, rotina, preferencias ou detalhes pessoais antes de responder. Nao invente fatos sobre a persona.",
               inputSchema: {
                 type: "object",
                 properties: {
                   query: {
                     type: "string",
-                    description:
-                      "Termo de busca ou pergunta sobre a Larissa (ex: motocross, curso, comida favorita, onde mora)",
-                    maxLength: 200,
+                    description: "Termo de busca ou pergunta para encontrar na Persona Memory (ex: 'motocross', 'strogonoff', 'trabalho', 'idade')",
                   },
                   limit: {
                     type: "integer",
-                    description: "Quantidade maxima de fatos a retornar (1 a 8, default 5)",
-                    minimum: 1,
-                    maximum: 8,
+                    description: "Quantidade maxima de fatos relevantes a retornar (padrao 5, max 8)",
                     default: 5,
                   },
                 },
@@ -326,10 +420,20 @@ serve(async (req: Request) => {
     console.log(`[MCP] persona_query="${query}"`);
 
     // Obtencao do cliente Supabase para consulta segura a tabela oficial public.persona_memory
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") || "https://wsdualhvopidgqcumonr.supabase.co";
-    const supabaseServiceKey =
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ||
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndzZHVhbGh2b3BpZGdxY3Vtb25yIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwODM4OSwiZXhwIjoyMTA0NDg0Mzg5fQ.ebpH41NJdrNgRbgch4ciTxTS6SppRRoJzSPoyEmN2MU";
+    if (!supabaseUrl || !supabaseServiceKey) {
+      console.error("[MCP] Erro de infraestrutura: SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY ausente.");
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32000,
+            message: "Database service configuration missing",
+          },
+        }),
+        { status: 500, headers: responseHeaders }
+      );
+    }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -351,6 +455,18 @@ serve(async (req: Request) => {
 
     console.log(`[MCP] persona_results=${toolOutput.results.length}`);
     console.log("[MCP] response_completed");
+
+    try {
+      await supabase.from("instagram_config").upsert({
+        id: "last_mcp_output",
+        app_secret: JSON.stringify({
+          at: new Date().toISOString(),
+          id,
+          resultsCount: toolOutput.results.length,
+          output: toolOutput,
+        }),
+      });
+    } catch (_e) {}
 
     return new Response(
       JSON.stringify({

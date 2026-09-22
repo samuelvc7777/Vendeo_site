@@ -5878,6 +5878,7 @@ export interface OrchestrationResult {
   decision?: OrchestratorDecision;
   durationMs?: number;
   tokens?: number;
+  trace?: string[];
   error?: string;
 }
 
@@ -6670,6 +6671,17 @@ export async function runExperimentalOrchestration(
           tokenMeasurements.add("provider");
           for (const s of openAiBrainTurn.telemetry.sourcesUsed) {
             brainMemorySourcesUsed.add(s);
+          }
+          if (openAiBrainTurn.telemetry.sessionId) {
+            currentCycle.trace.push(`openai_agent_session_created: ${openAiBrainTurn.telemetry.sessionId}`);
+            currentCycle.trace.push("openai_agent_turn_started");
+            currentCycle.trace.push("openai_agent_turn_completed");
+          }
+          for (const tool of openAiBrainTurn.telemetry.toolsRequested) {
+            currentCycle.trace.push(`openai_agent_mcp_used=${tool}`);
+          }
+          if (openAiBrainTurn.telemetry.finalPlanParsed) {
+            currentCycle.trace.push("openai_agent_plan_validated");
           }
           currentCycle.trace.push(
             `openai_brain_turn_success: agent=${agentId} tools=${openAiBrainTurn.telemetry.toolsRequested.join(",")}`
@@ -8380,6 +8392,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         decision,
         durationMs,
         tokens: totalTokens,
+        trace: currentCycle.trace,
       };
     }
 

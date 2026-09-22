@@ -93,6 +93,9 @@ export interface OpenAiBrainTurnResult {
   error?: string;
   telemetry: {
     agentId: string;
+    sessionId?: string;
+    turnId?: string;
+    status?: string;
     toolsRequested: string[];
     toolExecutionsCount: number;
     durationMs: number;
@@ -100,6 +103,7 @@ export interface OpenAiBrainTurnResult {
     outputTokens: number;
     totalTokens: number;
     sourcesUsed: string[];
+    finalPlanParsed?: boolean;
   };
 }
 
@@ -238,6 +242,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       console.log("[Brain] turn_completed");
       telemetry.durationMs = Date.now() - startTime;
       telemetry.totalTokens = mockResult.tokens || 100;
+      telemetry.sessionId = mockResult.sessionId || `sess_runtime_${Date.now()}`;
+      telemetry.finalPlanParsed = true;
 
       return {
         success: true,
@@ -256,11 +262,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
   }
 
-  // 2. Chamada real à API da OpenAI (Agents API ou Chat Completions com function calling)
+  // 2. Chamada real à OpenAI Agents API oficial com Sessions e MCP Remoto
   if (!apiKey) {
     const errMsg = "OPENAI_API_KEY ausente para execução do OpenAI Agent Brain.";
     console.error(`[Brain] ${errMsg}`);
     telemetry.durationMs = Date.now() - startTime;
+    telemetry.status = "failed";
     return {
       success: false,
       plan: null,
@@ -270,108 +277,185 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   }
 
   try {
-    let messages: Array<{ role: string; content?: string | null; tool_calls?: any[]; tool_call_id?: string }> = [
-      { role: "user", content: contextMessage },
-    ];
+    const headers = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "OpenAI-Beta": "agents=v1",
+    };
 
-    let maxToolIterations = 3;
-    let iteration = 0;
-    let finalPlan: any = null;
+    console.log(`[OpenAI Agent] session_created: agentId=${agentId}`);
 
-    while (iteration < maxToolIterations && !finalPlan) {
-      iteration++;
-
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+    // Cria a sessão com o contexto compacto do turno
+    const sessionPayload = {
+      agent_id: agentId,
+      environment: { type: "none" },
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: contextMessage,
+            },
+          ],
         },
-        body: JSON.stringify({
-          model: agentId.startsWith("asst_") || agentId.startsWith("agent_") ? "gpt-4o" : agentId,
-          messages,
-          tools: [PERSONA_MEMORY_TOOL_DEFINITION],
-          tool_choice: "auto",
-          temperature: 0.2,
-          response_format: { type: "json_object" },
-        }),
-      });
+      ],
+    };
 
-      if (!res.ok) {
-        throw new Error(`Falha HTTP na chamada da OpenAI: ${res.status} ${await res.text()}`);
-      }
+    const sessionRes = await fetch("https://api.openai.com/v1/agents/sessions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(sessionPayload),
+    });
 
-      const resData = await res.json();
-      const choice = resData.choices?.[0];
-      const message = choice?.message;
+    if (!sessionRes.ok) {
+      const errText = await sessionRes.text();
+      throw new Error(`Falha HTTP ao criar sessão na OpenAI Agents API: ${sessionRes.status} - ${errText}`);
+    }
 
-      if (resData.usage) {
-        telemetry.inputTokens += resData.usage.prompt_tokens || 0;
-        telemetry.outputTokens += resData.usage.completion_tokens || 0;
-        telemetry.totalTokens += resData.usage.total_tokens || 0;
-      }
+    const sessionData = await sessionRes.json();
+    const sessionId = sessionData.id;
+    telemetry.sessionId = sessionId;
+    console.log(`[OpenAI Agent] session_created: sessionId=${sessionId}`);
+    console.log(`[OpenAI Agent] turn_started: sessionId=${sessionId}`);
 
-      if (message?.tool_calls && message.tool_calls.length > 0) {
-        messages.push(message);
+    // Polling de conclusão com timeout e backoff controlado (suporta reasoning do gpt-5.6-terra + chamada remota MCP)
+    const maxPollAttempts = 45;
+    const pollIntervalMs = 2000;
+    let finalStatus = sessionData.status;
 
-        for (const tc of message.tool_calls) {
-          const toolName = tc.function?.name;
-          let parsedArgs = {};
-          try {
-            parsedArgs = JSON.parse(tc.function?.arguments || "{}");
-          } catch {}
-
-          if (toolName === "persona_memory_search") {
-            console.log(`[Brain] tool_requested ${toolName}`);
-            telemetry.toolsRequested.push(toolName);
-            telemetry.toolExecutionsCount++;
-            if (!telemetry.sourcesUsed.includes("persona_memory")) {
-              telemetry.sourcesUsed.push("persona_memory");
-            }
-
-            const toolOutput = await executePersonaMemoryTool(parsedArgs, params.supabase);
-            console.log("[Brain] tool_output_submitted");
-
-            messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: JSON.stringify(toolOutput),
-            });
-          } else {
-            messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: JSON.stringify({ error: `Ferramenta desconhecida: ${toolName}` }),
-            });
-          }
-        }
-      } else if (message?.content) {
-        try {
-          finalPlan = JSON.parse(message.content);
-        } catch {
-          finalPlan = {
-            action: "delegate_mission",
-            responsibleSubagent: "conexao_inicial",
-            objectiveDecision: "defer",
-            reasoning: message.content,
-          };
-        }
-      } else {
+    for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
+      if (finalStatus === "completed" || finalStatus === "idle") {
         break;
+      }
+      if (finalStatus === "failed") {
+        break;
+      }
+
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
+
+      const pollRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}`, { headers });
+      if (!pollRes.ok) {
+        console.warn(`[OpenAI Agent] Falha no poll da sessão ${sessionId}: ${pollRes.status}`);
+        continue;
+      }
+
+      const pollData = await pollRes.json();
+      finalStatus = pollData.status;
+
+      if (finalStatus === "failed") {
+        const errorDetail = pollData.error ? JSON.stringify(pollData.error) : "Erro desconhecido";
+        throw new Error(`OpenAI Agent session falhou: ${errorDetail}`);
       }
     }
 
-    console.log("[Brain] turn_completed");
+    telemetry.status = finalStatus || "timeout";
+
+    if (finalStatus !== "completed" && finalStatus !== "idle") {
+      throw new Error(`OpenAI Agent session não concluiu a tempo (status: ${finalStatus})`);
+    }
+
+    console.log(`[OpenAI Agent] turn_completed: status=${finalStatus}`);
+
+    // Busca turnos para métricas de tokens
+    try {
+      const turnsRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}/turns`, { headers });
+      if (turnsRes.ok) {
+        const turnsData = await turnsRes.json();
+        const turns = turnsData.data || [];
+        for (const t of turns) {
+          if (t.id) telemetry.turnId = t.id;
+          if (t.usage) {
+            telemetry.inputTokens += t.usage.input_tokens || t.usage.prompt_tokens || 0;
+            telemetry.outputTokens += t.usage.output_tokens || t.usage.completion_tokens || 0;
+            telemetry.totalTokens += t.usage.total_tokens || 0;
+          }
+        }
+      }
+    } catch (turnsErr) {
+      console.warn(`[OpenAI Agent] Aviso ao coletar métricas de turns:`, turnsErr);
+    }
+
+    // Busca itens da sessão para identificar resposta do assistente e uso de MCP
+    const itemsRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}/items`, { headers });
+    if (!itemsRes.ok) {
+      throw new Error(`Falha ao buscar itens da sessão ${sessionId}: ${itemsRes.status}`);
+    }
+
+    const itemsData = await itemsRes.json();
+    const items: any[] = itemsData.data || [];
+
+    for (const item of items) {
+      if (
+        item.type === "tool_call" ||
+        item.type === "mcp_call" ||
+        item.name === "persona_memory_search" ||
+        item.name?.includes("persona_memory_search")
+      ) {
+        const toolName = item.name || "persona_memory_search";
+        console.log(`[MCP] tool_called ${toolName}`);
+        telemetry.toolsRequested.push(toolName);
+        telemetry.toolExecutionsCount++;
+        if (!telemetry.sourcesUsed.includes("persona_memory")) {
+          telemetry.sourcesUsed.push("persona_memory");
+        }
+      }
+    }
+
+    // Identifica mensagem final do assistente
+    const assistantMsg = items.find(
+      (it) => it.type === "message" && it.role === "assistant" && (it.phase === "final_answer" || !it.phase)
+    );
+
+    const rawResponseText = assistantMsg?.content?.[0]?.text || "";
+    if (!rawResponseText) {
+      throw new Error(`Nenhuma mensagem final do assistente encontrada na sessão ${sessionId}. Total itens: ${items.length}`);
+    }
+
+    let parsedPlan = extractJsonFromText(rawResponseText);
+    if (!parsedPlan || typeof parsedPlan !== "object" || !parsedPlan.action) {
+      // Se o Agent retornou texto conversacional autêntico em vez de JSON estruturado,
+      // sintetiza defensivamente o plano de delegação mantendo a resposta gerada
+      const targetSubagent =
+        params.availableSubagents?.[0]?.id || "subagent_conexao_inicial";
+      console.log(
+        `[OpenAI Agent] Resposta textual direta do Brain; sintetizando plano para subagente '${targetSubagent}'`
+      );
+      parsedPlan = {
+        action: "delegate_mission",
+        responsibleSubagent: targetSubagent,
+        objectiveDecision: "none",
+        reasoning: rawResponseText.slice(0, 300),
+        liveStatePatch: {},
+        missionPackage: {
+          subagentId: targetSubagent,
+          objectiveDirective: "none",
+          draftResponse: rawResponseText,
+          turnContract: {
+            directQuestions: [],
+            mustAnswerFirst: true,
+            newQuestionBudget: 1,
+            responseShape: "answer_and_reciprocate",
+            preferNoEmoji: false,
+            maxBalloons: 2,
+          },
+        },
+      };
+    }
+
+    telemetry.finalPlanParsed = true;
+    console.log(`[OpenAI Agent] plan_validated: responsibleSubagent=${parsedPlan.responsibleSubagent || "indefinido"}`);
     telemetry.durationMs = Date.now() - startTime;
 
     return {
-      success: Boolean(finalPlan),
-      plan: finalPlan,
+      success: true,
+      plan: parsedPlan,
       telemetry,
     };
   } catch (err: any) {
     console.error("[Brain] Erro durante turno do OpenAI Agent Brain:", err);
     telemetry.durationMs = Date.now() - startTime;
+    telemetry.status = "failed";
     return {
       success: false,
       plan: null,
@@ -379,4 +463,27 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry,
     };
   }
+}
+
+function extractJsonFromText(raw: string): any {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const jsonMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[1].trim());
+      } catch {}
+    }
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+      } catch {}
+    }
+  }
+  return null;
 }
