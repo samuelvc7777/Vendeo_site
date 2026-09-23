@@ -25,9 +25,14 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
     setChatStates((previous) => {
       const merged = { ...previous };
       for (const [conversationId, next] of Object.entries(incoming)) {
-        const current = merged[conversationId];
-        const currentVersion = current?.stateUpdatedAt ? Date.parse(current.stateUpdatedAt) : 0;
-        const nextVersion = next?.stateUpdatedAt ? Date.parse(next.stateUpdatedAt) : 0;
+      const current = merged[conversationId];
+      const currentVersion = current?.stateUpdatedAt ? Date.parse(current.stateUpdatedAt) : 0;
+      const nextVersion = next?.stateUpdatedAt ? Date.parse(next.stateUpdatedAt) : 0;
+      if (current?.cycleId && next?.cycleId === current.cycleId && Array.isArray(current.cycleEvents) && Array.isArray(next.cycleEvents)) {
+        const currentSequence = current.cycleEvents[current.cycleEvents.length - 1]?.sequence || 0;
+        const nextSequence = next.cycleEvents[next.cycleEvents.length - 1]?.sequence || 0;
+        if (nextSequence < currentSequence) continue;
+      }
         if (!current || nextVersion >= currentVersion) merged[conversationId] = next;
       }
       return merged;
@@ -63,6 +68,11 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
         ? Date.parse(payload.stateUpdatedAt)
         : payload.timestamp ? Date.parse(payload.timestamp) : Date.now();
       if (currentVersion > incomingVersion) return previous;
+      if (existing.cycleId && payload.cycleId === existing.cycleId && Array.isArray(existing.cycleEvents) && Array.isArray((payload as any).cycleEvents)) {
+        const currentSequence = existing.cycleEvents[existing.cycleEvents.length - 1]?.sequence || 0;
+        const incomingSequence = (payload as any).cycleEvents[(payload as any).cycleEvents.length - 1]?.sequence || 0;
+        if (incomingSequence < currentSequence) return previous;
+      }
       const mergedActivity = payload.activity === null
         ? undefined
         : payload.activity

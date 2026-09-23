@@ -5539,6 +5539,33 @@ async function callModelOrOpenAi(
 }
 
 const callBrainModel = callModelOrOpenAi;
+
+async function waitForHumanSendDelay({
+  supabase, conversationId, seconds, cycleId, phase, label, detail,
+  currentBalloon, totalBalloons, audioDurationSeconds,
+}: {
+  supabase: any; conversationId: string; seconds: number; cycleId: string;
+  phase: "typing" | "recording_audio"; label: string; detail: string;
+  currentBalloon: number; totalBalloons: number; audioDurationSeconds?: number;
+}) {
+  const deadline = Date.now() + Math.max(0, seconds) * 1000;
+  while (Date.now() < deadline) {
+    const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    await publishAutoPilotState(supabase, conversationId, {
+      cycleId, status: "processing",
+      activity: activity(phase, label, detail, {
+        cycleId, currentBalloon, totalBalloons, countdownSeconds: remaining,
+        audioDurationSeconds,
+        event: phase === "typing" ? "text_delay_started" : "audio_delay_started",
+      }),
+    });
+    const { data } = await supabase.from("instagram_conversations")
+      .select("ai_auto_respond, stage_completed_rules").eq("id", conversationId).maybeSingle();
+    if (data?.ai_auto_respond === false || data?.stage_completed_rules?.cancel_current_cycle === true) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(100, deadline - Date.now()))));
+  }
+  return true;
+}
 const callModelOrKie = callModelOrOpenAi;
 const callModelOrAtria = callModelOrOpenAi;
 
@@ -5982,6 +6009,14 @@ export async function runBrainOrchestration(
     currentCycle.inputWatermark.claimedCount = claimedMessageIds.length;
     currentCycle.trace.push(`input_watermark: rev=${initialInboundRevision}, count=${claimedMessageIds.length}`);
     currentCycle.trace.push(`messages_claimed: ${claimedMessageIds.length}`);
+    await publishAutoPilotState(supabase, conversationId, {
+      cycleId: correlationId,
+      status: "processing",
+      activity: activity("starting", "Ciclo reivindicado", `Ciclo ${correlationId} iniciado com ${claimedMessageIds.length} mensagem(ns) inbound.`, {
+        cycleId: correlationId,
+        event: "cycle_claimed",
+      }),
+    });
     // Helper atômico de preempção segura contra ciclos zumbis e concorrência
     async function handleCyclePreemption(
       reasonLabel: string,
@@ -7413,14 +7448,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
           const balloonText = balloons[bIndex];
 
-          // Pausa humana entre balões subsequentes (se houver mais de 1 balão)
-          if (bIndex > 0) {
-            const isFastTest = Boolean((runtime as any)?._fastTest);
-            if (!isFastTest) {
-              await new Promise((resolve) => setTimeout(resolve, 1500));
-            }
-          }
-
           // ------------------------------------------------------------------
           // FRESHNESS GATE 4: Revalidação imediatamente antes de despachar o balão
           // ------------------------------------------------------------------
@@ -7555,6 +7582,27 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
           const isAudioBalloon = balloonText.startsWith("[audio:");
           const balloonMessageType = isAudioBalloon ? "audio" : "text";
+          const humanDelaySeconds = isAudioBalloon
+            ? Math.max(0, Number(audioPayload?.duration || 10))
+            : 10;
+          const delayCompleted = await waitForHumanSendDelay({
+            supabase, conversationId, seconds: humanDelaySeconds, cycleId: correlationId,
+            phase: isAudioBalloon ? "recording_audio" : "typing",
+            label: isAudioBalloon ? `Gravando áudio ${bIndex + 1}/${balloons.length}` : `Digitando resposta ${bIndex + 1}/${balloons.length}`,
+            detail: isAudioBalloon && !audioPayload?.duration
+              ? "Duração do áudio indisponível • fallback 10s"
+              : "Aguardando o tempo humano antes do dispatch.",
+            currentBalloon: bIndex + 1, totalBalloons: balloons.length,
+            audioDurationSeconds: isAudioBalloon ? humanDelaySeconds : undefined,
+          });
+          if (!delayCompleted) {
+            await releaseExperimentalCycleAtomic({ supabase, conversationId, cycleToken: correlationId, processingStatus: "cancelled", cycleRecord: currentCycle });
+            await publishAutoPilotState(supabase, conversationId, {
+              cycleId: correlationId, isEnabled: false, status: "disabled", scheduledResponseAt: null,
+              activity: activity("cancelled", "Ação cancelada", "IA desativada antes do envio.", { event: "cycle_cancelled" }),
+            });
+            return { handled: true, sentToMeta: sentBalloonsCount > 0, blockLegacyFallback: true };
+          }
 
           if (!balloonOutbox) {
             balloonOutbox = {

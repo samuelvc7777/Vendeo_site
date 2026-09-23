@@ -4034,7 +4034,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // Rota para PAUSAR o ciclo ativo do Piloto no chat (HUD Control)
+    // Cancelamento operacional: desativa a IA e invalida o ciclo atual.
     if ((path === "/autopilot/pause" || path === "/api/autopilot/pause") && req.method === "POST") {
       try {
         const body = await req.json().catch(() => ({}));
@@ -4101,7 +4101,16 @@ serve(async (req: Request) => {
           payload: { ...updated, timestamp: nowIso },
         });
 
-        return new Response(JSON.stringify({ success: true, detail: "Ciclo pausado pelo operador." }), {
+        await publishAutoPilotState(supabase, conversationId, {
+          isEnabled: false,
+          status: "disabled",
+          cycleId: current.activeCycleToken || undefined,
+          activity: activity("cancelled", "Ação cancelada", "IA desativada pelo operador.", { event: "cycle_cancelled" }),
+          scheduledResponseAt: null,
+          pendingAction: null,
+        });
+
+        return new Response(JSON.stringify({ success: true, result: "cancelled", status: "disabled", detail: "Ação cancelada. IA desativada." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (err: unknown) {
@@ -4292,7 +4301,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // Rota para ENVIAR AGORA sem esperar o debounce ou os 10 segundos restantes (HUD Control)
+    // Rota para iniciar o ciclo imediatamente, com resultado operacional explícito.
     if ((path === "/autopilot/send-now" || path === "/api/autopilot/send-now") && req.method === "POST") {
       try {
         const body = await req.json().catch(() => ({}));
@@ -4306,10 +4315,25 @@ serve(async (req: Request) => {
 
         const { data: convRow } = await supabase
           .from("instagram_conversations")
-          .select("stage_completed_rules, ai_debounce_until")
+          .select("stage_completed_rules, ai_debounce_until, ai_auto_respond")
           .eq("id", conversationId)
           .maybeSingle();
         const currentRules = convRow?.stage_completed_rules || {};
+
+        if (convRow?.ai_auto_respond === false) {
+          return new Response(JSON.stringify({ success: false, result: "disabled", status: "disabled", detail: "IA está desativada neste chat." }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const stateRow = await supabase.from("instagram_conversations").select("stage_completed_rules").eq("id", "__autopilot_states__").maybeSingle();
+        const existingState = stateRow.data?.stage_completed_rules?.states?.[conversationId];
+        if (existingState?.status === "processing" || existingState?.status === "in_queue" || existingState?.status === "starting") {
+          return new Response(JSON.stringify({ success: true, result: "already_processing", cycleId: existingState.cycleId || existingState.activeCycleToken || null, status: existingState.status }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
 
         // Limpa o debounce e marca envio imediato
         await supabase
@@ -4323,8 +4347,8 @@ serve(async (req: Request) => {
           })
           .eq("id", conversationId);
 
-        // Se estava agendado aguardando o debounce, dispara o piloto agora mesmo!
-        if (convRow?.ai_debounce_until) {
+        // O ciclo é disparado mesmo quando o debounce já expirou, desde que ainda haja inbound pendente.
+        {
           const { data: lastMsgs } = await supabase
             .from("instagram_messages")
             .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
@@ -4337,9 +4361,17 @@ serve(async (req: Request) => {
             console.log(`[Brain] send-now roteando para Brain em ${conversationId}`);
             const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
 
+            const cycleId = `corr_sendnow_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            await publishAutoPilotState(supabase, conversationId, {
+              cycleId,
+              status: "starting",
+              activity: activity("starting", "Iniciando...", "Ciclo iniciado manualmente pelo operador.", { cycleId, event: "send_now_started" }),
+              scheduledResponseAt: null,
+            });
             const brainPromise = runBrainOrchestration({
               supabase,
               conversationId,
+              correlationId: cycleId,
               newMessage: {
                 id: lastMsg.id,
                 text: resolvedAudio.text,
@@ -4355,10 +4387,14 @@ serve(async (req: Request) => {
             } else {
               void brainPromise;
             }
+            return new Response(JSON.stringify({ success: true, result: "started", cycleId, status: "starting" }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
           }
         }
 
-        return new Response(JSON.stringify({ success: true, detail: "Envio imediato solicitado." }), {
+        return new Response(JSON.stringify({ success: false, result: "nothing_to_answer", status: "idle", detail: "Nenhuma mensagem inbound pendente para responder." }), {
+          status: 409,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (err: unknown) {

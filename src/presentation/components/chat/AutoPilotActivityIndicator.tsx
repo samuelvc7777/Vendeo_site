@@ -15,6 +15,8 @@ import {
   Bot,
   Zap,
   Pause,
+  StopCircle,
+  Maximize2,
   Edit3,
   Check,
   X,
@@ -160,6 +162,7 @@ function getCopy(state: AutoPilotChatState) {
 }
 
 function ActivityIcon({ state, className }: { state: AutoPilotChatState; className: string }) {
+  if (!state.isEnabled && state.status === "disabled") return <Bot className={className} />;
   if (state.status === "paused_guardrail" || state.status === "paused_handoff") {
     return <AlertTriangle className={className} />;
   }
@@ -252,8 +255,9 @@ export function AutoPilotActivityIndicator({
   const [remainingSeconds, setRemainingSeconds] = useState<number>(calcInitialCountdown);
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editedText, setEditedText] = useState<string>("");
-  const [isPausing, setIsPausing] = useState<boolean>(false);
+  const [isCancelling, setIsCancelling] = useState<boolean>(false);
   const [isSendingNow, setIsSendingNow] = useState<boolean>(false);
+  const [isConsoleOpen, setIsConsoleOpen] = useState<boolean>(false);
 
   // Fases e Stepper Cognitivo
   const phase = activity?.phase;
@@ -319,15 +323,22 @@ export function AutoPilotActivityIndicator({
 
   useEffect(() => {
     setRemainingSeconds(calcInitialCountdown());
-  }, [activity?.countdownSeconds, activity?.currentBalloon, state.scheduledResponseAt]);
+  }, [activity?.countdownSeconds, activity?.currentBalloon, state.scheduledResponseAt, state.stateUpdatedAt]);
 
   useEffect(() => {
-    if (remainingSeconds <= 0 || isEditing) return;
+    if (isEditing) return;
     const interval = setInterval(() => {
-      setRemainingSeconds((prev) => Math.max(0, prev - 1));
+      if (state.scheduledResponseAt && (state.status === "waiting_delay" || activity?.phase === "waiting")) {
+        setRemainingSeconds(Math.max(0, Math.ceil((Date.parse(state.scheduledResponseAt) - Date.now()) / 1000)));
+      } else if (activity?.countdownSeconds && activity.countdownSeconds > 0) {
+        const updatedAt = Date.parse(activity.updatedAt || state.stateUpdatedAt || "");
+        setRemainingSeconds(Math.max(0, activity.countdownSeconds - Math.floor((Date.now() - updatedAt) / 1000)));
+      } else {
+        setRemainingSeconds(0);
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [remainingSeconds, isEditing]);
+  }, [activity?.countdownSeconds, activity?.updatedAt, state.scheduledResponseAt, state.status, state.stateUpdatedAt, isEditing]);
 
   const currentPreview = activity?.currentResponsePreview;
 
@@ -369,24 +380,25 @@ export function AutoPilotActivityIndicator({
     }
   };
 
-  const handlePause = async () => {
-    if (!targetId || isPausing) return;
-    setIsPausing(true);
+  const handleCancelAction = async () => {
+    if (!targetId || isCancelling) return;
+    setIsCancelling(true);
     try {
       const res = await fetch(getApiUrl("/api/autopilot/pause"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId }),
       });
-      if (res.ok) {
-        toast.success("Piloto Automático pausado.");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.result === "cancelled") {
+        toast.success("Ação cancelada. IA desativada.");
       } else {
-        toast.error("Erro ao pausar piloto.");
+        toast.error(data.detail || "Erro ao cancelar ação.");
       }
     } catch {
-      toast.error("Erro de conexão ao pausar.");
+      toast.error("Erro de conexão ao cancelar ação.");
     } finally {
-      setIsPausing(false);
+      setIsCancelling(false);
     }
   };
 
@@ -418,8 +430,15 @@ export function AutoPilotActivityIndicator({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId }),
       });
-      if (res.ok) {
-        toast.success("Disparo adiantado!");
+      const data = await res.json().catch(() => ({}));
+      if (data.result === "started" || data.result === "already_processing") {
+        toast.success(data.result === "started" ? "Ciclo iniciado." : "Este ciclo já está em processamento.");
+      } else if (data.result === "disabled") {
+        toast.error("IA está desativada neste chat.");
+      } else if (data.result === "nothing_to_answer") {
+        toast.info("Não há mensagem pendente para responder.");
+      } else {
+        toast.error(data.detail || "Não foi possível iniciar o ciclo.");
       }
     } catch {
       toast.error("Erro ao adiantar envio.");
@@ -431,10 +450,10 @@ export function AutoPilotActivityIndicator({
   // VARIANTE INBOX (Lista de conversas - limpa e elegante)
   if (variant === "inbox") {
     return (
-      <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
-        <ActivityIcon state={state} className="h-3 w-3 shrink-0" />
-        <span className="truncate">{copy.title}</span>
-        <TypingDots compact />
+    <span className={cn("flex min-w-0 items-center gap-1.5 text-[11px] font-semibold", state.isEnabled ? "text-emerald-400" : "text-zinc-500")}>
+      <ActivityIcon state={state} className="h-3 w-3 shrink-0" />
+        <span className="truncate">{state.scheduledResponseAt && remainingSeconds > 0 ? `IA responde em ${remainingSeconds}s` : remainingSeconds === 0 && (state.status === "waiting_delay" || activity?.phase === "waiting") ? "IA iniciando..." : copy.title}</span>
+        {state.isEnabled && isWorking && <TypingDots compact />}
       </span>
     );
   }
@@ -541,19 +560,24 @@ export function AutoPilotActivityIndicator({
               </button>
             )}
 
-            {/* Botão Pausar (ativo quando em processamento) */}
+            {/* Cancelamento operacional: desativa a IA do chat e invalida o ciclo */}
             {isWorking && (
               <button
                 type="button"
-                onClick={handlePause}
-                disabled={isPausing}
+                onClick={handleCancelAction}
+                disabled={isCancelling}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-                title="Pausar o envio da IA agora"
+                title="Cancelar ação e desativar a IA neste chat"
               >
-                <Pause className="h-3 w-3" />
-                <span className="hidden sm:inline">Pausar</span>
+                <StopCircle className="h-3 w-3" />
+                <span className="hidden sm:inline">{isCancelling ? "Cancelando..." : "Cancelar ação"}</span>
               </button>
             )}
+
+            <button type="button" onClick={() => setIsConsoleOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-700 text-zinc-300 text-[10px] hover:bg-zinc-800" title="Abrir console operacional">
+              <Maximize2 className="h-3 w-3" />
+              <span className="hidden sm:inline">Abrir console</span>
+            </button>
 
             {/* Botão Alternar Raciocínio (Estilo Antigravity) */}
             {shouldShowReasoningSection && (
@@ -764,6 +788,20 @@ export function AutoPilotActivityIndicator({
           </div>
         )}
       </div>
+      {isConsoleOpen && (
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm p-2 sm:p-6" role="dialog" aria-modal="true">
+          <div className="h-full w-full rounded-2xl border border-zinc-700 bg-[#0b0b0f] text-zinc-100 shadow-2xl flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+              <div className="min-w-0"><div className="text-sm font-bold truncate">Brain • Console operacional</div><div className="text-[10px] text-zinc-500 font-mono">{(state.cycleId || state.activeCycleToken || "sem ciclo").slice(0, 28)} • {state.status}</div></div>
+              <button type="button" onClick={() => setIsConsoleOpen(false)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-[11px]">
+              {(state.cycleEvents || []).map((event) => <div key={`${event.cycleId}-${event.sequence}`} className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2"><div className="text-zinc-500">{new Date(event.timestamp).toLocaleTimeString("pt-BR")} · #{event.sequence} · {event.phase}</div><div className="text-zinc-200">{event.label}</div>{event.detail && <div className="text-zinc-500 mt-0.5">{event.detail}</div>}</div>)}
+              {(!state.cycleEvents || state.cycleEvents.length === 0) && <div className="text-zinc-500">Nenhum evento operacional persistido neste ciclo.</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

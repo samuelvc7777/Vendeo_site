@@ -5041,6 +5041,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           );
                         }
 
+                        if (!apState.isEnabled) {
+                          return (
+                            <span title="Piloto Automático desativado neste chat" className="text-[9px] bg-zinc-800/70 text-zinc-500 border border-zinc-700 font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
+                              <Bot className="w-2.5 h-2.5 text-zinc-500" /> Piloto desativado
+                            </span>
+                          );
+                        }
+
                         return (
                           <span
                             title="Piloto Automático ativo neste chat"

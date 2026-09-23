@@ -16,6 +16,7 @@ export async function publishAutoPilotState(
   patch: Record<string, any>,
 ) {
   try {
+    const stateUpdatedAt = new Date().toISOString();
     const { data: row } = await supabase
       .from("instagram_conversations")
       .select("stage_completed_rules")
@@ -39,6 +40,32 @@ export async function publishAutoPilotState(
       conversationId,
       stateUpdatedAt,
     };
+    const cycleId = patch.cycleId || patch.activity?.cycleId || current.cycleId || null;
+    if (cycleId) {
+      updated.cycleId = cycleId;
+      const previousEvents = Array.isArray(current.cycleEvents) && current.cycleId === cycleId
+        ? current.cycleEvents
+        : [];
+      const event = patch.event || patch.activity?.event || patch.activity?.label;
+      if (event) {
+        updated.cycleEvents = [
+          ...previousEvents,
+          {
+            cycleId,
+            conversationId,
+            sequence: previousEvents.length + 1,
+            phase: patch.activity?.phase || patch.status || "idle",
+            event,
+            label: patch.activity?.label || event,
+            detail: patch.activity?.detail,
+            timestamp: stateUpdatedAt,
+            metadata: patch.eventMetadata || undefined,
+          },
+        ].slice(-100);
+      } else if (previousEvents.length > 0) {
+        updated.cycleEvents = previousEvents;
+      }
+    }
     states[conversationId] = updated;
 
     await supabase.from("instagram_conversations").upsert({

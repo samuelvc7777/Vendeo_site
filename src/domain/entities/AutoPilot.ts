@@ -14,6 +14,7 @@ export type AutoPilotChatStatus =
   | "idle" // Aguardando mensagem do cliente
   | "activation_wait" // Aguardando 1 minuto inicial após ativação
   | "waiting_delay" // Cliente mandou mensagem, aguardando expirar tempo de espera (debounce)
+  | "scheduled" // Estado legado/canônico de espera publicado pelo backend
   | "waiting_debounce" // Alias semântico para waiting_delay
   | "in_queue" // Tempo expirou, está na fila sequencial global aguardando a vez
   | "processing" // Sendo respondido agora pela IA (simulando digitação)
@@ -24,6 +25,9 @@ export type AutoPilotChatStatus =
 
 export type AutoPilotActivityPhase =
   | "waiting"
+  | "scheduled"
+  | "starting"
+  | "loading_context"
   | "context"
   | "search"
   | "reanalyzing"
@@ -31,9 +35,13 @@ export type AutoPilotActivityPhase =
   | "atria"
   | "sol"
   | "checklist"
+  | "validating"
   | "typing"
+  | "recording_audio"
   | "sending"
   | "completed"
+  | "cancelled"
+  | "idle"
   | "failed";
 
 export interface AutoPilotActivity {
@@ -49,6 +57,21 @@ export interface AutoPilotActivity {
   previewResponses?: string[];
   currentResponsePreview?: string;
   countdownSeconds?: number;
+  cycleId?: string;
+  scheduledResponseAt?: string;
+  audioDurationSeconds?: number;
+}
+
+export interface AutoPilotCycleEvent {
+  cycleId: string;
+  conversationId: string;
+  sequence: number;
+  phase: AutoPilotActivityPhase | string;
+  event: string;
+  label: string;
+  detail?: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AutoPilotLastThoughts {
@@ -87,6 +110,8 @@ export interface AutoPilotChatState {
   sendingStartedAt?: string | null;
   sendingCycleToken?: string | null;
   activeCycleToken?: string | null;
+  cycleId?: string | null;
+  cycleEvents?: AutoPilotCycleEvent[];
   stateUpdatedAt?: string;
 }
 
