@@ -5,6 +5,12 @@
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import {
+  ACTIVE_CYCLE_TTL_SECONDS,
+  checkCycleAuthority,
+  classifyCycleOutboxEvidence,
+  resolveMissionMemoryContext,
+} from "./autopilot_cycle_safety.ts";
+import {
   OpenAiCycleUsageAccumulator,
   parseUsdBrlEstimate,
   type OpenAiUsageRecord,
@@ -2270,8 +2276,12 @@ export interface ClaimExperimentalCycleParams {
 
 export interface ClaimExperimentalCycleResult {
   success: boolean;
-  reason: "claimed" | "active_lock" | "conversation_not_found" | "infra_failure";
+  reason: "claimed" | "active_lock" | "retry_exhausted" | "invalid_recovery_contract" | "conversation_not_found" | "infra_failure";
   activeCycleToken?: string | null;
+  staleRecovered?: boolean;
+  previousCycleToken?: string | null;
+  releasedMessageCount?: number;
+  uncertainMessageCount?: number;
 }
 
 /**
@@ -2281,7 +2291,7 @@ export interface ClaimExperimentalCycleResult {
 export async function claimExperimentalCycleAtomic(
   params: ClaimExperimentalCycleParams
 ): Promise<ClaimExperimentalCycleResult> {
-  const { supabase, conversationId, cycleToken, staleSeconds = 25 } = params;
+  const { supabase, conversationId, cycleToken, staleSeconds = ACTIVE_CYCLE_TTL_SECONDS } = params;
 
   if (typeof supabase?.rpc === "function") {
     try {
@@ -2293,12 +2303,24 @@ export async function claimExperimentalCycleAtomic(
 
       if (!error && data && typeof data === "object") {
         if (data.success === true) {
-          return { success: true, reason: "claimed", activeCycleToken: cycleToken };
+          return {
+            success: true,
+            reason: "claimed",
+            activeCycleToken: cycleToken,
+            staleRecovered: data.staleRecovered === true,
+            previousCycleToken: data.previousCycleToken ?? null,
+            releasedMessageCount: Number(data.releasedMessageCount || 0),
+            uncertainMessageCount: Number(data.uncertainMessageCount || 0),
+          };
         }
         return {
           success: false,
           reason: data.reason || "active_lock",
           activeCycleToken: data.activeCycleToken ?? null,
+          staleRecovered: data.staleRecovered === true,
+          previousCycleToken: data.previousCycleToken ?? null,
+          releasedMessageCount: Number(data.releasedMessageCount || 0),
+          uncertainMessageCount: Number(data.uncertainMessageCount || 0),
         };
       }
 
@@ -2454,6 +2476,9 @@ export interface ReleaseExperimentalCycleResult {
   released: boolean;
   reason?: string;
   activeToken?: string | null;
+  possibleSend?: boolean;
+  retryCount?: number;
+  retryExhausted?: boolean;
 }
 
 /**
@@ -2495,7 +2520,13 @@ export async function releaseExperimentalCycleAtomic(
 
       if (!error && data && typeof data === "object") {
         if (data.released === true) {
-          return { released: true, reason: "released" };
+          return {
+            released: true,
+            reason: "released",
+            possibleSend: data.possibleSend === true,
+            retryCount: Number(data.retryCount || 0),
+            retryExhausted: data.retryExhausted === true,
+          };
         }
         return {
           released: false,
@@ -2595,6 +2626,10 @@ export async function dispatchOutboxEntry(
     }
   }
 
+  if (claimToken && !(await checkCycleAuthority(supabase, outboxEntry.conversationId, claimToken))) {
+    return { success: false, isUncertain: true, error: "late_agent_result_discarded: ciclo perdeu autoridade antes do HTTP Meta" };
+  }
+
   try {
     if (runtime?.sendMetaTextMessage) {
       const res = await runtime.sendMetaTextMessage(supabase, outboxEntry.conversationId, outboxEntry.content);
@@ -2630,6 +2665,7 @@ export async function dispatchOutboxEntry(
           recipient: { id: recipientId },
           message: { text: outboxEntry.content },
         }),
+        signal: AbortSignal.timeout(15_000),
       }
     );
 
@@ -5860,7 +5896,7 @@ export async function runBrainOrchestration(
     return { handled: false, blockLegacyFallback: true, error: convErr.message };
   }
 
-  const stageRules = convRow?.stage_completed_rules || {};
+  let stageRules = convRow?.stage_completed_rules || {};
 
   // Debounce Real (Quiet Period): Respeita responseDelayMinutes da conversa/configuração
   const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
@@ -5870,7 +5906,7 @@ export async function runBrainOrchestration(
   const computedDebounceUntil = quietPeriodMs > 0
     ? new Date(Date.now() + quietPeriodMs).toISOString()
     : new Date(Date.now() + 2500).toISOString();
-  const orchState: ConversationOrchestrationState = stageRules.orchestration || {
+  let orchState: ConversationOrchestrationState = stageRules.orchestration || {
     version: 1,
     currentPhase: "conexao_inicial",
     checkpoint: "chk_saudacao_feita",
@@ -5888,20 +5924,14 @@ export async function runBrainOrchestration(
   const officialCompletedGoalIdsAtCycleStart = resolveOfficialCompletedGoals(stageRules, orchState);
   const officialObjectiveProgressAtCycleStart = resolveOfficialObjectiveProgress(stageRules, orchState);
 
-  // 2. BACKEND DETERMINÍSTICO: Idempotência estrita
-  if (orchState.lastProcessedMessageId && orchState.lastProcessedMessageId === newMessage.id) {
-    console.log(
-      `[Brain] Mensagem ${newMessage.id} já processada em ${conversationId}. Abortando por idempotência.`
-    );
-    return { handled: true, skippedDuplicate: true, blockLegacyFallback: true };
-  }
-
+  // 2. Lock antes da seleção idempotente: uma mensagem já processada pode ser
+  // apenas o gatilho para recuperar outras inbounds pendentes no mesmo diálogo.
   // 3. BACKEND DETERMINÍSTICO: Lock Atômico via PostgreSQL com SELECT ... FOR UPDATE
   const claimLockRes = await claimExperimentalCycleAtomic({
     supabase,
     conversationId,
     cycleToken: correlationId,
-    staleSeconds: 25,
+    staleSeconds: ACTIVE_CYCLE_TTL_SECONDS,
   });
 
   if (!claimLockRes.success) {
@@ -5919,6 +5949,24 @@ export async function runBrainOrchestration(
         error: "Falha de infraestrutura no claim atômico (rpc_error_fail_closed)",
       };
     }
+    if (claimLockRes.reason === "retry_exhausted") {
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        status: "failed",
+        cycleEvent: {
+          phase: "failed",
+          event: "technical_retry_exhausted",
+          label: "Tentativas técnicas esgotadas",
+          detail: "O ciclo antigo foi encerrado com segurança. Novas tentativas aguardam outra mensagem inbound.",
+          metadata: {
+            previousCycleId: claimLockRes.previousCycleToken || null,
+            releasedMessageCount: claimLockRes.releasedMessageCount || 0,
+            uncertainMessageCount: claimLockRes.uncertainMessageCount || 0,
+          },
+        },
+      });
+      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "technical_retry_exhausted" };
+    }
     console.log(
       `[Orchestrator] Lock ativo detectado (${claimLockRes.activeCycleToken || "outro ciclo"}) para ${conversationId}. Abortando execução concorrente.`
     );
@@ -5930,14 +5978,56 @@ export async function runBrainOrchestration(
     };
   }
 
+  // O claim/recovery pode ter alterado ledger, outbox e token. Nunca executar
+  // um novo ciclo sobre o snapshot lido antes do CAS no PostgreSQL.
+  const { data: claimedConversation, error: claimedReadError } = await supabase
+    .from("instagram_conversations")
+    .select("stage_completed_rules")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (claimedReadError || claimedConversation?.stage_completed_rules?.active_cycle_token !== correlationId) {
+    await releaseExperimentalCycleAtomic({ supabase, conversationId, cycleToken: correlationId, processingStatus: "failed", lastError: "claim_state_unavailable" });
+    return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "claim_state_unavailable" };
+  }
+  stageRules = claimedConversation.stage_completed_rules;
+  orchState = stageRules.orchestration || orchState;
+  if (claimLockRes.staleRecovered) {
+    await publishAutoPilotState(supabase, conversationId, {
+      cycleId: correlationId,
+      status: "processing",
+      cycleEvent: {
+        phase: "starting",
+        event: "cycle_recovery_completed",
+        label: "Ciclo anterior recuperado",
+        detail: `Lock antigo invalidado; ${claimLockRes.releasedMessageCount || 0} mensagem(ns) liberada(s), ${claimLockRes.uncertainMessageCount || 0} protegida(s) por possível envio.`,
+        metadata: {
+          previousCycleId: claimLockRes.previousCycleToken || null,
+          releasedMessageCount: claimLockRes.releasedMessageCount || 0,
+          uncertainMessageCount: claimLockRes.uncertainMessageCount || 0,
+        },
+      },
+    });
+  }
+
   let claimedMessageIds: string[] = [];
   let staleMessageIds: string[] = [];
   let sentSuccessfully = false;
   let currentCycle: ProcessingCycle | null = null;
+  let currentMemoryScopeId: string | undefined;
+  let configuredAgentModel = OPENAI_BRAIN_DEFAULT_MODEL;
+  let agentSettings = new Map<string, string>();
+  const revokeCurrentMemoryScope = async () => {
+    if (!currentMemoryScopeId) return;
+    const scopeId = currentMemoryScopeId;
+    currentMemoryScopeId = undefined;
+    try {
+      await revokeAgentMemoryScope({ supabase, scopeId });
+    } catch (scopeError) {
+      console.warn(`[Brain] memory_scope_cleanup_failed cycle=${correlationId}`, scopeError);
+    }
+  };
   const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
   const outboxMap: Record<string, OutboxEntry> = { ...(orchState.outbox || {}) };
-  const activeLock = stageRules.active_cycle_token;
-  const activeLockAt = stageRules.active_cycle_at ? Date.parse(stageRules.active_cycle_at) : 0;
 
   try {
     const initialInboundRevision =
@@ -6084,14 +6174,8 @@ export async function runBrainOrchestration(
       for (const m of batch) {
         const msg = normalizeToCanonicalMessage(m, conversationId);
         if (msg.sender === "pretendente" && msg.direction === "inbound") {
-          const isActivelyClaimed =
-            ledger[msg.id] === "claimed" &&
-            activeLock &&
-            Date.now() - activeLockAt < 25000 &&
-            activeLock !== correlationId;
           const isProcessed =
             ledger[msg.id] === "processed" ||
-            isActivelyClaimed ||
             (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
 
           if (!isProcessed) {
@@ -6111,14 +6195,8 @@ export async function runBrainOrchestration(
     const pendingMessages: CanonicalMessage[] = collectedPendingRaw.reverse();
 
     if (newMessage && !pendingMessages.some((m) => m.id === newMessage.id)) {
-      const isActivelyClaimed =
-        ledger[newMessage.id] === "claimed" &&
-        activeLock &&
-        Date.now() - activeLockAt < 25000 &&
-        activeLock !== correlationId;
       const isProcessed =
         ledger[newMessage.id] === "processed" ||
-        isActivelyClaimed ||
         (orchState.lastProcessedMessageId && newMessage.id === orchState.lastProcessedMessageId);
       if (!isProcessed) {
         pendingMessages.push(
@@ -6605,9 +6683,6 @@ export async function runBrainOrchestration(
     const toolResultsHistory: string[] = [];
     let brainPlan: ConversationBrainPlan | null = null;
     let brainIterations = 0;
-    let currentMemoryScopeId: string | undefined;
-    let configuredAgentModel = OPENAI_BRAIN_DEFAULT_MODEL;
-    let agentSettings = new Map<string, string>();
 
     if (isOpenAiAgentBrain) {
       configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
@@ -6673,6 +6748,19 @@ export async function runBrainOrchestration(
         },
       });
 
+      currentCycle.trace.push("agent_wait_started");
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        status: "processing",
+        cycleEvent: {
+          phase: "brain",
+          event: "agent_wait_started",
+          label: "Aguardando Agent",
+          detail: "Sessão oficial em processamento; a espera local tem limite técnico.",
+          metadata: { model: configuredAgentModel },
+        },
+      });
+
       try {
         const openAiBrainTurn = await runOpenAiBrainTurn({
           supabase,
@@ -6719,6 +6807,14 @@ export async function runBrainOrchestration(
             replyTargetIds: budgetedRecentContext.replyTargetIds,
           },
         });
+
+        if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
+          currentCycle.status = "superseded";
+          currentCycle.trace.push("late_agent_result_discarded");
+          console.warn(`[Brain] late_agent_result_discarded cycle=${correlationId} conversation=${conversationId}`);
+          await revokeCurrentMemoryScope();
+          return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
+        }
 
         for (const sessionUsage of openAiBrainTurn.telemetry.agentUsageSessions || []) {
           cycleOpenAiUsage.addAgentSession(sessionUsage);
@@ -6895,23 +6991,19 @@ export async function runBrainOrchestration(
           console.warn(
             `[Brain] OpenAI Agent Brain não concluiu plano (${openAiBrainTurn.error || "plan_null"}).`
           );
-          currentCycle.trace.push(`openai_brain_turn_fallback: ${openAiBrainTurn.error || "plan_null"}`);
-          if (isStrict) {
-            currentCycle.trace.push("OPENAI_AGENT_FAILED");
-            throw new Error(`OPENAI_AGENT_FAILED: ${openAiBrainTurn.error || "plan_null"}`);
-          }
+          currentCycle.trace.push(`openai_brain_turn_failed: ${openAiBrainTurn.error || "plan_null"}`);
+          currentCycle.trace.push("OPENAI_AGENT_FAILED");
+          throw new Error(`OPENAI_AGENT_FAILED: ${openAiBrainTurn.error || "plan_null"}`);
         }
       } catch (err: any) {
         console.error(`[Brain] Exceção durante turno do OpenAI Agent Brain:`, err);
         currentCycle.trace.push(`openai_brain_turn_error: ${err?.message || String(err)}`);
-        if (isStrict) {
-          currentCycle.trace.push("OPENAI_AGENT_FAILED");
-          throw new Error(`OPENAI_AGENT_FAILED: ${err?.message || String(err)}`);
-        }
+        currentCycle.trace.push("OPENAI_AGENT_FAILED");
+        throw new Error(`OPENAI_AGENT_FAILED: ${err?.message || String(err)}`);
       }
     }
 
-    while (brainIterations < 3 && !brainPlan) {
+    while (!isOpenAiAgentBrain && brainIterations < 3 && !brainPlan) {
       brainIterations++;
 
       // Freshness Gate antes de cada chamada do Brain
@@ -7061,7 +7153,7 @@ export async function runBrainOrchestration(
     brainToolResultTokens = estimateTextTokens(toolResultsHistory.join("\n"));
 
     // Fallback seguro caso o Brain esgote iterações sem emitir plano
-    if (!brainPlan) {
+    if (!brainPlan && !isOpenAiAgentBrain) {
       brainPlan = {
         action: "reply",
         currentStage: currentStageId,
@@ -7073,6 +7165,8 @@ export async function runBrainOrchestration(
         reasoning: "Plano gerado por fallback do Brain.",
       };
     }
+
+    if (!brainPlan) throw new Error("OPENAI_AGENT_FAILED: plano oficial ausente");
 
     // Atualiza o LiveState com o patch do Brain (com poda estrita de coleções)
     currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
@@ -7167,12 +7261,12 @@ export async function runBrainOrchestration(
         targetObjective: stageChecklistForRouter.currentObjective
           ? { id: stageChecklistForRouter.currentObjective.id, label: stageChecklistForRouter.currentObjective.label }
           : null,
-        relevantMemoryContext: (brainPlan.missionPackage?.relevantMemoryContext || [
+        relevantMemoryContext: resolveMissionMemoryContext(brainPlan.missionPackage?.relevantMemoryContext, [
           contactMemorySummary ? `FATOS DO PRETENDENTE:\n${contactMemorySummary}` : "",
           landmarksSummary ? `MARCOS HISTÓRICOS:\n${landmarksSummary}` : "",
           speechActsSummary ? `ATOS DE FALA RECENTES:\n${speechActsSummary}` : "",
           personaMemorySummary ? `FATOS RELEVANTES DA LARISSA:\n${personaMemorySummary}` : "",
-        ]).filter(Boolean).join("\n\n"),
+        ]),
         liveStateContext: serializeLiveStateForPrompt(currentLiveState),
         selectedAudioId: audioSelection.selectedAudioId,
         candidateAudios: audioSelection.candidateAudios,
@@ -7707,6 +7801,13 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     // ------------------------------------------------------------------------
     // FRESHNESS GATE 2: Revalidação imediatamente após o Brain
     // ------------------------------------------------------------------------
+    if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
+      currentCycle.status = "superseded";
+      currentCycle.trace.push("late_agent_result_discarded");
+      console.warn(`[Brain] late_agent_result_discarded cycle=${correlationId} conversation=${conversationId}`);
+      await revokeCurrentMemoryScope();
+      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
+    }
     const freshnessAfterBrain = await checkFreshnessGate({
       supabase,
       conversationId,
@@ -8168,6 +8269,13 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             return { handled: true, sentToMeta: sentBalloonsCount > 0, blockLegacyFallback: true };
           }
 
+          if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
+            currentCycle.status = "superseded";
+            currentCycle.trace.push("late_agent_result_discarded");
+            console.warn(`[Brain] late_agent_result_discarded before dispatch cycle=${correlationId}`);
+            return { handled: false, sentToMeta: sentBalloonsCount > 0, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
+          }
+
           if (!balloonOutbox) {
             balloonOutbox = {
               id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_b${bIndex}`,
@@ -8275,6 +8383,13 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
           if (claimRes.entry) {
             Object.assign(balloonOutbox, claimRes.entry);
+          }
+
+          if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
+            currentCycle.status = "superseded";
+            currentCycle.trace.push("late_agent_result_discarded");
+            console.warn(`[Brain] late_agent_result_discarded after outbox claim cycle=${correlationId}`);
+            return { handled: false, sentToMeta: sentBalloonsCount > 0, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
           }
 
           await publishAutoPilotState(supabase, conversationId, {
@@ -8657,6 +8772,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           completed_goals: stageProgression.updatedCompletedGoals,
           objective_progress: stageProgression.updatedObjectiveProgress,
           active_cycle_token: null,
+          active_cycle_at: null,
           preempt_requested: false,
           orchestration: updatedState,
         };
@@ -8885,12 +9001,8 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         }
 
         if (currentMemoryScopeId) {
-          try {
-            await revokeAgentMemoryScope({ supabase, scopeId: currentMemoryScopeId });
-            currentCycle.trace.push("agent_memory_scope_revoked=true");
-          } catch (revScopeErr) {
-            console.warn("[Orchestrator] Falha ao revogar agent_memory_scope:", revScopeErr);
-          }
+          await revokeCurrentMemoryScope();
+          currentCycle.trace.push("agent_memory_scope_revoked=true");
         }
       }
 
@@ -8935,11 +9047,39 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       };
   } catch (err: any) {
     console.error(`[Brain] Erro na execução de ${conversationId}:`, err);
+    await revokeCurrentMemoryScope();
+
+    if (currentCycle) {
+      currentCycle.status = "failed";
+      currentCycle.completedAt = new Date().toISOString();
+      currentCycle.trace.push(err?.message?.includes("local_wait_timeout") ? "agent_wait_timeout" : "orchestration_exception");
+      if (err?.message?.includes("invalid_array_contract")) {
+        currentCycle.trace.push("orchestration_contract_error");
+      }
+    }
+
+    // A evidência persistida prevalece sobre o snapshot local: se o HTTP Meta
+    // chegou a começar, a ausência de confirmação NÃO autoriza reprocessamento.
+    let possibleSend = sentSuccessfully || classifyCycleOutboxEvidence(outboxMap, correlationId).possibleSend;
+    let retryAllowed = false;
+    try {
+      const { data: failureRow, error: failureReadError } = await supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules, ai_auto_respond")
+        .eq("id", conversationId)
+        .maybeSingle();
+      if (!failureReadError) {
+        possibleSend ||= classifyCycleOutboxEvidence(failureRow?.stage_completed_rules?.orchestration?.outbox, correlationId).possibleSend;
+        retryAllowed = failureRow?.ai_auto_respond === true &&
+          failureRow?.stage_completed_rules?.cancel_current_cycle !== true &&
+          failureRow?.stage_completed_rules?.status !== "paused_manual";
+      }
+    } catch {
+      // A RPC de release ainda fará a verificação decisiva sob FOR UPDATE.
+    }
 
     // Em caso de erro, reverte as mensagens claimed para pending para permitir retry
-    for (const id of claimedMessageIds) {
-      ledger[id] = "pending";
-    }
+    for (const id of claimedMessageIds) ledger[id] = possibleSend ? "processed" : "pending";
 
     const fallbackState: ConversationOrchestrationState = {
       ...orchState,
@@ -8958,10 +9098,13 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       lastError: err.message || "Erro desconhecido",
       cycleRecord: currentCycle,
       outboxMap: fallbackState.outbox || outboxMap,
-      revertMessageIds: sentSuccessfully ? null : claimedMessageIds,
+      revertMessageIds: possibleSend ? null : claimedMessageIds,
+      markProcessedIds: possibleSend ? claimedMessageIds : null,
+      debounceUntil: !possibleSend && retryAllowed ? new Date(Date.now() + 60_000).toISOString() : null,
     });
 
     if (!releaseRes.released) {
+      console.error(`[Brain] cycle_cleanup_failed cycle=${correlationId} reason=${releaseRes.reason || "unknown"}`);
       console.warn(
         `[Brain] Falha capturada no ciclo ${correlationId}, mas ciclo já perdeu o lock (atual: ${releaseRes.activeToken || "null"}). Abortando sobrescrita de fallback.`
       );
@@ -8971,6 +9114,20 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         blockLegacyFallback: true,
         error: err.message || "Ciclo preemptado",
       };
+    }
+
+    if (releaseRes.retryExhausted) {
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        status: "failed",
+        cycleEvent: {
+          phase: "failed",
+          event: "technical_retry_exhausted",
+          label: "Tentativas técnicas esgotadas",
+          detail: "O lock foi liberado. A próxima mensagem inbound pode abrir um novo lote; não haverá repetição automática deste erro.",
+          metadata: { retryCount: releaseRes.retryCount },
+        },
+      });
     }
 
     await publishAutoPilotState(supabase, conversationId, {
@@ -8985,8 +9142,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       ...(usageTerminalEventPublished ? {} : {
         cycleEvent: {
           phase: "failed",
-          event: "cycle_failed",
-          label: "Ciclo falhou",
+          event: err?.message?.includes("local_wait_timeout") ? "agent_wait_timeout" :
+            err?.message?.includes("invalid_array_contract") ? "orchestration_contract_error" : "cycle_failed",
+          label: err?.message?.includes("local_wait_timeout") ? "Agent excedeu tempo de espera" : "Ciclo falhou",
           detail: err.message || "Falha na análise do Brain.",
           metadata: {
             model: cycleOpenAiUsage.snapshot()?.models[0] || configuredAgentModel || null,
@@ -9005,6 +9163,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       error: err.message || "Erro na orquestração do Brain",
     };
   } finally {
+    await revokeCurrentMemoryScope();
     try {
       await releaseExperimentalCycleAtomic({
         supabase,

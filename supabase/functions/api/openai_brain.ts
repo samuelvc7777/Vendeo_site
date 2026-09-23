@@ -24,6 +24,11 @@ import {
 import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts";
 import type { AgentSessionUsageTelemetry } from "./openai_usage.ts";
 import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
+import { AGENT_LOCAL_WAIT_MS } from "./autopilot_cycle_safety.ts";
+
+function fetchOpenAiBounded(url: string | URL, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
+}
 
 export interface OpenAiBrainToolDefinition {
   type: "function";
@@ -272,6 +277,15 @@ export function validateConversationBrainPlan(
     };
   } else if (!plan.missionPackage.turnContract) {
     plan.missionPackage.turnContract = turnContract;
+  }
+
+  const memoryContext = plan.missionPackage.relevantMemoryContext;
+  if (memoryContext !== undefined && memoryContext !== null && typeof memoryContext !== "string") {
+    const actualType = Array.isArray(memoryContext) ? "array" : typeof memoryContext;
+    return {
+      valid: false,
+      error: `invalid_array_contract: field=missionPackage.relevantMemoryContext actual_type=${actualType} expected_type=string`,
+    };
   }
 
   return { valid: true };
@@ -613,18 +627,20 @@ export interface OpenAiBrainTurnResult {
 async function fetchAgentGenerationIds(
   sessionId: string,
   headers: Record<string, string>,
+  deadlineMs = Date.now() + 15_000,
 ): Promise<string[] | null> {
   const generationIds = new Set<string>();
   let after: string | null = null;
 
   for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    if (Date.now() >= deadlineMs) return null;
     const url = new URL(`https://api.openai.com/v1/agents/sessions/${sessionId}/traces`);
     url.searchParams.set("limit", "100");
     url.searchParams.set("order", "asc");
     if (after) url.searchParams.set("after", after);
 
     try {
-      const response = await fetch(url, { headers });
+      const response = await fetchOpenAiBounded(url, { headers }, Math.min(5_000, deadlineMs - Date.now()));
       if (!response.ok) return null;
       const page = await response.json();
       const traceRows = Array.isArray(page?.data) ? page.data : [];
@@ -664,18 +680,20 @@ async function fetchAgentSessionUsageTelemetry(
   model: string | null,
   sessionUsage: unknown,
   headers: Record<string, string>,
+  deadlineMs = Date.now() + 15_000,
 ): Promise<AgentSessionUsageTelemetry> {
   const turns: AgentSessionUsageTelemetry["turns"] = [];
   let after: string | null = null;
 
   for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    if (Date.now() >= deadlineMs) break;
     const url = new URL(`https://api.openai.com/v1/agents/sessions/${sessionId}/turns`);
     url.searchParams.set("limit", "100");
     url.searchParams.set("order", "asc");
     if (after) url.searchParams.set("after", after);
 
     try {
-      const response = await fetch(url, { headers });
+      const response = await fetchOpenAiBounded(url, { headers }, Math.min(5_000, deadlineMs - Date.now()));
       if (!response.ok) break;
       const page = await response.json();
       for (const turn of Array.isArray(page?.data) ? page.data : []) {
@@ -690,7 +708,7 @@ async function fetchAgentSessionUsageTelemetry(
     }
   }
 
-  const generationIds = await fetchAgentGenerationIds(sessionId, headers);
+  const generationIds = Date.now() < deadlineMs ? await fetchAgentGenerationIds(sessionId, headers, deadlineMs) : null;
   return { sessionId, model, sessionUsage, turns, generationIds };
 }
 
@@ -1199,6 +1217,11 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         telemetry.finalPlanParsed = true;
       } else {
         if (!mockResult.plan || !validation.valid) {
+          if (validation.error?.startsWith("invalid_array_contract:")) {
+            telemetry.finalPlanParsed = false;
+            telemetry.status = "failed";
+            return { success: false, plan: null, error: validation.error, telemetry };
+          }
           telemetry.finalPlanParsed = false;
           console.warn(`[OpenAI Agent Mock] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
           mockResult.plan = buildFallbackBrainPlan(typeof mockResult.plan === "string" ? mockResult.plan : "");
@@ -1251,8 +1274,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   try {
     collectSessionUsage = async () => {
       if (!activeSessionId || sessionUsageCollected) return;
+      const usageDeadlineMs = Date.now() + 15_000;
       try {
-        const finalSessionRes = await fetch(`https://api.openai.com/v1/agents/sessions/${activeSessionId}`, { headers });
+        const finalSessionRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/sessions/${activeSessionId}`, { headers }, 5_000);
         if (finalSessionRes.ok) latestSessionData = await finalSessionRes.json();
       } catch {}
       const sessionTelemetry = await fetchAgentSessionUsageTelemetry(
@@ -1260,6 +1284,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         typeof latestSessionData?.agent?.model === "string" ? latestSessionData.agent.model : null,
         latestSessionData?.usage ?? null,
         headers,
+        usageDeadlineMs,
       );
       telemetry.agentUsageSessions.push(sessionTelemetry);
       sessionUsageCollected = true;
@@ -1316,7 +1341,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     if (params.memoryScopeId) {
       try {
-        const agentConfigRes = await fetch(`https://api.openai.com/v1/agents/${agentId}`, { headers });
+        const agentConfigRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/${agentId}`, { headers });
         if (!agentConfigRes.ok) throw new Error(`HTTP ${agentConfigRes.status}`);
         const agentConfig = await agentConfigRes.json();
         sessionPayload.agent = {
@@ -1329,11 +1354,11 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
     }
 
-    const sessionRes = await fetch("https://api.openai.com/v1/agents/sessions", {
+    const sessionRes = await fetchOpenAiBounded("https://api.openai.com/v1/agents/sessions", {
       method: "POST",
       headers,
       body: JSON.stringify(sessionPayload),
-    });
+    }, 20_000);
 
     if (!sessionRes.ok) {
       const errText = await sessionRes.text();
@@ -1351,19 +1376,34 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     // Polling de conclusão com timeout e backoff controlado (suporta reasoning do gpt-5.6-terra + chamada remota MCP)
     const maxPollAttempts = 45;
     const pollIntervalMs = 2000;
+    const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
     let finalStatus = sessionData.status;
+    console.log(`[OpenAI Agent] agent_wait_started sessionId=${sessionId} maxAttempts=${maxPollAttempts} intervalMs=${pollIntervalMs}`);
 
     for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
       if (finalStatus === "completed" || finalStatus === "idle") {
         break;
       }
-      if (finalStatus === "failed") {
+      if (["failed", "cancelled", "expired", "requires_action"].includes(finalStatus)) {
         break;
       }
 
-      await new Promise((r) => setTimeout(r, pollIntervalMs));
+      if (Date.now() >= waitDeadlineMs) break;
 
-      const pollRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}`, { headers });
+      await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, waitDeadlineMs - Date.now())));
+      if (Date.now() >= waitDeadlineMs) break;
+
+      let pollRes: Response;
+      try {
+        pollRes = await fetchOpenAiBounded(
+          `https://api.openai.com/v1/agents/sessions/${sessionId}`,
+          { headers },
+          Math.min(10_000, waitDeadlineMs - Date.now()),
+        );
+      } catch (pollError) {
+        console.warn(`[OpenAI Agent] Poll HTTP sem resposta para sessão ${sessionId}:`, pollError);
+        continue;
+      }
       if (!pollRes.ok) {
         console.warn(`[OpenAI Agent] Falha no poll da sessão ${sessionId}: ${pollRes.status}`);
         continue;
@@ -1373,29 +1413,39 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       latestSessionData = pollData;
       finalStatus = pollData.status;
 
-      if (finalStatus === "failed") {
+      if (["failed", "cancelled", "expired", "requires_action"].includes(finalStatus)) {
         break;
       }
     }
 
-    telemetry.status = finalStatus || "timeout";
-
     // Usage é coletado inclusive para turns que falharam ou expiraram.
     await collectSessionUsage();
+    // A coleta faz uma última leitura da sessão. Se ela concluiu exatamente
+    // após o último poll, aproveita o mesmo Agent em vez de abrir outro ciclo.
+    if (!["completed", "idle", "failed", "cancelled", "expired", "requires_action"].includes(finalStatus)
+      && typeof latestSessionData?.status === "string") {
+      finalStatus = latestSessionData.status;
+    }
+    telemetry.status = finalStatus || "timeout";
 
-    if (finalStatus === "failed") {
+    if (finalStatus === "requires_action") {
+      throw new Error("agent_requires_action_unhandled: sessão requer ação do aplicativo");
+    }
+    if (["failed", "cancelled", "expired"].includes(finalStatus)) {
       const errorDetail = latestSessionData?.error ? JSON.stringify(latestSessionData.error) : "Erro desconhecido";
-      throw new Error(`OpenAI Agent session falhou: ${errorDetail}`);
+      throw new Error(`agent_terminal_failure: status=${finalStatus} detail=${errorDetail}`);
     }
 
     if (finalStatus !== "completed" && finalStatus !== "idle") {
-      throw new Error(`OpenAI Agent session não concluiu a tempo (status: ${finalStatus})`);
+      telemetry.status = "local_wait_timeout";
+      console.warn(`[OpenAI Agent] agent_wait_timeout sessionId=${sessionId} status=${finalStatus}`);
+      throw new Error(`local_wait_timeout: OpenAI Agent session ainda ${finalStatus}`);
     }
 
     console.log(`[OpenAI Agent] turn_completed: status=${finalStatus}`);
 
     // Busca itens da sessão para identificar resposta do assistente e uso de MCP
-    const itemsRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}/items`, { headers });
+    const itemsRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/sessions/${sessionId}/items`, { headers });
     if (!itemsRes.ok) {
       throw new Error(`Falha ao buscar itens da sessão ${sessionId}: ${itemsRes.status}`);
     }
@@ -1473,6 +1523,11 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       console.log(`[OpenAI Agent] plan_validated`);
     } else {
       if (!parsedPlan || !validation.valid) {
+        if (validation.error?.startsWith("invalid_array_contract:")) {
+          telemetry.finalPlanParsed = false;
+          telemetry.status = "failed";
+          return { success: false, plan: null, error: validation.error, telemetry };
+        }
         telemetry.finalPlanParsed = false;
         console.warn(`[OpenAI Agent] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
         parsedPlan = recoverSafeBrainPlan(parsedPlan);
@@ -1506,7 +1561,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     } catch {}
     console.error("[Brain] Erro durante turno do OpenAI Agent Brain:", err);
     telemetry.durationMs = Date.now() - startTime;
-    telemetry.status = "failed";
+    telemetry.status = err?.message?.includes("local_wait_timeout") ? "local_wait_timeout" : "failed";
     return {
       success: false,
       plan: null,

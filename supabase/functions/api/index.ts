@@ -3897,12 +3897,10 @@ serve(async (req: Request) => {
         }
 
         // 1. Busca conversas prontas para serem respondidas cujo tempo de espera já venceu
-        const { data: readyConvs, error: queryErr } = await supabase
-          .from("instagram_conversations")
-          .select("id, last_message, last_message_at, last_direction, stage_completed_rules, ai_debounce_until, ai_auto_respond")
-          .eq("ai_auto_respond", true)
-          .lte("ai_debounce_until", nowIso)
-          .limit(20);
+        const { data: readyConvs, error: queryErr } = await supabase.rpc(
+          "list_autopilot_due_conversations",
+          { p_now: nowIso, p_limit: 20 },
+        );
 
         if (queryErr) {
           console.error("[Cloud AutoPilot] Erro ao buscar conversas agendadas:", queryErr);
@@ -3920,24 +3918,34 @@ serve(async (req: Request) => {
 
         if (validConvs.length > 0) {
           for (const conv of validConvs) {
-            // Trava atômica imediata: limpa ai_debounce_until para que outro tick concorrente não execute a mesma conversa
-            await supabase
-              .from("instagram_conversations")
-              .update({
-                ai_debounce_until: null,
-              })
-              .eq("id", conv.id);
+            // O claim_experimental_cycle é o CAS real. Não limpar debounce antes
+            // dele: uma falha do worker deixaria a conversa sem agenda.
 
-            // Busca a última mensagem da conversa com ordenação precisa
-            const { data: lastMsgs } = await supabase
-              .from("instagram_messages")
-              .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url, audio_transcript")
-              .eq("conversation_id", conv.id)
-              .order("created_at", { ascending: false })
-              .limit(1);
+            // A mensagem mais recente pode já ter sido processada enquanto uma
+            // inbound anterior continua pendente. Pagina apenas a janela de 48h.
+            const ledger = conv.stage_completed_rules?.orchestration?.messageLedger || {};
+            let lastMsg: any = null;
+            let messageOffset = 0;
+            while (!lastMsg) {
+              const { data: inboundPage, error: inboundError } = await supabase
+                .from("instagram_messages")
+                .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url, audio_transcript")
+                .eq("conversation_id", conv.id)
+                .eq("is_mine", false)
+                .gte("created_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
+                .order("created_at", { ascending: false })
+                .range(messageOffset, messageOffset + 99);
+              if (inboundError || !inboundPage?.length) break;
+              lastMsg = inboundPage.find((message: any) =>
+                message.sender_id !== "me" &&
+                ledger[message.id] !== "processed" &&
+                message.id !== conv.stage_completed_rules?.orchestration?.lastProcessedMessageId
+              );
+              if (inboundPage.length < 100) break;
+              messageOffset += 100;
+            }
 
-            const lastMsg = lastMsgs?.[0];
-            const isFromThem = lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me";
+            const isFromThem = Boolean(lastMsg);
 
             if (isFromThem) {
               const convRules = conv.stage_completed_rules || {};
