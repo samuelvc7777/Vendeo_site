@@ -32,6 +32,7 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import {
   COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
@@ -47,6 +48,8 @@ import {
   commitAudioDeliverySent,
   releaseAudioDeliveryReservation,
   dispatchOutboxEntry,
+  validateFinalTextDispatchPayload,
+  checkOutboundActionDispatchPayload,
 } from "../supabase/functions/api/brain_orchestrator.ts";
 import {
   createAudioDeliveredEpisode,
@@ -1163,4 +1166,107 @@ test("24. Mensagem incidental sobre praia não dispara áudio", async () => {
 
   const hasBeachAudio = candidates.some((c) => c.audio_id === "aud_hobbies" && c.transcript.includes("praia"));
   assert.equal(hasBeachAudio, false, "Menção puramente incidental de local próximo à praia não casa com áudio pessoal de gostar de praia");
+});
+
+// ============================================================================
+// REGRESSÃO LIVE v299: LOOP DE DISPATCH E checkOutboundActionDispatchPayload
+// ============================================================================
+
+test("25. CENÁRIO A — TEXT: checkOutboundActionDispatchPayload executa validateFinalTextDispatchPayload sem ReferenceError", () => {
+  const canonicalOutboundActions = [
+    { type: "text", text: "adoro viajar e curtir um tempo com a minha família" },
+    { type: "text", text: "e vc trabalha ou estuda com oq?" },
+  ];
+  const balloons = canonicalOutboundActions.map((a) => a.text);
+
+  const checks = [];
+  assert.doesNotThrow(() => {
+    for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
+      const balloonText = balloons[bIndex];
+      const currentAction = canonicalOutboundActions[bIndex];
+      const dispatchPayloadCheck = checkOutboundActionDispatchPayload(currentAction, balloonText);
+      checks.push(dispatchPayloadCheck);
+    }
+  }, "Nenhum ReferenceError deve ocorrer na função de produção checkOutboundActionDispatchPayload para ações TEXT");
+
+  assert.equal(checks.length, 2);
+  assert.equal(checks[0].isAudio, false, "Ação 0 de texto deve ter isAudio=false");
+  assert.equal(checks[0].valid, true, "Texto válido deve passar");
+  assert.equal(checks[1].isAudio, false, "Ação 1 de texto deve ter isAudio=false");
+  assert.equal(checks[1].valid, true, "Texto válido deve passar");
+
+  // Testa texto vazio que deve ser rejeitado pelo validateFinalTextDispatchPayload de produção
+  const emptyCheck = checkOutboundActionDispatchPayload({ type: "text", text: "" }, "");
+  assert.equal(emptyCheck.isAudio, false);
+  assert.equal(emptyCheck.valid, false);
+  assert.equal(emptyCheck.error, "EMPTY_TEXT_BALLOON");
+});
+
+test("26. CENÁRIO B — AUDIO: checkOutboundActionDispatchPayload pula validateFinalTextDispatchPayload e não lança ReferenceError", () => {
+  const canonicalOutboundActions = [
+    { type: "audio", audioId: "audio_test_123" },
+  ];
+  const balloons = ["[audio:audio_test_123]"];
+
+  const checks = [];
+  assert.doesNotThrow(() => {
+    for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
+      const balloonText = balloons[bIndex];
+      const currentAction = canonicalOutboundActions[bIndex];
+      const dispatchPayloadCheck = checkOutboundActionDispatchPayload(currentAction, balloonText);
+      checks.push(dispatchPayloadCheck);
+    }
+  }, "Nenhum ReferenceError deve ocorrer na função de produção checkOutboundActionDispatchPayload para ação AUDIO");
+
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].isAudio, true, "Ação audio deve ter isAudio=true");
+  assert.equal(checks[0].valid, true, "Ação audio é considerada válida sem passar por validação de texto");
+});
+
+test("27. CENÁRIO C — TEXT + AUDIO: isolamento lexical por iteração com helper oficial de produção", () => {
+  const canonicalOutboundActions = [
+    { type: "text", text: "minha rotina é bem corrida" },
+    { type: "audio", audioId: "aud_hobbies" },
+    { type: "text", text: "mas e vc, me conta mais de vc!" },
+  ];
+  const balloons = [
+    "minha rotina é bem corrida",
+    "[audio:aud_hobbies]",
+    "mas e vc, me conta mais de vc!",
+  ];
+
+  const results = [];
+  for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
+    const balloonText = balloons[bIndex];
+    const currentAction = canonicalOutboundActions[bIndex];
+    const dispatchPayloadCheck = checkOutboundActionDispatchPayload(currentAction, balloonText);
+    results.push({
+      bIndex,
+      type: currentAction.type,
+      isAudio: dispatchPayloadCheck.isAudio,
+      valid: dispatchPayloadCheck.valid,
+    });
+  }
+
+  assert.equal(results[0].isAudio, false, "Iteração 0 (text) deve ter isAudio=false");
+  assert.equal(results[0].valid, true);
+
+  assert.equal(results[1].isAudio, true, "Iteração 1 (audio) deve ter isAudio=true");
+  assert.equal(results[1].valid, true);
+
+  assert.equal(results[2].isAudio, false, "Iteração 2 (text) deve ter isAudio=false (sem vazamento do áudio anterior)");
+  assert.equal(results[2].valid, true);
+
+  // Verificação estática direta no arquivo brain_orchestrator.ts: zero ocorrências de 'isAudioAction'
+  const code = fs.readFileSync("supabase/functions/api/brain_orchestrator.ts", "utf8");
+  assert.equal(
+    code.includes("isAudioAction"),
+    false,
+    "supabase/functions/api/brain_orchestrator.ts NÃO deve conter nenhuma referência a 'isAudioAction'"
+  );
+  assert.equal(
+    code.includes("const dispatchPayloadCheck = checkOutboundActionDispatchPayload("),
+    true,
+    "supabase/functions/api/brain_orchestrator.ts DEVE chamar checkOutboundActionDispatchPayload no loop real"
+  );
 });

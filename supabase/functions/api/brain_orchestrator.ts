@@ -6386,6 +6386,27 @@ export function validateFinalTextDispatchPayload(text: unknown): { valid: boolea
   }
   return { valid: true };
 }
+
+/**
+ * Classifica a ação do balão (áudio vs texto) e executa a validação de pré-despacho apropriada.
+ * - Para ações de áudio: não valida como texto e retorna { isAudio: true, valid: true }.
+ * - Para ações de texto: submete o balão a validateFinalTextDispatchPayload.
+ */
+export function checkOutboundActionDispatchPayload(
+  currentAction: { type?: string; [key: string]: unknown } | undefined,
+  balloonText: unknown
+): { isAudio: boolean; valid: boolean; error?: string } {
+  const isCurrentActionAudio =
+    currentAction?.type === "audio" ||
+    (typeof balloonText === "string" && balloonText.startsWith("[audio:"));
+
+  if (isCurrentActionAudio) {
+    return { isAudio: true, valid: true };
+  }
+
+  const check = validateFinalTextDispatchPayload(balloonText);
+  return { isAudio: false, valid: check.valid, error: check.error };
+}
 const callModelOrKie = callModelOrOpenAi;
 const callModelOrAtria = callModelOrOpenAi;
 
@@ -8671,6 +8692,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         currentCycle.trace.push(!resolvedAudio ? "audio_rejected_not_authorized" : "audio_rejected_disabled");
         canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
         resolvedAudio = undefined;
+      } else {
         // 3. Trava 2 Anti-repetição atômica pré-dispatch com RESERVA (CLAIM)
         const claimResult = await claimAudioDeliveryReservation({
           supabase,
@@ -8802,13 +8824,10 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
         const balloonText = balloons[bIndex];
         const currentAction = canonicalOutboundActions[bIndex];
-        const isCurrentActionAudio = currentAction?.type === "audio" || balloonText.startsWith("[audio:");
-
-          const dispatchPayloadCheck = isAudioAction
-            ? { valid: true }
-            : validateFinalTextDispatchPayload(balloonText);
-          currentCycle.trace.push(`dispatch_balloon_length=${typeof balloonText === "string" ? balloonText.length : 0}`);
-          currentCycle.trace.push(`dispatch_payload_source=${isOpenAiAgentBrain ? "decision.responses" : "legacy"}`);
+        const dispatchPayloadCheck = checkOutboundActionDispatchPayload(currentAction, balloonText);
+        const isCurrentActionAudio = dispatchPayloadCheck.isAudio;
+        currentCycle.trace.push(`dispatch_balloon_length=${typeof balloonText === "string" ? balloonText.length : 0}`);
+        currentCycle.trace.push(`dispatch_payload_source=${isOpenAiAgentBrain ? "decision.responses" : "legacy"}`);
           if (!dispatchPayloadCheck.valid) {
             currentCycle.trace.push(`${dispatchPayloadCheck.error?.toLowerCase()}=true`);
             currentCycle.status = "failed";
