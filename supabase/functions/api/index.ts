@@ -3747,6 +3747,68 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
+    // 8.5.2. CONFIGURAÇÃO DO OPENAI BRAIN (/ai/openai-config)
+    // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
+    // ==========================================
+    if (path === "/ai/openai-config") {
+      const allowedModels = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as const;
+      const labels: Record<string, string> = {
+        "gpt-5.6-luna": "Luna",
+        "gpt-5.6-terra": "Terra",
+        "gpt-5.6-sol": "Sol",
+      };
+      const { data: configRows, error: configError } = await supabase
+        .from("instagram_config")
+        .select("id, app_secret")
+        .in("id", ["openai_api_key", "openai_brain_model", "openai_brain_agent_id"]);
+      if (configError) return new Response(JSON.stringify({ error: configError.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const configs = new Map((configRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
+      const apiKey = (Deno.env.get("OPENAI_API_KEY") || configs.get("openai_api_key") || "").trim();
+      const agentId = (Deno.env.get("OPENAI_BRAIN_AGENT_ID") || configs.get("openai_brain_agent_id") || "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482").trim();
+      const mask = (key: string) => key ? `${key.slice(0, 7)}...${key.slice(-4)}` : null;
+      if (!apiKey) return new Response(JSON.stringify({ configured: false, maskedKey: null, model: null, modelLabel: null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const agentUrl = `https://api.openai.com/v1/agents/${agentId}`;
+      const agentHeaders = { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "agents=v1" };
+      const getAgent = () => fetch(agentUrl, { headers: agentHeaders });
+
+      if (req.method === "GET") {
+        const remote = await getAgent();
+        if (!remote.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${remote.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const agent = await remote.json();
+        const model = allowedModels.includes(agent.model) ? agent.model : allowedModels.includes(configs.get("openai_brain_model") as any) ? configs.get("openai_brain_model") : null;
+        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), model, modelLabel: model ? labels[model] : null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (req.method === "PUT") {
+        const body = await req.json().catch(() => ({}));
+        const model = body?.model;
+        if (!allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha Luna, Terra ou Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const suppliedKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
+        const effectiveKey = suppliedKey || apiKey;
+        if (!effectiveKey) return new Response(JSON.stringify({ error: "Configure a chave da API OpenAI antes de escolher o modelo." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const currentResponse = await fetch(agentUrl, { headers: { Authorization: `Bearer ${effectiveKey}`, "OpenAI-Beta": "agents=v1" } });
+        if (!currentResponse.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${currentResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const currentAgent = await currentResponse.json();
+        const updateResponse = await fetch(agentUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${effectiveKey}`, "Content-Type": "application/json", "OpenAI-Beta": "agents=v1" },
+          // PATCH semântico: envia somente model para preservar instructions, tools e demais campos remotos.
+          body: JSON.stringify({ model }),
+        });
+        if (!updateResponse.ok) return new Response(JSON.stringify({ error: `Falha ao atualizar o modelo do Agent remoto (${updateResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const updatedAgent = await updateResponse.json();
+        if (updatedAgent.model !== model) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou o modelo selecionado" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const modelWrite = await supabase.from("instagram_config").upsert({ id: "openai_brain_model", app_secret: model, updated_at: new Date().toISOString() });
+        if (modelWrite.error) return new Response(JSON.stringify({ error: modelWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (suppliedKey) {
+          const keyWrite = await supabase.from("instagram_config").upsert({ id: "openai_api_key", app_secret: suppliedKey, updated_at: new Date().toISOString() });
+          if (keyWrite.error) return new Response(JSON.stringify({ error: keyWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), model, modelLabel: labels[model] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // ==========================================
     // 8.6. REFERÊNCIAS CANÔNICAS DE PERSONA (/ai/persona-references)
     // ==========================================
     if (path === "/ai/persona-references") {

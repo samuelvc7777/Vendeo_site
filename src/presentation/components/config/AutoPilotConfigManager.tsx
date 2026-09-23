@@ -18,7 +18,6 @@ import { toast } from "sonner";
 import { AutoPilotConfig } from "@/domain/entities/AutoPilot";
 import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/SupabaseAutoPilotRepository";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
-import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 
 const autoPilotRepo = new SupabaseAutoPilotRepository();
 
@@ -35,44 +34,45 @@ export function AutoPilotConfigManager() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [openAiKey, setOpenAiKey] = useState("");
+  const [openAiMaskedKey, setOpenAiMaskedKey] = useState<string | null>(null);
+  const [openAiModel, setOpenAiModel] = useState("gpt-5.6-luna");
   const [isSavingKey, setIsSavingKey] = useState(false);
   const mobileNotifications = useMobileNotifications();
 
   useEffect(() => {
     loadConfig();
-    loadOpenAiKey();
+    loadOpenAiConfig();
   }, []);
 
-  const loadOpenAiKey = async () => {
+  const loadOpenAiConfig = async () => {
     try {
-      const supabase = getSupabaseBrowserClient();
-      const { data } = await supabase
-        .from("instagram_config")
-        .select("app_secret")
-        .eq("id", "openai_api_key")
-        .maybeSingle();
-      if (data?.app_secret) {
-        setOpenAiKey(data.app_secret);
-      }
+      const response = await fetch("/api/ai/openai-config", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Falha ao carregar configuração OpenAI");
+      setOpenAiMaskedKey(data.maskedKey || null);
+      if (data.model) setOpenAiModel(data.model);
     } catch (e) {
-      console.warn("Aviso ao carregar openai_api_key:", e);
+      console.warn("Aviso ao carregar configuração OpenAI:", e);
     }
   };
 
-  const handleSaveOpenAiKey = async () => {
-    if (!openAiKey.trim()) return;
+  const handleSaveOpenAiConfig = async () => {
+    if (!openAiKey.trim() && !openAiModel) return;
     setIsSavingKey(true);
     try {
-      const supabase = getSupabaseBrowserClient();
-      const { error } = await supabase.from("instagram_config").upsert({
-        id: "openai_api_key",
-        app_secret: openAiKey.trim(),
-        updated_at: new Date().toISOString(),
+      const response = await fetch("/api/ai/openai-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: openAiKey.trim() || undefined, model: openAiModel }),
       });
-      if (error) throw error;
-      toast.success("Chave da OpenAI (ChatGPT Sol) salva com sucesso!");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Falha ao salvar configuração OpenAI");
+      setOpenAiKey("");
+      setOpenAiMaskedKey(data.maskedKey || openAiMaskedKey);
+      setOpenAiModel(data.model || openAiModel);
+      toast.success("Configuração do OpenAI — Brain da Larissa salva com sucesso!");
     } catch (e: any) {
-      toast.error("Erro ao salvar chave da OpenAI: " + (e.message || ""));
+      toast.error("Erro ao salvar configuração OpenAI: " + (e.message || ""));
     } finally {
       setIsSavingKey(false);
     }
@@ -205,26 +205,26 @@ export function AutoPilotConfigManager() {
         </div>
       </div>
 
-      {/* Card: Arquitetura Dual de Inteligência Artificial (Orquestrador + Persona ChatGPT Sol) */}
+      {/* Card: OpenAI — Brain da Larissa */}
       <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-purple-500/20 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <span className="text-xs font-semibold text-white flex items-center gap-1.5">
             <Bot className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-            Motor Dual de IA (Orquestrador + ChatGPT Sol)
+            OpenAI — Brain da Larissa
           </span>
           <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 self-start sm:self-auto">
-            {openAiKey ? "OpenAI Sol Conectada" : "Groq Ativo (Custo Zero)"}
+            {openAiMaskedKey ? "OpenAI conectada" : "OpenAI não configurada"}
           </span>
         </div>
 
         <p className="text-[11px] text-zinc-400 leading-relaxed">
-          O <strong>Orquestrador (Groq)</strong> avalia o checklist a custo zero e dita a Regra do Bumerangue. A <strong>Persona (ChatGPT Sol)</strong> formula a resposta humana com o DNA da Larissa.
+          O Brain oficial da Larissa usa o mesmo Agent OpenAI remoto. Escolha aqui o modelo aplicado ao Agent.
         </p>
 
         <div className="space-y-1.5 pt-1">
           <label className="text-[11px] text-zinc-300 font-medium flex items-center gap-1">
             <Key className="w-3 h-3 text-amber-400" />
-            Chave de API OpenAI (sk-...) para ChatGPT Sol:
+            Chave da API OpenAI
           </label>
           <div className="flex items-center gap-2">
             <input
@@ -236,16 +236,30 @@ export function AutoPilotConfigManager() {
             />
             <button
               type="button"
-              disabled={isSavingKey || !openAiKey.trim()}
-              onClick={handleSaveOpenAiKey}
+              disabled={isSavingKey}
+              onClick={handleSaveOpenAiConfig}
               className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-xs font-bold text-white transition-all shrink-0 cursor-pointer shadow-sm"
             >
-              {isSavingKey ? "Salvando..." : "Salvar Chave"}
+              {isSavingKey ? "Salvando..." : "Salvar configuração"}
             </button>
           </div>
           <span className="text-[10px] text-zinc-500">
-            Caso não configure chave da OpenAI, o sistema utilizará o Groq (Llama-3.3-70b) com fallback 100% gratuito.
+            {openAiMaskedKey ? `Chave atual: ${openAiMaskedKey}. Deixe o campo vazio para manter a chave.` : "Nenhuma chave OpenAI configurada."}
           </span>
+        </div>
+
+        <div className="space-y-1.5 pt-1">
+          <label className="text-[11px] text-zinc-300 font-medium block">Modelo do Brain</label>
+          <select
+            value={openAiModel}
+            onChange={(e) => setOpenAiModel(e.target.value)}
+            className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
+          >
+            <option value="gpt-5.6-luna">Luna — Mais econômico</option>
+            <option value="gpt-5.6-terra">Terra — Equilíbrio entre inteligência e custo</option>
+            <option value="gpt-5.6-sol">Sol — Maior capacidade</option>
+          </select>
+          <span className="text-[10px] text-zinc-500">Modelo atual: {openAiModel === "gpt-5.6-luna" ? "Luna" : openAiModel === "gpt-5.6-terra" ? "Terra" : "Sol"}</span>
         </div>
       </div>
 

@@ -161,6 +161,21 @@ export const BRAIN_ORCHESTRATION_BUDGETS = {
  */
 export const OPENAI_BRAIN_DEFAULT_MODEL = "gpt-5.6-luna";
 export const OPENAI_EXECUTOR_DEFAULT_MODEL = "gpt-5.6-luna";
+export const ALLOWED_OPENAI_BRAIN_MODELS = [
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+  "gpt-5.6-sol",
+] as const;
+
+export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel?: string): Promise<string> {
+  if (requestedModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(requestedModel)) return requestedModel;
+  try {
+    const { data } = await supabase.from("instagram_config").select("app_secret").eq("id", "openai_brain_model").maybeSingle();
+    if (data?.app_secret && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
+  } catch {}
+  const envModel = typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL;
+  return envModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel) ? envModel : OPENAI_BRAIN_DEFAULT_MODEL;
+}
 
 export function estimateTextTokens(text: string): number {
   return Math.max(1, Math.ceil((text || "").length / 4));
@@ -6431,6 +6446,7 @@ export async function runBrainOrchestration(
     let currentMemoryScopeId: string | undefined;
 
     if (isOpenAiAgentBrain) {
+      const configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
       const latestRelevantMessage = [...finalRecentMessages]
         .filter((message: any) => message?.createdAt)
         .sort((a: any, b: any) => messageTimestampMs(b) - messageTimestampMs(a))[0];
@@ -6518,8 +6534,8 @@ export async function runBrainOrchestration(
             }
           }
 
-          currentCycle.brainModel = "gpt-5.6-luna";
-          currentCycle.trace.push("brain_model: gpt-5.6-luna");
+          currentCycle.brainModel = configuredAgentModel;
+          currentCycle.trace.push(`brain_model: ${configuredAgentModel}`);
           currentCycle.trace.push(`interaction_dna_version: ${LARISSA_INTERACTION_DNA_VERSION}`);
           currentCycle.trace.push(`interaction_dna_hash: ${LARISSA_INTERACTION_DNA_HASH}`);
           currentCycle.trace.push(`recent_style_state_applied: ${Boolean(recentStyleSnippet)}`);
@@ -6594,7 +6610,9 @@ export async function runBrainOrchestration(
         currentObjective: stageChecklistForRouter.currentObjective as any,
         toolResultsHistory,
       });
-      const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: params.model });
+      const configuredBrainModel = await resolveConfiguredOpenAiModel(supabase, params.model);
+      currentCycle.trace.push(`configured_brain_model=${configuredBrainModel}`);
+      const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: configuredBrainModel });
       tokenMeasurements.add(brainRes.tokenMeasurement);
       brainInputTokens += brainRes.inputTokens;
       brainOutputTokens += brainRes.outputTokens;
@@ -6909,7 +6927,7 @@ export async function runBrainOrchestration(
 
       currentCycle.trace.push("single_turn_agent_execution_used: true");
       currentCycle.trace.push("second_model_inference_skipped: true");
-      currentCycle.trace.push("model: gpt-5.6-luna");
+      currentCycle.trace.push(`model: ${configuredAgentModel}`);
       currentCycle.trace.push(`brain_safe_responses_count=${finalSubDecision.responses?.length || 0}`);
       currentCycle.trace.push("brain_plan_recovery_mode=none");
       } else {
@@ -6938,10 +6956,7 @@ export async function runBrainOrchestration(
         });
 
         // Resolução do modelo (fallback legado)
-        const brainLegacyModel =
-          params.model ||
-          (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL) ||
-          OPENAI_BRAIN_DEFAULT_MODEL;
+        const brainLegacyModel = await resolveConfiguredOpenAiModel(supabase, params.model);
 
         const execRes = await callModelOrOpenAi(executorPrompt, {
           runtime,
