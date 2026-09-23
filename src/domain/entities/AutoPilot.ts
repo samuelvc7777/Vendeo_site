@@ -112,6 +112,7 @@ export interface AutoPilotChatState {
   activeCycleToken?: string | null;
   cycleId?: string | null;
   cycleEvents?: AutoPilotCycleEvent[];
+  lastError?: string;
   stateUpdatedAt?: string;
 }
 

@@ -4,7 +4,11 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { buildTinderAiPromptForBackend } from "./tinder_ai.ts";
 import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
-import { runBrainOrchestration, requestBrainCyclePreemptionAtomic } from "./brain_orchestrator.ts";
+import {
+  runBrainOrchestration,
+  requestBrainCyclePreemptionAtomic,
+  authorizeManualAutopilotRetryAtomic,
+} from "./brain_orchestrator.ts";
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import {
   getGroqApiKey,
@@ -4503,6 +4507,110 @@ serve(async (req: Request) => {
         });
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro ao adiantar envio" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ==========================================
+    // 8.11. AUTOPILOT: RETRY MANUAL ÚNICO (/autopilot/retry-once)
+    // Autoriza EXATAMENTE UMA tentativa manual do Brain quando technical_retry_exhausted
+    // ==========================================
+    if ((path === "/autopilot/retry-once" || path === "/api/autopilot/retry-once") && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = body?.conversationId;
+        if (!conversationId) {
+          return new Response(JSON.stringify({ success: false, reason: "missing_conversation_id", message: "conversationId é obrigatório." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const newCycleToken = `manual_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+        const authRes = await authorizeManualAutopilotRetryAtomic({
+          supabase,
+          conversationId,
+          newCycleToken,
+        });
+
+        if (!authRes.success) {
+          const httpStatus = authRes.reason === "active_cycle_running" ? 409 : 400;
+          return new Response(JSON.stringify(authRes), {
+            status: httpStatus,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // Publica evento de autorização
+        await publishAutoPilotState(supabase, conversationId, {
+          cycleId: newCycleToken,
+          status: "processing",
+          activity: activity("analyzing", "Tentativa manual autorizada", "Iniciando ciclo manual solicitado pelo operador.", { cycleId: newCycleToken }),
+          cycleEvent: {
+            phase: "started",
+            event: "manual_retry_authorized",
+            label: "Tentativa manual autorizada",
+            detail: "Operador autorizou uma única tentativa manual para este lote.",
+            metadata: {
+              cycleToken: newCycleToken,
+              previousCycleToken: authRes.previousCycleToken,
+              pendingCount: authRes.pendingCount,
+            },
+          },
+        });
+
+        // Localiza a mensagem inbound alvo
+        let targetMessage = {
+          id: authRes.pendingMessageIds?.[0] || `manual_inbound_${Date.now()}`,
+          text: "",
+          timestamp: new Date().toISOString(),
+          sender: "pretendente",
+        };
+        const { data: dbMsg } = await supabase
+          .from("instagram_messages")
+          .select("id, text, created_at, sender_id")
+          .eq("id", targetMessage.id)
+          .maybeSingle();
+        if (dbMsg) {
+          targetMessage = {
+            id: dbMsg.id,
+            text: dbMsg.text || "",
+            timestamp: dbMsg.created_at || new Date().toISOString(),
+            sender: dbMsg.sender_id || "pretendente",
+          };
+        }
+
+        // Dispara a orquestração oficial com isManualRetry: true
+        const orchestrationPromise = runBrainOrchestration({
+          supabase,
+          conversationId,
+          newMessage: targetMessage,
+          correlationId: newCycleToken,
+          isManualRetry: true,
+          preClaimedCycleToken: newCycleToken,
+        });
+
+        // Aguarda a execução terminar para responder ao operador
+        const result = await orchestrationPromise;
+
+        return new Response(JSON.stringify({
+          success: true,
+          cycleToken: newCycleToken,
+          result,
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        console.error("[Autopilot] Erro ao executar retry manual:", err);
+        return new Response(JSON.stringify({
+          success: false,
+          reason: "internal_error",
+          message: err instanceof Error ? err.message : "Erro interno ao processar tentativa manual.",
+        }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

@@ -2553,6 +2553,189 @@ export async function releaseExperimentalCycleAtomic(
   return { released: false, reason: "infra_failure" };
 }
 
+export interface AuthorizeManualAutopilotRetryParams {
+  supabase: any;
+  conversationId: string;
+  newCycleToken: string;
+}
+
+export interface AuthorizeManualAutopilotRetryResult {
+  success: boolean;
+  reason:
+    | "authorized"
+    | "conversation_not_found"
+    | "autopilot_disabled"
+    | "active_cycle_running"
+    | "not_exhausted"
+    | "outbox_already_sent"
+    | "outbox_sending"
+    | "outbox_uncertain"
+    | "no_pending_messages"
+    | "infra_failure";
+  message?: string;
+  cycleToken?: string;
+  previousCycleToken?: string | null;
+  pendingMessageIds?: string[];
+  pendingCount?: number;
+  activeCycleToken?: string | null;
+}
+
+/**
+ * Autoriza de forma atômica e segura EXATAMENTE UMA tentativa manual do Brain
+ * para um lote que esgotou as tentativas técnicas automáticas (technical_retry_exhausted).
+ * Valida fail-closed: autopilot ativado, sem active_cycle vigente, technicalRetryCount >= 3,
+ * sem outbox sent/sending/uncertain, e com mensagens inbounds pendentes.
+ */
+export async function authorizeManualAutopilotRetryAtomic(
+  params: AuthorizeManualAutopilotRetryParams
+): Promise<AuthorizeManualAutopilotRetryResult> {
+  const { supabase, conversationId, newCycleToken } = params;
+
+  if (typeof supabase?.rpc === "function") {
+    try {
+      const { data, error } = await supabase.rpc("authorize_manual_autopilot_retry", {
+        p_conversation_id: conversationId,
+        p_new_cycle_token: newCycleToken,
+      });
+
+      if (!error && data && typeof data === "object") {
+        return data as AuthorizeManualAutopilotRetryResult;
+      }
+
+      if (error) {
+        console.warn(
+          `[authorizeManualAutopilotRetryAtomic] Erro na RPC authorize_manual_autopilot_retry para conv=${conversationId}:`,
+          error.message || error
+        );
+        if (!error.message?.includes("does not exist")) {
+          return { success: false, reason: "infra_failure", message: error.message };
+        }
+      }
+    } catch (rpcErr: any) {
+      console.warn(
+        `[authorizeManualAutopilotRetryAtomic] Exceção na RPC authorize_manual_autopilot_retry para conv=${conversationId}:`,
+        rpcErr?.message || rpcErr
+      );
+    }
+  }
+
+  // Fallback defensivo em TypeScript para testes ou caso a RPC não tenha sido aplicada:
+  try {
+    const { data: convRow, error: fetchErr } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules, ai_auto_respond")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    if (fetchErr || !convRow) {
+      return { success: false, reason: "conversation_not_found", message: "Conversa não encontrada." };
+    }
+
+    if (convRow.ai_auto_respond !== true) {
+      return { success: false, reason: "autopilot_disabled", message: "O autopiloto está desativado para esta conversa." };
+    }
+
+    const rules = convRow.stage_completed_rules || {};
+    const orch = rules.orchestration || {};
+    const ledger = orch.messageLedger || {};
+    const outbox = orch.outbox || {};
+
+    const activeToken = rules.active_cycle_token;
+    if (activeToken) {
+      const activeAtMs = rules.active_cycle_at ? Date.parse(rules.active_cycle_at) : 0;
+      if (activeAtMs > 0 && Date.now() - activeAtMs < 300_000) {
+        return {
+          success: false,
+          reason: "active_cycle_running",
+          message: "Já existe um ciclo do Brain em execução para esta conversa.",
+          activeCycleToken: activeToken,
+        };
+      }
+    }
+
+    const technicalRetryCount = Number(orch.technicalRetryCount || 0);
+    const exhaustedAt = orch.technicalRetryExhaustedAt;
+    const lastError = orch.lastError;
+
+    if (technicalRetryCount < 3 && !exhaustedAt && lastError !== "technical_retry_exhausted") {
+      return { success: false, reason: "not_exhausted", message: "As tentativas técnicas automáticas ainda não se esgotaram." };
+    }
+
+    for (const entry of Object.values(outbox) as any[]) {
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.status === "sent" || (entry.providerMessageId && entry.providerMessageId !== "")) {
+        return { success: false, reason: "outbox_already_sent", message: "Já existe mensagem enviada confirmada neste lote." };
+      }
+      if (entry.status === "sending") {
+        return { success: false, reason: "outbox_sending", message: "Existe mensagem em processo de envio no momento." };
+      }
+      if (entry.status === "dispatch_uncertain" || entry.isUncertain === true) {
+        return { success: false, reason: "outbox_uncertain", message: "Há um envio anterior com confirmação incerta. Não é seguro reenviar automaticamente." };
+      }
+    }
+
+    const pendingIds: string[] = [];
+    for (const [msgId, status] of Object.entries(ledger)) {
+      if (status === "pending") {
+        pendingIds.push(msgId);
+      }
+    }
+
+    if (pendingIds.length === 0) {
+      const { data: recentMsgs } = await supabase
+        .from("instagram_messages")
+        .select("id")
+        .eq("conversation_id", conversationId)
+        .eq("is_mine", false)
+        .gte("created_at", new Date(Date.now() - 48 * 3600 * 1000).toISOString())
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      for (const m of recentMsgs || []) {
+        if (ledger[m.id] !== "processed") {
+          pendingIds.push(m.id);
+          ledger[m.id] = "pending";
+        }
+      }
+    }
+
+    if (pendingIds.length === 0) {
+      return { success: false, reason: "no_pending_messages", message: "Não há mensagens pendentes a responder." };
+    }
+
+    const oldCycle = rules.active_cycle_token || orch.lastCycleId || null;
+    orch.messageLedger = ledger;
+    orch.manualRetryAttempt = true;
+    orch.manualRetryCycleId = newCycleToken;
+    orch.manualRetryAuthorizedAt = new Date().toISOString();
+    if (oldCycle) orch.manualRetryOfCycleId = oldCycle;
+
+    rules.orchestration = orch;
+    rules.active_cycle_token = newCycleToken;
+    rules.active_cycle_at = new Date().toISOString();
+
+    const { error: updateErr } = await supabase
+      .from("instagram_conversations")
+      .update({ stage_completed_rules: rules })
+      .eq("id", conversationId);
+
+    if (updateErr) {
+      return { success: false, reason: "infra_failure", message: updateErr.message };
+    }
+
+    return {
+      success: true,
+      reason: "authorized",
+      cycleToken: newCycleToken,
+      previousCycleToken: oldCycle,
+      pendingMessageIds: pendingIds,
+      pendingCount: pendingIds.length,
+    };
+  } catch (err: any) {
+    return { success: false, reason: "infra_failure", message: err?.message || String(err) };
+  }
+}
+
 export interface DispatchOutboxParams {
   supabase: any;
   outboxEntry: OutboxEntry;
@@ -5787,6 +5970,8 @@ export interface RunOrchestrationParams {
   model?: string;
   memoryProvider?: MemoryProvider;
   responseDelayMinutes?: number;
+  isManualRetry?: boolean;
+  preClaimedCycleToken?: string;
   runtime?: {
     sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
     callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }>;
@@ -5927,12 +6112,22 @@ export async function runBrainOrchestration(
   // 2. Lock antes da seleção idempotente: uma mensagem já processada pode ser
   // apenas o gatilho para recuperar outras inbounds pendentes no mesmo diálogo.
   // 3. BACKEND DETERMINÍSTICO: Lock Atômico via PostgreSQL com SELECT ... FOR UPDATE
-  const claimLockRes = await claimExperimentalCycleAtomic({
-    supabase,
-    conversationId,
-    cycleToken: correlationId,
-    staleSeconds: ACTIVE_CYCLE_TTL_SECONDS,
-  });
+  let claimLockRes: ClaimExperimentalCycleResult;
+  if (params.isManualRetry && params.preClaimedCycleToken && params.preClaimedCycleToken === correlationId) {
+    claimLockRes = {
+      success: true,
+      reason: "claimed",
+      activeCycleToken: correlationId,
+      staleRecovered: false,
+    };
+  } else {
+    claimLockRes = await claimExperimentalCycleAtomic({
+      supabase,
+      conversationId,
+      cycleToken: correlationId,
+      staleSeconds: ACTIVE_CYCLE_TTL_SECONDS,
+    });
+  }
 
   if (!claimLockRes.success) {
     if (claimLockRes.reason === "infra_failure" || (claimLockRes as any).isInfraFailure) {
@@ -8739,6 +8934,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           memory: mergedMemory,
           liveState: currentLiveState,
           recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
+          technicalRetryCount: 0,
+          technicalRetryExhaustedAt: null,
+          manualRetryAttempt: null,
+          manualRetryCycleId: null,
+          manualRetryAuthorizedAt: null,
         };
         // Enriquece objetivos factuais concluídos com os valores reais da memória consolidada
         if (stageProgression.updatedObjectiveProgress) {
@@ -9079,6 +9279,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     }
 
     // Em caso de erro, reverte as mensagens claimed para pending para permitir retry
+    // Se for tentativa manual autorizada, impede novo agendamento de retry automático no cron
+    if (params.isManualRetry) {
+      retryAllowed = false;
+    }
+
     for (const id of claimedMessageIds) ledger[id] = possibleSend ? "processed" : "pending";
 
     const fallbackState: ConversationOrchestrationState = {
@@ -9116,7 +9321,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       };
     }
 
-    if (releaseRes.retryExhausted) {
+    if (releaseRes.retryExhausted || params.isManualRetry) {
       await publishAutoPilotState(supabase, conversationId, {
         cycleId: correlationId,
         status: "failed",
@@ -9124,8 +9329,13 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           phase: "failed",
           event: "technical_retry_exhausted",
           label: "Tentativas técnicas esgotadas",
-          detail: "O lock foi liberado. A próxima mensagem inbound pode abrir um novo lote; não haverá repetição automática deste erro.",
-          metadata: { retryCount: releaseRes.retryCount },
+          detail: params.isManualRetry
+            ? "A tentativa manual falhou. O ciclo foi encerrado com segurança sem retries automáticos."
+            : "O lock foi liberado. A próxima mensagem inbound pode abrir um novo lote; não haverá repetição automática deste erro.",
+          metadata: {
+            retryCount: releaseRes.retryCount,
+            isManualRetry: params.isManualRetry === true,
+          },
         },
       });
     }

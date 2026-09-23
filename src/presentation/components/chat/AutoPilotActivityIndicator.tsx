@@ -609,10 +609,17 @@ export function AutoPilotActivityIndicator({
   const [isCancelling, setIsCancelling] = useState<boolean>(false);
   const [isSendingNow, setIsSendingNow] = useState<boolean>(false);
   const [isConsoleOpen, setIsConsoleOpen] = useState<boolean>(false);
+  const [isRetryingManual, setIsRetryingManual] = useState<boolean>(false);
 
   // Fases e Stepper Cognitivo
   const phase = activity?.phase;
   const isFailed = phase === "failed" || state.status === "failed";
+  const isRetryExhausted =
+    isFailed &&
+    (state.lastError === "technical_retry_exhausted" ||
+      copy.title.toLowerCase().includes("esgotadas") ||
+      Boolean(state.cycleEvents?.some((e) => e.event === "technical_retry_exhausted")) ||
+      (activity?.phase === "failed" && Boolean(activity?.label?.toLowerCase().includes("esgotadas"))));
 
   // Pensamento/raciocínio único do Brain (com tolerância a chaves legadas preservadas no histórico)
   const rawBrainThought =
@@ -792,6 +799,28 @@ export function AutoPilotActivityIndicator({
     }
   };
 
+  const handleManualRetryOnce = async () => {
+    if (!targetId || isRetryingManual) return;
+    setIsRetryingManual(true);
+    try {
+      const res = await fetch(getApiUrl("/api/autopilot/retry-once"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: targetId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        toast.success("Tentativa manual autorizada com sucesso!");
+      } else {
+        toast.error(data.message || data.error || "Não foi possível autorizar a nova tentativa manual.");
+      }
+    } catch {
+      toast.error("Erro de conexão ao solicitar nova tentativa manual.");
+    } finally {
+      setIsRetryingManual(false);
+    }
+  };
+
   if (!shouldRender) return null;
 
   // VARIANTE INBOX (Lista de conversas - limpa e elegante)
@@ -891,6 +920,29 @@ export function AutoPilotActivityIndicator({
                   ? `${Math.floor(remainingSeconds / 60)}m ${String(remainingSeconds % 60).padStart(2, "0")}s`
                   : `${remainingSeconds}s`}
               </span>
+            )}
+
+            {/* Botão Tentar Mais Uma Vez (quando tentativas esgotadas) */}
+            {isRetryExhausted && (
+              <button
+                type="button"
+                onClick={handleManualRetryOnce}
+                disabled={isRetryingManual}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                title="Autorizar exatamente uma nova tentativa manual para este lote"
+              >
+                {isRetryingManual ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>Tentando...</span>
+                  </>
+                ) : (
+                  <>
+                    <FastForward className="h-3 w-3" />
+                    <span className="hidden sm:inline">Tentar mais uma vez</span>
+                  </>
+                )}
+              </button>
             )}
 
             {/* Botão Responder Já (quando aguardando debounce de tempo) */}
@@ -1142,6 +1194,31 @@ export function AutoPilotActivityIndicator({
               <div className="min-w-0"><div className="text-sm font-bold truncate">Brain • Console operacional</div><div className="text-[10px] text-zinc-500 font-mono">{(state.cycleId || state.activeCycleToken || "sem ciclo").slice(0, 28)} • {state.status}</div></div>
               <button type="button" onClick={() => setIsConsoleOpen(false)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"><X className="h-4 w-4" /></button>
             </div>
+            {isRetryExhausted && (
+              <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 flex items-center justify-between gap-3">
+                <div className="text-[11px] text-amber-200">
+                  <span className="font-semibold">Tentativas técnicas esgotadas:</span> Você pode autorizar uma única tentativa manual para este lote.
+                </div>
+                <button
+                  type="button"
+                  onClick={handleManualRetryOnce}
+                  disabled={isRetryingManual}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {isRetryingManual ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Tentando novamente...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FastForward className="h-3.5 w-3.5" />
+                      <span>Tentar mais uma vez</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-[11px]">
               {(state.cycleEvents || []).map((event) => <ConsoleCycleEventCard key={`${event.cycleId}-${event.sequence}`} event={event} />)}
               {(!state.cycleEvents || state.cycleEvents.length === 0) && <div className="text-zinc-500">Nenhum evento operacional persistido neste ciclo.</div>}
