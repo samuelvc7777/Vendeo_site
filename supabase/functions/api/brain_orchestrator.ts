@@ -6552,12 +6552,13 @@ export async function runBrainOrchestration(
           conversationId,
           cycleId: correlationId,
           agentId,
-          ttlSeconds: 300,
+          durationSeconds: 300,
         });
-        currentMemoryScopeId = scopeRes.scopeId;
-        currentCycle.trace.push(`agent_memory_scope_created=${currentMemoryScopeId}`);
+        currentMemoryScopeId = scopeRes;
+        currentCycle.trace.push("agent_memory_scope_created=true");
       } catch (scopeErr) {
-        console.warn("[Orchestrator] Falha ao criar agent_memory_scope:", scopeErr);
+        currentCycle.trace.push("agent_memory_scope_created=false");
+        console.warn("[Orchestrator] Falha ao criar agent_memory_scope:", scopeErr instanceof Error ? scopeErr.message : "unknown_error");
       }
 
       const currentObjective = stageChecklistForRouter.currentObjective;
@@ -6627,6 +6628,12 @@ export async function runBrainOrchestration(
           const memoryToolCalls = openAiBrainTurn.telemetry.toolsRequested.filter((tool: string) =>
             /(?:persona|contact|conversation|episodic)_memory_search/i.test(tool)
           );
+          const memoryToolResults = (openAiBrainTurn.telemetry.memoryToolResults || []).map((result: any) => ({
+            toolName: safeOperationalConsoleText(result.toolName, 100),
+            status: ["success_with_results", "success_no_results", "tool_error"].includes(result.status) ? result.status : "tool_error",
+            reasonCode: ["memory_scope_missing", "memory_scope_invalid", "memory_scope_validation_failed", "memory_search_failed", "memory_scope_context_unavailable", "memory_result_unavailable"].includes(result.reasonCode) ? result.reasonCode : null,
+            resultCount: Number.isInteger(result.resultCount) ? result.resultCount : 0,
+          }));
           const toolsUsed = safeOperationalStringList(openAiBrainTurn.telemetry.toolsRequested, 12);
           const relevantPersonaFacts = brainPlan.missionPackage?.relevantPersonaFacts || brainPlan.relevantPersonaFacts || [];
           const currentObjective = stageChecklistForRouter.currentObjective;
@@ -6642,25 +6649,34 @@ export async function runBrainOrchestration(
             }))
             : [];
 
-          if (memoryToolCalls.length > 0) {
+          if (memoryToolCalls.length > 0 || memoryToolResults.length > 0) {
             const memorySources = [...new Set(memoryToolCalls.map((tool: string) => {
               if (tool.includes("persona_memory_search")) return "PersonaMemory";
               if (tool.includes("contact_memory_search")) return "ContactMemory";
               if (tool.includes("conversation_memory_search")) return "ConversationMemory";
               return "Memória episódica";
             }))];
+            const hasMemoryError = memoryToolResults.some((result: any) => result.status === "tool_error");
+            const hasMemoryResults = memoryToolResults.some((result: any) => result.status === "success_with_results");
+            const memoryLabel = hasMemoryError
+              ? "Memória • erro técnico"
+              : hasMemoryResults
+              ? "Memória consultada"
+              : "Memória consultada • nenhum resultado relevante";
             await publishAutoPilotState(supabase, conversationId, {
               cycleId: correlationId,
               status: "processing",
               cycleEvent: {
                 phase: "brain",
                 event: "brain_memory",
-                label: `Memória consultada • ${memorySources.join(", ")}`,
-                detail: "Consulta confirmada pelos registros de ferramentas do Agent.",
+                label: `${memoryLabel} • ${memorySources.join(", ")}`,
+                detail: hasMemoryError ? "A ferramenta retornou uma falha técnica, distinta de uma busca vazia." : "Resultado confirmado pelos registros das ferramentas do Agent.",
                 metadata: {
                   toolsUsed: safeOperationalStringList(memoryToolCalls, 8),
                   memorySources,
                   searchCount: memoryToolCalls.length,
+                  memoryToolResults,
+                  memoryStatus: hasMemoryError ? "tool_error" : hasMemoryResults ? "success_with_results" : "success_no_results",
                   memoryRationale: safeOperationalConsoleText(brainPlan.memoryRationale, 400) || null,
                   relevantPersonaFactsCount: relevantPersonaFacts.length,
                 },
@@ -6695,6 +6711,14 @@ export async function runBrainOrchestration(
                 coveredHooks,
                 ignoredRelevantHooks,
                 memoryConsulted: memoryToolCalls.length > 0,
+                memoryStatus: memoryToolResults.some((result: any) => result.status === "tool_error")
+                  ? "tool_error"
+                  : memoryToolResults.some((result: any) => result.status === "success_with_results")
+                  ? "success_with_results"
+                  : memoryToolCalls.length > 0
+                  ? "success_no_results"
+                  : "not_consulted",
+                memoryToolResults,
                 memoryRationale: safeOperationalConsoleText(brainPlan.memoryRationale, 400) || null,
                 toolsUsed,
                 relevantPersonaFactsCount: relevantPersonaFacts.length,
@@ -8743,7 +8767,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         if (currentMemoryScopeId) {
           try {
             await revokeAgentMemoryScope({ supabase, scopeId: currentMemoryScopeId });
-            currentCycle.trace.push(`agent_memory_scope_revoked=${currentMemoryScopeId}`);
+            currentCycle.trace.push("agent_memory_scope_revoked=true");
           } catch (revScopeErr) {
             console.warn("[Orchestrator] Falha ao revogar agent_memory_scope:", revScopeErr);
           }

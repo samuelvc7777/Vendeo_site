@@ -110,12 +110,15 @@ export async function createAgentMemoryScope(params: {
   cycleId: string;
   agentId: string;
   durationMinutes?: number;
+  durationSeconds?: number;
 }): Promise<string> {
   const { supabase, conversationId, cycleId, agentId } = params;
-  const duration = params.durationMinutes || 10;
+  const durationMs = params.durationSeconds !== undefined
+    ? Math.max(1, params.durationSeconds) * 1000
+    : Math.max(1, params.durationMinutes ?? 10) * 60 * 1000;
   const scopeId = `scope_${crypto.randomUUID().replace(/-/g, "")}`;
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + duration * 60 * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + durationMs).toISOString();
 
   const { error } = await supabase.from("agent_memory_scopes").insert({
     scope_id: scopeId,

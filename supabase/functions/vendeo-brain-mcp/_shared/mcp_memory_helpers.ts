@@ -32,7 +32,8 @@ export async function resolveMemoryScope(
       .eq("scope_id", cleanScope)
       .maybeSingle();
 
-    if (error || !data) return null;
+    if (error) throw error;
+    if (!data) return null;
     if (data.revoked_at) return null;
 
     const expiresMs = new Date(data.expires_at).getTime();
@@ -43,8 +44,8 @@ export async function resolveMemoryScope(
       cycleId: data.cycle_id,
     };
   } catch (err) {
-    console.error("[MCP-Scope] Erro ao validar scope:", err);
-    return null;
+    console.error("[MCP-Scope] memory_scope_validation_failed");
+    throw err;
   }
 }
 
@@ -76,6 +77,8 @@ export async function searchMcpContactMemory(params: {
         .neq("temporal_status", "superseded")
         .order("importance", { ascending: false })
         .limit(25);
+
+      if (error) throw error;
 
       if (!error && Array.isArray(facts)) {
         for (const f of facts) {
@@ -110,7 +113,8 @@ export async function searchMcpContactMemory(params: {
         }
       }
     } catch (err) {
-      console.warn("[MCP] Erro ao buscar contact_memory_facts:", err);
+      console.warn("[MCP] memory_search_failed: source=contact_memory_facts");
+      throw err;
     }
   }
 
@@ -123,6 +127,8 @@ export async function searchMcpContactMemory(params: {
         .eq("conversation_id", conversationId)
         .order("importance", { ascending: false })
         .limit(10);
+
+      if (error) throw error;
 
       if (!error && Array.isArray(quotes)) {
         for (const q of quotes) {
@@ -147,7 +153,8 @@ export async function searchMcpContactMemory(params: {
         }
       }
     } catch (err) {
-      console.warn("[MCP] Erro ao buscar contact_memory_quotes:", err);
+      console.warn("[MCP] memory_search_failed: source=contact_memory_quotes");
+      throw err;
     }
   }
 
@@ -184,6 +191,8 @@ export async function searchMcpConversationMemory(params: {
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
         .limit(30);
+
+      if (error) throw error;
 
       if (!error && Array.isArray(episodes)) {
         for (const ep of episodes) {
@@ -225,7 +234,8 @@ export async function searchMcpConversationMemory(params: {
         }
       }
     } catch (err) {
-      console.warn("[MCP] Erro ao buscar conversation_episodic_memory:", err);
+      console.warn("[MCP] memory_search_failed: source=conversation_episodic_memory");
+      throw err;
     }
   }
 
@@ -238,6 +248,8 @@ export async function searchMcpConversationMemory(params: {
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
         .limit(60);
+
+      if (error) throw error;
 
       if (!error && Array.isArray(messages)) {
         for (const msg of messages) {
@@ -265,7 +277,8 @@ export async function searchMcpConversationMemory(params: {
         }
       }
     } catch (err) {
-      console.warn("[MCP] Erro ao buscar fallback de histórico bruto:", err);
+      console.warn("[MCP] memory_search_failed: source=instagram_messages");
+      throw err;
     }
   }
 

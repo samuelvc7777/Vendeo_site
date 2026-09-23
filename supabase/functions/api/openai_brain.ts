@@ -10,6 +10,7 @@ import {
 } from "./persona_memory.ts";
 import {
   searchContactMemory,
+  resolveAgentMemoryScope,
   type ContactMemoryCompactToolOutput,
 } from "./contact_memory.ts";
 import {
@@ -21,6 +22,7 @@ import {
   LARISSA_INTERACTION_DNA_HASH,
 } from "./larissa_interaction_dna.ts";
 import type { AgentSessionUsageTelemetry } from "./openai_usage.ts";
+import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
 
 export interface OpenAiBrainToolDefinition {
   type: "function";
@@ -60,14 +62,10 @@ export const CONTACT_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "contact_memory_search",
     description:
-      "Pesquisa a Contact Memory do pretendente (fatos duráveis, entidades citadas e frases marcantes) no Supabase. Permite consultar detalhes já revelados sobre ele (onde mora, profissão, idade, pets, gostos, rotina, planos). REQUER o parâmetro 'scope' (o capability scope do turno).",
+      "Pesquisa a Contact Memory do pretendente (fatos duráveis, entidades citadas e frases marcantes) no Supabase. Permite consultar detalhes já revelados sobre ele (onde mora, profissão, idade, pets, gostos, rotina, planos). O contexto da conversa é associado pela infraestrutura. Em caso de erro técnico, não trate como busca vazia nem adie uma decisão somente por essa falha.",
     parameters: {
       type: "object",
       properties: {
-        scope: {
-          type: "string",
-          description: "Capability Scope efêmero do turno atual (ex: 'scope_...')",
-        },
         query: {
           type: "string",
           description: "Termos de busca sobre fatos ou citações do pretendente (ex: 'onde mora', 'idade', 'trabalho', 'irmã', 'moto').",
@@ -82,7 +80,7 @@ export const CONTACT_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
           description: "Número máximo de itens retornados (entre 1 e 8, default: 5).",
         },
       },
-      required: ["scope", "query"],
+      required: ["query"],
     },
   },
 };
@@ -92,14 +90,10 @@ export const CONVERSATION_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "conversation_memory_search",
     description:
-      "Pesquisa marcos, episódios passados, atos de fala, combinados/promessas pendentes (open loops) e histórico da conversa no Supabase. Use para evitar perguntas repetidas, honrar combinados e recuperar contexto de turnos anteriores. REQUER o parâmetro 'scope'.",
+      "Pesquisa marcos, episódios passados, atos de fala, combinados/promessas pendentes (open loops) e histórico da conversa no Supabase. Use para evitar perguntas repetidas, honrar combinados e recuperar contexto de turnos anteriores. O contexto da conversa é associado pela infraestrutura. Em caso de erro técnico, não trate como busca vazia nem adie uma decisão somente por essa falha.",
     parameters: {
       type: "object",
       properties: {
-        scope: {
-          type: "string",
-          description: "Capability Scope efêmero do turno atual (ex: 'scope_...')",
-        },
         query: {
           type: "string",
           description: "Termos de busca sobre episódios, acordos ou perguntas feitas.",
@@ -114,10 +108,69 @@ export const CONVERSATION_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
           description: "Número máximo de itens retornados (entre 1 e 8, default: 5).",
         },
       },
-      required: ["scope", "query"],
+      required: ["query"],
     },
   },
 };
+
+export function buildSessionAgentToolsWithMemoryScope(agentTools: unknown, scopeId: string): any[] {
+  if (!Array.isArray(agentTools)) throw new Error("OpenAI Agent configuration is missing its tools array.");
+  let matched = false;
+  const updatedTools = agentTools.map((tool: any) => {
+    if (tool?.type !== "mcp" || tool?.server_label !== "vendeo_memory") return tool;
+    matched = true;
+    return {
+      ...tool,
+      transport: {
+        ...(tool.transport || {}),
+        headers: {
+          ...(tool.transport?.headers || {}),
+          [MEMORY_SCOPE_HEADER]: scopeId,
+        },
+      },
+    };
+  });
+  if (!matched) throw new Error("OpenAI Agent configuration has no vendeo_memory MCP tool.");
+  return updatedTools;
+}
+
+function parseMemoryToolTelemetry(item: any, toolName: string): OpenAiBrainTurnResult["telemetry"]["memoryToolResults"][number] {
+  let payload: any = item?.output;
+  if (payload && typeof payload === "object" && !Array.isArray(payload) && Array.isArray(payload.content)) {
+    payload = payload.content;
+  }
+  if (Array.isArray(payload)) {
+    const text = payload.find((part: any) => part?.type === "text" && typeof part.text === "string")?.text;
+    if (text) {
+      try { payload = JSON.parse(text); } catch { payload = null; }
+    }
+  } else if (typeof payload === "string") {
+    try { payload = JSON.parse(payload); } catch { payload = null; }
+  }
+
+  const reasonCode = ["memory_scope_missing", "memory_scope_invalid", "memory_scope_validation_failed", "memory_search_failed", "memory_scope_context_unavailable"].includes(payload?.reasonCode)
+    ? payload.reasonCode
+    : undefined;
+  const isError = Boolean(
+    item?.error || item?.isError || item?.status === "failed" || item?.status === "error" || payload?.status === "tool_error",
+  );
+  const status = isError
+    ? "tool_error"
+    : payload?.status === "success_no_results" || payload?.status === "success_with_results"
+    ? payload.status
+    : Array.isArray(payload?.results)
+    ? payload.results.length > 0 || payload.found === true ? "success_with_results" : "success_no_results"
+    : payload?.found === false
+    ? "success_no_results"
+    : "tool_error";
+
+  return {
+    toolName,
+    status,
+    ...(reasonCode ? { reasonCode } : status === "tool_error" ? { reasonCode: "memory_result_unavailable" } : {}),
+    ...(Array.isArray(payload?.results) ? { resultCount: payload.results.length } : {}),
+  };
+}
 
 export async function executePersonaMemoryTool(
   params: { query?: string; limit?: number },
@@ -499,6 +552,7 @@ export interface OpenAiBrainTurnResult {
     status?: string;
     toolsRequested: string[];
     toolExecutionsCount: number;
+    memoryToolResults: Array<{ toolName: string; status: string; reasonCode?: string; resultCount?: number }>;
     actualMemoryToolCalled: boolean;
     durationMs: number;
     inputTokens: number;
@@ -600,7 +654,6 @@ async function fetchAgentSessionUsageTelemetry(
 
 export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): string {
   const {
-    conversationId,
     currentStageId,
     currentObjectiveId,
     currentObjectiveLabel,
@@ -611,7 +664,6 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     landmarksSummary,
     liveStateContext,
     recentStyleStateSnippet,
-    memoryScopeId,
     recentQuestionIntentsSnippet,
   } = params;
 
@@ -622,7 +674,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     : "Nenhum objetivo pendente";
 
   const sections: string[] = [
-    `# TURNO DA CONVERSA: ${conversationId}`,
+    "# TURNO ATUAL DA CONVERSA",
     `ETAPA ATUAL: ${currentStageId}`,
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
@@ -632,10 +684,6 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
       `PRÓXIMOS OBJETIVOS PENDENTES DA ETAPA (usar como gancho natural de continuidade SE o objetivo atual for satisfeito neste turno e não houver assunto mais rico):\n` +
         params.nextObjectives.map((o) => `• ${o.id} ("${o.label}")${o.description ? ` - ${o.description}` : ""}`).join("\n")
     );
-  }
-
-  if (memoryScopeId) {
-    sections.push(`MEMORY_SCOPE_ID: "${memoryScopeId}" (Obrigatório usar como parâmetro 'scope' ao chamar contact_memory_search ou conversation_memory_search)`);
   }
 
   if (liveStateContext) {
@@ -850,6 +898,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     agentId,
     toolsRequested: [],
     toolExecutionsCount: 0,
+    memoryToolResults: [],
     durationMs: 0,
     inputTokens: 0,
     outputTokens: 0,
@@ -885,7 +934,16 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             if (!telemetry.sourcesUsed.includes("persona_memory")) {
               telemetry.sourcesUsed.push("persona_memory");
             }
-            const output = await executePersonaMemoryTool(toolArgs, params.supabase);
+            const prepared = prepareMemoryToolCall(toolName, toolArgs, params.memoryScopeId);
+            const output = prepared.ok
+              ? await executePersonaMemoryTool(prepared.arguments, params.supabase)
+              : { status: prepared.status, reasonCode: prepared.reasonCode };
+            telemetry.memoryToolResults.push({
+              toolName,
+              status: String((output as any)?.status || ((output as any)?.found ? "success_with_results" : "success_no_results")),
+              reasonCode: (output as any)?.reasonCode,
+              resultCount: Array.isArray((output as any)?.results) ? (output as any).results.length : 0,
+            });
             console.log("[Brain] tool_output_submitted");
             return output;
           }
@@ -897,13 +955,30 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             if (!telemetry.sourcesUsed.includes("contact_memory")) {
               telemetry.sourcesUsed.push("contact_memory");
             }
-            const output = await searchContactMemory({
-              supabase: params.supabase,
-              conversationId: params.conversationId,
-              query: toolArgs?.query || "",
-              scopes: toolArgs?.scopes,
-              limit: toolArgs?.limit,
-            });
+            const prepared = prepareMemoryToolCall(toolName, toolArgs, params.memoryScopeId);
+            let output: any;
+            if (!prepared.ok) {
+              output = { status: prepared.status, reasonCode: prepared.reasonCode };
+            } else {
+              try {
+                const resolved = await resolveAgentMemoryScope({ supabase: params.supabase, scopeId: String(prepared.arguments.scope) });
+                if (!resolved || resolved.conversationId !== params.conversationId) {
+                  output = { status: "tool_error", reasonCode: "memory_scope_invalid" };
+                } else {
+                  output = await searchContactMemory({
+                    supabase: params.supabase,
+                    conversationId: resolved.conversationId,
+                    query: String(prepared.arguments.query || ""),
+                    scopes: prepared.arguments.scopes as string[] | undefined,
+                    limit: prepared.arguments.limit as number | undefined,
+                  });
+                  output = { ...output, status: output.found ? "success_with_results" : "success_no_results" };
+                }
+              } catch {
+                output = { status: "tool_error", reasonCode: "memory_search_failed" };
+              }
+            }
+            telemetry.memoryToolResults.push({ toolName, status: output.status, reasonCode: output.reasonCode, resultCount: output.results?.length || 0 });
             console.log("[Brain] tool_output_submitted");
             return output;
           }
@@ -915,13 +990,30 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             if (!telemetry.sourcesUsed.includes("conversation_memory")) {
               telemetry.sourcesUsed.push("conversation_memory");
             }
-            const output = await searchUnifiedConversationMemory({
-              supabase: params.supabase,
-              conversationId: params.conversationId,
-              query: toolArgs?.query || "",
-              scopes: toolArgs?.scopes,
-              limit: toolArgs?.limit,
-            });
+            const prepared = prepareMemoryToolCall(toolName, toolArgs, params.memoryScopeId);
+            let output: any;
+            if (!prepared.ok) {
+              output = { status: prepared.status, reasonCode: prepared.reasonCode };
+            } else {
+              try {
+                const resolved = await resolveAgentMemoryScope({ supabase: params.supabase, scopeId: String(prepared.arguments.scope) });
+                if (!resolved || resolved.conversationId !== params.conversationId) {
+                  output = { status: "tool_error", reasonCode: "memory_scope_invalid" };
+                } else {
+                  output = await searchUnifiedConversationMemory({
+                    supabase: params.supabase,
+                    conversationId: resolved.conversationId,
+                    query: String(prepared.arguments.query || ""),
+                    scopes: prepared.arguments.scopes as string[] | undefined,
+                    limit: prepared.arguments.limit as number | undefined,
+                  });
+                  output = { ...output, status: output.found ? "success_with_results" : "success_no_results" };
+                }
+              } catch {
+                output = { status: "tool_error", reasonCode: "memory_search_failed" };
+              }
+            }
+            telemetry.memoryToolResults.push({ toolName, status: output.status, reasonCode: output.reasonCode, resultCount: output.results?.length || 0 });
             console.log("[Brain] tool_output_submitted");
             return output;
           }
@@ -1078,6 +1170,21 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       sessionPayload.vault_ids = sessionVaultIds;
     }
 
+    if (params.memoryScopeId) {
+      try {
+        const agentConfigRes = await fetch(`https://api.openai.com/v1/agents/${agentId}`, { headers });
+        if (!agentConfigRes.ok) throw new Error(`HTTP ${agentConfigRes.status}`);
+        const agentConfig = await agentConfigRes.json();
+        sessionPayload.agent = {
+          tools: buildSessionAgentToolsWithMemoryScope(agentConfig?.tools, params.memoryScopeId),
+        };
+      } catch {
+        // A sessão continua. A chamada MCP sem header falhará fechada com memory_scope_missing.
+        telemetry.memoryToolResults.push({ toolName: "memory_scope_context", status: "tool_error", reasonCode: "memory_scope_context_unavailable" });
+        console.warn("[OpenAI Agent] memory_scope_context_unavailable: sessão criada sem enriquecimento de contexto.");
+      }
+    }
+
     const sessionRes = await fetch("https://api.openai.com/v1/agents/sessions", {
       method: "POST",
       headers,
@@ -1161,6 +1268,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         telemetry.toolsRequested.push(toolName);
         telemetry.toolExecutionsCount++;
         telemetry.actualMemoryToolCalled = true;
+        if (/(?:persona|contact|conversation)_memory_search/.test(toolName)) {
+          telemetry.memoryToolResults.push(parseMemoryToolTelemetry(item, toolName));
+        }
         if (toolName.includes("persona_memory_search") && !telemetry.sourcesUsed.includes("persona_memory")) {
           telemetry.sourcesUsed.push("persona_memory");
         }

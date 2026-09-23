@@ -202,6 +202,17 @@ function objectiveDecisionLabel(value: string | null): string | null {
   return value ? labels[value] || value : null;
 }
 
+function memoryStatusLabel(value: string | null): string | null {
+  if (!value) return null;
+  const labels: Record<string, string> = {
+    success_with_results: "consultada",
+    success_no_results: "consultada · nenhum resultado relevante",
+    tool_error: "erro técnico",
+    not_consulted: "não consultada",
+  };
+  return labels[value] || value;
+}
+
 function ConsoleEventField({ label, children }: { label: string; children: React.ReactNode }) {
   if (children === null || children === undefined || children === "") return null;
   return (
@@ -214,6 +225,9 @@ function ConsoleEventField({ label, children }: { label: string; children: React
 
 function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
   const metadata = event.metadata || {};
+  const memoryToolResults = Array.isArray(metadata.memoryToolResults)
+    ? metadata.memoryToolResults.filter((result): result is Record<string, unknown> => Boolean(result) && typeof result === "object").slice(0, 8)
+    : [];
   const model = formatConsoleModel(eventMetadataText(metadata, "model"));
   const reasoningEffort = formatConsoleSetting(eventMetadataText(metadata, "reasoningEffort"));
   const verbosity = formatConsoleSetting(eventMetadataText(metadata, "verbosity"));
@@ -257,6 +271,19 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
         <div className="mt-3 space-y-2">
           <ConsoleEventField label="Memórias">{memorySources.join(" · ") || toolsUsed.join(" · ")}</ConsoleEventField>
           <ConsoleEventField label="Consultas realizadas">{eventMetadataNumber(metadata, "searchCount")}</ConsoleEventField>
+          <ConsoleEventField label="Status das buscas de memória">
+            {memoryToolResults.map((result, index) => {
+              const rawToolName = String(result.toolName || "memory");
+              const tool = ["persona_memory_search", "contact_memory_search", "conversation_memory_search"].find((name) => rawToolName.endsWith(name)) || rawToolName;
+              const reasonCode = typeof result.reasonCode === "string" ? result.reasonCode : "";
+              const status = result.status === "tool_error"
+                ? `erro técnico${reasonCode ? ` · ${reasonCode}` : ""}`
+                : result.status === "success_no_results"
+                ? "consultada · nenhum resultado relevante"
+                : "consultada";
+              return <div key={`${tool}-${index}`}>{tool}: {status}</div>;
+            })}
+          </ConsoleEventField>
           {eventMetadataNumber(metadata, "relevantPersonaFactsCount") !== null && (
             <ConsoleEventField label="Fatos relevantes incluídos">{eventMetadataNumber(metadata, "relevantPersonaFactsCount")}</ConsoleEventField>
           )}
@@ -283,6 +310,7 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
             <ConsoleEventField label="Memória">
               {metadata.memoryConsulted === true ? "Consultada" : metadata.memoryConsulted === false ? "Não consultada" : null}
               {eventMetadataText(metadata, "memoryRationale") ? ` · ${eventMetadataText(metadata, "memoryRationale")}` : ""}
+              {memoryStatusLabel(eventMetadataText(metadata, "memoryStatus")) ? ` · ${memoryStatusLabel(eventMetadataText(metadata, "memoryStatus"))}` : ""}
             </ConsoleEventField>
             <ConsoleEventField label="Ponte para objetivo">
               {objectiveBridgeDetected === null ? null : objectiveBridgeDetected ? `Detectada${eventMetadataText(metadata, "objectiveBridgeEvidence") ? ` · ${eventMetadataText(metadata, "objectiveBridgeEvidence")}` : ""}` : "Não detectada"}

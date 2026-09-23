@@ -104,8 +104,9 @@ export async function loadPersonaMemoryFacts(params: {
   supabase?: any;
   personaId?: string;
   forceRefresh?: boolean;
+  throwOnError?: boolean;
 }): Promise<PersonaMemoryFact[]> {
-  const { supabase, personaId = "larissa", forceRefresh = false } = params;
+  const { supabase, personaId = "larissa", forceRefresh = false, throwOnError = false } = params;
   const now = Date.now();
 
   if (!forceRefresh && personaMemoryCache && personaMemoryCache.expiresAt > now) {
@@ -123,6 +124,7 @@ export async function loadPersonaMemoryFacts(params: {
       .eq("persona_id", personaId);
 
     if (error) {
+      if (throwOnError) throw error;
       console.warn("[PersonaMemory] Erro ao carregar fatos do Supabase:", error.message || error);
       return personaMemoryCache?.facts || [];
     }
@@ -138,6 +140,7 @@ export async function loadPersonaMemoryFacts(params: {
       return activeFacts;
     }
   } catch (err) {
+    if (throwOnError) throw err;
     console.warn("[PersonaMemory] Excecao ao consultar tabela persona_memory:", err);
   }
 
@@ -155,6 +158,7 @@ export async function searchPersonaMemory(params: {
   now?: Date | string;
   cachedFacts?: PersonaMemoryFact[];
   allowLegacyFallback?: boolean;
+  throwOnLoadError?: boolean;
 }): Promise<PersonaMemorySearchResult[]> {
   const { supabase, query } = params;
   const personaId = params.personaId || "larissa";
@@ -163,7 +167,7 @@ export async function searchPersonaMemory(params: {
 
   let facts = params.cachedFacts || [];
   if (facts.length === 0) {
-    facts = await loadPersonaMemoryFacts({ supabase, personaId });
+    facts = await loadPersonaMemoryFacts({ supabase, personaId, throwOnError: params.throwOnLoadError });
   }
 
   if (facts.length === 0 && params.allowLegacyFallback !== false) {

@@ -13,11 +13,12 @@ import {
   searchMcpContactMemory,
   searchMcpConversationMemory,
 } from "./_shared/mcp_memory_helpers.ts";
+import { classifyMemorySearchStatus, MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
 export { sanitizeMcpTelemetry, type SanitizedMcpTelemetry };
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, mcp-session-id, accept",
+  "Access-Control-Allow-Headers": `authorization, x-client-info, apikey, content-type, mcp-session-id, accept, ${MEMORY_SCOPE_HEADER}`,
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
 };
 
@@ -246,7 +247,7 @@ serve(async (req: Request) => {
             },
           },
           instructions:
-            "vendeo_memory: Use persona_memory_search para pesquisar fatos oficiais da Larissa. Use contact_memory_search (com o parâmetro scope) para fatos/citações do pretendente. Use conversation_memory_search (com o parâmetro scope) para episódios/open loops/histórico.",
+            "vendeo_memory: Use persona_memory_search para pesquisar fatos oficiais da Larissa. Use contact_memory_search para fatos/citações do pretendente. Use conversation_memory_search para episódios/open loops/histórico. O escopo da conversa é injetado pela infraestrutura; envie apenas argumentos semânticos.",
         },
       }),
       { status: 200, headers: responseHeaders }
@@ -278,7 +279,7 @@ serve(async (req: Request) => {
             version: MCP_SERVER_VERSION,
           },
           instructions:
-            "vendeo_memory: Use persona_memory_search para pesquisar fatos oficiais da Larissa. Use contact_memory_search (com o parâmetro scope) para fatos/citações do pretendente. Use conversation_memory_search (com o parâmetro scope) para episódios/open loops/histórico.",
+            "vendeo_memory: Use persona_memory_search para pesquisar fatos oficiais da Larissa. Use contact_memory_search para fatos/citações do pretendente. Use conversation_memory_search para episódios/open loops/histórico. O escopo da conversa é injetado pela infraestrutura; envie apenas argumentos semânticos.",
         },
       }),
       { status: 200, headers: responseHeaders }
@@ -337,14 +338,10 @@ serve(async (req: Request) => {
             {
               name: "contact_memory_search",
               description:
-                "Busca autoritativa em Contact Memory (Fatos e Citações do Pretendente) no Supabase. Permite consultar fatos duráveis (idade, profissão, gostos, rotina, planos, família, pets, dados pessoais) e frases marcantes do pretendente. REQUER o parâmetro 'scope' (o capability scope do turno atual). Use quando precisar recuperar ou confirmar detalhes já revelados pelo pretendente.",
+                "Busca autoritativa em Contact Memory (Fatos e Citações do Pretendente) no Supabase. Permite consultar fatos duráveis (idade, profissão, gostos, rotina, planos, família, pets, dados pessoais) e frases marcantes do pretendente. O contexto da conversa é associado pela infraestrutura; forneça apenas a intenção semântica da busca. Se ocorrer erro técnico, não trate como ausência de resultados nem adie uma decisão somente por isso.",
               inputSchema: {
                 type: "object",
                 properties: {
-                  scope: {
-                    type: "string",
-                    description: "Capability Scope efêmero gerado pelo backend para o turno atual (ex: 'scope_...')",
-                  },
                   query: {
                     type: "string",
                     description: "Termo de busca ou pergunta sobre fatos ou citações do pretendente (ex: 'onde mora', 'idade', 'trabalho', 'irmã', 'moto')",
@@ -360,20 +357,16 @@ serve(async (req: Request) => {
                     default: 5,
                   },
                 },
-                required: ["scope", "query"],
+                required: ["query"],
               },
             },
             {
               name: "conversation_memory_search",
               description:
-                "Busca autoritativa em Conversation Memory (Episódios passados, Atos de fala, Open loops pendentes e Histórico da conversa) no Supabase. Permite consultar eventos marcantes, temas discutidos, promessas/combinados pendentes, autorrevelações já feitas pela Larissa ou histórico bruto. REQUER o parâmetro 'scope' (o capability scope do turno atual). Use para evitar perguntas repetidas, honrar combinados e recuperar contexto de turnos anteriores.",
+                "Busca autoritativa em Conversation Memory (Episódios passados, Atos de fala, Open loops pendentes e Histórico da conversa) no Supabase. Permite consultar eventos marcantes, temas discutidos, promessas/combinados pendentes, autorrevelações já feitas pela Larissa ou histórico bruto. O contexto da conversa é associado pela infraestrutura; forneça apenas a intenção semântica da busca. Se ocorrer erro técnico, não trate como ausência de resultados nem adie uma decisão somente por isso. Use para evitar perguntas repetidas, honrar combinados e recuperar contexto de turnos anteriores.",
               inputSchema: {
                 type: "object",
                 properties: {
-                  scope: {
-                    type: "string",
-                    description: "Capability Scope efêmero gerado pelo backend para o turno atual (ex: 'scope_...')",
-                  },
                   query: {
                     type: "string",
                     description: "Termo de busca sobre episódios, combinados, perguntas anteriores ou temas",
@@ -389,7 +382,7 @@ serve(async (req: Request) => {
                     default: 5,
                   },
                 },
-                required: ["scope", "query"],
+                required: ["query"],
               },
             },
           ],
@@ -443,22 +436,19 @@ serve(async (req: Request) => {
     const isPersonaTool =
       rawToolName === "persona_memory_search" ||
       rawToolName.endsWith(":persona_memory_search") ||
-      rawToolName.endsWith("_persona_memory_search") ||
-      rawToolName.includes("persona_memory_search");
+      rawToolName.endsWith("_persona_memory_search");
 
     const isContactTool =
       rawToolName === "contact_memory_search" ||
       rawToolName.endsWith(":contact_memory_search") ||
-      rawToolName.endsWith("_contact_memory_search") ||
-      rawToolName.includes("contact_memory_search");
+      rawToolName.endsWith("_contact_memory_search");
 
     const isConversationTool =
       rawToolName === "conversation_memory_search" ||
       rawToolName.endsWith(":conversation_memory_search") ||
-      rawToolName.endsWith("_conversation_memory_search") ||
-      rawToolName.includes("conversation_memory_search");
+      rawToolName.endsWith("_conversation_memory_search");
 
-    const toolArgs = params?.arguments || {};
+    const modelArgs = params?.arguments || {};
 
     if (!isPersonaTool && !isContactTool && !isConversationTool) {
       return new Response(
@@ -473,6 +463,27 @@ serve(async (req: Request) => {
         { status: 200, headers: responseHeaders }
       );
     }
+
+    const preparedCall = prepareMemoryToolCall(
+      rawToolName,
+      modelArgs,
+      req.headers.get(MEMORY_SCOPE_HEADER),
+    );
+    if (!preparedCall.ok) {
+      console.warn(`[MCP] ${preparedCall.reasonCode}: tool=${preparedCall.toolName} missing=${preparedCall.missingFields.join(",")}`);
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: JSON.stringify({ status: "tool_error", reasonCode: preparedCall.reasonCode }) }],
+            isError: true,
+          },
+        }),
+        { status: 200, headers: responseHeaders },
+      );
+    }
+    const toolArgs = preparedCall.arguments;
 
     // Obtencao do cliente Supabase para consulta segura
     if (!supabaseUrl || !supabaseServiceKey) {
@@ -497,7 +508,7 @@ serve(async (req: Request) => {
       console.log("[MCP] request_received: persona_memory_search");
 
       // Sanitizacao rigorosa dos argumentos recebidos da OpenAI
-      let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+      const query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
       let limit = 5;
       if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
         limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
@@ -513,13 +524,22 @@ serve(async (req: Request) => {
           query,
           limit,
           allowLegacyFallback: false,
+          throwOnLoadError: true,
         });
-      } catch (err) {
-        console.error("[MCP] Erro ao consultar searchPersonaMemory:", err);
-        hits = [];
+      } catch {
+        console.error("[MCP] memory_search_failed: tool=persona_memory_search");
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: { content: [{ type: "text", text: JSON.stringify({ status: "tool_error", reasonCode: "memory_search_failed" }) }], isError: true },
+          }),
+          { status: 200, headers: responseHeaders },
+        );
       }
 
       const toolOutput = formatPersonaMemoryForToolOutput(hits);
+      const status = classifyMemorySearchStatus({ found: hits.length > 0, resultCount: hits.length });
       console.log(`[MCP] persona_results=${toolOutput.results.length}`);
 
       return new Response(
@@ -530,7 +550,7 @@ serve(async (req: Request) => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(toolOutput),
+                text: JSON.stringify({ ...toolOutput, status }),
               },
             ],
             isError: false,
@@ -544,15 +564,23 @@ serve(async (req: Request) => {
     if (isContactTool) {
       console.log("[MCP] request_received: contact_memory_search");
       const incomingScope = typeof toolArgs?.scope === "string" ? toolArgs.scope.trim() : "";
-      let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+      const query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
       let limit = 5;
       if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
         limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
       }
 
-      const resolved = await resolveMemoryScope(supabase, incomingScope);
+      let resolved;
+      try {
+        resolved = await resolveMemoryScope(supabase, incomingScope);
+      } catch {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ status: "tool_error", reasonCode: "memory_scope_validation_failed" }) }], isError: true } }),
+          { status: 200, headers: responseHeaders },
+        );
+      }
       if (!resolved) {
-        console.warn(`[MCP] Scope inválido, expirado ou revogado para contact_memory_search: '${incomingScope}'`);
+        console.warn("[MCP] memory_scope_invalid: tool=contact_memory_search");
         return new Response(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -562,9 +590,8 @@ serve(async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify({
-                    error: "Invalid, expired, or unauthorized memory scope (FAIL_CLOSED)",
-                    found: false,
-                    results: [],
+                    status: "tool_error",
+                    reasonCode: "memory_scope_invalid",
                   }),
                 },
               ],
@@ -575,13 +602,23 @@ serve(async (req: Request) => {
         );
       }
 
-      const toolOutput = await searchMcpContactMemory({
-        supabase,
-        conversationId: resolved.conversationId,
-        query,
-        scopes: Array.isArray(toolArgs?.scopes) ? toolArgs.scopes : undefined,
-        limit,
-      });
+      let toolOutput: Awaited<ReturnType<typeof searchMcpContactMemory>>;
+      try {
+        toolOutput = await searchMcpContactMemory({
+          supabase,
+          conversationId: resolved.conversationId,
+          query,
+          scopes: Array.isArray(toolArgs?.scopes) ? toolArgs.scopes as string[] : undefined,
+          limit,
+        });
+      } catch {
+        console.error("[MCP] memory_search_failed: tool=contact_memory_search");
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ status: "tool_error", reasonCode: "memory_search_failed" }) }], isError: true } }),
+          { status: 200, headers: responseHeaders },
+        );
+      }
+      const status = classifyMemorySearchStatus({ found: toolOutput.found, resultCount: toolOutput.results.length });
 
       console.log(`[MCP] contact_memory_results=${toolOutput.results.length}`);
 
@@ -593,7 +630,7 @@ serve(async (req: Request) => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(toolOutput),
+                text: JSON.stringify({ ...toolOutput, status }),
               },
             ],
             isError: false,
@@ -607,15 +644,23 @@ serve(async (req: Request) => {
     if (isConversationTool) {
       console.log("[MCP] request_received: conversation_memory_search");
       const incomingScope = typeof toolArgs?.scope === "string" ? toolArgs.scope.trim() : "";
-      let query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+      const query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
       let limit = 5;
       if (typeof toolArgs?.limit === "number" && !isNaN(toolArgs.limit)) {
         limit = Math.min(Math.max(Math.floor(toolArgs.limit), 1), 8);
       }
 
-      const resolved = await resolveMemoryScope(supabase, incomingScope);
+      let resolved;
+      try {
+        resolved = await resolveMemoryScope(supabase, incomingScope);
+      } catch {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ status: "tool_error", reasonCode: "memory_scope_validation_failed" }) }], isError: true } }),
+          { status: 200, headers: responseHeaders },
+        );
+      }
       if (!resolved) {
-        console.warn(`[MCP] Scope inválido, expirado ou revogado para conversation_memory_search: '${incomingScope}'`);
+        console.warn("[MCP] memory_scope_invalid: tool=conversation_memory_search");
         return new Response(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -625,9 +670,8 @@ serve(async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify({
-                    error: "Invalid, expired, or unauthorized memory scope (FAIL_CLOSED)",
-                    found: false,
-                    results: [],
+                    status: "tool_error",
+                    reasonCode: "memory_scope_invalid",
                   }),
                 },
               ],
@@ -638,13 +682,23 @@ serve(async (req: Request) => {
         );
       }
 
-      const toolOutput = await searchMcpConversationMemory({
-        supabase,
-        conversationId: resolved.conversationId,
-        query,
-        scopes: Array.isArray(toolArgs?.scopes) ? toolArgs.scopes : undefined,
-        limit,
-      });
+      let toolOutput: Awaited<ReturnType<typeof searchMcpConversationMemory>>;
+      try {
+        toolOutput = await searchMcpConversationMemory({
+          supabase,
+          conversationId: resolved.conversationId,
+          query,
+          scopes: Array.isArray(toolArgs?.scopes) ? toolArgs.scopes as string[] : undefined,
+          limit,
+        });
+      } catch {
+        console.error("[MCP] memory_search_failed: tool=conversation_memory_search");
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ status: "tool_error", reasonCode: "memory_search_failed" }) }], isError: true } }),
+          { status: 200, headers: responseHeaders },
+        );
+      }
+      const status = classifyMemorySearchStatus({ found: toolOutput.found, resultCount: toolOutput.results.length });
 
       console.log(`[MCP] conversation_memory_results=${toolOutput.results.length}`);
 
@@ -656,7 +710,7 @@ serve(async (req: Request) => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(toolOutput),
+                text: JSON.stringify({ ...toolOutput, status }),
               },
             ],
             isError: false,
