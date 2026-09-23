@@ -357,37 +357,30 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     const client = this.getClient();
     if (client && typeof state.isEnabled === "boolean") {
       try {
-        const { data: convRow } = await client
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        const currentRules = convRow?.stage_completed_rules || {};
-        if (state.isEnabled === false) {
-          await client
-            .from("instagram_conversations")
-            .update({
-              ai_auto_respond: false,
-              ai_debounce_until: null,
-              stage_completed_rules: {
-                ...currentRules,
-                status: "paused_manual",
-                cancel_current_cycle: true,
-              },
-            })
-            .eq("id", conversationId);
-        } else {
-          const cleanRules = { ...currentRules };
-          if (cleanRules.status === "paused_manual" || cleanRules.status === "disabled") {
-            delete cleanRules.status;
+        const isPaused = state.isEnabled === false;
+        const { data: rpcResult, error: rpcError } = await client.rpc(
+          "patch_autopilot_pause_atomic",
+          {
+            p_conversation_id: conversationId,
+            p_paused: isPaused,
+            p_reason: isPaused ? "paused_manual" : null,
           }
-          delete cleanRules.cancel_current_cycle;
+        );
+
+        if (!rpcError && rpcResult?.success) {
+          // Sucesso via RPC atômica blindada no PostgreSQL
+        } else {
+          // FAIL-CLOSED: NUNCA fazer read-modify-write de stage_completed_rules em JS.
+          // Se a RPC falhar ou estiver indisponível, atualiza somente a coluna física isolada ai_auto_respond.
+          console.warn(
+            `[AutoPilotRepo] RPC patch_autopilot_pause_atomic indisponível ou falhou para conv=${conversationId}. ` +
+            `Atualizando somente coluna física ai_auto_respond sem tocar em stage_completed_rules.`
+          );
           await client
             .from("instagram_conversations")
             .update({
-              ai_auto_respond: true,
-              stage_completed_rules: cleanRules,
+              ai_auto_respond: !isPaused,
+              ...(isPaused ? { ai_debounce_until: null } : {}),
             })
             .eq("id", conversationId);
         }

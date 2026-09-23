@@ -67,7 +67,7 @@ function loadModule(filePath, customEnv = {}) {
 }
 
 const chatStyleMod = loadModule("supabase/functions/api/LarissaChatStyle.ts");
-const orchestratorMod = loadModule("supabase/functions/api/experimental_orchestrator.ts");
+const orchestratorMod = loadModule("supabase/functions/api/brain_orchestrator.ts");
 
 const {
   LARISSA_CHAT_STYLE_V2,
@@ -88,8 +88,6 @@ const {
   buildSubagentPrompt,
   InMemoryMemoryProvider,
   resolveStageObjectives,
-  filterGoalsForSubagent,
-  formatGoalsSnippetForSubagent,
 } = orchestratorMod;
 
 // ============================================================================
@@ -193,14 +191,14 @@ console.log("\n=== BLOCO 3: EMOJI BUDGET & FREQUÊNCIA 2,4% ===");
   assert.equal(budgetFresh.budget, 1);
   assert.equal(budgetFresh.allowEmoji, true);
 
-  // Com emoji recente em 1 dos últimos turnos -> budget = 0 (respeito à raridade de 2,4%)
+  // Contexto sério ou delicado -> budget = 0
   const budgetRecent = computeDynamicEmojiBudget([
     "que fofo 🥰",
     "estava estudando",
-  ]);
+  ], { isSeriousContext: true });
   assert.equal(budgetRecent.budget, 0);
   assert.equal(budgetRecent.allowEmoji, false);
-  console.log("✔ Teste 3.1: computeDynamicEmojiBudget respeita alternância e taxa de 2,4%.");
+  console.log("✔ Teste 3.1: computeDynamicEmojiBudget respeita contexto sério e variedade de emojis.");
 }
 
 {

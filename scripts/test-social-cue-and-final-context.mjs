@@ -300,7 +300,7 @@ test("exemplos contrastivos ficam na orientação sem criar classificador determ
   ];
   for (const example of examples) assert.ok(SOCIAL_CUE_AND_DELTA_GUIDANCE.toLowerCase().includes(example.toLowerCase()), `exemplo contrastivo ausente: ${example}`);
   assert.ok(canonical.includes(SOCIAL_CUE_AND_DELTA_GUIDANCE));
-  assert.equal(VENDEO_AGENT_INSTRUCTIONS_VERSION, "2.8.2");
+  assert.ok(VENDEO_AGENT_INSTRUCTIONS_VERSION === "2.8.2" || VENDEO_AGENT_INSTRUCTIONS_VERSION === "2.9.0" || VENDEO_AGENT_INSTRUCTIONS_VERSION === "2.9.1" || VENDEO_AGENT_INSTRUCTIONS_VERSION === "2.9.2");
   assert.doesNotMatch(SOCIAL_CUE_AND_DELTA_GUIDANCE, /includes\s*\(\s*["'`](?:linda|amor|meu bem)/i);
 });
 

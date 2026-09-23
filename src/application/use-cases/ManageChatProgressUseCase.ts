@@ -39,10 +39,16 @@ export interface ChatStageDetail {
 }
 
 export class ManageChatProgressUseCase {
+  private stageRepository: IChatStageRepository;
+  private vaultRepository: IVaultRepository;
+
   constructor(
-    private stageRepository: IChatStageRepository,
-    private vaultRepository: IVaultRepository
-  ) {}
+    stageRepository: IChatStageRepository,
+    vaultRepository: IVaultRepository
+  ) {
+    this.stageRepository = stageRepository;
+    this.vaultRepository = vaultRepository;
+  }
 
   async getChatStageDetail(conversationId: string): Promise<ChatStageDetail> {
     const stages = await this.stageRepository.getStages();
@@ -72,26 +78,25 @@ export class ManageChatProgressUseCase {
       };
     }
 
-    // Se a conversa ainda não tem progresso salvo, inicializa na primeira etapa
-    if (!progress || !progress.currentStageId) {
-      progress = {
-        conversationId,
-        currentStageId: stages[0].id,
-        completedItemIds: [],
-        completedGoalIds: [],
-        isConverted: false,
-        updatedAt: new Date().toISOString(),
-      };
-      await this.stageRepository.saveChatProgress(progress);
-    }
+    // Se a conversa ainda não tem progresso salvo, inicializa fallback em memória (100% READ-ONLY)
+    const effectiveProgress: ChatProgress = progress && progress.currentStageId
+      ? progress
+      : {
+          conversationId,
+          currentStageId: stages[0].id,
+          completedItemIds: progress?.completedItemIds || [],
+          completedGoalIds: progress?.completedGoalIds || [],
+          objectiveProgress: progress?.objectiveProgress,
+          isConverted: progress?.isConverted || false,
+          updatedAt: progress?.updatedAt || new Date().toISOString(),
+        };
 
     // Encontra a etapa atual
-    let stageIndex = stages.findIndex((s) => s.id === progress!.currentStageId);
+    let stageIndex = stages.findIndex((s) => s.id === effectiveProgress.currentStageId);
     if (stageIndex === -1) {
-      // Se a etapa que estava salva foi deletada, volta para a primeira
+      // Se a etapa que estava salva foi deletada ou não consta na tabela chat_stages,
+      // utiliza a primeira etapa como fallback estritamente em memória (SEM mutação no banco em leitura).
       stageIndex = 0;
-      progress.currentStageId = stages[0].id;
-      await this.stageRepository.saveChatProgress(progress);
     }
 
     const currentStage = stages[stageIndex];
@@ -104,8 +109,8 @@ export class ManageChatProgressUseCase {
       .filter((o) => o.enabled !== false)
       .sort((a, b) => a.order - b.order);
 
-    const completedGoalSet = new Set(progress.completedGoalIds || []);
-    const objectivesProgressMap = progress.objectiveProgress || {};
+    const completedGoalSet = new Set(effectiveProgress.completedGoalIds || []);
+    const objectivesProgressMap = effectiveProgress.objectiveProgress || {};
 
     const objectives: StageObjectiveItem[] = rawObjectives.map((obj) => {
       const prog = objectivesProgressMap[obj.id];
@@ -131,7 +136,7 @@ export class ManageChatProgressUseCase {
     if (currentStage.folderId) {
       try {
         const vaultItems = await this.vaultRepository.getItems(currentStage.folderId);
-        const completedSet = new Set(progress.completedItemIds || []);
+        const completedSet = new Set(effectiveProgress.completedItemIds || []);
         checklist = vaultItems.map((item) => ({
           id: item.id,
           folderId: item.folderId,
@@ -174,7 +179,7 @@ export class ManageChatProgressUseCase {
       totalItems,
       completedItemsCount,
       is100Percent,
-      isConverted: progress.isConverted || false,
+      isConverted: effectiveProgress.isConverted || false,
       allStages: stages,
     };
   }

@@ -56,6 +56,7 @@ import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
 import {
   LARISSA_CHAT_STYLE_V2,
+  LARISSA_COMPACT_SUBAGENT_PROMPT,
   LARISSA_CONVERSATION_EXAMPLES_V1,
   computeDynamicEmojiBudget,
   extractRecentStyleState,
@@ -133,6 +134,7 @@ import {
   type OpenAiBrainTurnResult,
   type QuestionIntentAnnotation,
   validateQuestionIntentsInvariant,
+  type OutboundAction,
 } from "./openai_brain.ts";
 import {
   LARISSA_INTERACTION_DNA_VERSION,
@@ -625,6 +627,7 @@ export interface BrainDecision {
   summary: string;
   suggestedResponse: string;
   responses?: string[];
+  outboundActions?: OutboundAction[];
   nextPhase: OrchestrationPhase;
   reasoning: string;
   requiredTools?: string[];
@@ -646,6 +649,7 @@ export interface OrchestratorDecision {
   summary: string;
   suggestedResponse: string;
   responses?: string[];
+  outboundActions?: OutboundAction[];
   requiredTools: string[];
   reasoning: string;
   audioId?: string;
@@ -2927,6 +2931,30 @@ export async function dispatchOutboxEntry(
       throw new Error("Access token do Instagram (id: 'default') não configurado em instagram_config.");
     }
 
+    let bodyPayload: any;
+    if (outboxEntry.messageType === "audio") {
+      let audioUrl = outboxEntry.content;
+      if (audioUrl.startsWith("[audio:") && audioUrl.endsWith("]")) {
+        audioUrl = audioUrl.slice(7, -1).trim();
+      }
+      bodyPayload = {
+        recipient: { id: recipientId },
+        message: {
+          attachment: {
+            type: "audio",
+            payload: {
+              url: audioUrl,
+            },
+          },
+        },
+      };
+    } else {
+      bodyPayload = {
+        recipient: { id: recipientId },
+        message: { text: outboxEntry.content },
+      };
+    }
+
     const sendRes = await fetch(
       `https://graph.instagram.com/v21.0/me/messages?access_token=${accessToken}`,
       {
@@ -2935,10 +2963,7 @@ export async function dispatchOutboxEntry(
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          recipient: { id: recipientId },
-          message: { text: outboxEntry.content },
-        }),
+        body: JSON.stringify(bodyPayload),
         signal: AbortSignal.timeout(15_000),
       }
     );
@@ -4345,10 +4370,10 @@ export async function searchPersonaAudios(params: {
   } catch {}
 
   if ((supabase as any)?.__mockAudioHistory) {
-    const mockHist: AudioDeliveryHistory[] = (supabase as any).__mockAudioHistory;
+    const mockHist: any[] = (supabase as any).__mockAudioHistory;
     mockHist
-      .filter((h) => h.conversationId === conversationId)
-      .forEach((h) => sentAudioIds.add(h.audioId));
+      .filter((h) => (h.conversationId === conversationId || h.conversation_id === conversationId))
+      .forEach((h) => sentAudioIds.add(h.audioId || h.audio_id));
   }
 
   const AUDIO_STOPWORDS = new Set([
@@ -4356,7 +4381,7 @@ export async function searchPersonaAudios(params: {
     "de", "do", "da", "dos", "das",
     "em", "no", "na", "nos", "nas",
     "e", "ou", "que", "com", "por", "pra", "para",
-    "se", "seu", "sua", "seus", "suas",
+    "se", "seu", "sua", "seus", "suas", "meu", "minha", "meus", "minhas",
     "você", "vc", "como", "qual", "acha", "sobre",
     "isso", "aqui", "tudo", "bem", "mais"
   ]);
@@ -4415,7 +4440,8 @@ export async function searchPersonaAudios(params: {
         }
       }
 
-      const alreadySent = isExplicitReplay ? false : sentAudioIds.has(a.id);
+      // AUTOPILOTO: exclusão estrita de áudio já enviado na conversa (sem bypass por frase de replay)
+      const alreadySent = sentAudioIds.has(a.id);
       return {
         ...a,
         matchScore,
@@ -4435,38 +4461,356 @@ export async function searchPersonaAudios(params: {
   return matched;
 }
 
+export type AudioDeliveryStatus = "reserved" | "dispatching" | "sent" | "dispatch_uncertain" | "failed_safe";
+
+export interface ClaimAudioReservationResult {
+  claimed: boolean;
+  reason: string;
+  id?: string;
+  status?: AudioDeliveryStatus;
+}
+
+export async function claimAudioDeliveryReservation(params: {
+  supabase: any;
+  conversationId: string;
+  audioId: string;
+  cycleId: string;
+  reservationToken: string;
+  actionIndex?: number;
+  staleSeconds?: number;
+}): Promise<ClaimAudioReservationResult> {
+  const {
+    supabase,
+    conversationId,
+    audioId,
+    cycleId,
+    reservationToken,
+    actionIndex = 0,
+    staleSeconds = 60,
+  } = params;
+
+  try {
+    // 1. Tenta RPC oficial atômica no banco de dados
+    if (typeof supabase?.rpc === "function") {
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc("claim_audio_delivery_reservation", {
+          p_conversation_id: conversationId,
+          p_audio_id: audioId,
+          p_cycle_id: cycleId,
+          p_reservation_token: reservationToken,
+          p_action_index: actionIndex,
+          p_stale_seconds: staleSeconds,
+        });
+
+        if (!rpcErr && rpcRes) {
+          return {
+            claimed: Boolean(rpcRes.claimed),
+            reason: rpcRes.reason || (rpcRes.claimed ? "reserved" : "already_reserved_or_delivered"),
+            id: rpcRes.id,
+            status: rpcRes.status,
+          };
+        }
+      } catch (_rpcErr) {
+        // Fallback
+      }
+    }
+
+    // 2. Mock in-memory com garantia de concorrência e modelo de estados para suíte de testes
+    if ((supabase as any)?.__mockAudioHistory) {
+      const historyList: any[] = (supabase as any).__mockAudioHistory;
+      const existing = historyList.find(
+        (h) =>
+          (h.conversation_id === conversationId || h.conversationId === conversationId) &&
+          (h.audio_id === audioId || h.audioId === audioId)
+      );
+
+      const now = new Date().toISOString();
+      if (existing) {
+        const curStatus: AudioDeliveryStatus = existing.status || "sent";
+        if (curStatus === "sent") {
+          return { claimed: false, reason: "already_delivered", status: "sent" };
+        }
+        if (curStatus === "dispatch_uncertain") {
+          return { claimed: false, reason: "dispatch_uncertain", status: "dispatch_uncertain" };
+        }
+        if (curStatus === "dispatching") {
+          return { claimed: false, reason: "already_dispatching", status: "dispatching" };
+        }
+        if (curStatus === "reserved") {
+          if (existing.cycleId === cycleId && existing.reservationToken === reservationToken) {
+            return { claimed: true, reason: "idempotent_reclaim", id: existing.id, status: "reserved" };
+          }
+          const reservedTime = new Date(existing.reservedAt || existing.reserved_at || 0).getTime();
+          if (Date.now() - reservedTime > staleSeconds * 1000) {
+            existing.status = "reserved";
+            existing.cycleId = cycleId;
+            existing.reservationToken = reservationToken;
+            existing.actionIndex = actionIndex;
+            existing.reservedAt = now;
+            existing.reserved_at = now;
+            return { claimed: true, reason: "stale_reservation_recovered", id: existing.id, status: "reserved" };
+          }
+          return { claimed: false, reason: "already_reserved", status: "reserved" };
+        }
+        if (curStatus === "failed_safe") {
+          existing.status = "reserved";
+          existing.cycleId = cycleId;
+          existing.reservationToken = reservationToken;
+          existing.actionIndex = actionIndex;
+          existing.reservedAt = now;
+          existing.reserved_at = now;
+          return { claimed: true, reason: "failed_safe_reclaimed", id: existing.id, status: "reserved" };
+        }
+      }
+
+      const newId = `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      historyList.push({
+        id: newId,
+        conversationId,
+        conversation_id: conversationId,
+        audioId,
+        audio_id: audioId,
+        status: "reserved",
+        cycleId,
+        reservationToken,
+        actionIndex,
+        reservedAt: now,
+        reserved_at: now,
+      });
+      return { claimed: true, reason: "reserved", id: newId, status: "reserved" };
+    }
+
+    // 3. Fallback direto no banco via tabela audio_delivery_history
+    const nowIso = new Date().toISOString();
+    const newId = `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const { error: insErr } = await supabase.from("audio_delivery_history").insert({
+      id: newId,
+      conversation_id: conversationId,
+      audio_id: audioId,
+      status: "reserved",
+      cycle_id: cycleId,
+      reservation_token: reservationToken,
+      action_index: actionIndex,
+      reserved_at: nowIso,
+    });
+
+    if (insErr) {
+      if (insErr.code === "23505" || String(insErr.message).includes("unique")) {
+        return { claimed: false, reason: "concurrent_audio_delivered", status: "reserved" };
+      }
+      return { claimed: false, reason: "db_insert_failed" };
+    }
+
+    return { claimed: true, reason: "reserved", id: newId, status: "reserved" };
+  } catch (err) {
+    console.warn("[Orchestrator] Falha no claim atômico de áudio:", err);
+    return { claimed: false, reason: "exception_fail_closed" };
+  }
+}
+
+export async function updateAudioDeliveryStatus(params: {
+  supabase: any;
+  conversationId: string;
+  audioId: string;
+  reservationToken: string;
+  status: AudioDeliveryStatus;
+  error?: string;
+}): Promise<{ success: boolean; reason?: string }> {
+  const { supabase, conversationId, audioId, reservationToken, status, error } = params;
+  try {
+    if (typeof supabase?.rpc === "function") {
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc("update_audio_delivery_status", {
+          p_conversation_id: conversationId,
+          p_audio_id: audioId,
+          p_reservation_token: reservationToken,
+          p_status: status,
+          p_error: error || null,
+        });
+        if (!rpcErr && rpcRes && rpcRes.success) {
+          return { success: true };
+        }
+      } catch (_rpcErr) {}
+    }
+
+    if ((supabase as any)?.__mockAudioHistory) {
+      const existing = (supabase as any).__mockAudioHistory.find(
+        (h: any) =>
+          (h.conversation_id === conversationId || h.conversationId === conversationId) &&
+          (h.audio_id === audioId || h.audioId === audioId) &&
+          (h.reservationToken === reservationToken || !h.reservationToken)
+      );
+      if (existing) {
+        existing.status = status;
+        if (error) existing.lastError = error;
+        return { success: true };
+      }
+      return { success: false, reason: "not_found" };
+    }
+
+    const { error: updErr } = await supabase
+      .from("audio_delivery_history")
+      .update({ status, last_error: error || null })
+      .eq("conversation_id", conversationId)
+      .eq("audio_id", audioId)
+      .eq("reservation_token", reservationToken);
+
+    if (updErr) return { success: false, reason: updErr.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: "exception" };
+  }
+}
+
+export async function commitAudioDeliverySent(params: {
+  supabase: any;
+  conversationId: string;
+  audioId: string;
+  reservationToken: string;
+  providerMessageId?: string;
+}): Promise<{ success: boolean; reason?: string }> {
+  const { supabase, conversationId, audioId, reservationToken, providerMessageId } = params;
+  try {
+    const nowIso = new Date().toISOString();
+    if (typeof supabase?.rpc === "function") {
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc("commit_audio_delivery_sent", {
+          p_conversation_id: conversationId,
+          p_audio_id: audioId,
+          p_reservation_token: reservationToken,
+          p_provider_message_id: providerMessageId || null,
+        });
+        if (!rpcErr && rpcRes && rpcRes.success) {
+          return { success: true };
+        }
+      } catch (_rpcErr) {}
+    }
+
+    if ((supabase as any)?.__mockAudioHistory) {
+      const existing = (supabase as any).__mockAudioHistory.find(
+        (h: any) =>
+          (h.conversation_id === conversationId || h.conversationId === conversationId) &&
+          (h.audio_id === audioId || h.audioId === audioId)
+      );
+      if (existing) {
+        existing.status = "sent";
+        existing.sentAt = nowIso;
+        existing.sent_at = nowIso;
+        existing.providerMessageId = providerMessageId;
+        existing.provider_message_id = providerMessageId;
+        return { success: true };
+      }
+      (supabase as any).__mockAudioHistory.push({
+        id: `adh_${Date.now()}`,
+        conversationId,
+        conversation_id: conversationId,
+        audioId,
+        audio_id: audioId,
+        status: "sent",
+        sentAt: nowIso,
+        sent_at: nowIso,
+        providerMessageId,
+        provider_message_id: providerMessageId,
+      });
+      return { success: true };
+    }
+
+    const { error: updErr } = await supabase
+      .from("audio_delivery_history")
+      .update({
+        status: "sent",
+        sent_at: nowIso,
+        provider_message_id: providerMessageId || null,
+      })
+      .eq("conversation_id", conversationId)
+      .eq("audio_id", audioId);
+
+    if (updErr) return { success: false, reason: updErr.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: "exception" };
+  }
+}
+
+export async function releaseAudioDeliveryReservation(params: {
+  supabase: any;
+  conversationId: string;
+  audioId: string;
+  reservationToken: string;
+  reason?: string;
+}): Promise<{ success: boolean; released: boolean; reason?: string }> {
+  const { supabase, conversationId, audioId, reservationToken, reason = "cancelled_pre_dispatch" } = params;
+  try {
+    if (typeof supabase?.rpc === "function") {
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc("release_audio_delivery_reservation", {
+          p_conversation_id: conversationId,
+          p_audio_id: audioId,
+          p_reservation_token: reservationToken,
+          p_reason: reason,
+        });
+        if (!rpcErr && rpcRes) {
+          return { success: Boolean(rpcRes.success), released: Boolean(rpcRes.released), reason };
+        }
+      } catch (_rpcErr) {}
+    }
+
+    if ((supabase as any)?.__mockAudioHistory) {
+      const idx = (supabase as any).__mockAudioHistory.findIndex(
+        (h: any) =>
+          (h.conversation_id === conversationId || h.conversationId === conversationId) &&
+          (h.audio_id === audioId || h.audioId === audioId) &&
+          (h.reservationToken === reservationToken || !h.reservationToken) &&
+          h.status === "reserved"
+      );
+      if (idx >= 0) {
+        (supabase as any).__mockAudioHistory.splice(idx, 1);
+        return { success: true, released: true, reason };
+      }
+      return { success: false, released: false, reason: "not_found_or_not_reserved" };
+    }
+
+    const { error: delErr } = await supabase
+      .from("audio_delivery_history")
+      .delete()
+      .eq("conversation_id", conversationId)
+      .eq("audio_id", audioId)
+      .eq("reservation_token", reservationToken)
+      .eq("status", "reserved");
+
+    if (delErr) return { success: false, released: false, reason: delErr.message };
+    return { success: true, released: true, reason };
+  } catch (err) {
+    return { success: false, released: false, reason: "exception" };
+  }
+}
+
 export async function recordAudioDeliveryHistory(params: {
   supabase: any;
   conversationId: string;
   audioId: string;
   providerMessageId?: string;
-}): Promise<void> {
+}): Promise<{ success: boolean; reason?: string }> {
   const { supabase, conversationId, audioId, providerMessageId } = params;
-  try {
-    const newEntryId = `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const now = new Date().toISOString();
-
-    // 1. Grava na tabela oficial audio_delivery_history
-    await supabase.from("audio_delivery_history").insert({
-      id: newEntryId,
-      conversation_id: conversationId,
-      audio_id: audioId,
-      sent_at: now,
-      provider_message_id: providerMessageId || null,
-    });
-
-    if ((supabase as any)?.__mockAudioHistory) {
-      (supabase as any).__mockAudioHistory.push({
-        id: newEntryId,
-        conversationId,
-        audioId,
-        sentAt: now,
-        providerMessageId,
-      });
-    }
-  } catch (err) {
-    console.warn("[Orchestrator] Falha ao gravar histórico de áudio:", err);
+  const token = `token_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const claimRes = await claimAudioDeliveryReservation({
+    supabase,
+    conversationId,
+    audioId,
+    cycleId: token,
+    reservationToken: token,
+  });
+  if (!claimRes.claimed) {
+    return { success: false, reason: claimRes.reason };
   }
+  const commitRes = await commitAudioDeliverySent({
+    supabase,
+    conversationId,
+    audioId,
+    reservationToken: token,
+    providerMessageId,
+  });
+  return commitRes;
 }
 
 export interface CofreAudioCandidate {
@@ -4501,8 +4845,8 @@ export async function searchCofreAudios(params: {
     intent: combinedIntent,
   });
 
-  const isExplicitReplay = /\b(?:manda\s+(?:de\s+novo|novamente|aquele)|toca\s+(?:de\s+novo|novamente)|re[-]?(?:envia|manda)|ouve\s+de\s+novo|manda\s+o\s+audio\s+de\s+novo)\b/i.test(combinedIntent);
-  const available = isExplicitReplay ? rawMatches : rawMatches.filter((a) => !a.alreadySentInConversation);
+  // AUTOPILOTO: NUNCA permite replay automático de áudio já enviado nesta conversa
+  const available = rawMatches.filter((a) => !a.alreadySentInConversation && !a.already_sent);
 
   return available.slice(0, Math.min(limit, 3)).map((a) => {
     const fullTranscript = a.transcript || a.title || "";
@@ -6314,6 +6658,7 @@ export async function runBrainOrchestration(
   };
   const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
   const outboxMap: Record<string, OutboxEntry> = { ...(orchState.outbox || {}) };
+  let reservedAudioId: string | undefined;
 
   try {
     const initialInboundRevision =
@@ -7078,6 +7423,12 @@ export async function runBrainOrchestration(
           recentStyleStateSnippet: recentStyleSnippet,
           memoryScopeId: currentMemoryScopeId,
           recentQuestionIntentsSnippet: formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
+          searchCofreAudios: (p) => searchCofreAudios({
+            supabase,
+            conversationId: p.conversationId,
+            query: p.query,
+            limit: 3,
+          }),
           nextObjectives: (stageChecklistForRouter.goals || [])
             .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
             .map((g) => ({ id: g.id, label: g.label, description: g.description, kind: g.kind })),
@@ -7243,6 +7594,25 @@ export async function runBrainOrchestration(
                 }
               }
             }
+          }
+
+          if (openAiBrainTurn.telemetry.authorizedCandidateAudios) {
+            for (const cand of openAiBrainTurn.telemetry.authorizedCandidateAudios) {
+              brainAudioCandidates.push({
+                audio_id: cand.audioId,
+                title: cand.title,
+                summary: cand.transcript,
+                full_transcript: cand.transcript,
+                transcript: cand.transcript,
+                usage_instruction: cand.whenToUse,
+                when_to_use: cand.whenToUse,
+                duration: cand.duration,
+                already_sent: false,
+              });
+            }
+          }
+          if (Array.isArray(openAiBrainTurn.telemetry.audioSearchResults) && openAiBrainTurn.telemetry.audioSearchResults.length > 0) {
+            currentCycle.trace.push(`audio_search_results_count=${openAiBrainTurn.telemetry.audioSearchResults.length}`);
           }
 
           currentCycle.brainModel = configuredAgentModel;
@@ -7563,10 +7933,26 @@ export async function runBrainOrchestration(
         `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
       ).join("\n") || "";
 
-      if (isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0) {
-        // Execução em turno único: o Agent Brain produz o plano e a resposta final.
-        const rawResponses = brainPlan.responses
-          .map((r: any) => String(r || "").trim())
+      const hasAgentOutboundActions = isOpenAiAgentBrain && Array.isArray(brainPlan.outboundActions) && brainPlan.outboundActions.length > 0;
+      const hasAgentResponses = isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0;
+
+      if (isOpenAiAgentBrain && (hasAgentOutboundActions || hasAgentResponses || brainPlan.action === "send_audio")) {
+        // Execução em turno único: o Agent Brain produz o plano com ações canônicas ordenadas
+        let rawActions: OutboundAction[] = [];
+        if (hasAgentOutboundActions) {
+          rawActions = [...brainPlan.outboundActions];
+        } else if (hasAgentResponses) {
+          rawActions = brainPlan.responses.map((r: any) => ({ type: "text" as const, text: String(r || "").trim() }));
+          if (brainPlan.audioId) {
+            rawActions.push({ type: "audio" as const, audioId: brainPlan.audioId });
+          }
+        } else if (brainPlan.audioId) {
+          rawActions = [{ type: "audio" as const, audioId: brainPlan.audioId }];
+        }
+
+        const rawResponses = rawActions
+          .filter((a) => a.type === "text")
+          .map((a: any) => String(a.text || "").trim())
           .filter(Boolean);
 
         const intentGuard = validateBackendQuestionIntentGuard({
@@ -7583,7 +7969,9 @@ export async function runBrainOrchestration(
           );
         }
 
-        if (intentGuard.failClosed) {
+        const hasAudioAction = rawActions.some((a) => a.type === "audio");
+
+        if (intentGuard.failClosed && !hasAudioAction) {
           currentCycle.trace.push("backend_intent_guard_fail_closed");
           finalSubDecision = {
             action: "wait",
@@ -7591,14 +7979,31 @@ export async function runBrainOrchestration(
             summary: `Turno bloqueado por repetição de pergunta (Fail Closed): ${intentGuard.reasons.join(", ")}`,
             suggestedResponse: "",
             responses: [],
+            outboundActions: [],
             nextPhase: currentPhase,
             reasoning: "Bloqueio determinístico de repetição de pergunta pelo backend",
             requiredTools: [],
             objectiveCompletion: brainObjectiveCompletion || undefined,
           };
         } else {
-          const chosenResponses = intentGuard.allowedBalloons;
+          // Reconstruir lista de outboundActions autorizadas respeitando o guard de texto
+          const allowedOutboundActions: OutboundAction[] = [];
+          for (const act of rawActions) {
+            if (act.type === "text") {
+              const textVal = String(act.text || "").trim();
+              if (textVal && intentGuard.allowedBalloons.includes(textVal)) {
+                allowedOutboundActions.push({ type: "text", text: textVal });
+              }
+            } else if (act.type === "audio") {
+              allowedOutboundActions.push(act);
+            }
+          }
+
+          const chosenResponses = allowedOutboundActions
+            .filter((a) => a.type === "text")
+            .map((a: any) => a.text);
           const suggestedText = chosenResponses.join("\n\n");
+          const selectedAudio = allowedOutboundActions.find((a) => a.type === "audio") as { type: "audio"; audioId: string } | undefined;
 
           finalSubDecision = {
             action: "reply",
@@ -7606,6 +8011,8 @@ export async function runBrainOrchestration(
             summary: "Executado em turno único pelo Agent Brain",
             suggestedResponse: suggestedText,
             responses: chosenResponses,
+            outboundActions: allowedOutboundActions,
+            audioId: selectedAudio ? selectedAudio.audioId : undefined,
             nextPhase: currentPhase,
             reasoning: brainPlan.reasoning || "Execução direta pelo Agent Brain",
             requiredTools: [],
@@ -7709,10 +8116,16 @@ export async function runBrainOrchestration(
       // Se o subagente gerou balões, aplica sanitização determinística mandatória
       if (finalSubDecision.action === "reply" && (!finalSubDecision.responses || finalSubDecision.responses.length === 0)) {
         if (isOpenAiAgentBrain) {
-          finalSubDecision.action = "wait";
-          finalSubDecision.suggestedResponse = "";
-          finalSubDecision.requiredTools = [];
-          currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
+          const hasAudioOnly = finalSubDecision.outboundActions?.some((a: any) => a.type === "audio");
+          if (hasAudioOnly) {
+            // Válido: turno composto apenas por áudio
+            currentCycle.trace.push("brain_plan_audio_only_valid");
+          } else {
+            finalSubDecision.action = "wait";
+            finalSubDecision.suggestedResponse = "";
+            finalSubDecision.requiredTools = [];
+            currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
+          }
         } else {
           finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
         }
@@ -8145,6 +8558,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       summary: finalSubDecision.summary,
       suggestedResponse: finalSubDecision.suggestedResponse,
       responses: finalSubDecision.responses,
+      outboundActions: finalSubDecision.outboundActions,
       requiredTools: finalSubDecision.requiredTools || ["send_text"],
       reasoning: finalSubDecision.reasoning,
       audioId: finalSubDecision.audioId,
@@ -8224,46 +8638,104 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     }
 
     // ------------------------------------------------------------------------
-    // OUTBOX PATTERN: Criação da Intenção de Envio com IdempotencyKey
+    // OUTBOX PATTERN: Sequência Canônica de Ações de Saída (Texto e/ou Áudio)
     // ------------------------------------------------------------------------
-    const isAudioAction = decision.action === "send_audio" || Boolean(decision.audioId);
-    let resolvedAudio: PersonaAudioAsset | undefined;
-    if (isAudioAction && decision.audioId) {
-      const allAudios = await searchPersonaAudios({ supabase, conversationId, intent: "", stageId: undefined });
-      resolvedAudio = allAudios.find((a) => a.id === decision.audioId);
+    let canonicalOutboundActions: OutboundAction[] = [];
+    if (Array.isArray(decision.outboundActions) && decision.outboundActions.length > 0) {
+      canonicalOutboundActions = [...decision.outboundActions];
+    } else if (decision.action === "send_audio" || Boolean(decision.audioId)) {
+      const texts = (decision.responses && decision.responses.length > 0)
+        ? decision.responses
+        : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []);
+      canonicalOutboundActions = texts.map((t: string) => ({ type: "text" as const, text: t }));
+      if (decision.audioId) {
+        canonicalOutboundActions.push({ type: "audio" as const, audioId: decision.audioId });
+      }
+    } else {
+      const texts = (decision.responses && decision.responses.length > 0)
+        ? decision.responses
+        : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []);
+      canonicalOutboundActions = texts.map((t: string) => ({ type: "text" as const, text: t }));
     }
 
-    const initialContentType = isAudioAction && (resolvedAudio?.audioUrl || decision.audioUrl) ? "audio" : "text";
-    const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
-    const finalTextBalloons = isOpenAiAgentBrain
-      ? (Array.isArray(decision.responses) ? decision.responses : [])
-      : (decision.responses?.length
-        ? decision.responses
-        : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []));
-    const initialContent = initialContentType === "audio"
-      ? (resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${decision.audioUrl}]`)
-      : finalTextBalloons[0] || "";
-    const textPayloadCheck = initialContentType === "text"
-      ? validateFinalTextDispatchPayload(initialContent)
-      : { valid: true };
-    if (!textPayloadCheck.valid) currentCycle.trace.push(`${textPayloadCheck.error?.toLowerCase()}=true`);
-    const hasFinalDispatchPayload = Boolean(
-      (decision.action === "reply" || decision.action === "advance_phase" || decision.action === "send_audio")
-      && initialContent
-      && textPayloadCheck.valid
-      && (initialContentType === "audio" || finalTextBalloons.length === 1)
-    );
-    let outboxEntry: any = hasFinalDispatchPayload ? outboxMap[idempotencyKey] : undefined;
+    // Trava de autorização e resolução de áudio na sequência canônica
+    let resolvedAudio: PersonaAudioAsset | undefined;
+    const audioAction = canonicalOutboundActions.find((a) => a.type === "audio") as { type: "audio"; audioId: string } | undefined;
+    if (audioAction && audioAction.audioId) {
+      // 1. Resolução do asset do áudio
+      const allAudios = await searchPersonaAudios({ supabase, conversationId, intent: "", stageId: undefined });
+      resolvedAudio = allAudios.find((a) => a.id === audioAction.audioId);
 
-    if (hasFinalDispatchPayload) {
+      // 2. Trava de autorização: deve existir e estar habilitado
+      if (!resolvedAudio || resolvedAudio.enabled === false) {
+        currentCycle.trace.push(!resolvedAudio ? "audio_rejected_not_authorized" : "audio_rejected_disabled");
+        canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
+        resolvedAudio = undefined;
+        // 3. Trava 2 Anti-repetição atômica pré-dispatch com RESERVA (CLAIM)
+        const claimResult = await claimAudioDeliveryReservation({
+          supabase,
+          conversationId,
+          audioId: resolvedAudio.id,
+          cycleId: correlationId,
+          reservationToken: correlationId,
+          actionIndex: canonicalOutboundActions.indexOf(audioAction),
+        });
+
+        if (!claimResult.claimed) {
+          currentCycle.trace.push("audio_repeat_blocked");
+          currentCycle.trace.push("audio_claim_conflict");
+          await publishAutoPilotState(supabase, conversationId, {
+            cycleId: correlationId,
+            status: "processing",
+            cycleEvent: {
+              phase: "validating",
+              event: "audio_repeat_blocked",
+              label: "Áudio bloqueado por repetição ou colisão concorrente",
+              detail: `O áudio ${resolvedAudio.id} não pôde ser reservado (${claimResult.reason}).`,
+              metadata: { audioId: resolvedAudio.id, reason: claimResult.reason },
+            },
+          });
+          canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
+          resolvedAudio = undefined;
+        } else {
+          reservedAudioId = resolvedAudio.id;
+          currentCycle.trace.push(`audio_claim_reserved: ${resolvedAudio.id}`);
+        }
+      }
+    }
+
+    const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
+    const totalActions = canonicalOutboundActions.length;
+    const isSingleAction = totalActions === 1;
+
+    // Converte ações canônicas em representação de balões para o loop e para retrocompatibilidade
+    let balloons: string[] = canonicalOutboundActions.map((act) => {
+      if (act.type === "audio") {
+        return resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${act.audioId}]`;
+      }
+      return act.text;
+    });
+
+    const hasFinalDispatchPayload = Boolean(
+      (decision.action === "reply" || decision.action === "advance_phase" || decision.action === "send_audio") &&
+      totalActions > 0
+    );
+
+    let outboxEntry: any = (hasFinalDispatchPayload && isSingleAction) ? outboxMap[idempotencyKey] : undefined;
+
+    if (hasFinalDispatchPayload && isSingleAction) {
+      const singleAct = canonicalOutboundActions[0];
+      const singleContent = balloons[0];
+      const singleType = singleAct.type === "audio" ? "audio" : "text";
+
       if (!outboxEntry) {
         outboxEntry = {
           id: `out_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           cycleId: correlationId,
           conversationId,
           idempotencyKey,
-          content: initialContent,
-          messageType: initialContentType,
+          content: singleContent,
+          messageType: singleType,
           status: "pending",
           attempts: 0,
           maxAttempts: 3,
@@ -8271,33 +8743,25 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         };
         outboxMap[idempotencyKey] = outboxEntry;
       } else {
-        // O conteúdo final aprovado é autoritativo mesmo em retomadas idempotentes.
-        outboxEntry.content = initialContent;
-        outboxEntry.messageType = initialContentType;
+        outboxEntry.content = singleContent;
+        outboxEntry.messageType = singleType;
       }
       currentCycle.outboxEntryId = outboxEntry.id;
       currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
-      // Persistência acontece somente depois dos gates finais.
       await prepareExperimentalOutboxEntryAtomic({
         supabase,
         conversationId,
         cycleToken: correlationId,
         outboxEntry,
       });
+    } else if (totalActions > 1) {
+      currentCycle.trace.push("outbox_deferred_to_final_balloons");
     } else {
-      currentCycle.trace.push(finalTextBalloons.length > 1
-        ? "outbox_deferred_to_final_balloons"
-        : "outbox_skipped_no_final_payload");
+      currentCycle.trace.push("outbox_skipped_no_final_payload");
     }
 
-    const finalTextResponsesAreSafe = finalTextBalloons.length > 0 && finalTextBalloons.every(
-      (balloon) => validateFinalTextDispatchPayload(balloon).valid
-    );
-    const responseReady = (decision.action === "reply" || decision.action === "advance_phase" || decision.action === "send_audio") &&
-      (initialContentType === "audio"
-        ? Boolean(resolvedAudio?.audioUrl || decision.audioUrl)
-        : finalTextResponsesAreSafe);
+    const responseReady = hasFinalDispatchPayload;
     if (responseReady) {
       await publishAutoPilotState(supabase, conversationId, {
         cycleId: correlationId,
@@ -8309,45 +8773,32 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           detail: "Payload final após os gates do pipeline, pronto para o dispatch.",
           metadata: {
             action: decision.action,
-            payloadType: initialContentType,
-            totalBalloons: initialContentType === "audio" ? 1 : finalTextBalloons.length,
-            responses: initialContentType === "audio"
-              ? []
-              : safeOperationalStringList(finalTextBalloons, 4),
+            totalActions,
+            outboundActions: canonicalOutboundActions,
           },
         },
       });
     }
 
     let sentBalloonsCount = 0;
-    let balloons: string[] = [];
 
     // ------------------------------------------------------------------------
-    // BRAIN: Execução ativa no chat (fluxo oficial único)
+    // BRAIN: Execução ativa no chat (fluxo sequencial ordenado de ações)
     // ------------------------------------------------------------------------
     sentSuccessfully = false;
 
     const audioPayload: PersonaAudioAsset | undefined = resolvedAudio;
 
-      if (
-        (decision.action === "reply" || decision.action === "send_audio" || decision.action === "advance_phase") &&
-        (decision.suggestedResponse || isAudioAction)
-      ) {
-        if (isAudioAction && (audioPayload?.audioUrl || decision.audioUrl)) {
-          const aUrl = audioPayload?.audioUrl || decision.audioUrl;
-          balloons = [`[audio:${aUrl}]`];
-        } else if (decision.responses && decision.responses.length > 0) {
-          balloons = decision.responses;
-        } else if (decision.suggestedResponse) {
-          balloons = splitIntoBalloons(decision.suggestedResponse);
-        } else {
-          balloons = [];
-        }
+    if (
+      (decision.action === "reply" || decision.action === "send_audio" || decision.action === "advance_phase") &&
+      totalActions > 0
+    ) {
+      sentBalloonsCount = 0;
 
-        sentBalloonsCount = 0;
-
-        for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
-          const balloonText = balloons[bIndex];
+      for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
+        const balloonText = balloons[bIndex];
+        const currentAction = canonicalOutboundActions[bIndex];
+        const isCurrentActionAudio = currentAction?.type === "audio" || balloonText.startsWith("[audio:");
 
           const dispatchPayloadCheck = isAudioAction
             ? { valid: true }
@@ -8489,9 +8940,18 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             }
           }
 
-          // Chave de outbox para este balão
-          const balloonKey = balloons.length > 1 ? `${idempotencyKey}_b${bIndex}` : idempotencyKey;
+          // Chave de outbox para esta ação (suporta _a e _b para retrocompatibilidade)
+          const balloonKeyA = balloons.length > 1 ? `${idempotencyKey}_a${bIndex}` : idempotencyKey;
+          const balloonKeyB = balloons.length > 1 ? `${idempotencyKey}_b${bIndex}` : idempotencyKey;
+          const balloonKey = outboxMap[balloonKeyB] ? balloonKeyB : balloonKeyA;
           let balloonOutbox = outboxMap[balloonKey];
+
+          // PARTIAL DISPATCH RESILIENTE: Se esta ação já foi confirmada enviada, pula sem reenviar
+          if (balloonOutbox && balloonOutbox.status === "sent") {
+            currentCycle.trace.push(`partial_dispatch_already_sent_action_${bIndex}`);
+            sentBalloonsCount++;
+            continue;
+          }
 
           const isAudioBalloon = balloonText.startsWith("[audio:");
           const balloonMessageType = isAudioBalloon ? "audio" : "text";
@@ -8658,6 +9118,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 error: `Falha de infraestrutura no claim atômico (${claimRes.reason}). Fail-closed: envio abortado.`,
               };
             } else {
+              sentSuccessfully = false;
+              currentCycle.status = "failed";
+              currentCycle.trace.push(`outbox_claim_unsuccessful: ${claimRes.reason}`);
+              if (sentBalloonsCount === 0) {
+                await releaseExperimentalCycleAtomic({
+                  supabase,
+                  conversationId,
+                  cycleToken: correlationId,
+                  processingStatus: "failed",
+                  revertMessageIds: claimedMessageIds,
+                  lastError: `Outbox claim não teve sucesso: ${claimRes.reason}`,
+                }).catch(() => null);
+              }
               return {
                 handled: false,
                 sentToMeta: sentBalloonsCount > 0,
@@ -8697,6 +9170,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           });
 
           // 2. DISPATCHER: Envio seguro do balão através da Outbox
+          if (isAudioBalloon && audioPayload) {
+            await updateAudioDeliveryStatus({
+              supabase,
+              conversationId,
+              audioId: audioPayload.id,
+              reservationToken: correlationId,
+              status: "dispatching",
+            });
+            currentCycle.trace.push(`audio_dispatching: ${audioPayload.id}`);
+          }
+
           const dispatchRes = await dispatchOutboxEntry({
             supabase,
             outboxEntry: balloonOutbox,
@@ -8723,10 +9207,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             });
 
             if (isAudioBalloon && audioPayload) {
-              await recordAudioDeliveryHistory({
+              await commitAudioDeliverySent({
                 supabase,
                 conversationId,
                 audioId: audioPayload.id,
+                reservationToken: correlationId,
                 providerMessageId: dispatchRes.providerMessageId,
               });
               currentCycle.trace.push(`audio_delivered: ${audioPayload.id}`);
@@ -8760,6 +9245,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             sentSuccessfully = true;
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_uncertain: ${dispatchRes.error}`);
+            if (isAudioBalloon && audioPayload) {
+              await updateAudioDeliveryStatus({
+                supabase,
+                conversationId,
+                audioId: audioPayload.id,
+                reservationToken: correlationId,
+                status: "dispatch_uncertain",
+                error: dispatchRes.error,
+              });
+              currentCycle.trace.push(`audio_dispatch_uncertain: ${audioPayload.id}`);
+            }
             const failedUsage = cycleUsageMetadata();
             await publishAutoPilotState(supabase, conversationId, {
               cycleId: correlationId,
@@ -8783,6 +9279,16 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           } else {
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
+            if (isAudioBalloon && audioPayload) {
+              await updateAudioDeliveryStatus({
+                supabase,
+                conversationId,
+                audioId: audioPayload.id,
+                reservationToken: correlationId,
+                status: "failed_safe",
+                error: dispatchRes.error,
+              });
+            }
             const failedUsage = cycleUsageMetadata();
             await publishAutoPilotState(supabase, conversationId, {
               cycleId: correlationId,
@@ -9367,6 +9873,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       }
     } catch {
       // A RPC de release ainda fará a verificação decisiva sob FOR UPDATE.
+    }
+
+    // Se a falha for comprovadamente pré-dispatch (nada enviado à Meta), libera reserva de áudio
+    if (!possibleSend && reservedAudioId) {
+      try {
+        await releaseAudioDeliveryReservation({
+          supabase,
+          conversationId,
+          audioId: reservedAudioId,
+          reservationToken: correlationId,
+          reason: "cycle_exception_before_dispatch",
+        });
+      } catch (_relErr) {}
     }
 
     // Em caso de erro, reverte as mensagens claimed para pending para permitir retry

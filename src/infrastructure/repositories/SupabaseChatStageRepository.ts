@@ -565,36 +565,39 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       const convId = progress.conversationId;
       const now = new Date().toISOString();
 
-      // Busca as regras existentes para mesclar sem sobrescrever outros campos como 'orchestration'
-      const { data: existing } = await client
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .or(`id.eq.${convId},contact_id.eq.${convId}`)
-        .maybeSingle();
-
-      const currentRules = existing?.stage_completed_rules && typeof existing.stage_completed_rules === "object"
-        ? existing.stage_completed_rules
-        : {};
-
-      const updatedRules = {
-        ...currentRules,
-        ...progress,
-        chat_progress: {
-          ...progress,
-          updatedAt: now,
-        },
-        updated_at: now,
+      const patchPayload = {
+        currentStageId: progress.currentStageId,
+        completedItemIds: progress.completedItemIds || [],
+        completedGoalIds: progress.completedGoalIds || [],
+        objectiveProgress: progress.objectiveProgress || {},
+        isConverted: Boolean(progress.isConverted),
+        updatedAt: progress.updatedAt || now,
       };
 
-      await client
-        .from("instagram_conversations")
-        .update({
-          stage_completed_rules: updatedRules,
-          updated_at: now,
-        })
-        .or(`id.eq.${convId},contact_id.eq.${convId}`);
+      // 1. Tenta a RPC atômica blindada no PostgreSQL (FOR UPDATE sem clobber de outbox)
+      const { data: rpcResult, error: rpcError } = await client.rpc(
+        "patch_chat_progress_atomic",
+        {
+          p_conversation_id: convId,
+          p_progress_patch: patchPayload,
+        }
+      );
+
+      if (!rpcError && rpcResult?.success) {
+        return;
+      }
+
+      // 2. FAIL-CLOSED ABSOLUTO: Se a RPC falhar ou estiver indisponível, NUNCA recorrer
+      // a read-modify-write em JS (SELECT -> merge -> UPDATE stage_completed_rules),
+      // pois qualquer escrita de coluna inteira por JS causa lost update e clobber da outbox/lock.
+      const errorMsg = rpcError?.message || rpcResult?.error || "RPC não retornou sucesso";
+      console.error(
+        `[SupabaseChatStageRepository] FAIL-CLOSED: Erro ao executar patch_chat_progress_atomic para conv=${convId}: ${errorMsg}. Escrita direta em stage_completed_rules terminantemente proibida.`
+      );
+      throw new Error(`Falha ao salvar progresso atômico: ${errorMsg}`);
     } catch (err) {
-      console.warn("[SupabaseChatStageRepository] Erro ao salvar progresso da conversa:", err);
+      console.error("[SupabaseChatStageRepository] Erro ao salvar progresso da conversa:", err);
+      throw err;
     }
   }
 

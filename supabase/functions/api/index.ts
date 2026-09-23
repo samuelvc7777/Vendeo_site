@@ -8,6 +8,7 @@ import {
   runBrainOrchestration,
   requestBrainCyclePreemptionAtomic,
   authorizeManualAutopilotRetryAtomic,
+  releaseExperimentalCycleAtomic,
 } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import {
@@ -4039,23 +4040,12 @@ serve(async (req: Request) => {
             ai_auto_respond: true,
             ai_debounce_until: null,
           }).eq("id", conversationId);
-          // Limpa travas manuais antigas para que o ciclo possa enviar os balões
-          let cRow: any = null;
+          // Limpa travas manuais antigas via RPC atômica blindada no PostgreSQL
           try {
-            const { data } = await supabase
-              .from("instagram_conversations")
-              .select("stage_completed_rules")
-              .eq("id", conversationId)
-              .maybeSingle();
-            cRow = data;
-            if (cRow?.stage_completed_rules?.cancel_current_cycle || cRow?.stage_completed_rules?.status === "paused_manual") {
-              const cleanRules = { ...cRow.stage_completed_rules };
-              delete cleanRules.cancel_current_cycle;
-              delete cleanRules.status;
-              await supabase.from("instagram_conversations").update({
-                stage_completed_rules: cleanRules,
-              }).eq("id", conversationId);
-            }
+            await supabase.rpc("patch_autopilot_pause_atomic", {
+              p_conversation_id: conversationId,
+              p_paused: false,
+            });
           } catch {}
 
           // BRAIN: Único orquestrador oficial (fail-closed)
@@ -4154,25 +4144,26 @@ serve(async (req: Request) => {
           });
         }
 
-        // 1. Grava cancelamento atômico na conversa e limpa agendamento assíncrono
-        const { data: convRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-        const currentRules = convRow?.stage_completed_rules || {};
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            ai_debounce_until: null,
-            ai_auto_respond: false,
-            stage_completed_rules: {
-              ...currentRules,
-              cancel_current_cycle: true,
-              status: "paused_manual",
-            },
-          })
-          .eq("id", conversationId);
+        // 1. Grava cancelamento atômico na conversa via RPC no PostgreSQL
+        const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
+          "patch_autopilot_pause_atomic",
+          {
+            p_conversation_id: conversationId,
+            p_paused: true,
+            p_reason: "paused_manual",
+          }
+        );
+
+        if (pauseRpcErr || !pauseRpcResult?.success) {
+          // FAIL-CLOSED: se a RPC falhar, atualiza somente colunas físicas isoladas, sem tocar em stage_completed_rules
+          await supabase
+            .from("instagram_conversations")
+            .update({
+              ai_debounce_until: null,
+              ai_auto_respond: false,
+            })
+            .eq("id", conversationId);
+        }
 
         // 2. Atualiza estado visual no __autopilot_states__
         const { data: statesRow } = await supabase
@@ -4250,33 +4241,24 @@ serve(async (req: Request) => {
 
         const currentRules = convRow?.stage_completed_rules || {};
 
-        if (!isEnabled) {
-          // Desativar: trava atômica imediata
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              ai_debounce_until: null,
-              ai_auto_respond: false,
-              stage_completed_rules: {
-                ...currentRules,
-                cancel_current_cycle: true,
-                status: "paused_manual",
-              },
-            })
-            .eq("id", conversationId);
-        } else {
-          // Ativar: remove pausas manuais
-          const cleanRules = { ...currentRules };
-          if (cleanRules.status === "paused_manual") {
-            delete cleanRules.status;
+        // 1. Mutação atômica via RPC protegendo outbox e active_cycle_token
+        const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
+          "patch_autopilot_pause_atomic",
+          {
+            p_conversation_id: conversationId,
+            p_paused: !isEnabled,
+            p_reason: !isEnabled ? "paused_manual" : null,
           }
-          delete cleanRules.cancel_current_cycle;
+        );
 
+        if (pauseRpcErr || !pauseRpcResult?.success) {
+          // FAIL-CLOSED: se a RPC falhar ou for inacessível, atualiza somente a coluna física ai_auto_respond sem tocar em stage_completed_rules
+          console.warn(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}. Atualizando somente coluna física ai_auto_respond.`);
           await supabase
             .from("instagram_conversations")
             .update({
-              ai_auto_respond: true,
-              stage_completed_rules: cleanRules,
+              ai_auto_respond: isEnabled,
+              ai_debounce_until: isEnabled ? undefined : null,
             })
             .eq("id", conversationId);
         }
@@ -4342,21 +4324,18 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: convRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-        const currentRules = convRow?.stage_completed_rules || {};
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            stage_completed_rules: {
-              ...currentRules,
-              editing_in_progress: Boolean(isEditing),
-            },
-          })
-          .eq("id", conversationId);
+        const { data: rpcHoldResult, error: rpcHoldErr } = await supabase.rpc(
+          "patch_autopilot_hold_edit_atomic",
+          {
+            p_conversation_id: conversationId,
+            p_is_editing: Boolean(isEditing),
+          }
+        );
+
+        if (rpcHoldErr || !rpcHoldResult?.success) {
+          // FAIL-CLOSED: se a RPC falhar, terminantemente proibido fazer read-modify-write de stage_completed_rules em JS
+          console.warn(`[Autopilot] patch_autopilot_hold_edit_atomic falhou para conv=${conversationId}. FAIL-CLOSED: zero escrita direta em stage_completed_rules.`);
+        }
 
         return new Response(JSON.stringify({ success: true, editing_in_progress: Boolean(isEditing) }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -4381,22 +4360,18 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: convRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-        const currentRules = convRow?.stage_completed_rules || {};
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            stage_completed_rules: {
-              ...currentRules,
-              edited_balloon_text: editedText,
-              editing_in_progress: false,
-            },
-          })
-          .eq("id", conversationId);
+        const { data: rpcEditResult, error: rpcEditErr } = await supabase.rpc(
+          "patch_autopilot_edit_preview_atomic",
+          {
+            p_conversation_id: conversationId,
+            p_edited_text: editedText,
+          }
+        );
+
+        if (rpcEditErr || !rpcEditResult?.success) {
+          // FAIL-CLOSED: se a RPC falhar, terminantemente proibido fazer read-modify-write de stage_completed_rules em JS
+          console.warn(`[Autopilot] patch_autopilot_edit_preview_atomic falhou para conv=${conversationId}. FAIL-CLOSED: zero escrita direta em stage_completed_rules.`);
+        }
 
         return new Response(JSON.stringify({ success: true, detail: "Edição gravada para o ciclo atual." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -4421,39 +4396,57 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: convRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules, ai_debounce_until, ai_auto_respond")
-          .eq("id", conversationId)
-          .maybeSingle();
-        const currentRules = convRow?.stage_completed_rules || {};
+        const proposedCycleId = `corr_sendnow_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-        if (convRow?.ai_auto_respond === false) {
-          return new Response(JSON.stringify({ success: false, result: "disabled", status: "disabled", detail: "IA está desativada neste chat." }), {
-            status: 409,
+        // 1. Autorização atômica sob lock FOR UPDATE no PostgreSQL
+        const { data: authResult, error: authErr } = await supabase.rpc(
+          "authorize_send_now_atomic",
+          {
+            p_conversation_id: conversationId,
+            p_new_cycle_token: proposedCycleId,
+            p_stale_seconds: 300,
+          }
+        );
+
+        if (authErr) {
+          console.error(`[Brain] send-now erro ao chamar authorize_send_now_atomic:`, authErr.message);
+        }
+
+        if (authResult) {
+          if (!authResult.success) {
+            if (authResult.reason === "disabled") {
+              return new Response(JSON.stringify({ success: false, result: "disabled", status: "disabled", detail: "IA está desativada neste chat." }), {
+                status: 409,
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+              });
+            }
+            if (authResult.reason === "already_processing") {
+              return new Response(JSON.stringify({
+                success: true,
+                result: "already_processing",
+                cycleId: authResult.active_cycle_token || null,
+                status: "processing",
+                detail: "Ciclo do agente já está em andamento. Envio acelerado sem duplicação de execução."
+              }), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+              });
+            }
+            return new Response(JSON.stringify({ success: false, result: authResult.reason, detail: "Falha na autorização do send-now." }), {
+              status: 409,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        } else {
+          // FAIL-CLOSED: Se a RPC authorize_send_now_atomic falhar ou estiver indisponível,
+          // é TERMINANTEMENTE PROIBIDO fazer read-modify-write de stage_completed_rules em JS.
+          console.error(`[Brain] send-now: RPC authorize_send_now_atomic falhou ou retornou nulo. FAIL-CLOSED: zero escrita direta em stage_completed_rules.`);
+          return new Response(JSON.stringify({ success: false, result: "infra_failure", detail: "Falha na autorização atômica do send-now. Operação abortada com segurança." }), {
+            status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
 
-        const stateRow = await supabase.from("instagram_conversations").select("stage_completed_rules").eq("id", "__autopilot_states__").maybeSingle();
-        const existingState = stateRow.data?.stage_completed_rules?.states?.[conversationId];
-        if (existingState?.status === "processing" || existingState?.status === "in_queue" || existingState?.status === "starting") {
-          return new Response(JSON.stringify({ success: true, result: "already_processing", cycleId: existingState.cycleId || existingState.activeCycleToken || null, status: existingState.status }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // Limpa o debounce e marca envio imediato
-        await supabase
-          .from("instagram_conversations")
-          .update({
-            ai_debounce_until: null,
-            stage_completed_rules: {
-              ...currentRules,
-              send_immediately: true,
-            },
-          })
-          .eq("id", conversationId);
+        const cycleId = proposedCycleId;
 
         // O ciclo é disparado mesmo quando o debounce já expirou, desde que ainda haja inbound pendente.
         {
@@ -4469,7 +4462,6 @@ serve(async (req: Request) => {
             console.log(`[Brain] send-now roteando para Brain em ${conversationId}`);
             const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
 
-            const cycleId = `corr_sendnow_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
             await publishAutoPilotState(supabase, conversationId, {
               cycleId,
               status: "starting",
@@ -4500,6 +4492,14 @@ serve(async (req: Request) => {
             });
           }
         }
+
+        // Se não houver inbound pendente, libera o ciclo para não manter lock zombie
+        await releaseExperimentalCycleAtomic({
+          supabase,
+          conversationId,
+          cycleToken: cycleId,
+          processingStatus: "idle",
+        }).catch(() => null);
 
         return new Response(JSON.stringify({ success: false, result: "nothing_to_answer", status: "idle", detail: "Nenhuma mensagem inbound pendente para responder." }), {
           status: 409,

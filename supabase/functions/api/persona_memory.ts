@@ -376,6 +376,15 @@ export async function searchPersonaMemory(params: {
     period: ["periodo", "semestre"],
     course: ["curso", "faculdade", "enfermagem"],
     graduation: ["formatura", "formar", "forma"],
+    trabalho: ["profissao", "ocupacao", "emprego", "servico", "trampo", "estagio", "vendas"],
+    trabalha: ["profissao", "ocupacao", "estagio", "vendas"],
+    profissao: ["trabalho", "ocupacao", "carreira", "estudo", "estagio", "vendas"],
+    ocupacao: ["trabalho", "profissao", "estagio", "vendas"],
+    estagio: ["hospital", "hospitalar", "enfermagem", "trabalho"],
+    work: ["trabalho", "profissao", "job", "occupation"],
+    job: ["trabalho", "profissao", "work", "occupation"],
+    profession: ["profissao", "trabalho", "occupation"],
+    occupation: ["ocupacao", "profissao", "trabalho"],
   };
 
   const searchTermsSet = new Set<string>(rawTerms);

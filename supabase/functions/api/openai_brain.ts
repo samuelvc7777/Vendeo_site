@@ -44,14 +44,14 @@ export const PERSONA_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "persona_memory_search",
     description:
-      "Pesquisa a PersonaMemory oficial da Larissa no Supabase para descobrir fatos reais que possam gerar afinidade, conexão pessoal, reação autêntica, experiência parecida, diferença interessante, comentário pessoal ou grounding factual. Use para profissão, formação, estudos, hobbies, experiências, viagens, rotina, preferências, gostos, hábitos, valores e reação pessoal. Quando o pretendente revelar um fato pessoal relevante e o contexto não trouxer informação suficiente da Larissa sobre o tema, prefira consultar esta ferramenta antes de concluir que não existe conexão. Não invente fatos que podem ser consultados nesta ferramenta.",
+      "Pesquisa a PersonaMemory oficial no Supabase para descobrir fatos reais que possam gerar afinidade, conexão pessoal, reação autêntica, experiência parecida, diferença interessante, comentário pessoal ou grounding factual. Use para profissão, formação, estudos, hobbies, experiências, viagens, rotina, preferências, gostos, hábitos, valores e reação pessoal. Em perguntas amplas sobre identidade ocupacional, profissão ou atividade atual da Persona, busque fatos canônicos e complementares suficientes para representar a categoria de forma completa. Não encerre a busca em um fato parcial quando houver fato canônico mais abrangente relevante. Quando o pretendente revelar um fato pessoal relevante e o contexto não trouxer informação suficiente da Persona sobre o tema, prefira consultar esta ferramenta antes de concluir que não existe conexão. Não invente fatos que podem ser consultados nesta ferramenta.",
     parameters: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description:
-            "Termos de busca para encontrar fatos na memória da Larissa (ex: 'motocross', 'comida favorita', 'estágio', 'música', 'onde mora').",
+            "Termos de busca para encontrar fatos na PersonaMemory (ex: 'profissão trabalho ocupação', 'comida favorita', 'hobbies', 'música', 'onde mora').",
         },
         limit: {
           type: "number",
@@ -112,6 +112,36 @@ export const CONVERSATION_MEMORY_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
         limit: {
           type: "number",
           description: "Número máximo de itens retornados (entre 1 e 8, default: 5).",
+        },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+export type OutboundAction =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "audio";
+      audioId: string;
+    };
+
+export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
+  type: "function",
+  function: {
+    name: "cofre_audio_search",
+    description:
+      "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente (hobbies, rotina, gostos, faculdade, tempo livre, preferências). Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'hobbies e tempo livre', 'rotina da faculdade', 'comida preferida').",
         },
       },
       required: ["query"],
@@ -205,6 +235,107 @@ export async function executePersonaMemoryTool(
   return output;
 }
 
+export async function executeCofreAudioSearch(params: {
+  supabase: any;
+  conversationId: string;
+  query: string;
+  limit?: number;
+}): Promise<Array<{
+  audioId: string;
+  title: string;
+  transcript: string;
+  whenToUse: string;
+  duration?: number;
+}>> {
+  const { supabase, conversationId, query, limit = 3 } = params;
+  if (!supabase) return [];
+
+  let audios: any[] = [];
+  try {
+    const { data: rows } = await supabase
+      .from("persona_audios")
+      .select("*")
+      .eq("enabled", true)
+      .order("title", { ascending: true });
+    if (Array.isArray(rows)) {
+      audios = rows;
+    }
+  } catch {}
+
+  if (audios.length === 0 && (supabase as any)?.__mockPersonaAudios) {
+    audios = (supabase as any).__mockPersonaAudios;
+  }
+
+  // 1. Histórico de áudios já enviados nesta conversa (eliminação estrita sem exceção no autopiloto)
+  const sentAudioIds = new Set<string>();
+  try {
+    const { data: histRows } = await supabase
+      .from("audio_delivery_history")
+      .select("audio_id")
+      .eq("conversation_id", conversationId);
+    if (Array.isArray(histRows)) {
+      histRows.forEach((h: any) => sentAudioIds.add(String(h.audio_id)));
+    }
+  } catch {}
+
+  try {
+    const { data: convRow } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    const convHist = convRow?.stage_completed_rules?.audio_delivery_history || [];
+    if (Array.isArray(convHist)) {
+      convHist.forEach((h: any) => sentAudioIds.add(String(h.audioId || h.id)));
+    }
+    const delivered = convRow?.stage_completed_rules?.orchestration?.deliveredAudios || [];
+    if (Array.isArray(delivered)) {
+      delivered.forEach((d: any) => sentAudioIds.add(typeof d === "string" ? d : String(d?.id)));
+    }
+  } catch {}
+
+  if ((supabase as any)?.__mockAudioHistory) {
+    const mockHist: any[] = (supabase as any).__mockAudioHistory;
+    mockHist
+      .filter((h) => h.conversationId === conversationId)
+      .forEach((h) => sentAudioIds.add(String(h.audioId)));
+  }
+
+  const queryTerms = String(query || "")
+    .toLowerCase()
+    .replace(/[.,;!?]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
+
+  // Filtra áudios habilitados, com transcrição, e NUNCA enviados
+  const available = audios
+    .filter((a) => a.enabled !== false)
+    .filter((a) => Boolean(a.transcript && String(a.transcript).trim().length > 0))
+    .filter((a) => !sentAudioIds.has(String(a.id)));
+
+  const scored = available.map((a) => {
+    const haystack = `${a.title || ""} ${a.transcript || ""} ${a.usage_instruction || a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`.toLowerCase();
+    let score = 0;
+    for (const term of queryTerms) {
+      if (haystack.includes(term)) score += 1;
+    }
+    return {
+      audioId: String(a.id),
+      title: String(a.title || ""),
+      transcript: String(a.transcript || ""),
+      whenToUse: String(a.usage_instruction || a.usageInstruction || a.when_to_use || a.title || ""),
+      duration: a.duration != null ? Number(a.duration) : undefined,
+      score,
+    };
+  });
+
+  const filtered = queryTerms.length === 0 ? scored : scored.filter((s) => s.score > 0);
+  filtered.sort((a, b) => b.score - a.score);
+
+  return filtered.slice(0, Math.min(limit, 3)).map(({ score, ...c }) => c);
+}
+
 export interface PlanValidationResult {
   valid: boolean;
   error?: string;
@@ -216,15 +347,74 @@ export function validateConversationBrainPlan(
   if (!plan || typeof plan !== "object") {
     return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
   }
-  const validActions = ["reply", "wait"];
+  const validActions = ["reply", "wait", "send_audio"];
   if (!validActions.includes(plan.action)) {
     return {
       valid: false,
       error: `Ação do plano deve ser 'reply' ou 'wait', recebido: '${plan.action}'`,
     };
   }
+  if (plan.action === "send_audio") {
+    plan.action = "reply";
+  }
   if (plan.action === "wait") {
     return { valid: true };
+  }
+
+  // Validação e normalização canônica de outboundActions
+  if (Array.isArray(plan.outboundActions)) {
+    if (plan.outboundActions.length > 4) {
+      return {
+        valid: false,
+        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'outboundActions' excede o limite máximo de 4 ações",
+      };
+    }
+    let audioActionCount = 0;
+    for (let i = 0; i < plan.outboundActions.length; i++) {
+      const act = plan.outboundActions[i];
+      if (!act || typeof act !== "object") {
+        return { valid: false, error: `outboundActions[${i}] inválido ou não é um objeto` };
+      }
+      if (act.type === "text") {
+        if (typeof act.text !== "string" || !act.text.trim()) {
+          return { valid: false, error: `outboundActions[${i}] de texto deve ter 'text' como string não vazia` };
+        }
+      } else if (act.type === "audio") {
+        audioActionCount++;
+        if (audioActionCount > 1) {
+          return { valid: false, error: "Limite excedido: máximo 1 áudio automático por turno" };
+        }
+        if (typeof act.audioId !== "string" || !act.audioId.trim()) {
+          return { valid: false, error: `outboundActions[${i}] de áudio deve ter 'audioId' como string não vazia` };
+        }
+      } else {
+        return { valid: false, error: `outboundActions[${i}] tipo inválido: '${act.type}'` };
+      }
+    }
+    // Normalização retrocompatível: popula responses com os textos se responses não veio
+    if (!Array.isArray(plan.responses)) {
+      plan.responses = plan.outboundActions
+        .filter((a: any) => a.type === "text")
+        .map((a: any) => a.text);
+    }
+    const audioAct = plan.outboundActions.find((a: any) => a.type === "audio");
+    if (audioAct) {
+      plan.selectedAudioId = audioAct.audioId;
+      plan.audioId = audioAct.audioId;
+    }
+  } else {
+    // Retrocompatibilidade se outboundActions não foi enviado:
+    const audioId = plan.audioId || plan.selectedAudioId;
+    const isAudio = plan.action === "send_audio" || Boolean(audioId);
+    if (Array.isArray(plan.responses) && plan.responses.length > 0) {
+      plan.outboundActions = plan.responses.map((t: string) => ({ type: "text", text: String(t) }));
+      if (isAudio && audioId) {
+        plan.outboundActions.push({ type: "audio", audioId: String(audioId) });
+      }
+    } else if (isAudio && audioId) {
+      plan.outboundActions = [{ type: "audio", audioId: String(audioId) }];
+      plan.responses = [];
+    }
   }
 
   // Validação estrita de evidenceMessageId e satisfiedObjectiveId para already_satisfied
@@ -300,6 +490,16 @@ export function validateResponseGenerationInvariant(plan: any): PlanValidationRe
     return { valid: false, error: "Plano inválido" };
   }
   if (plan.action === "wait") {
+    return { valid: true };
+  }
+  // Se possuir outboundActions válido (inclusive caso somente de áudio)
+  if (Array.isArray(plan.outboundActions) && plan.outboundActions.length > 0) {
+    if (plan.outboundActions.length > 4) {
+      return {
+        valid: false,
+        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'outboundActions' excede o limite máximo de 4 ações",
+      };
+    }
     return { valid: true };
   }
   // Se for ação de reply ou tiver responses declarado
@@ -528,6 +728,7 @@ export function buildFallbackBrainPlan(parsedPlan: any): any {
 export interface RunOpenAiBrainParams {
   supabase: any;
   conversationId: string;
+  searchCofreAudios?: (params: any) => Promise<any[]>;
   currentStageId: string;
   currentObjectiveId?: string | null;
   currentObjectiveLabel?: string | null;
@@ -616,6 +817,8 @@ recoveryMode?: string;
 toolsRequested: string[];
     toolExecutionsCount: number;
     memoryToolResults: Array<{ toolName: string; status: string; reasonCode?: string; resultCount?: number }>;
+    authorizedCandidateAudios?: Array<{ audioId: string; title: string; transcript: string; whenToUse: string; duration?: number }>;
+    audioSearchResults?: { query: string; count: number };
     actualMemoryToolCalled: boolean;
     durationMs: number;
     inputTokens: number;
@@ -1208,6 +1411,52 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             telemetry.memoryToolResults.push({ toolName, status: output.status, reasonCode: output.reasonCode, resultCount: output.results?.length || 0 });
             console.log("[Brain] tool_output_submitted");
             return output;
+          }
+          if (toolName === "cofre_audio_search") {
+            console.log(`[Brain] tool_requested ${toolName}`);
+            telemetry.toolsRequested.push(toolName);
+            telemetry.toolExecutionsCount++;
+            if (!telemetry.sourcesUsed.includes("cofre_audio")) {
+              telemetry.sourcesUsed.push("cofre_audio");
+            }
+            const query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
+            let candidates: any[] = [];
+            try {
+              if (typeof params.searchCofreAudios === "function") {
+                candidates = await params.searchCofreAudios({
+                  supabase: params.supabase,
+                  conversationId: params.conversationId,
+                  query,
+                  limit: 3,
+                });
+              } else {
+                candidates = await executeCofreAudioSearch({
+                  supabase: params.supabase,
+                  conversationId: params.conversationId,
+                  query,
+                  limit: 3,
+                });
+              }
+            } catch (err: any) {
+              console.warn("[Brain] Erro na busca de áudio do cofre:", err);
+            }
+
+            const sanitizedCandidates = candidates.slice(0, 3).map((c: any) => ({
+              audioId: String(c.audioId || c.audio_id || c.id),
+              title: String(c.title || ""),
+              transcript: String(c.transcript || c.full_transcript || ""),
+              whenToUse: String(c.whenToUse || c.when_to_use || c.usageInstruction || c.usage_instruction || ""),
+              ...(c.duration != null ? { duration: Number(c.duration) } : {}),
+            }));
+
+            telemetry.authorizedCandidateAudios = sanitizedCandidates;
+            console.log(`[Brain] audio_candidates_returned count=${sanitizedCandidates.length}`);
+            console.log("[Brain] tool_output_submitted");
+            return {
+              status: sanitizedCandidates.length > 0 ? "success_with_results" : "success_no_results",
+              count: sanitizedCandidates.length,
+              candidates: sanitizedCandidates,
+            };
           }
           throw new Error(`Tool não suportada: ${toolName}`);
         },
