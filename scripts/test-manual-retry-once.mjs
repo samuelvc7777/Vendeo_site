@@ -92,6 +92,21 @@ function createMockSupabase(initialConversations = {}, initialMessages = [], opt
         return {
           select(fields) {
             return {
+              in(col, values) {
+                return {
+                  order(col2, opts) {
+                    return {
+                      limit: async (lim) => {
+                        const set = new Set(values);
+                        const filtered = messages
+                          .filter((m) => set.has(m[col]))
+                          .sort((a, b) => (a[col2] > b[col2] ? (opts?.ascending === false ? -1 : 1) : (opts?.ascending === false ? 1 : -1)));
+                        return { data: filtered.slice(0, lim), error: null };
+                      },
+                    };
+                  },
+                };
+              },
               eq(col1, val1) {
                 return {
                   eq(col2, val2) {

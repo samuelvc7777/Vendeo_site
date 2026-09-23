@@ -1,5 +1,7 @@
--- Migration local: escopo da validação de outbox por lote pendente na autorização manual de retry
--- Impede que outbox histórica de ciclos passados bloqueie o retry de novos lotes pendentes.
+-- Migration: correção de tipo e precedência temporal em authorize_manual_autopilot_retry
+-- 1. Corrige tipo de iteração em jsonb_each_text(v_ledger) para text (evita erro 22P02)
+-- 2. Incorpora precedência temporal (min_pending_at): outbox ou ciclos finalizados antes
+--    da criação da primeira mensagem do lote pendente são comprovadamente históricos e não bloqueiam.
 
 CREATE OR REPLACE FUNCTION public.authorize_manual_autopilot_retry(
   p_conversation_id text,
@@ -15,10 +17,12 @@ DECLARE
   v_active_token text;
   v_active_at timestamptz;
   v_key text;
-  v_entry jsonb;
+  v_outbox_entry jsonb;
+  v_entry_text text;
   v_msg_id text;
   v_pending_count int := 0;
   v_pending_ids text[] := ARRAY[]::text[];
+  v_min_pending_at timestamptz := NULL;
   v_ai_auto boolean;
   v_technical_retry_count int;
   v_exhausted_at text;
@@ -31,7 +35,9 @@ DECLARE
   v_cycle_item jsonb;
   v_cycle_id text;
   v_claimed_ids text[];
+  v_cycle_completed_at timestamptz;
   v_outbox_cycle_id text;
+  v_outbox_created_at timestamptz;
   v_is_relevant_outbox boolean;
 BEGIN
   -- 1. Lock exclusivo na linha da conversa
@@ -86,8 +92,8 @@ BEGIN
   END IF;
 
   -- 5. RESOLVER PRIMEIRO O LOTE PENDENTE (pendingMessageIds)
-  FOR v_msg_id, v_entry IN SELECT key, value FROM jsonb_each_text(v_ledger) LOOP
-    IF v_entry = 'pending' THEN
+  FOR v_msg_id, v_entry_text IN SELECT key, value FROM jsonb_each_text(v_ledger) LOOP
+    IF v_entry_text = 'pending' THEN
       v_pending_count := v_pending_count + 1;
       v_pending_ids := array_append(v_pending_ids, v_msg_id);
     END IF;
@@ -114,8 +120,12 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'reason', 'no_pending_messages', 'message', 'Não há mensagens pendentes a responder.');
   END IF;
 
+  -- Obtém o timestamp da mensagem mais antiga do lote pendente atual
+  SELECT MIN(created_at) INTO v_min_pending_at
+  FROM public.instagram_messages
+  WHERE id = ANY(v_pending_ids);
+
   -- 6. IDENTIFICAR CICLOS RELACIONADOS AO LOTE PENDENTE
-  -- Itera sobre recentCycles e activeCycle para classificar quais ciclos processaram este lote
   IF jsonb_typeof(v_recent_cycles) = 'array' THEN
     FOR v_cycle_item IN SELECT * FROM jsonb_array_elements(v_recent_cycles) LOOP
       v_cycle_id := v_cycle_item->>'cycleId';
@@ -129,6 +139,16 @@ BEGIN
           v_relevant_cycle_ids := array_append(v_relevant_cycle_ids, v_cycle_id);
         ELSIF v_claimed_ids IS NOT NULL AND array_length(v_claimed_ids, 1) > 0 THEN
           v_unrelated_cycle_ids := array_append(v_unrelated_cycle_ids, v_cycle_id);
+        ELSE
+          -- Se o ciclo não tem claimedMessageIds gravado, verifica causalidade temporal por completedAt
+          BEGIN
+            v_cycle_completed_at := (v_cycle_item->>'completedAt')::timestamptz;
+          EXCEPTION WHEN OTHERS THEN
+            v_cycle_completed_at := NULL;
+          END;
+          IF v_cycle_completed_at IS NOT NULL AND v_min_pending_at IS NOT NULL AND v_cycle_completed_at < v_min_pending_at THEN
+            v_unrelated_cycle_ids := array_append(v_unrelated_cycle_ids, v_cycle_id);
+          END IF;
         END IF;
       END IF;
     END LOOP;
@@ -149,24 +169,35 @@ BEGIN
   END IF;
 
   -- 7. VALIDAÇÃO DE OUTBOX ESCOPADA (Fail-Closed apenas para o lote relevante ou ambíguo)
-  FOR v_key, v_entry IN SELECT * FROM jsonb_each(v_outbox) LOOP
-    v_outbox_cycle_id := COALESCE(v_entry->>'cycleId', '');
+  FOR v_key, v_outbox_entry IN SELECT * FROM jsonb_each(v_outbox) LOOP
+    v_outbox_cycle_id := COALESCE(v_outbox_entry->>'cycleId', '');
     
+    -- Extrai createdAt da outbox entry para checagem de causalidade temporal
+    BEGIN
+      v_outbox_created_at := (v_outbox_entry->>'createdAt')::timestamptz;
+    EXCEPTION WHEN OTHERS THEN
+      v_outbox_created_at := NULL;
+    END;
+
     -- Determina se a entrada de outbox é relevante ao lote atual:
     -- 1) Se o cycleId pertence aos ciclos relevantes deste lote: RELEVANTE
     -- 2) Se o cycleId pertence comprovadamente aos ciclos não-relacionados (outros lotes): IGNORA
-    -- 3) Se o cycleId for desconhecido/ambíguo: FAIL-CLOSED (trata como relevante)
+    -- 3) Se a outbox foi criada antes da mensagem pendente mais antiga deste lote: IGNORA (causalidade temporal)
+    -- 4) Se o cycleId for desconhecido/ambíguo e posterior às pendentes: FAIL-CLOSED (trata como relevante)
     IF v_outbox_cycle_id <> '' AND v_outbox_cycle_id = ANY(v_relevant_cycle_ids) THEN
       v_is_relevant_outbox := true;
     ELSIF v_outbox_cycle_id <> '' AND v_outbox_cycle_id = ANY(v_unrelated_cycle_ids) THEN
       v_is_relevant_outbox := false;
+    ELSIF v_outbox_created_at IS NOT NULL AND v_min_pending_at IS NOT NULL AND v_outbox_created_at < v_min_pending_at THEN
+      -- Outbox gerada antes da chegada do lote atual é historicamente disjunta
+      v_is_relevant_outbox := false;
     ELSE
-      -- Ambiguidade: se a outbox tem cycleId desconhecido ou não rastreado, age fail-closed
+      -- Ambiguidade: se a outbox tem cycleId desconhecido e não foi gerada antes das pendentes, age fail-closed
       v_is_relevant_outbox := true;
     END IF;
 
     IF v_is_relevant_outbox THEN
-      IF v_entry->>'status' IN ('sent') OR NULLIF(v_entry->>'providerMessageId', '') IS NOT NULL THEN
+      IF v_outbox_entry->>'status' IN ('sent') OR NULLIF(v_outbox_entry->>'providerMessageId', '') IS NOT NULL THEN
         RETURN jsonb_build_object(
           'success', false,
           'reason', 'outbox_already_sent',
@@ -174,7 +205,7 @@ BEGIN
           'blockingCycleId', v_outbox_cycle_id
         );
       END IF;
-      IF v_entry->>'status' IN ('sending') THEN
+      IF v_outbox_entry->>'status' IN ('sending') THEN
         RETURN jsonb_build_object(
           'success', false,
           'reason', 'outbox_sending',
@@ -182,7 +213,7 @@ BEGIN
           'blockingCycleId', v_outbox_cycle_id
         );
       END IF;
-      IF v_entry->>'status' IN ('dispatch_uncertain') OR COALESCE((v_entry->>'isUncertain')::boolean, false) IS TRUE THEN
+      IF v_outbox_entry->>'status' IN ('dispatch_uncertain') OR COALESCE((v_outbox_entry->>'isUncertain')::boolean, false) IS TRUE THEN
         RETURN jsonb_build_object(
           'success', false,
           'reason', 'outbox_uncertain',
@@ -194,10 +225,6 @@ BEGIN
   END LOOP;
 
   -- 8. AUTORIZAÇÃO ATÔMICA:
-  -- - Registra o novo cycle_token
-  -- - Marca manualRetryAttempt = true
-  -- - Vincula previousCycleToken
-  -- - Mantém technicalRetryCount em 3 para que o cron NÃO assuma
   v_old_cycle := COALESCE(v_rules->>'active_cycle_token', v_orch->>'lastCycleId');
   v_orch := jsonb_set(v_orch, '{messageLedger}', v_ledger);
   v_orch := jsonb_set(v_orch, '{manualRetryAttempt}', 'true'::jsonb);

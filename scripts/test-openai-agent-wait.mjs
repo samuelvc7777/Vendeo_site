@@ -65,6 +65,7 @@ async function withAdvancedSyntheticAgent(options, run) {
     sessionPolls: 0,
     turnPolls: 0,
     itemsCalls: 0,
+    turnsListCalls: 0,
   };
 
   globalThis.setTimeout = (callback, delay) => {
@@ -96,6 +97,11 @@ async function withAdvancedSyntheticAgent(options, run) {
 
     // GET /agents/sessions/{sessionId}/turns (listagem)
     if (address.endsWith('/turns') || address.includes('/turns?')) {
+      state.turnsListCalls++;
+      if (typeof options.turnsList === 'function') {
+        const generated = options.turnsList(state.turnsListCalls);
+        return response({ data: generated, has_more: false });
+      }
       if (options.turnsList) {
         return response({ data: options.turnsList, has_more: false });
       }
@@ -477,14 +483,146 @@ test('13. Runtime real simulado + nenhum turnId identificável -> FAIL-CLOSED (n
         status: 'completed', // Mesmo com session completed!
       },
       sessionData: { id: 'sess_local_test', status: 'completed' },
-      turnsList: [], // Sem turn identificável
-      // allowSessionStatusFallback: omitido -> padrão estrito do runtime real (false)
+      turnsList: [], // Sem turn identificável durante toda a janela e reconciliação final
     },
-    (result) => {
+    (result, state) => {
       assert.equal(result.success, false, 'Deve falhar fail-closed');
-      assert.match(result.error, /agent_turn_identification_failed/, 'Deve lançar erro explícito de turn não identificado');
-      assert.equal(result.telemetry.status, 'failed');
+      assert.match(result.error, /agent_turn_identification_timeout/, 'Deve lançar erro explícito de turn não identificado após deadline');
+      assert.equal(result.telemetry.status, 'agent_turn_identification_timeout');
+      assert.equal(result.telemetry.turnStatus, 'unidentified');
       assert.equal(result.plan, null, 'Não deve emitir plano baseado no status da session');
+      assert.ok(state.turnsListCalls > 1, 'Deve ter tentado listar turns ao longo de toda a janela');
+    }
+  );
+});
+
+test('14. Caso Real Obrigatório: Turn não visível nos primeiros segundos, aparece depois e completa -> SUCCESS', async () => {
+  const startTime = Date.now();
+  await withAdvancedSyntheticAgent(
+    {
+      initialSession: {
+        id: 'sess_local_test',
+        status: 'in_progress',
+        // Sem current_turn / turn_id
+      },
+      sessionData: { id: 'sess_local_test', status: 'in_progress' },
+      // t=0s, 3s, 5s -> []
+      // t=9s (chamada 3 ou 4) -> turn aparece
+      turnsList: (callCount) => {
+        if (callCount < 3) return [];
+        return [
+          {
+            id: 'turn_root_current',
+            session_id: 'sess_local_test',
+            status: 'in_progress',
+            created_at: startTime / 1000,
+          },
+        ];
+      },
+      turnHandler: (callCount) => {
+        if (callCount === 1) return { id: 'turn_root_current', status: 'in_progress' };
+        return { id: 'turn_root_current', status: 'completed' };
+      },
+    },
+    (result, state) => {
+      assert.equal(result.success, true, 'Deve ter sucesso após o turn propagar e concluir');
+      assert.notEqual(result.plan, null, 'Deve retornar plano válido');
+      assert.equal(result.telemetry.turnId, 'turn_root_current');
+      assert.equal(result.telemetry.turnStatus, 'completed');
+      assert.equal(result.telemetry.status, 'completed');
+      assert.equal(result.telemetry.completionSource, 'turn');
+      assert.ok(state.turnsListCalls >= 3, 'Deve ter continuado tentando listar turns até aparecer');
+    }
+  );
+});
+
+test('15. Caso de Produção Mais Importante: Turn só aparece DEPOIS das antigas 3 tentativas iniciais -> aguarda e conclui sem retry', async () => {
+  const startTime = Date.now();
+  await withAdvancedSyntheticAgent(
+    {
+      initialSession: {
+        id: 'sess_local_test',
+        status: 'in_progress',
+      },
+      sessionData: { id: 'sess_local_test', status: 'in_progress' },
+      // Retorna vazio nas primeiras 4 chamadas (supera o limite antigo de 3 tentativas rápidas)
+      turnsList: (callCount) => {
+        if (callCount <= 4) return [];
+        return [
+          {
+            id: 'turn_prod_delayed',
+            session_id: 'sess_local_test',
+            status: 'in_progress',
+            created_at: startTime / 1000,
+          },
+        ];
+      },
+      turnHandler: (callCount) => {
+        if (callCount === 1) return { id: 'turn_prod_delayed', status: 'in_progress' };
+        return { id: 'turn_prod_delayed', status: 'completed' };
+      },
+    },
+    (result, state) => {
+      assert.equal(result.success, true);
+      assert.notEqual(result.plan, null);
+      assert.equal(result.telemetry.turnId, 'turn_prod_delayed');
+      assert.equal(result.telemetry.turnStatus, 'completed');
+      assert.ok(state.turnsListCalls >= 5, 'Deve ter realizado 5 ou mais tentativas de listagem de turns');
+    }
+  );
+});
+
+test('16. Caso Deadline sem Turn: Durante toda a janela nenhum turn aparece -> FAIL-CLOSED (agent_turn_identification_timeout)', async () => {
+  await withAdvancedSyntheticAgent(
+    {
+      initialSession: {
+        id: 'sess_local_test',
+        status: 'completed', // Mesmo com session completed!
+      },
+      sessionData: { id: 'sess_local_test', status: 'completed' },
+      turnsList: () => [], // Sem turn em nenhuma chamada
+    },
+    (result, state) => {
+      assert.equal(result.success, false, 'Deve falhar fail-closed');
+      assert.match(result.error, /agent_turn_identification_timeout/);
+      assert.equal(result.telemetry.status, 'agent_turn_identification_timeout');
+      assert.equal(result.telemetry.turnStatus, 'unidentified');
+      assert.equal(result.plan, null, 'NÃO deve sintetizar resposta baseada na Session');
+      assert.ok(state.turnsListCalls >= 40, 'Deve ter tentado até o deadline de espera da janela');
+    }
+  );
+});
+
+test('17. Caso Turn Aparece no Último Instante: Turn ausente durante polling, aparece completed na reconciliação final -> SUCCESS', async () => {
+  const startTime = Date.now();
+  await withAdvancedSyntheticAgent(
+    {
+      initialSession: {
+        id: 'sess_local_test',
+        status: 'in_progress',
+      },
+      sessionData: { id: 'sess_local_test', status: 'in_progress' },
+      // Retorna vazio durante as 45 iterações do laço regular de polling
+      // Na reconciliação final (após esgotar os polls regulares), o Turn aparece completed
+      turnsList: (callCount) => {
+        if (callCount < 46) return [];
+        return [
+          {
+            id: 'turn_last_second_savior',
+            session_id: 'sess_local_test',
+            status: 'completed',
+            created_at: startTime / 1000,
+          },
+        ];
+      },
+      turnHandler: () => ({ id: 'turn_last_second_savior', status: 'completed' }),
+    },
+    (result, state) => {
+      assert.equal(result.success, true, 'Deve ter sucesso pela reconciliação final');
+      assert.notEqual(result.plan, null, 'Deve retornar plano válido');
+      assert.equal(result.telemetry.turnId, 'turn_last_second_savior');
+      assert.equal(result.telemetry.turnStatus, 'completed');
+      assert.equal(result.telemetry.completionSource, 'turn');
     }
   );
 });

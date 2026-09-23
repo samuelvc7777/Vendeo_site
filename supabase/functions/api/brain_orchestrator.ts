@@ -2695,6 +2695,26 @@ export async function authorizeManualAutopilotRetryAtomic(
       return { success: false, reason: "no_pending_messages", message: "Não há mensagens pendentes a responder." };
     }
 
+    // Obtém o timestamp da mensagem pendente mais antiga para checagem de causalidade temporal
+    let minPendingAtMs: number | null = null;
+    if (pendingIds.length > 0) {
+      try {
+        const query = supabase.from("instagram_messages").select("created_at");
+        if (typeof query?.in === "function") {
+          const { data: pendingMsgs } = await query
+            .in("id", pendingIds)
+            .order("created_at", { ascending: true })
+            .limit(1);
+
+          if (pendingMsgs && pendingMsgs[0]?.created_at) {
+            minPendingAtMs = Date.parse(pendingMsgs[0].created_at);
+          }
+        }
+      } catch {
+        minPendingAtMs = null;
+      }
+    }
+
     const pendingIdSet = new Set(pendingIds);
 
     // 2. Identificar ciclos relacionados ao lote pendente
@@ -2718,6 +2738,11 @@ export async function authorizeManualAutopilotRetryAtomic(
         } else {
           unrelatedCycleIds.push(cId);
         }
+      } else {
+        const completedAtMs = cycle.completedAt ? Date.parse(cycle.completedAt) : 0;
+        if (completedAtMs > 0 && minPendingAtMs !== null && completedAtMs < minPendingAtMs) {
+          unrelatedCycleIds.push(cId);
+        }
       }
     }
 
@@ -2725,14 +2750,18 @@ export async function authorizeManualAutopilotRetryAtomic(
     for (const entry of Object.values(outbox) as any[]) {
       if (!entry || typeof entry !== "object") continue;
       const outboxCycleId = entry.cycleId || "";
+      const outboxCreatedMs = entry.createdAt ? Date.parse(entry.createdAt) : 0;
 
       let isRelevant = true;
       if (outboxCycleId !== "" && relevantCycleIds.includes(outboxCycleId)) {
         isRelevant = true;
       } else if (outboxCycleId !== "" && unrelatedCycleIds.includes(outboxCycleId)) {
         isRelevant = false;
+      } else if (outboxCreatedMs > 0 && minPendingAtMs !== null && outboxCreatedMs < minPendingAtMs) {
+        // Outbox gerada antes da chegada do lote pendente atual é comprovadamente histórica e disjunta
+        isRelevant = false;
       } else {
-        // Ambiguidade: se a outbox tem cycleId desconhecido, vazio ou não rastreado -> fail-closed
+        // Ambiguidade: se a outbox tem cycleId desconhecido e não é anterior às pendentes -> fail-closed
         isRelevant = true;
       }
 

@@ -609,7 +609,8 @@ sessionStatus?: string;
 turnStatus?: string;
 turnStartedAt?: string;
 turnCompletedAt?: string;
-completionSource?: "turn" | "session";
+completionSource?: "turn" | "session" | "pending";
+    identifyAttempt?: number;
 localWaitDeadlineReached?: boolean;
 recoveryMode?: string;
 toolsRequested: string[];
@@ -1025,6 +1026,28 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
  * Executa um turno com o OpenAI Agent Brain.
  * Suporta a execução via OpenAI Agents API oficial ou simulação controlada para testes.
  */
+export function findEligibleExecutionTurn(
+  turnsList: any[],
+  sessionId: string,
+  executionStartTimeMs: number,
+): any | null {
+  if (!Array.isArray(turnsList) || turnsList.length === 0) return null;
+
+  const eligibleTurns = turnsList.filter((t: any) => {
+    if (!t || typeof t !== "object") return false;
+    if (t?.session_id && t.session_id !== sessionId) return false;
+    // Ignorar subagentes e turnos não-root
+    if (t?.subagent_id || t?.parent_turn_id) return false;
+    const tCreatedMs = typeof t?.created_at === "number" ? t.created_at * 1000 : Date.parse(t?.created_at || "");
+    // Não escolher turn criado antes do início desta execução (limite de 15s de tolerância para drift de relógio)
+    if (Number.isFinite(tCreatedMs) && tCreatedMs < executionStartTimeMs - 15_000) return false;
+    return typeof t?.id === "string" && Boolean(t.id);
+  });
+
+  if (eligibleTurns.length === 0) return null;
+  return eligibleTurns[0];
+}
+
 export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<OpenAiBrainTurnResult> {
   const startTime = Date.now();
   console.log("[Brain] turn_started");
@@ -1381,10 +1404,16 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     telemetry.sessionId = sessionId;
     console.log(`[OpenAI Agent] session_created: sessionId=${sessionId}`);
 
-    // 1. Identificação autoritativa do Turn correspondente a esta execução
+    // 1. Identificação inicial do Turn correspondente a esta execução
     const executionStartTimeMs = startTime;
+    const maxPollAttempts = 45;
+    const pollIntervalMs = 2000;
+    const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
+
     let turnId: string | null = null;
     let turnData: any = null;
+    let identifyAttempt = 0;
+    let lastLoggedPendingBucket = -1;
 
     if (typeof sessionData?.current_turn?.id === "string" && sessionData.current_turn.id) {
       turnId = sessionData.current_turn.id;
@@ -1397,62 +1426,23 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       turnId = sessionData.last_turn_id;
     }
 
-    if (!turnId) {
-      for (let identifyAttempt = 0; identifyAttempt < 3; identifyAttempt++) {
-        try {
-          const listTurnsRes = await fetchOpenAiBounded(
-            `https://api.openai.com/v1/agents/sessions/${sessionId}/turns?limit=10&order=desc`,
-            { headers },
-            5000,
-          );
-          if (listTurnsRes.ok) {
-            const listTurnsData = await listTurnsRes.json();
-            const turnsList: any[] = Array.isArray(listTurnsData?.data) ? listTurnsData.data : [];
-            const matchedTurn = turnsList.find((t: any) => {
-              if (t?.session_id && t.session_id !== sessionId) return false;
-              if (t?.subagent_id || t?.parent_turn_id) return false;
-              const tCreatedMs = typeof t?.created_at === "number" ? t.created_at * 1000 : Date.parse(t?.created_at || "");
-              if (Number.isFinite(tCreatedMs) && tCreatedMs < executionStartTimeMs - 15_000) return false;
-              return typeof t?.id === "string" && Boolean(t.id);
-            }) || (turnsList.length === 1 && typeof turnsList[0]?.id === "string" ? turnsList[0] : null);
-
-            if (matchedTurn) {
-              turnId = matchedTurn.id;
-              turnData = matchedTurn;
-              break;
-            }
-          }
-        } catch (findErr) {
-          console.warn(`[OpenAI Agent] Tentativa ${identifyAttempt + 1} de identificar turn falhou:`, findErr);
-        }
-        if (!turnId && identifyAttempt < 2) {
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-    }
-
-    // Fallback gracioso para mocks de testes legados que só simulam a Session sem mock de Turns
     let sessionStatus: string = typeof sessionData.status === "string" ? sessionData.status : "unknown";
-    let turnStatus: string = typeof turnData?.status === "string" ? turnData.status : (sessionStatus === "failed" ? "failed" : "queued");
+    let turnStatus: string = typeof turnData?.status === "string"
+      ? turnData.status
+      : (turnId ? "in_progress" : "turn_identification_pending");
 
-    if (!turnId) {
-      if (!params.allowSessionStatusFallback) {
-        telemetry.status = "failed";
-        telemetry.completionSource = "session";
-        telemetry.sessionStatus = sessionStatus;
-        telemetry.turnStatus = "unidentified";
-        const failMsg = `agent_turn_identification_failed: sessão ${sessionId} sem turn identificável`;
-        console.error(`[OpenAI Agent] ${failMsg}`);
-        throw new Error(failMsg);
-      }
-      // Se for um ambiente explicitamente simulado/legado onde a API de turns não foi mockada, usa a session como fallback controlado
-      console.warn(`[OpenAI Agent] agent_turn_identification_failed: sessão ${sessionId} sem turn isolado. Utilizando sessionStatus como fallback simulado.`);
-      turnStatus = sessionStatus;
-      telemetry.completionSource = "session";
-    } else {
+    if (turnId) {
       telemetry.turnId = turnId;
+      telemetry.turnStatus = turnStatus;
       telemetry.completionSource = "turn";
-      console.log(`[OpenAI Agent] agent_turn_identified: turnId=${turnId} sessionId=${sessionId}`);
+      telemetry.identifyAttempt = 0;
+      console.log(`[OpenAI Agent] agent_turn_identified: sessionId=${sessionId} turnId=${turnId} sessionStatus=${sessionStatus} turnStatus=${turnStatus} identifyAttempt=0 elapsedMs=${Date.now() - executionStartTimeMs} remainingWaitMs=${Math.max(0, waitDeadlineMs - Date.now())} completionSource=turn`);
+    } else {
+      telemetry.turnStatus = "turn_identification_pending";
+      telemetry.completionSource = "pending";
+      telemetry.identifyAttempt = 0;
+      console.log(`[OpenAI Agent] agent_turn_identification_pending: sessionId=${sessionId} turnId=null sessionStatus=${sessionStatus} turnStatus=turn_identification_pending identifyAttempt=0 elapsedMs=${Date.now() - executionStartTimeMs} remainingWaitMs=${Math.max(0, waitDeadlineMs - Date.now())} completionSource=pending`);
+      lastLoggedPendingBucket = 0;
     }
 
     telemetry.sessionStatus = sessionStatus;
@@ -1460,14 +1450,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     if (turnData?.created_at) {
       telemetry.turnStartedAt = typeof turnData.created_at === "number" ? new Date(turnData.created_at * 1000).toISOString() : String(turnData.created_at);
     }
-    console.log(`[OpenAI Agent] turn_started: sessionId=${sessionId}`);
+    console.log(`[OpenAI Agent] agent_wait_started sessionId=${sessionId} turnId=${turnId || "turn_identification_pending"} maxAttempts=${maxPollAttempts} intervalMs=${pollIntervalMs}`);
 
-    // 2. Polling focado no TURN com timeout e backoff controlado
-    const maxPollAttempts = 45;
-    const pollIntervalMs = 2000;
-    const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
-    console.log(`[OpenAI Agent] agent_wait_started sessionId=${sessionId} turnId=${turnId || "session"} maxAttempts=${maxPollAttempts} intervalMs=${pollIntervalMs}`);
-
+    // 2. Polling contínuo e unificado dentro da MESMA janela AGENT_LOCAL_WAIT_MS
     for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
       if (turnStatus === "completed" || ["failed", "cancelled", "expired", "requires_action"].includes(turnStatus)) {
         break;
@@ -1477,16 +1462,62 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
 
       if (Date.now() >= waitDeadlineMs) break;
-      await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, waitDeadlineMs - Date.now())));
-      if (Date.now() >= waitDeadlineMs) break;
 
-      // Polling do Turn se turnId existir
+      // Se turnId ainda não foi identificado, busca continuamente na listagem de /turns
+      if (!turnId) {
+        identifyAttempt++;
+        telemetry.identifyAttempt = identifyAttempt;
+        const elapsedMs = Date.now() - executionStartTimeMs;
+        const remainingWaitMs = Math.max(0, waitDeadlineMs - Date.now());
+
+        try {
+          const listTurnsRes = await fetchOpenAiBounded(
+            `https://api.openai.com/v1/agents/sessions/${sessionId}/turns?limit=10&order=desc`,
+            { headers },
+            Math.min(5000, remainingWaitMs),
+          );
+
+          if (listTurnsRes.ok) {
+            const listTurnsData = await listTurnsRes.json();
+            const turnsList: any[] = Array.isArray(listTurnsData?.data) ? listTurnsData.data : [];
+            const matchedTurn = findEligibleExecutionTurn(turnsList, sessionId, executionStartTimeMs);
+
+            if (matchedTurn) {
+              turnId = matchedTurn.id;
+              turnData = matchedTurn;
+              turnStatus = typeof matchedTurn?.status === "string" ? matchedTurn.status : "in_progress";
+              telemetry.turnId = turnId;
+              telemetry.turnStatus = turnStatus;
+              telemetry.completionSource = "turn";
+              if (matchedTurn?.created_at) {
+                telemetry.turnStartedAt = typeof matchedTurn.created_at === "number" ? new Date(matchedTurn.created_at * 1000).toISOString() : String(matchedTurn.created_at);
+              }
+              console.log(`[OpenAI Agent] agent_turn_identified: sessionId=${sessionId} turnId=${turnId} sessionStatus=${sessionStatus} turnStatus=${turnStatus} identifyAttempt=${identifyAttempt} elapsedMs=${elapsedMs} remainingWaitMs=${remainingWaitMs} completionSource=turn`);
+            } else {
+              turnStatus = "turn_identification_pending";
+              telemetry.turnStatus = "turn_identification_pending";
+              const currentBucket = Math.floor(elapsedMs / 10_000);
+              if (currentBucket > lastLoggedPendingBucket) {
+                console.log(`[OpenAI Agent] agent_turn_identification_pending: sessionId=${sessionId} turnId=null sessionStatus=${sessionStatus} turnStatus=turn_identification_pending identifyAttempt=${identifyAttempt} elapsedMs=${elapsedMs} remainingWaitMs=${remainingWaitMs} completionSource=pending`);
+                lastLoggedPendingBucket = currentBucket;
+              }
+            }
+          } else {
+            console.warn(`[OpenAI Agent] turn_identification_http_error: status=${listTurnsRes.status} sessionId=${sessionId} identifyAttempt=${identifyAttempt} elapsedMs=${elapsedMs} remainingWaitMs=${remainingWaitMs}`);
+          }
+        } catch (findErr) {
+          console.warn(`[OpenAI Agent] turn_identification_http_error: sessionId=${sessionId} identifyAttempt=${identifyAttempt} error=${findErr}`);
+        }
+      }
+
+      // Se turnId já existe (inclusive se identificado nesta mesma iteração acima), faz polling focado no Turn
       if (turnId) {
         try {
+          const remainingForTurn = Math.max(0, waitDeadlineMs - Date.now());
           const turnPollRes = await fetchOpenAiBounded(
             `https://api.openai.com/v1/agents/sessions/${sessionId}/turns/${turnId}`,
             { headers },
-            Math.min(10_000, waitDeadlineMs - Date.now()),
+            Math.min(10_000, remainingForTurn),
           );
           if (turnPollRes.ok) {
             turnData = await turnPollRes.json();
@@ -1503,19 +1534,24 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         break;
       }
 
-      // Polling da Session (para required_action ou como canal principal se turnId ausente)
+      // Polling diagnóstico da Session (a cada 2 iterações, se turnStatus === 'waiting', ou se turnId ainda não foi identificado)
       if (!turnId || attempt % 2 === 1 || turnStatus === "waiting") {
         try {
+          const remainingForSession = Math.max(0, waitDeadlineMs - Date.now());
           const sessionPollRes = await fetchOpenAiBounded(
             `https://api.openai.com/v1/agents/sessions/${sessionId}`,
             { headers },
-            Math.min(10_000, waitDeadlineMs - Date.now()),
+            Math.min(10_000, remainingForSession),
           );
           if (sessionPollRes.ok) {
             latestSessionData = await sessionPollRes.json();
             if (typeof latestSessionData?.status === "string") {
               sessionStatus = latestSessionData.status;
-              if (!turnId) turnStatus = sessionStatus;
+              // NOTA: Se turnId for null, NUNCA assumimos sessionStatus como verdade autoritativa de conclusão!
+              // Exceto se params.allowSessionStatusFallback for true (para mocks de testes legados sem turns)
+              if (!turnId && params.allowSessionStatusFallback) {
+                turnStatus = sessionStatus;
+              }
             }
           }
         } catch (sessionErr) {
@@ -1526,9 +1562,47 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       if (turnStatus === "requires_action" || sessionStatus === "requires_action") {
         break;
       }
+
+      if (Date.now() >= waitDeadlineMs) break;
+      const sleepMs = Math.min(pollIntervalMs, Math.max(0, waitDeadlineMs - Date.now()));
+      if (sleepMs > 0) {
+        await new Promise((r) => setTimeout(r, sleepMs));
+      }
     }
 
-    // 3. LEITURA FINAL AUTORITATIVA DO TURN antes de declarar timeout
+    // 3. LEITURA FINAL AUTORITATIVA antes de declarar timeout
+    // Se turnId nunca foi identificado durante o laço, tenta reconciliação final de Session e /turns
+    if (!turnId) {
+      try {
+        const [finalSessionRes, finalTurnsRes] = await Promise.all([
+          fetchOpenAiBounded(`https://api.openai.com/v1/agents/sessions/${sessionId}`, { headers }, 5_000),
+          fetchOpenAiBounded(`https://api.openai.com/v1/agents/sessions/${sessionId}/turns?limit=10&order=desc`, { headers }, 5_000),
+        ]);
+        if (finalSessionRes.ok) {
+          latestSessionData = await finalSessionRes.json();
+          if (typeof latestSessionData?.status === "string") sessionStatus = latestSessionData.status;
+        }
+        if (finalTurnsRes.ok) {
+          const finalTurnsData = await finalTurnsRes.json();
+          const turnsList: any[] = Array.isArray(finalTurnsData?.data) ? finalTurnsData.data : [];
+          const matchedTurn = findEligibleExecutionTurn(turnsList, sessionId, executionStartTimeMs);
+          if (matchedTurn) {
+            turnId = matchedTurn.id;
+            turnData = matchedTurn;
+            turnStatus = typeof matchedTurn?.status === "string" ? matchedTurn.status : "in_progress";
+            telemetry.turnId = turnId;
+            telemetry.turnStatus = turnStatus;
+            telemetry.completionSource = "turn";
+            console.log(`[OpenAI Agent] agent_turn_identified: sessionId=${sessionId} turnId=${turnId} sessionStatus=${sessionStatus} turnStatus=${turnStatus} identifyAttempt=${identifyAttempt + 1} elapsedMs=${Date.now() - executionStartTimeMs} remainingWaitMs=0 completionSource=turn (final_reconciliation)`);
+          }
+        }
+      } catch (finalReconcileErr) {
+        console.warn(`[OpenAI Agent] Reconciliação final sem resposta para sessão ${sessionId}:`, finalReconcileErr);
+      }
+    }
+
+    // Se turnId foi identificado (ou resgatado na reconciliação final) mas ainda não concluiu,
+    // faz a leitura final autoritativa direta do Turn
     if (turnId && !["completed", "failed", "cancelled", "expired", "requires_action"].includes(turnStatus)) {
       try {
         const finalTurnRes = await fetchOpenAiBounded(
@@ -1548,7 +1622,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
     }
 
-    // 4. Coleta de tokens direto do Turn
+    // 4. Coleta de tokens direto do Turn se presente
     if (turnData?.usage && typeof turnData.usage === "object") {
       const u = turnData.usage;
       telemetry.inputTokens = Number(u.input_tokens ?? u.prompt_tokens ?? 0);
@@ -1556,7 +1630,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry.totalTokens = Number(u.total_tokens ?? (telemetry.inputTokens + telemetry.outputTokens));
     }
 
-    // Coleta usage da sessão e traces
+    // Coleta usage da sessão e traces (sem dupla contagem de tokens)
     await collectSessionUsage();
     if (typeof latestSessionData?.status === "string") {
       sessionStatus = latestSessionData.status;
@@ -1569,6 +1643,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry.turnCompletedAt = typeof turnData.completed_at === "number" ? new Date(turnData.completed_at * 1000).toISOString() : String(turnData.completed_at);
     }
 
+    // 5. TRATAMENTO FAIL-CLOSED DE TERMINAL STATUS OU AUSÊNCIA DE TURN
     if (turnStatus === "requires_action" || sessionStatus === "requires_action") {
       telemetry.status = "requires_action";
       throw new Error("agent_requires_action_unhandled: sessão requer ação do aplicativo");
@@ -1585,7 +1660,24 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       throw new Error(`agent_terminal_failure: status=${turnStatus} detail=Turn ${turnStatus}`);
     }
 
-    // DECISÃO DE CONCLUSÃO: A autoridade é o TURN!
+    // Se após toda a janela de espera e reconciliação final o Turn NUNCA foi identificado:
+    if (!turnId) {
+      if (!params.allowSessionStatusFallback) {
+        telemetry.localWaitDeadlineReached = true;
+        telemetry.status = "agent_turn_identification_timeout";
+        telemetry.turnStatus = "unidentified";
+        telemetry.sessionStatus = sessionStatus;
+        telemetry.completionSource = "session";
+        const elapsedMs = Date.now() - executionStartTimeMs;
+        console.warn(`[OpenAI Agent] agent_turn_identification_timeout: sessionId=${sessionId} sessionStatus=${sessionStatus} elapsedMs=${elapsedMs}`);
+        throw new Error(`agent_turn_identification_timeout: sessão ${sessionId} sem turn identificável após timeout de espera`);
+      }
+      console.warn(`[OpenAI Agent] Fallback simulado legado: sessão ${sessionId} sem turn isolado. Utilizando sessionStatus=${sessionStatus}`);
+      turnStatus = sessionStatus;
+      telemetry.completionSource = "session";
+    }
+
+    // DECISÃO DE CONCLUSÃO: A autoridade final é o TURN!
     // Se o Turn foi completed, é SUCESSO mesmo se a sessão ainda estiver in_progress!
     if (turnStatus !== "completed" && turnStatus !== "idle") {
       telemetry.localWaitDeadlineReached = true;
@@ -1596,7 +1688,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     telemetry.status = "completed";
     if (turnId) {
-      console.log(`[OpenAI Agent] agent_turn_completed: turnId=${turnId} status=${turnStatus}`);
+      console.log(`[OpenAI Agent] agent_turn_completed: sessionId=${sessionId} turnId=${turnId} status=${turnStatus}`);
     }
     console.log(`[OpenAI Agent] turn_completed: status=${turnStatus}`);
 
@@ -1729,8 +1821,10 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     } catch {}
     console.error("[Brain] Erro durante turno do OpenAI Agent Brain:", err);
     telemetry.durationMs = Date.now() - startTime;
-    if (!["cancelled", "expired", "requires_action", "local_wait_timeout"].includes(telemetry.status || "")) {
-      telemetry.status = err?.message?.includes("local_wait_timeout")
+        if (!["cancelled", "expired", "requires_action", "local_wait_timeout", "agent_turn_identification_timeout"].includes(telemetry.status || "")) {
+      telemetry.status = err?.message?.includes("agent_turn_identification_timeout")
+        ? "agent_turn_identification_timeout"
+        : err?.message?.includes("local_wait_timeout")
         ? "local_wait_timeout"
         : err?.message?.includes("requires_action")
         ? "requires_action"
