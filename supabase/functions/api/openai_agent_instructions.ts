@@ -9,7 +9,7 @@ import {
   LARISSA_INTERACTION_DNA_VERSION,
 } from "./larissa_interaction_dna.ts";
 
-export const VENDEO_AGENT_INSTRUCTIONS_VERSION = "2.7.0";
+export const VENDEO_AGENT_INSTRUCTIONS_VERSION = "2.8.0";
 
 /**
  * Constrói as instruções persistentes completas e determinísticas do OpenAI Agent.
@@ -21,6 +21,15 @@ export function buildCanonicalAgentInstructions(): string {
 LARISSA_INTERACTION_DNA_VERSION: ${LARISSA_INTERACTION_DNA_VERSION}
 
 Brain central do Vendeo. Analisa cada turno, consulta memórias remotas quando necessário, decide objetivos e ações do turno e formula as respostas finais da Larissa (responses[]) em TURNO ÚNICO.
+
+==================================================
+12. TEMPORAL ELIGIBILITY / RETOMADA APÓS GAP (OBRIGATÓRIO)
+==================================================
+- O bloco CONTEXTO TEMPORAL ATUAL fornecido pelo backend é autoridade para hora, data, timezone America/Sao_Paulo e período do dia; nunca adivinhe nem use o relógio do navegador.
+- Mensagem inbound com mais de 48 horas é HISTÓRICO/CONTEXTO, não obrigação do turno. Inbound Coverage, Social Salience, perguntas, evidência e bestHook atuais consideram somente mensagens frescas elegíveis.
+- Em restart_after_gap, responda prioritariamente à mensagem fresca atual; não reabra automaticamente perguntas, open loops ou checklist antigos.
+- Se houver saudação, use o período atual do backend (bom dia, boa tarde ou boa noite). A saudação do pretendente não substitui o horário atual e não deve ser papagaiada se estiver desatualizada.
+- Não force cumprimento quando o inbound não for saudação nem retomada natural. Memória e histórico permanecem preservados, mas não criam obrigação de resposta.
 
 ==================================================
 1. AUTORIDADE DO BRAIN (BRAIN AUTHORITY CANÔNICA)

@@ -466,7 +466,7 @@ export interface RunOpenAiBrainParams {
   currentObjectiveRequired?: boolean;
   currentObjectiveKind?: string | null;
   inboundMessages: string[];
-  currentInboundMessages?: Array<{ id: string; text: string }>;
+  currentInboundMessages?: Array<{ id: string; text: string; createdAt?: string }>;
   recentMessages: Array<{ id?: string; sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;
   landmarksSummary?: string;
@@ -484,6 +484,7 @@ export interface RunOpenAiBrainParams {
   memoryScopeId?: string;
   recentQuestionIntentsSnippet?: string;
   nextObjectives?: Array<{ id: string; label: string; description?: string; kind?: string }>;
+  temporalContext?: string;
 }
 
 export interface OpenAiBrainTurnResult {
@@ -554,6 +555,9 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   if (liveStateContext) {
     sections.push(`\n## ESTADO VIVO\n${liveStateContext}`);
   }
+  if (params.temporalContext) {
+    sections.push(`\n${params.temporalContext}`);
+  }
   if (params.candidateEvidence?.length) {
     sections.push(`\n## EVIDÊNCIAS CANDIDATAS DE OBJETIVO (NÃO CONCLUEM NADA SOZINHAS)\n${params.candidateEvidence.map((e) => `- objetivo=${e.objectiveId}; mensagem=${e.evidenceMessageId}; evidência=${e.summary}`).join("\n")}`);
   }
@@ -598,7 +602,8 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
       if (cleanText.length > 600) {
         cleanText = cleanText.slice(0, 600) + " [...]";
       }
-      return `[${role}${idSnippet}]:\n${cleanText}`;
+      const timestamp = m.createdAt ? ` | ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(m.createdAt))}` : "";
+      return `[${role}${idSnippet}${timestamp}]:\n${cleanText}`;
     });
 
     // Controle de tamanho: preserva prioritariamente as mais recentes se exceder 9000 caracteres
@@ -613,7 +618,7 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
   let inboundsText = "[Nenhuma mensagem nova]";
   if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
     inboundsText = params.currentInboundMessages
-      .map((m) => `[MENSAGEM id="${m.id}"]: "${m.text}"`)
+      .map((m) => `[MENSAGEM id="${m.id}"${m.createdAt ? ` | ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(m.createdAt))}` : ""}]: "${m.text}"`)
       .join("\n");
   } else if (inboundMessages && inboundMessages.length > 0) {
     inboundsText = inboundMessages.map((msg, i) => `[Mensagem ${i + 1}]: "${msg}"`).join("\n");

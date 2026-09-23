@@ -5625,11 +5625,52 @@ export interface OrchestrationResult {
   error?: string;
 }
 
+export const STALE_INBOUND_CUTOFF_MS = 48 * 60 * 60 * 1000;
+export const LARISSA_TIMEZONE = "America/Sao_Paulo";
+
+function messageTimestampMs(message: any): number {
+  const raw = message?.timestamp || message?.createdAt || message?.created_at;
+  const parsed = typeof raw === "number" ? raw : Date.parse(String(raw || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function daypartForHour(hour: number): "morning" | "afternoon" | "night" {
+  if (hour >= 5 && hour < 12) return "morning";
+  if (hour >= 12 && hour < 18) return "afternoon";
+  return "night";
+}
+
+export function buildTemporalContext(cycleNow: Date, lastRelevantMessageAt?: string | null): string {
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: LARISSA_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    weekday: "long",
+  }).formatToParts(cycleNow);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  const hour = Number(get("hour"));
+  const age = lastRelevantMessageAt ? Math.max(0, cycleNow.getTime() - Date.parse(lastRelevantMessageAt)) : 0;
+  return [
+    "## CONTEXTO TEMPORAL ATUAL",
+    `timezone: ${LARISSA_TIMEZONE}`,
+    `data_local: ${get("year")}-${get("month")}-${get("day")}`,
+    `hora_local: ${get("hour")}:${get("minute")}`,
+    `dia_semana: ${get("weekday")}`,
+    `periodo_do_dia: ${daypartForHour(hour)}`,
+    `conversationRecencyMode: ${age > STALE_INBOUND_CUTOFF_MS ? "restart_after_gap" : "continuous"}`,
+  ].join("\n");
+}
+
 export async function runBrainOrchestration(
   params: RunOrchestrationParams
 ): Promise<OrchestrationResult> {
   const { supabase, conversationId, newMessage, runtime } = params;
   const startTime = Date.now();
+  const cycleNow = new Date();
   const correlationId =
     params.correlationId || `corr_${startTime}_${Math.random().toString(36).slice(2, 7)}`;
   const memoryProvider: MemoryProvider =
@@ -5725,6 +5766,7 @@ export async function runBrainOrchestration(
   }
 
   let claimedMessageIds: string[] = [];
+  let staleMessageIds: string[] = [];
   let sentSuccessfully = false;
   let currentCycle: ProcessingCycle | null = null;
   const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
@@ -5757,6 +5799,8 @@ export async function runBrainOrchestration(
       },
       trace: [
         `cycle_started: ${correlationId}`,
+        `cycle_now_utc=${cycleNow.toISOString()}`,
+        `cycle_timezone=${LARISSA_TIMEZONE}`,
         `input_watermark: rev=${initialInboundRevision}`,
       ],
     };
@@ -5937,6 +5981,24 @@ export async function runBrainOrchestration(
       return timeA > timeB ? 1 : timeA < timeB ? -1 : 0;
     });
 
+    const freshPendingMessages: CanonicalMessage[] = [];
+    const stalePendingMessages: CanonicalMessage[] = [];
+    for (const msg of pendingMessages) {
+      const timestampMs = messageTimestampMs(msg);
+      const ageMs = timestampMs > 0 ? Math.max(0, cycleNow.getTime() - timestampMs) : 0;
+      if (timestampMs > 0 && ageMs > STALE_INBOUND_CUTOFF_MS) stalePendingMessages.push(msg);
+      else freshPendingMessages.push(msg);
+    }
+    staleMessageIds = stalePendingMessages.map((msg) => String(msg.id));
+    for (const id of staleMessageIds) {
+      ledger[id] = "processed";
+      currentCycle.trace.push(`stale_inbound_ignored: ${id}`);
+    }
+    currentCycle.trace.push(`fresh_inbound_count=${freshPendingMessages.length}`);
+    currentCycle.trace.push(`stale_inbound_count=${stalePendingMessages.length}`);
+    pendingMessages.length = 0;
+    pendingMessages.push(...freshPendingMessages);
+
     // DEFESA ATIVA: Se houver qualquer mensagem de áudio pendente sem transcrição, resolve antes de prosseguir
     for (const msg of pendingMessages) {
       if (msg.type === "audio" && (!msg.audioTranscript || !msg.audioTranscript.trim())) {
@@ -5969,9 +6031,10 @@ export async function runBrainOrchestration(
         conversationId,
         cycleToken: correlationId,
         processingStatus: "idle",
+        markProcessedIds: staleMessageIds,
         cycleRecord: currentCycle,
       });
-      return { handled: true, skippedDuplicate: true, blockLegacyFallback: true };
+      return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };
     }
 
     // SNAPSHOT IMUTÁVEL DO CICLO: Claims all pending messages
@@ -6368,6 +6431,14 @@ export async function runBrainOrchestration(
     let currentMemoryScopeId: string | undefined;
 
     if (isOpenAiAgentBrain) {
+      const latestRelevantMessage = [...finalRecentMessages]
+        .filter((message: any) => message?.createdAt)
+        .sort((a: any, b: any) => messageTimestampMs(b) - messageTimestampMs(a))[0];
+      const temporalContext = buildTemporalContext(cycleNow, latestRelevantMessage?.createdAt || null);
+      const localHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: LARISSA_TIMEZONE, hour: "2-digit", hour12: false }).format(cycleNow));
+      currentCycle.trace.push(`cycle_now_local=${new Intl.DateTimeFormat("pt-BR", { timeZone: LARISSA_TIMEZONE, dateStyle: "short", timeStyle: "medium" }).format(cycleNow)}`);
+      currentCycle.trace.push(`cycle_daypart=${daypartForHour(localHour)}`);
+      currentCycle.trace.push(`conversation_recency_mode=${temporalContext.includes("restart_after_gap") ? "restart_after_gap" : "continuous"}`);
       const agentId =
         (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_AGENT_ID") : process.env.OPENAI_BRAIN_AGENT_ID) ||
         stageRules.openaiBrainAgentId ||
@@ -6406,7 +6477,7 @@ export async function runBrainOrchestration(
           currentObjectiveKind: stageChecklistForRouter.currentObjective?.kind,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
           currentInboundMessages: claimedMessages
-            .map((m: any) => ({ id: String(m.id || ""), text: String(m.text || "") }))
+            .map((m: any) => ({ id: String(m.id || ""), text: String(m.text || ""), createdAt: m.createdAt || m.created_at || m.timestamp }))
             .filter((m: any) => m.id && m.text),
           recentMessages: finalRecentMessages.map((m) => ({
             id: m.id,
@@ -6417,6 +6488,7 @@ export async function runBrainOrchestration(
           contactMemorySummary,
           landmarksSummary,
           liveStateContext: JSON.stringify(currentLiveState),
+          temporalContext,
           candidateEvidence: candidateObjectiveEvidence,
           agentId,
           runtime,
@@ -7577,7 +7649,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 cycleToken: correlationId,
                 processingStatus: "sent",
                 debounceUntil: computedDebounceUntil,
-                markProcessedIds: claimedMessageIds,
+                markProcessedIds: [...claimedMessageIds, ...staleMessageIds],
                 cycleRecord: currentCycle,
                 outboxMap: outboxMap,
               });
@@ -7908,7 +7980,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           processingStatus: "failed",
           cycleRecord: currentCycle,
           outboxMap,
-          markProcessedIds: claimedMessageIds,
+          markProcessedIds: [...claimedMessageIds, ...staleMessageIds],
         });
       } else {
         // 1. Calcula progressão determinística usando ESTADO LOCAL/OVERLAY (cycleMemoryProvider)
