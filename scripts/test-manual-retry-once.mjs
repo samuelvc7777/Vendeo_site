@@ -1,7 +1,7 @@
 // ============================================================================
 // scripts/test-manual-retry-once.mjs
-// Suíte de Testes do Retry Manual Seguro (10 Cenários Obrigatórios)
-// Clean Architecture & Resiliência Fail-Closed
+// Suíte de Testes do Retry Manual Seguro com Escopo de Outbox por Lote
+// Valida os 10 cenários obrigatórios + contratos de segurança e paridade RPC/Fallback
 // ============================================================================
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -10,7 +10,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 console.log("==================================================================");
-console.log("INICIANDO SUÍTE DE TESTES: AUTORIZAÇÃO MANUAL DE RETRY (10 CENÁRIOS)");
+console.log("INICIANDO SUÍTE DE TESTES: AUTORIZAÇÃO MANUAL DE RETRY (ESCOPO DE OUTBOX)");
 console.log("==================================================================\n");
 
 let passedTests = 0;
@@ -31,13 +31,14 @@ function loadAuthorizeManualAutopilotRetryAtomic() {
   }).outputText;
 
   const moduleObj = { exports: {} };
-  vm.runInNewContext(transpiled, { module: moduleObj, exports: moduleObj.exports, console, Date }, { filename: "brain_orchestrator.ts" });
+  vm.runInNewContext(transpiled, { module: moduleObj, exports: moduleObj.exports, console, Date, Set, Array }, { filename: "brain_orchestrator.ts" });
   return moduleObj.exports.authorizeManualAutopilotRetryAtomic;
 }
 
 const authorizeManualAutopilotRetryAtomic = loadAuthorizeManualAutopilotRetryAtomic();
 
-function createMockSupabase(initialConversations = {}, initialMessages = []) {
+function createMockSupabase(initialConversations = {}, initialMessages = [], options = {}) {
+  const { disableRpc = false } = options;
   const conversations = { ...initialConversations };
   const messages = [...initialMessages];
 
@@ -123,7 +124,11 @@ function createMockSupabase(initialConversations = {}, initialMessages = []) {
       return {};
     },
     rpc: async (fn, params) => {
-      // Mock da RPC authorize_manual_autopilot_retry espelhando com precisão a migration PostgreSQL
+      if (disableRpc) {
+        return { data: null, error: { message: "function authorize_manual_autopilot_retry does not exist" } };
+      }
+
+      // Mock da RPC authorize_manual_autopilot_retry espelhando com precisão a migration 20260923150000
       if (fn === "authorize_manual_autopilot_retry") {
         const conv = conversations[params.p_conversation_id];
         if (!conv) {
@@ -136,6 +141,8 @@ function createMockSupabase(initialConversations = {}, initialMessages = []) {
         const orch = rules.orchestration || {};
         const ledger = orch.messageLedger || {};
         const outbox = orch.outbox || {};
+        const recentCycles = Array.isArray(orch.recentCycles) ? orch.recentCycles : [];
+        const activeCycle = orch.activeCycle || null;
 
         if (rules.active_cycle_token) {
           const activeAtMs = rules.active_cycle_at ? Date.parse(rules.active_cycle_at) : 0;
@@ -159,18 +166,7 @@ function createMockSupabase(initialConversations = {}, initialMessages = []) {
           return { data: { success: false, reason: "not_exhausted", message: "As tentativas técnicas automáticas ainda não se esgotaram." }, error: null };
         }
 
-        for (const entry of Object.values(outbox)) {
-          if (entry.status === "sent" || (entry.providerMessageId && entry.providerMessageId !== "")) {
-            return { data: { success: false, reason: "outbox_already_sent", message: "Já existe mensagem enviada confirmada neste lote." }, error: null };
-          }
-          if (entry.status === "sending") {
-            return { data: { success: false, reason: "outbox_sending", message: "Existe mensagem em processo de envio no momento." }, error: null };
-          }
-          if (entry.status === "dispatch_uncertain" || entry.isUncertain === true) {
-            return { data: { success: false, reason: "outbox_uncertain", message: "Há um envio anterior com confirmação incerta. Não é seguro reenviar automaticamente." }, error: null };
-          }
-        }
-
+        // 1. Resolver primeiro o lote pendente
         const pendingIds = [];
         for (const [mid, st] of Object.entries(ledger)) {
           if (st === "pending") pendingIds.push(mid);
@@ -188,6 +184,78 @@ function createMockSupabase(initialConversations = {}, initialMessages = []) {
 
         if (pendingIds.length === 0) {
           return { data: { success: false, reason: "no_pending_messages", message: "Não há mensagens pendentes a responder." }, error: null };
+        }
+
+        const pendingSet = new Set(pendingIds);
+
+        // 2. Classificar ciclos relevantes e não-relacionados
+        const relevantCycleIds = [];
+        const unrelatedCycleIds = [];
+        const allCycles = [...recentCycles];
+        if (activeCycle && typeof activeCycle === "object") allCycles.push(activeCycle);
+
+        for (const c of allCycles) {
+          if (!c || !c.cycleId) continue;
+          const claimed = Array.isArray(c.claimedMessageIds) ? c.claimedMessageIds : [];
+          if (claimed.length > 0) {
+            if (claimed.some((id) => pendingSet.has(id))) {
+              relevantCycleIds.push(c.cycleId);
+            } else {
+              unrelatedCycleIds.push(c.cycleId);
+            }
+          }
+        }
+
+        // 3. Validação de outbox escopada
+        for (const entry of Object.values(outbox)) {
+          if (!entry || typeof entry !== "object") continue;
+          const outboxCycleId = entry.cycleId || "";
+
+          let isRelevant = true;
+          if (outboxCycleId !== "" && relevantCycleIds.includes(outboxCycleId)) {
+            isRelevant = true;
+          } else if (outboxCycleId !== "" && unrelatedCycleIds.includes(outboxCycleId)) {
+            isRelevant = false;
+          } else {
+            // Ambiguidade / cycleId vazio ou não rastreado -> fail-closed
+            isRelevant = true;
+          }
+
+          if (isRelevant) {
+            if (entry.status === "sent" || (entry.providerMessageId && entry.providerMessageId !== "")) {
+              return {
+                data: {
+                  success: false,
+                  reason: "outbox_already_sent",
+                  message: "Já existe mensagem enviada confirmada neste lote.",
+                  blockingCycleId: outboxCycleId || null,
+                },
+                error: null,
+              };
+            }
+            if (entry.status === "sending") {
+              return {
+                data: {
+                  success: false,
+                  reason: "outbox_sending",
+                  message: "Existe mensagem em processo de envio no momento.",
+                  blockingCycleId: outboxCycleId || null,
+                },
+                error: null,
+              };
+            }
+            if (entry.status === "dispatch_uncertain" || entry.isUncertain === true) {
+              return {
+                data: {
+                  success: false,
+                  reason: "outbox_uncertain",
+                  message: "Há um envio anterior com confirmação incerta para este lote. Não é seguro reenviar automaticamente.",
+                  blockingCycleId: outboxCycleId || null,
+                },
+                error: null,
+              };
+            }
+          }
         }
 
         const oldCycle = rules.active_cycle_token || orch.lastCycleId || null;
@@ -210,6 +278,7 @@ function createMockSupabase(initialConversations = {}, initialMessages = []) {
             previousCycleToken: oldCycle,
             pendingMessageIds: pendingIds,
             pendingCount: pendingIds.length,
+            relevantCycleIds,
           },
           error: null,
         };
@@ -233,268 +302,498 @@ async function runScenario(name, fn) {
 }
 
 // ==========================================
-// CENÁRIO 1: Retry esgotado + inbound pending -> autoriza única tentativa manual e cria novo cycleToken
+// CENÁRIO 1: Historical unrelated dispatch_uncertain + current pending batch sem outbox -> AUTORIZA (Caso real William)
 // ==========================================
-await runScenario("Retry esgotado com pendência autoriza única tentativa manual", async () => {
-  const supabase = createMockSupabase({
-    conv_1: {
-      id: "conv_1",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: null,
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date(Date.now() - 60_000).toISOString(),
-          lastCycleId: "cycle_old_failed",
-          lastError: "technical_retry_exhausted",
-          messageLedger: { msg_1: "pending" },
-          outbox: {},
-        },
-      },
-    },
-  });
-
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_1",
-    newCycleToken: "manual_cycle_101",
-  });
-
-  assert.equal(res.success, true);
-  assert.equal(res.reason, "authorized");
-  assert.equal(res.cycleToken, "manual_cycle_101");
-  assert.equal(res.previousCycleToken, "cycle_old_failed");
-  assert.equal(res.pendingCount, 1);
-  assert.deepEqual(res.pendingMessageIds, ["msg_1"]);
-
-  // Verifica persistência imediata do lock no banco
-  const conv = supabase._conversations.conv_1;
-  assert.equal(conv.stage_completed_rules.active_cycle_token, "manual_cycle_101");
-  assert.equal(conv.stage_completed_rules.orchestration.manualRetryAttempt, true);
-  assert.equal(conv.stage_completed_rules.orchestration.manualRetryCycleId, "manual_cycle_101");
-  assert.equal(conv.stage_completed_rules.orchestration.manualRetryOfCycleId, "cycle_old_failed");
-});
-
-// ==========================================
-// CENÁRIO 2: Tentativa concorrente / clique duplo com o ciclo ativo -> fail-closed/idempotente
-// ==========================================
-await runScenario("Clique duplo ou tentativa concorrente é recusada com active_cycle_running", async () => {
-  const supabase = createMockSupabase({
-    conv_2: {
-      id: "conv_2",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: "manual_cycle_in_flight",
-        active_cycle_at: new Date().toISOString(),
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date().toISOString(),
-          messageLedger: { msg_2: "pending" },
-          outbox: {},
-        },
-      },
-    },
-  });
-
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_2",
-    newCycleToken: "manual_cycle_double_click",
-  });
-
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "active_cycle_running");
-  assert.equal(res.activeCycleToken, "manual_cycle_in_flight");
-});
-
-// ==========================================
-// CENÁRIO 3: Conversa com ciclo ativo legítimo de outro worker (< 300s) -> recusado
-// ==========================================
-await runScenario("Ciclo ativo legítimo de outro worker bloqueia autorização", async () => {
-  const supabase = createMockSupabase({
-    conv_3: {
-      id: "conv_3",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: "worker_cron_active",
-        active_cycle_at: new Date(Date.now() - 5000).toISOString(),
-        orchestration: {
-          technicalRetryCount: 3,
-          messageLedger: { msg_3: "pending" },
-          outbox: {},
-        },
-      },
-    },
-  });
-
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_3",
-    newCycleToken: "manual_3",
-  });
-
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "active_cycle_running");
-});
-
-// ==========================================
-// CENÁRIO 4: Conversa com outbox sent no lote -> recusado fail-closed
-// ==========================================
-await runScenario("Lote com outbox sent anterior é recusado por segurança contra duplicidade", async () => {
-  const supabase = createMockSupabase({
-    conv_4: {
-      id: "conv_4",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: null,
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date().toISOString(),
-          messageLedger: { msg_4: "pending" },
-          outbox: {
-            out_1: { status: "sent", providerMessageId: "meta_msg_999" },
+await runScenario("Historical unrelated dispatch_uncertain não bloqueia lote pendente atual (Caso real William)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      "1541421561005872": {
+        id: "1541421561005872",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: "2026-09-23T10:55:00.000Z",
+            lastCycleId: "corr_1790171503437_gd1iy",
+            lastError: "technical_retry_exhausted",
+            messageLedger: {
+              "msg_curr_1": "pending",
+              "msg_curr_2": "pending",
+              "msg_curr_3": "pending",
+            },
+            recentCycles: [
+              {
+                cycleId: "corr_1790168702836_9j5x1",
+                claimedMessageIds: ["msg_historica_antiga"],
+                completedAt: "2026-09-23T10:10:00.000Z",
+              },
+              {
+                cycleId: "corr_1790171503437_gd1iy",
+                claimedMessageIds: ["msg_curr_1", "msg_curr_2", "msg_curr_3"],
+                completedAt: "2026-09-23T10:53:50.000Z",
+              },
+            ],
+            outbox: {
+              "corr_1790168702836_9j5x1": {
+                cycleId: "corr_1790168702836_9j5x1",
+                status: "dispatch_uncertain",
+                isUncertain: true,
+                content: "Bom diaa, tô bem tbm 😊",
+              },
+            },
           },
         },
       },
-    },
-  });
+    }, [], { disableRpc });
 
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_4",
-    newCycleToken: "manual_4",
-  });
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "1541421561005872",
+      newCycleToken: "manual_william_retry",
+    });
 
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "outbox_already_sent");
+    assert.equal(res.success, true, `Falhou com disableRpc=${disableRpc}`);
+    assert.equal(res.reason, "authorized");
+    assert.equal(res.pendingCount, 3);
+    assert.deepEqual(Array.from(res.pendingMessageIds), ["msg_curr_1", "msg_curr_2", "msg_curr_3"]);
+    assert.ok(Array.from(res.relevantCycleIds).includes("corr_1790171503437_gd1iy"));
+    assert.ok(!Array.from(res.relevantCycleIds).includes("corr_1790168702836_9j5x1"));
+
+    // Verifica persistência imediata do lock no banco
+    const conv = supabase._conversations["1541421561005872"];
+    assert.equal(conv.stage_completed_rules.active_cycle_token, "manual_william_retry");
+    assert.equal(conv.stage_completed_rules.orchestration.manualRetryAttempt, true);
+    assert.equal(conv.stage_completed_rules.orchestration.manualRetryCycleId, "manual_william_retry");
+  }
 });
 
 // ==========================================
-// CENÁRIO 5: Conversa com outbox dispatch_uncertain -> recusado fail-closed
+// CENÁRIO 2: Historical unrelated sent + current pending batch sem outbox -> AUTORIZA
 // ==========================================
-await runScenario("Lote com outbox incerta (dispatch_uncertain) é recusado fail-closed", async () => {
-  const supabase = createMockSupabase({
-    conv_5: {
-      id: "conv_5",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: null,
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date().toISOString(),
-          messageLedger: { msg_5: "pending" },
-          outbox: {
-            out_1: { status: "dispatch_uncertain", isUncertain: true },
+await runScenario("Historical unrelated sent não bloqueia novo lote pendente", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_hist_sent: {
+        id: "conv_hist_sent",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            lastError: "technical_retry_exhausted",
+            messageLedger: { msg_batch_2: "pending" },
+            recentCycles: [
+              {
+                cycleId: "cycle_old_sent",
+                claimedMessageIds: ["msg_batch_1"],
+              },
+              {
+                cycleId: "cycle_curr_batch_2",
+                claimedMessageIds: ["msg_batch_2"],
+              },
+            ],
+            outbox: {
+              cycle_old_sent: {
+                cycleId: "cycle_old_sent",
+                status: "sent",
+                providerMessageId: "meta_msg_old_123",
+              },
+            },
           },
         },
       },
-    },
-  });
+    }, [], { disableRpc });
 
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_5",
-    newCycleToken: "manual_5",
-  });
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_hist_sent",
+      newCycleToken: "manual_retry_batch_2",
+    });
 
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "outbox_uncertain");
+    assert.equal(res.success, true);
+    assert.equal(res.reason, "authorized");
+    assert.equal(res.pendingCount, 1);
+  }
 });
 
 // ==========================================
-// CENÁRIO 6: Conversa com outbox sending ativo -> recusado
+// CENÁRIO 3: Current batch dispatch_uncertain -> BLOQUEIA (outbox_uncertain)
 // ==========================================
-await runScenario("Lote com outbox em sending é recusado", async () => {
-  const supabase = createMockSupabase({
-    conv_6: {
-      id: "conv_6",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: null,
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date().toISOString(),
-          messageLedger: { msg_6: "pending" },
-          outbox: {
-            out_1: { status: "sending" },
+await runScenario("Current batch dispatch_uncertain BLOQUEIA fail-closed (outbox_uncertain)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_curr_uncertain: {
+        id: "conv_curr_uncertain",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_curr: "pending" },
+            recentCycles: [
+              {
+                cycleId: "cycle_curr_uncertain",
+                claimedMessageIds: ["msg_curr"],
+              },
+            ],
+            outbox: {
+              cycle_curr_uncertain: {
+                cycleId: "cycle_curr_uncertain",
+                status: "dispatch_uncertain",
+                isUncertain: true,
+              },
+            },
           },
         },
       },
-    },
-  });
+    }, [], { disableRpc });
 
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_6",
-    newCycleToken: "manual_6",
-  });
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_curr_uncertain",
+      newCycleToken: "manual_retry_uncertain",
+    });
 
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "outbox_sending");
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "outbox_uncertain");
+    assert.equal(res.blockingCycleId, "cycle_curr_uncertain");
+  }
 });
 
 // ==========================================
-// CENÁRIO 7: Conversa sem mensagens inbound pendentes -> recusado
+// CENÁRIO 4: Current batch sent -> BLOQUEIA (outbox_already_sent)
 // ==========================================
-await runScenario("Conversa sem pendências no ledger nem inbounds recentes é recusada", async () => {
-  const supabase = createMockSupabase({
-    conv_7: {
-      id: "conv_7",
-      ai_auto_respond: true,
-      stage_completed_rules: {
-        active_cycle_token: null,
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date().toISOString(),
-          messageLedger: { msg_7: "processed" },
-          outbox: {},
+await runScenario("Current batch sent BLOQUEIA fail-closed (outbox_already_sent)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_curr_sent: {
+        id: "conv_curr_sent",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_curr: "pending" },
+            recentCycles: [
+              {
+                cycleId: "cycle_curr_sent",
+                claimedMessageIds: ["msg_curr"],
+              },
+            ],
+            outbox: {
+              cycle_curr_sent: {
+                cycleId: "cycle_curr_sent",
+                status: "sent",
+                providerMessageId: "meta_curr_sent_456",
+              },
+            },
+          },
         },
       },
-    },
-  });
+    }, [], { disableRpc });
 
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_7",
-    newCycleToken: "manual_7",
-  });
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_curr_sent",
+      newCycleToken: "manual_retry_sent",
+    });
 
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "no_pending_messages");
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "outbox_already_sent");
+    assert.equal(res.blockingCycleId, "cycle_curr_sent");
+  }
 });
 
 // ==========================================
-// CENÁRIO 8: Conversa com autopilot desativado -> recusado
+// CENÁRIO 5: Current batch sending -> BLOQUEIA (outbox_sending)
 // ==========================================
-await runScenario("Conversa com ai_auto_respond = false é recusada", async () => {
-  const supabase = createMockSupabase({
-    conv_8: {
-      id: "conv_8",
-      ai_auto_respond: false,
-      stage_completed_rules: {
-        active_cycle_token: null,
-        orchestration: {
-          technicalRetryCount: 3,
-          technicalRetryExhaustedAt: new Date().toISOString(),
-          messageLedger: { msg_8: "pending" },
-          outbox: {},
+await runScenario("Current batch sending BLOQUEIA fail-closed (outbox_sending)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_curr_sending: {
+        id: "conv_curr_sending",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_curr: "pending" },
+            recentCycles: [
+              {
+                cycleId: "cycle_curr_sending",
+                claimedMessageIds: ["msg_curr"],
+              },
+            ],
+            outbox: {
+              cycle_curr_sending: {
+                cycleId: "cycle_curr_sending",
+                status: "sending",
+              },
+            },
+          },
         },
       },
-    },
-  });
+    }, [], { disableRpc });
 
-  const res = await authorizeManualAutopilotRetryAtomic({
-    supabase,
-    conversationId: "conv_8",
-    newCycleToken: "manual_8",
-  });
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_curr_sending",
+      newCycleToken: "manual_retry_sending",
+    });
 
-  assert.equal(res.success, false);
-  assert.equal(res.reason, "autopilot_disabled");
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "outbox_sending");
+    assert.equal(res.blockingCycleId, "cycle_curr_sending");
+  }
 });
 
 // ==========================================
-// CENÁRIO 9: Contrato de falha manual (volta para exhausted sem agendamento no cron)
+// CENÁRIO 6: Dois ciclos com os mesmos claimedMessageIds, um deles uncertain -> BLOQUEIA
+// ==========================================
+await runScenario("Dois ciclos técnicos com mesmos claimedMessageIds, um uncertain -> BLOQUEIA", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_multi_cycle_same_batch: {
+        id: "conv_multi_cycle_same_batch",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_same: "pending" },
+            recentCycles: [
+              {
+                cycleId: "corr_attempt_1",
+                claimedMessageIds: ["msg_same"],
+              },
+              {
+                cycleId: "corr_attempt_2",
+                claimedMessageIds: ["msg_same"],
+              },
+            ],
+            outbox: {
+              corr_attempt_2: {
+                cycleId: "corr_attempt_2",
+                status: "dispatch_uncertain",
+                isUncertain: true,
+              },
+            },
+          },
+        },
+      },
+    }, [], { disableRpc });
+
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_multi_cycle_same_batch",
+      newCycleToken: "manual_retry_attempt_3",
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "outbox_uncertain");
+    assert.equal(res.blockingCycleId, "corr_attempt_2");
+  }
+});
+
+// ==========================================
+// CENÁRIO 7: Old cycle claimedMessageIds diferentes -> NÃO BLOQUEIA
+// ==========================================
+await runScenario("Old cycle com claimedMessageIds disjuntos NÃO BLOQUEIA novo lote", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_disjoint: {
+        id: "conv_disjoint",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_new_e2: "pending" },
+            recentCycles: [
+              {
+                cycleId: "corr_old_e1",
+                claimedMessageIds: ["msg_old_e1"],
+              },
+              {
+                cycleId: "corr_curr_e2",
+                claimedMessageIds: ["msg_new_e2"],
+              },
+            ],
+            outbox: {
+              corr_old_e1: {
+                cycleId: "corr_old_e1",
+                status: "dispatch_uncertain",
+                isUncertain: true,
+              },
+            },
+          },
+        },
+      },
+    }, [], { disableRpc });
+
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_disjoint",
+      newCycleToken: "manual_retry_e2",
+    });
+
+    assert.equal(res.success, true);
+    assert.equal(res.reason, "authorized");
+    assert.equal(res.pendingCount, 1);
+  }
+});
+
+// ==========================================
+// CENÁRIO 8: Active cycle atual vigente (< 300s) -> BLOQUEIA (active_cycle_running)
+// ==========================================
+await runScenario("Active cycle vigente (<300s) bloqueia autorização (active_cycle_running)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_active_running: {
+        id: "conv_active_running",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: "worker_currently_executing",
+          active_cycle_at: new Date(Date.now() - 30_000).toISOString(),
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_active: "pending" },
+            outbox: {},
+          },
+        },
+      },
+    }, [], { disableRpc });
+
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_active_running",
+      newCycleToken: "manual_retry_rejected",
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "active_cycle_running");
+    assert.equal(res.activeCycleToken, "worker_currently_executing");
+  }
+});
+
+// ==========================================
+// CENÁRIO 9: Sem pending messages -> BLOQUEIA (no_pending_messages)
+// ==========================================
+await runScenario("Sem pendências no ledger nem inbounds recentes -> BLOQUEIA (no_pending_messages)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_no_pending: {
+        id: "conv_no_pending",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_done: "processed" },
+            outbox: {},
+          },
+        },
+      },
+    }, [], { disableRpc });
+
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_no_pending",
+      newCycleToken: "manual_retry_empty",
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "no_pending_messages");
+  }
+});
+
+// ==========================================
+// CENÁRIO 10: Autopilot disabled -> BLOQUEIA (autopilot_disabled)
+// ==========================================
+await runScenario("Conversa com ai_auto_respond = false -> BLOQUEIA (autopilot_disabled)", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_disabled: {
+        id: "conv_disabled",
+        ai_auto_respond: false,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_dis: "pending" },
+            outbox: {},
+          },
+        },
+      },
+    }, [], { disableRpc });
+
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_disabled",
+      newCycleToken: "manual_retry_dis",
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "autopilot_disabled");
+  }
+});
+
+// ==========================================
+// CENÁRIO 11: Ambiguidade fail-closed (outbox sem cycleId rastreado) -> BLOQUEIA
+// ==========================================
+await runScenario("Outbox com cycleId desconhecido/não-rastreado bloqueia fail-closed por segurança", async () => {
+  for (const disableRpc of [false, true]) {
+    const supabase = createMockSupabase({
+      conv_ambiguous: {
+        id: "conv_ambiguous",
+        ai_auto_respond: true,
+        stage_completed_rules: {
+          active_cycle_token: null,
+          orchestration: {
+            technicalRetryCount: 3,
+            technicalRetryExhaustedAt: new Date().toISOString(),
+            messageLedger: { msg_amb: "pending" },
+            recentCycles: [
+              {
+                cycleId: "corr_known_batch",
+                claimedMessageIds: ["msg_amb"],
+              },
+            ],
+            outbox: {
+              ambiguous_entry: {
+                cycleId: "corr_untracked_cycle_xyz",
+                status: "sent",
+                providerMessageId: "meta_ambiguous_789",
+              },
+            },
+          },
+        },
+      },
+    }, [], { disableRpc });
+
+    const res = await authorizeManualAutopilotRetryAtomic({
+      supabase,
+      conversationId: "conv_ambiguous",
+      newCycleToken: "manual_ambiguous_retry",
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.reason, "outbox_already_sent");
+  }
+});
+
+// ==========================================
+// CENÁRIO 12: Contrato de falha manual (volta para exhausted sem agendamento no cron)
 // ==========================================
 await runScenario("Contrato de falha manual: retryAllowed = false, debounceUntil = null, volta para exhausted", async () => {
   const orchestratorCode = fs.readFileSync(path.resolve("supabase/functions/api/brain_orchestrator.ts"), "utf8");
@@ -530,7 +829,7 @@ await runScenario("Contrato de falha manual: retryAllowed = false, debounceUntil
 });
 
 // ==========================================
-// CENÁRIO 10: Contrato de sucesso manual (zera technicalRetryCount e limpa exhausted)
+// CENÁRIO 13: Contrato de sucesso manual (zera technicalRetryCount e limpa exhausted)
 // ==========================================
 await runScenario("Contrato de sucesso manual: CAS final zera technicalRetryCount e limpa exhausted", async () => {
   const orchestratorCode = fs.readFileSync(path.resolve("supabase/functions/api/brain_orchestrator.ts"), "utf8");
@@ -597,7 +896,7 @@ console.log(`FALHAS: ${totalTests - passedTests}`);
 console.log("==================================================================");
 
 if (passedTests === totalTests) {
-  console.log("\x1b[32mTODOS OS 10 CENÁRIOS FORAM APROVADOS COM SUCESSO!\x1b[0m\n");
+  console.log("\x1b[32mTODOS OS CENÁRIOS FORAM APROVADOS COM SUCESSO!\x1b[0m\n");
   process.exit(0);
 } else {
   console.log("\x1b[31mALGUNS CENÁRIOS FALHARAM!\x1b[0m\n");

@@ -2578,13 +2578,15 @@ export interface AuthorizeManualAutopilotRetryResult {
   pendingMessageIds?: string[];
   pendingCount?: number;
   activeCycleToken?: string | null;
+  blockingCycleId?: string | null;
+  relevantCycleIds?: string[];
 }
 
 /**
  * Autoriza de forma atômica e segura EXATAMENTE UMA tentativa manual do Brain
  * para um lote que esgotou as tentativas técnicas automáticas (technical_retry_exhausted).
  * Valida fail-closed: autopilot ativado, sem active_cycle vigente, technicalRetryCount >= 3,
- * sem outbox sent/sending/uncertain, e com mensagens inbounds pendentes.
+ * sem outbox sent/sending/uncertain para o lote atual ou ambíguo, e com mensagens inbounds pendentes.
  */
 export async function authorizeManualAutopilotRetryAtomic(
   params: AuthorizeManualAutopilotRetryParams
@@ -2639,6 +2641,8 @@ export async function authorizeManualAutopilotRetryAtomic(
     const orch = rules.orchestration || {};
     const ledger = orch.messageLedger || {};
     const outbox = orch.outbox || {};
+    const recentCycles: any[] = Array.isArray(orch.recentCycles) ? orch.recentCycles : [];
+    const activeCycle = orch.activeCycle || null;
 
     const activeToken = rules.active_cycle_token;
     if (activeToken) {
@@ -2661,19 +2665,7 @@ export async function authorizeManualAutopilotRetryAtomic(
       return { success: false, reason: "not_exhausted", message: "As tentativas técnicas automáticas ainda não se esgotaram." };
     }
 
-    for (const entry of Object.values(outbox) as any[]) {
-      if (!entry || typeof entry !== "object") continue;
-      if (entry.status === "sent" || (entry.providerMessageId && entry.providerMessageId !== "")) {
-        return { success: false, reason: "outbox_already_sent", message: "Já existe mensagem enviada confirmada neste lote." };
-      }
-      if (entry.status === "sending") {
-        return { success: false, reason: "outbox_sending", message: "Existe mensagem em processo de envio no momento." };
-      }
-      if (entry.status === "dispatch_uncertain" || entry.isUncertain === true) {
-        return { success: false, reason: "outbox_uncertain", message: "Há um envio anterior com confirmação incerta. Não é seguro reenviar automaticamente." };
-      }
-    }
-
+    // 1. Resolver primeiro o lote pendente (pendingMessageIds)
     const pendingIds: string[] = [];
     for (const [msgId, status] of Object.entries(ledger)) {
       if (status === "pending") {
@@ -2703,6 +2695,75 @@ export async function authorizeManualAutopilotRetryAtomic(
       return { success: false, reason: "no_pending_messages", message: "Não há mensagens pendentes a responder." };
     }
 
+    const pendingIdSet = new Set(pendingIds);
+
+    // 2. Identificar ciclos relacionados ao lote pendente
+    const relevantCycleIds: string[] = [];
+    const unrelatedCycleIds: string[] = [];
+
+    const allCyclesToCheck = [...recentCycles];
+    if (activeCycle && typeof activeCycle === "object") {
+      allCyclesToCheck.push(activeCycle);
+    }
+
+    for (const cycle of allCyclesToCheck) {
+      if (!cycle || typeof cycle !== "object") continue;
+      const cId = cycle.cycleId;
+      if (!cId || typeof cId !== "string") continue;
+      const claimed: string[] = Array.isArray(cycle.claimedMessageIds) ? cycle.claimedMessageIds : [];
+      if (claimed.length > 0) {
+        const hasOverlap = claimed.some((mid) => pendingIdSet.has(mid));
+        if (hasOverlap) {
+          relevantCycleIds.push(cId);
+        } else {
+          unrelatedCycleIds.push(cId);
+        }
+      }
+    }
+
+    // 3. Validação de outbox escopada (Fail-Closed apenas para o lote relevante ou ambíguo)
+    for (const entry of Object.values(outbox) as any[]) {
+      if (!entry || typeof entry !== "object") continue;
+      const outboxCycleId = entry.cycleId || "";
+
+      let isRelevant = true;
+      if (outboxCycleId !== "" && relevantCycleIds.includes(outboxCycleId)) {
+        isRelevant = true;
+      } else if (outboxCycleId !== "" && unrelatedCycleIds.includes(outboxCycleId)) {
+        isRelevant = false;
+      } else {
+        // Ambiguidade: se a outbox tem cycleId desconhecido, vazio ou não rastreado -> fail-closed
+        isRelevant = true;
+      }
+
+      if (isRelevant) {
+        if (entry.status === "sent" || (entry.providerMessageId && entry.providerMessageId !== "")) {
+          return {
+            success: false,
+            reason: "outbox_already_sent",
+            message: "Já existe mensagem enviada confirmada neste lote.",
+            blockingCycleId: outboxCycleId || null,
+          };
+        }
+        if (entry.status === "sending") {
+          return {
+            success: false,
+            reason: "outbox_sending",
+            message: "Existe mensagem em processo de envio no momento.",
+            blockingCycleId: outboxCycleId || null,
+          };
+        }
+        if (entry.status === "dispatch_uncertain" || entry.isUncertain === true) {
+          return {
+            success: false,
+            reason: "outbox_uncertain",
+            message: "Há um envio anterior com confirmação incerta para este lote. Não é seguro reenviar automaticamente.",
+            blockingCycleId: outboxCycleId || null,
+          };
+        }
+      }
+    }
+
     const oldCycle = rules.active_cycle_token || orch.lastCycleId || null;
     orch.messageLedger = ledger;
     orch.manualRetryAttempt = true;
@@ -2730,6 +2791,7 @@ export async function authorizeManualAutopilotRetryAtomic(
       previousCycleToken: oldCycle,
       pendingMessageIds: pendingIds,
       pendingCount: pendingIds.length,
+      relevantCycleIds,
     };
   } catch (err: any) {
     return { success: false, reason: "infra_failure", message: err?.message || String(err) };
