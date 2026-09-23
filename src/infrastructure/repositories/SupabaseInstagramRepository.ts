@@ -113,7 +113,9 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
     try {
       const { data, error } = await client
         .from("instagram_conversations")
-        .select("*")
+        .select(
+          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at"
+        )
         .neq("id", "__vault_data__")
         .neq("status", "vault")
         .order("last_message_at", { ascending: false, nullsFirst: false })

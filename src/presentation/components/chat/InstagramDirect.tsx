@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import Image from "next/image";
@@ -808,6 +808,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     }
   }, [activeChat, isManualSyncing, fetchConversationMessages]);
 
+  // isRealtimeHealthy: sincronizado com isRealtimeConnected via useEffect abaixo.
+  // O setInterval de 30s lê o ref dinamicamente, portanto a atualização posterior funciona.
+  const [isRealtimeHealthyForAutopilot, setIsRealtimeHealthyForAutopilot] = useState(true);
   // Instância do Piloto Automático Inteligente com Fila Sequencial e Debounce
   const autoPilot = useAutoPilot({
     conversations,
@@ -817,6 +820,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     onStageChange: async (convId) => {
       await chatStages.refresh();
     },
+    isRealtimeHealthy: isRealtimeHealthyForAutopilot,
   });
   const autoPilotRef = useRef(autoPilot);
   useEffect(() => {
@@ -1139,17 +1143,20 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [instaFilter, setInstaFilter] = useState<InstagramFilter>("todos");
   const [tinderFilter, setTinderFilter] = useState<TinderFilter>("todos");
 
-  // Carrega conversas reais do Instagram do Supabase
+  // Carrega conversas reais do Instagram do Supabase (com in-flight dedup e colunas explícitas sem stage_completed_rules)
+  const isDirectLoadingConvsRef = useRef<boolean>(false);
   const loadInstagramConversations = useCallback(async () => {
+    if (isDirectLoadingConvsRef.current) return;
+    isDirectLoadingConvsRef.current = true;
     try {
       const supabase = getSupabaseBrowserClient();
       let rawConversations: any[] = [];
 
-      // 1. Tenta carregar diretamente do banco Supabase para latência ultra baixa e colunas completas
+      // 1. Tenta carregar diretamente do banco Supabase com colunas explícitas (elimina payload pesado de stage_completed_rules)
       if (supabase) {
         const { data, error } = await supabase
           .from("instagram_conversations")
-          .select("*")
+          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
           .order("last_message_at", { ascending: false, nullsFirst: false })
           .limit(300);
 
@@ -1222,6 +1229,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       });
     } catch (err) {
       console.error("Erro ao carregar conversas do Instagram:", err);
+    } finally {
+      isDirectLoadingConvsRef.current = false;
     }
   }, []);
 
@@ -1398,10 +1407,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     setConversations((prevConvs) => {
       const found = prevConvs.find((c) => c.id === msg.conversationId);
-      if (!found) {
-        // Dispara busca dos dados oficiais completos no Supabase em background
-        setTimeout(() => loadInstagramConversations(), 250);
-      }
       const timeFormatted = formatMessageTime(msg.timestamp);
       const updated: DirectConversation = found
         ? {
@@ -1507,6 +1512,47 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
       const others = prevConvs.filter((c) => c.id !== conv.id);
       return [updated, ...others];
+    });
+  }, []);
+
+  // Handler de INSERT de nova conversa via Realtime — adiciona incrementalmente à lista sem full fetch
+  const handleRealtimeInstagramConversationInsert = useCallback((conv: {
+    id: string;
+    lastMessage?: string;
+    lastMessageAt?: string;
+    lastDirection?: string;
+    unread?: boolean;
+    fullName?: string;
+    username?: string;
+    avatar?: string;
+  }) => {
+    if (!conv.id || conv.id.startsWith("__")) return;
+
+    setConversations((prevConvs) => {
+      // Se a conversa já existe (pode ter sido adicionada via handler de mensagem), não duplicar
+      if (prevConvs.some((c) => c.id === conv.id)) return prevConvs;
+
+      const isSentByMe = conv.lastDirection === "out" || conv.lastDirection === "outbound";
+      const newConv: DirectConversation = {
+        id: conv.id,
+        username: conv.username || `ig_${conv.id.slice(-6)}`,
+        fullName: conv.fullName || "Usuário Instagram",
+        avatar: conv.avatar || "/images/default-avatar.svg",
+        isOnline: false,
+        lastActive: conv.lastMessageAt ? formatMessageTime(conv.lastMessageAt) : "agora",
+        lastMessage: isSentByMe
+          ? `Você: ${conv.lastMessage || ""}`
+          : (conv.lastMessage || ""),
+        lastSender: isSentByMe ? "me" : "them",
+        lastStatus: isSentByMe ? "sent" : undefined,
+        seenAt: undefined,
+        lastMessageAt: conv.lastMessageAt,
+        unread: isSentByMe ? false : Boolean(conv.unread),
+        type: "instagram",
+        isRestricted: false,
+        status: "active",
+      };
+      return [newConv, ...prevConvs];
     });
   }, []);
 
@@ -1681,12 +1727,28 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const { isRealtimeConnected } = useChatRealtime({
     onInstagramMessage: handleRealtimeInstagramMessage,
     onInstagramConversationUpdate: handleRealtimeInstagramConversationUpdate,
+    onInstagramConversationInsert: handleRealtimeInstagramConversationInsert,
     onInstagramSeen: handleRealtimeInstagramSeen,
     onTinderMessage: handleRealtimeTinderMessage,
     onTinderConversationUpdate: handleRealtimeTinderConversationUpdate,
     onAutoPilotStateUpdate: autoPilot.applyRemoteStateUpdate,
     tinderUserId: tinderSession?.profile?.id,
   });
+
+  // Sincroniza saúde do Realtime para suprimir polling de fallback do AutoPilot
+  useEffect(() => {
+    setIsRealtimeHealthyForAutopilot(isRealtimeConnected);
+  }, [isRealtimeConnected]);
+
+  // Refs de controle de presença de Realtime e in-flight dedup para os pollings
+  const isRealtimeConnectedRef = useRef<boolean>(true);
+  useEffect(() => {
+    isRealtimeConnectedRef.current = isRealtimeConnected;
+  }, [isRealtimeConnected]);
+  const isFetchingConversationsRef = useRef<boolean>(false);
+  const isFetchingMessagesRef = useRef<boolean>(false);
+  const lastConvFetchAtRef = useRef<number>(0);
+  const lastMsgFetchAtRef = useRef<number>(0);
 
   // Inicialização
   useEffect(() => {
@@ -1736,7 +1798,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     }
   }, [messages[activeChat?.id || ""]?.length]);
 
-  // POLLING RESILIENTE 1: Atualiza a conversa ativa em alta frequência e ao ganhar foco
+  // POLLING RESILIENTE 1 (fallback de reconciliação da conversa ativa)
+  // - Realtime saudável: apenas reconciliação espaçada a cada 5 minutos
+  // - Realtime degradado: fallback a cada 60s (visível) / 120s (oculto)
+  // - In-flight dedup: não inicia nova chamada se já há request em curso
+  // - Focus/visibilitychange: respeitam janela mínima de 30s desde o último fetch
   const consecutiveChatFailuresRef = useRef<number>(0);
 
   useEffect(() => {
@@ -1746,7 +1812,29 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     let timerId: NodeJS.Timeout | null = null;
     consecutiveChatFailuresRef.current = 0;
 
+    const scheduleNext = (ms: number) => {
+      if (isSubscribed) timerId = setTimeout(pollChatMessages, ms);
+    };
+
     const pollChatMessages = async () => {
+      // In-flight dedup: aborta se já há fetch em curso
+      if (isFetchingMessagesRef.current) {
+        scheduleNext(5000);
+        return;
+      }
+
+      // Realtime saudável: reconciliação apenas a cada 5 minutos
+      if (isRealtimeConnectedRef.current) {
+        const sinceLastMs = Date.now() - lastMsgFetchAtRef.current;
+        if (sinceLastMs < 300000) {
+          scheduleNext(300000 - sinceLastMs);
+          return;
+        }
+      }
+
+      isFetchingMessagesRef.current = true;
+      lastMsgFetchAtRef.current = Date.now();
+
       try {
         const endpoint = getApiUrl(
           activeChat.type === "tinder"
@@ -1759,22 +1847,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         if (!res.ok) {
           consecutiveChatFailuresRef.current += 1;
         } else {
-          // Sucesso: reseta a contagem de falhas consecutivas
           consecutiveChatFailuresRef.current = 0;
 
           if (!isSubscribed) return;
           const data = await res.json();
           const incomingMessages: DirectMessage[] = data?.messages || [];
 
-          // Enriquecimento com vínculos e transcrições do Supabase para mensagens recebidas no polling
+          // Enriquecimento com vínculos e transcrições do Supabase — limitado às últimas 48h
           let enrichedIncoming = incomingMessages;
           try {
             const supabase = getSupabaseBrowserClient();
             if (supabase && activeChat.type !== "tinder") {
+              const cutoff = new Date(Date.now() - 48 * 3600_000).toISOString();
               const { data: dbRows } = await supabase
                 .from("instagram_messages")
                 .select("id, reply_to_message_id, audio_transcript, timestamp")
-                .or(`conversation_id.eq.${activeChat.id},contact_id.eq.${activeChat.id}`);
+                .or(`conversation_id.eq.${activeChat.id},contact_id.eq.${activeChat.id}`)
+                .gte("created_at", cutoff)
+                .limit(150);
 
               if (dbRows && dbRows.length > 0) {
                 const dbReplyMap = new Map<string, string>();
@@ -1804,18 +1894,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           setMessages((prev) => {
             const current = prev[activeChat.id] || [];
 
-            // Identifica mensagens locais pendentes ou com falha para não perdê-las
             const pendingMessages = current.filter(
               (m) => m.status === "sending" || m.status === "failed"
             );
 
-            // Mapeia mensagens do servidor garantindo status 'sent'
             const serverMessages: DirectMessage[] = enrichedIncoming.map((m) => ({
               ...m,
               status: m.status || "sent",
             }));
 
-            // Merge resiliente: preserva mensagens existentes e NUNCA perde replyTo/replyToMessageId
             const mergedMap = new Map<string, DirectMessage>();
             for (const m of current) {
               mergedMap.set(m.id, m);
@@ -1896,29 +1983,39 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       } catch {
         consecutiveChatFailuresRef.current += 1;
       } finally {
+        isFetchingMessagesRef.current = false;
         if (isSubscribed) {
           const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
-          const baseInterval = isVisible ? 10000 : 30000;
-          const nextInterval = getResilientInterval(consecutiveChatFailuresRef.current, baseInterval);
+          let nextInterval: number;
+          if (isRealtimeConnectedRef.current) {
+            // Realtime ok: reconciliação a cada 5 minutos
+            nextInterval = 300000;
+          } else {
+            // Realtime degradado: fallback com backoff
+            const base = isVisible ? 60000 : 120000;
+            nextInterval = getResilientInterval(consecutiveChatFailuresRef.current, base);
+          }
           timerId = setTimeout(pollChatMessages, nextInterval);
         }
       }
     };
 
-    // Revalidação imediata quando a tela ganha foco ou volta a ficar visível
+    // Revalidação imediata ao ganhar foco — respeita janela mínima de 30s
     const handleImmediateChatRevalidate = () => {
       if (!isSubscribed) return;
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        const sinceLastMs = Date.now() - lastMsgFetchAtRef.current;
+        if (sinceLastMs < 30000) return; // já buscou recentemente
         if (timerId) clearTimeout(timerId);
-        pollChatMessages();
+        timerId = setTimeout(pollChatMessages, 0);
       }
     };
 
     window.addEventListener("focus", handleImmediateChatRevalidate);
     document.addEventListener("visibilitychange", handleImmediateChatRevalidate);
 
-    // Inicia imediatamente após 2000ms
-    timerId = setTimeout(pollChatMessages, 2000);
+    // Inicia com delay inicial de 5s (Realtime lida com atualizações imediatas)
+    timerId = setTimeout(pollChatMessages, 5000);
 
     return () => {
       isSubscribed = false;
@@ -1927,8 +2024,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       document.removeEventListener("visibilitychange", handleImmediateChatRevalidate);
     };
   }, [activeChat]);
-
-  // POLLING RESILIENTE 2: Atualiza a lista de conversas com cadência inteligente e ao ganhar foco
+  // POLLING RESILIENTE 2 (fallback de reconciliação da lista de conversas)
+  // - Realtime saudável: reconciliação apenas a cada 2 minutos
+  // - Realtime degradado: fallback a cada 120s (visível) / 300s (oculto)
+  // - In-flight dedup: não inicia nova chamada se já há request em curso
+  // - Focus/visibilitychange: respeitam janela mínima de 60s desde o último fetch
   const consecutiveListFailuresRef = useRef<number>(0);
 
   useEffect(() => {
@@ -1936,7 +2036,29 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     let timerId: NodeJS.Timeout | null = null;
     consecutiveListFailuresRef.current = 0;
 
+    const scheduleNext = (ms: number) => {
+      if (isSubscribed) timerId = setTimeout(pollConversations, ms);
+    };
+
     const pollConversations = async () => {
+      // In-flight dedup: aborta se já há fetch em curso
+      if (isFetchingConversationsRef.current) {
+        scheduleNext(5000);
+        return;
+      }
+
+      // Realtime saudável: reconciliação apenas a cada 2 minutos
+      if (isRealtimeConnectedRef.current) {
+        const sinceLastMs = Date.now() - lastConvFetchAtRef.current;
+        if (sinceLastMs < 120000) {
+          scheduleNext(120000 - sinceLastMs);
+          return;
+        }
+      }
+
+      isFetchingConversationsRef.current = true;
+      lastConvFetchAtRef.current = Date.now();
+
       try {
         const endpoint = getApiUrl(
           chatPlatform === "tinder" ? "/api/tinder/matches" : "/api/instagram/conversations"
@@ -2035,30 +2157,39 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       } catch {
         consecutiveListFailuresRef.current += 1;
       } finally {
+        isFetchingConversationsRef.current = false;
         if (isSubscribed) {
           const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
-          const baseInterval = activeChat ? (isVisible ? 6000 : 10000) : (isVisible ? 3500 : 7000);
-          const nextInterval = getResilientInterval(consecutiveListFailuresRef.current, baseInterval);
+          let nextInterval: number;
+          if (isRealtimeConnectedRef.current) {
+            // Realtime ok: reconciliação a cada 2 minutos
+            nextInterval = 120000;
+          } else {
+            // Realtime degradado: fallback com backoff
+            const base = isVisible ? 120000 : 300000;
+            nextInterval = getResilientInterval(consecutiveListFailuresRef.current, base);
+          }
           timerId = setTimeout(pollConversations, nextInterval);
         }
       }
     };
 
-    // Revalidação imediata da lista quando ganha foco
+    // Revalidação imediata ao ganhar foco — respeita janela mínima de 60s
     const handleImmediateListRevalidate = () => {
       if (!isSubscribed) return;
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        const sinceLastMs = Date.now() - lastConvFetchAtRef.current;
+        if (sinceLastMs < 60000) return; // já buscou recentemente
         if (timerId) clearTimeout(timerId);
-        pollConversations();
+        timerId = setTimeout(pollConversations, 0);
       }
     };
 
     window.addEventListener("focus", handleImmediateListRevalidate);
     document.addEventListener("visibilitychange", handleImmediateListRevalidate);
 
-    const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
-    const initialDelay = activeChat ? (isVisible ? 6000 : 10000) : (isVisible ? 3000 : 6000);
-    timerId = setTimeout(pollConversations, initialDelay);
+    // Inicia com delay de 10s — Realtime cobre atualizações imediatas
+    timerId = setTimeout(pollConversations, 10000);
 
     return () => {
       isSubscribed = false;
@@ -2067,7 +2198,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       document.removeEventListener("visibilitychange", handleImmediateListRevalidate);
     };
   }, [activeChat, chatPlatform]);
-
   // Iniciar Gravação de Áudio via Microfone
   const handleStartRecording = async () => {
     try {
@@ -3260,10 +3390,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           try {
             const supabase = getSupabaseBrowserClient();
             if (supabase && conv.type !== "tinder") {
+              const cutoff = new Date(Date.now() - 48 * 3600_000).toISOString();
               const { data: dbRows, error: dbErr } = await supabase
                 .from("instagram_messages")
                 .select("id, reply_to_message_id, audio_transcript, timestamp")
-                .or(`conversation_id.eq.${conv.id},contact_id.eq.${conv.id}`);
+                .or(`conversation_id.eq.${conv.id},contact_id.eq.${conv.id}`)
+                .gte("created_at", cutoff)
+                .limit(150);
 
               if (dbRows && dbRows.length > 0) {
                 const replyMap = new Map<string, string>();

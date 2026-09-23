@@ -49,6 +49,8 @@ export interface RealtimeSeenPayload {
 interface UseChatRealtimeProps {
   onInstagramMessage?: (msg: RealtimeMessagePayload) => void;
   onInstagramConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
+  /** Chamado quando uma nova conversa Instagram é inserida no banco (INSERT) */
+  onInstagramConversationInsert?: (conv: RealtimeConversationUpdatePayload) => void;
   onInstagramSeen?: (payload: RealtimeSeenPayload) => void;
   onTinderMessage?: (msg: RealtimeMessagePayload) => void;
   onTinderConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
@@ -80,6 +82,7 @@ export function notifyLocalTabs(
 export function useChatRealtime({
   onInstagramMessage,
   onInstagramConversationUpdate,
+  onInstagramConversationInsert,
   onInstagramSeen,
   onTinderMessage,
   onTinderConversationUpdate,
@@ -90,6 +93,7 @@ export function useChatRealtime({
   const callbacksRef = useRef({
     onInstagramMessage,
     onInstagramConversationUpdate,
+    onInstagramConversationInsert,
     onInstagramSeen,
     onTinderMessage,
     onTinderConversationUpdate,
@@ -109,6 +113,7 @@ export function useChatRealtime({
     callbacksRef.current = {
       onInstagramMessage,
       onInstagramConversationUpdate,
+      onInstagramConversationInsert,
       onInstagramSeen,
       onTinderMessage,
       onTinderConversationUpdate,
@@ -117,6 +122,7 @@ export function useChatRealtime({
   }, [
     onInstagramMessage,
     onInstagramConversationUpdate,
+    onInstagramConversationInsert,
     onInstagramSeen,
     onTinderMessage,
     onTinderConversationUpdate,
@@ -267,7 +273,7 @@ export function useChatRealtime({
       .on(
         "postgres_changes",
         {
-          event: "*",
+          event: "UPDATE",
           schema: "public",
           table: "instagram_conversations",
         },
@@ -276,6 +282,30 @@ export function useChatRealtime({
           if (!row || !row.id || String(row.id).startsWith("__") || row.status === "system" || row.status === "vault") return;
 
           callbacksRef.current.onInstagramConversationUpdate?.({
+            id: String(row.id),
+            lastMessage: row.last_message || undefined,
+            lastMessageAt: row.last_message_at || undefined,
+            lastDirection: row.last_direction || undefined,
+            unread: Boolean(row.unread),
+            fullName: row.full_name || undefined,
+            username: row.username || undefined,
+            avatar: row.avatar || undefined,
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "instagram_conversations",
+        },
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row || !row.id || String(row.id).startsWith("__") || row.status === "system" || row.status === "vault") return;
+
+          // Nova conversa: adiciona incrementalmente à lista sem full refetch
+          callbacksRef.current.onInstagramConversationInsert?.({
             id: String(row.id),
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,

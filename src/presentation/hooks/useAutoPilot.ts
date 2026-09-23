@@ -11,10 +11,12 @@ interface UseAutoPilotOptions {
   onSendMessage: (conversationId: string, text: string) => Promise<void>;
   onRefreshMessages?: (conversationId: string) => Promise<void>;
   onStageChange?: (conversationId: string) => Promise<void>;
+  /** Saúde do canal Realtime. Quando true, o polling de fallback é suprimido. */
+  isRealtimeHealthy?: boolean;
 }
 
 /** Console do AutoPilot: processamento autônomo exclusivamente no backend. */
-export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptions) {
+export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }: UseAutoPilotOptions) {
   const [config, setConfig] = useState<AutoPilotConfig | null>(null);
   const [chatStates, setChatStates] = useState<Record<string, AutoPilotChatState>>({});
   const [currentProcessingId, setCurrentProcessingId] = useState<string | null>(null);
@@ -47,14 +49,21 @@ export function useAutoPilot({ onSendMessage, onStageChange }: UseAutoPilotOptio
   }, [mergeStatesMonotonic]);
   useEffect(() => { void refreshState(); }, [refreshState]);
 
-  // Contingência para navegadores que perderem um broadcast do Realtime.
+  // Contingência para navegadores que perderem broadcast do Realtime.
+  // Só executa quando o Realtime está degradado (isRealtimeHealthy === false).
+  // Intervalo de 30s: fallback real, não polling primário.
+  const isRealtimeHealthyRef = useRef(isRealtimeHealthy);
+  useEffect(() => { isRealtimeHealthyRef.current = isRealtimeHealthy; }, [isRealtimeHealthy]);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
+      if (isRealtimeHealthyRef.current) return; // Realtime saudável → não pollar
       void autoPilotRepo.getAllChatStates(true).then(mergeStatesMonotonic).catch(() => {});
-    }, 4000);
+    }, 30000);
     return () => window.clearInterval(timer);
   }, [mergeStatesMonotonic]);
+
 
   const applyRemoteStateUpdate = useCallback((payload: Partial<AutoPilotChatState> & { conversationId: string; timestamp?: string }) => {
     setChatStates((previous) => {

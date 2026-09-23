@@ -42,6 +42,24 @@ export function useChatStages(activeConversationId?: string) {
     }
   }, []);
 
+  /**
+   * Atualiza incrementalmente apenas o progresso da conversa ativa em `allProgresses`.
+   * Lê 1 linha (SELECT por id) em vez de SeqScan de todas as conversas.
+   * Usar nas ações CRUD da conversa ativa no lugar de fetchAllProgresses().
+   */
+  const refreshActiveProgress = useCallback(async () => {
+    if (!activeConversationId) return;
+    try {
+      const progress = await progressUseCase.getChatProgress(activeConversationId);
+      if (progress) {
+        setAllProgresses((prev) => ({ ...prev, [activeConversationId]: progress }));
+      }
+    } catch (e) {
+      console.warn("Erro ao atualizar progresso da conversa ativa:", e);
+    }
+  }, [activeConversationId]);
+
+
   const fetchChatDetail = useCallback(async (convId: string) => {
     try {
       const detail = await progressUseCase.getChatStageDetail(convId);
@@ -78,7 +96,9 @@ export function useChatStages(activeConversationId?: string) {
 
     fetchChatDetail(activeConversationId);
 
-    // Subscrição Realtime para atualizar instantaneamente o progresso da etapa na conversa ativa
+    // Subscrição Realtime para atualizar instantaneamente o progresso da etapa na conversa ativa.
+    // FILTRO por id: só recebe eventos desta conversa específica, evitando SeqScan global a cada
+    // UPDATE do Brain em qualquer outra conversa.
     if (typeof window === "undefined") return;
     const client = getSupabaseBrowserClient();
     if (!client) return;
@@ -92,13 +112,11 @@ export function useChatStages(activeConversationId?: string) {
           event: "UPDATE",
           schema: "public",
           table: "instagram_conversations",
+          filter: `id=eq.${activeConversationId}`,
         },
-        (payload: { new: Record<string, any> }) => {
-          const row = payload.new;
-          if (row && (row.id === activeConversationId || row.contact_id === activeConversationId)) {
-            fetchChatDetail(activeConversationId);
-            fetchAllProgresses();
-          }
+        () => {
+          // Só atualiza o detalhe da conversa ativa — sem fetchAllProgresses() global
+          fetchChatDetail(activeConversationId);
         }
       )
       .subscribe();
@@ -106,7 +124,8 @@ export function useChatStages(activeConversationId?: string) {
     return () => {
       client.removeChannel(channel);
     };
-  }, [activeConversationId, fetchChatDetail, fetchAllProgresses]);
+  }, [activeConversationId, fetchChatDetail]);
+
 
   // Ações de Gestão de Etapas
   const createStage = async (data: {
@@ -166,7 +185,6 @@ export function useChatStages(activeConversationId?: string) {
     try {
       const updated = await stagesUseCase.moveStageUp(id);
       setStages(updated);
-      await fetchAllProgresses();
       if (activeConversationId) await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error(err.message || "Erro ao reordenar etapa.");
@@ -177,12 +195,12 @@ export function useChatStages(activeConversationId?: string) {
     try {
       const updated = await stagesUseCase.moveStageDown(id);
       setStages(updated);
-      await fetchAllProgresses();
       if (activeConversationId) await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error(err.message || "Erro ao reordenar etapa.");
     }
   };
+
 
   // Ações de Objetivos da Conversa (Goals)
   const addGoal = async (
@@ -274,7 +292,7 @@ export function useChatStages(activeConversationId?: string) {
       }
 
       await progressUseCase.toggleItem(activeConversationId, itemId, isCompleted);
-      await fetchAllProgresses();
+      await refreshActiveProgress();
       await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error("Erro ao atualizar item do checklist.");
@@ -307,7 +325,7 @@ export function useChatStages(activeConversationId?: string) {
         });
       }
       await progressUseCase.toggleObjective(activeConversationId, objectiveId, isCompleted);
-      await fetchAllProgresses();
+      await refreshActiveProgress();
       await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error("Erro ao atualizar objetivo.");
@@ -320,7 +338,7 @@ export function useChatStages(activeConversationId?: string) {
     try {
       await progressUseCase.advanceStage(activeConversationId);
       toast.success("Avançado para a próxima etapa com sucesso!");
-      await fetchAllProgresses();
+      await refreshActiveProgress();
       await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error(err.message || "Erro ao avançar etapa.");
@@ -332,7 +350,7 @@ export function useChatStages(activeConversationId?: string) {
     try {
       await progressUseCase.setStage(activeConversationId, stageId);
       toast.success("Etapa da conversa alterada.");
-      await fetchAllProgresses();
+      await refreshActiveProgress();
       await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error(err.message || "Erro ao alterar etapa.");
@@ -346,7 +364,7 @@ export function useChatStages(activeConversationId?: string) {
       toast.success(
         isConverted ? "🎉 Conversa marcada como Convertida / Objetivo Concluído!" : "Status de conversão removido."
       );
-      await fetchAllProgresses();
+      await refreshActiveProgress();
       await fetchChatDetail(activeConversationId);
     } catch (err: any) {
       toast.error(err.message || "Erro ao atualizar status de conversão.");
@@ -358,7 +376,7 @@ export function useChatStages(activeConversationId?: string) {
     try {
       const res = await progressUseCase.markItemCompletedByVaultItem(activeConversationId, vaultItemId);
       if (res) {
-        await fetchAllProgresses();
+        await refreshActiveProgress();
         await fetchChatDetail(activeConversationId);
       }
     } catch (e) {
@@ -371,13 +389,14 @@ export function useChatStages(activeConversationId?: string) {
     try {
       const res = await progressUseCase.markItemCompletedByExactText(activeConversationId, sentText);
       if (res) {
-        await fetchAllProgresses();
+        await refreshActiveProgress();
         await fetchChatDetail(activeConversationId);
       }
     } catch (e) {
       console.warn("Erro ao marcar item por texto exato:", e);
     }
   };
+
 
   return {
     stages,

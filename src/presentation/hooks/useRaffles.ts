@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
@@ -121,7 +121,7 @@ export function useRaffles() {
       if (client) {
         const { data, error } = await client
           .from("instagram_conversations")
-          .select("*")
+          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, unread, status, is_restricted")
           .neq("id", "__vault_data__")
           .neq("status", "vault")
           .order("last_message_at", { ascending: false, nullsFirst: false })

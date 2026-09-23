@@ -305,4 +305,9 @@ export class ManageChatProgressUseCase {
   async getAllProgresses(): Promise<Record<string, ChatProgress>> {
     return this.stageRepository.getAllChatProgresses();
   }
+
+  /** Lê o progresso de uma única conversa. Usado para merge incremental após ações CRUD. */
+  async getChatProgress(conversationId: string): Promise<ChatProgress | null> {
+    return this.stageRepository.getChatProgress(conversationId);
+  }
 }

@@ -1,4 +1,4 @@
-import { IChatRepository } from "@/domain/repositories/IChatRepository";
+﻿import { IChatRepository } from "@/domain/repositories/IChatRepository";
 import { Conversation, ChatMessage } from "@/domain/entities/Chat";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
@@ -22,7 +22,7 @@ export class SupabaseChatRepository implements IChatRepository {
     try {
       const { data, error } = await client
         .from("instagram_conversations")
-        .select("*")
+        .select("id, contact_id, display_name, full_name, username, last_message_at, last_direction, last_message_preview, last_message, avatar_url, avatar, is_restricted, unread_count, unread")
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(100);
 
@@ -82,7 +82,7 @@ export class SupabaseChatRepository implements IChatRepository {
     try {
       const { data, error } = await client
         .from("instagram_messages")
-        .select("*")
+        .select("id, contact_id, display_name, full_name, username, last_message_at, last_direction, last_message_preview, last_message, avatar_url, avatar, is_restricted, unread_count, unread")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true })
         .limit(200);

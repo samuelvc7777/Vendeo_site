@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/infrastructure/supabase/server";
 import { GenerateAiPromptUseCase } from "@/application/use-cases/GenerateAiPromptUseCase";
 import { GroqCloudAudioTranscriber } from "@/infrastructure/ai/GroqCloudAudioTranscriber";
@@ -147,7 +147,7 @@ async function handleGeneratePrompt(
         // Plataforma Instagram
         const { data: convData } = await supabase
           .from("instagram_conversations")
-          .select("*")
+          .select("id, full_name, username")
           .eq("id", conversationId)
           .maybeSingle();
 
