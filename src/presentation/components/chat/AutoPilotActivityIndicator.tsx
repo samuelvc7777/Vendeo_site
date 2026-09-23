@@ -7,13 +7,11 @@ import {
   Clock3,
   Loader2,
   Send,
-  Sparkles,
   ChevronDown,
   ChevronUp,
   Mic,
   MessageSquare,
   Bot,
-  Zap,
   Pause,
   StopCircle,
   Maximize2,
@@ -25,7 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { AutoPilotChatState } from "@/domain/entities/AutoPilot";
+import { AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
 
@@ -99,6 +97,180 @@ export function isAutoPilotActivelyWorking(state?: AutoPilotChatState | null): b
     state?.status !== "activation_wait" &&
     state?.status !== "waiting_delay" &&
     state?.status !== "waiting_debounce"
+  );
+}
+
+function eventMetadataText(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function eventMetadataStrings(metadata: Record<string, unknown>, key: string): string[] {
+  const value = metadata[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
+}
+
+function eventMetadataNumber(metadata: Record<string, unknown>, key: string): number | null {
+  const value = metadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatConsoleModel(model: string | null): string | null {
+  if (!model) return null;
+  const labels: Record<string, string> = {
+    "gpt-6-luna": "GPT-6 Luna",
+    "gpt-6-sol": "GPT-6 Sol",
+    "gpt-5.6-luna": "GPT-5.6 Luna (legado)",
+    "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
+    "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
+  };
+  return labels[model] || model;
+}
+
+function formatConsoleSetting(value: string | null): string | null {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : null;
+}
+
+function objectiveDecisionLabel(value: string | null): string | null {
+  const labels: Record<string, string> = {
+    pursue: "Avançar objetivo",
+    defer: "Adiar objetivo",
+    already_satisfied: "Objetivo satisfeito",
+    none: "Sem ação de objetivo",
+  };
+  return value ? labels[value] || value : null;
+}
+
+function ConsoleEventField({ label, children }: { label: string; children: React.ReactNode }) {
+  if (children === null || children === undefined || children === "") return null;
+  return (
+    <div className="min-w-0">
+      <div className="text-[9px] uppercase tracking-wide text-zinc-500">{label}</div>
+      <div className="mt-0.5 text-[11px] leading-relaxed text-zinc-200 whitespace-pre-wrap break-words">{children}</div>
+    </div>
+  );
+}
+
+function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
+  const metadata = event.metadata || {};
+  const model = formatConsoleModel(eventMetadataText(metadata, "model"));
+  const reasoningEffort = formatConsoleSetting(eventMetadataText(metadata, "reasoningEffort"));
+  const verbosity = formatConsoleSetting(eventMetadataText(metadata, "verbosity"));
+  const responses = eventMetadataStrings(metadata, "responses");
+  const proposedResponses = eventMetadataStrings(metadata, "proposedResponses");
+  const toolsUsed = eventMetadataStrings(metadata, "toolsUsed");
+  const memorySources = eventMetadataStrings(metadata, "memorySources");
+  const objectiveDecision = eventMetadataText(metadata, "objectiveDecision");
+  const questionIntents = Array.isArray(metadata.questionIntents) ? metadata.questionIntents : [];
+  const isBrainDecision = event.event === "brain_decision";
+  const isBrainStarted = event.event === "brain_started";
+  const isBrainMemory = event.event === "brain_memory";
+  const isResponseReady = event.event === "response_ready";
+  const isDiagnostic = isBrainDecision || isBrainStarted || isBrainMemory || isResponseReady;
+
+  return (
+    <article className={`rounded-xl border p-3 ${isBrainDecision ? "border-purple-500/40 bg-purple-950/20" : isResponseReady ? "border-emerald-500/30 bg-emerald-950/15" : "border-zinc-800 bg-zinc-950/70"}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[10px] text-zinc-500">{new Date(event.timestamp).toLocaleTimeString("pt-BR")} · #{event.sequence} · {event.phase}</div>
+          <div className="mt-1 text-[11px] font-semibold text-zinc-100">{event.label}</div>
+        </div>
+        {isBrainDecision && <BrainCircuit className="h-4 w-4 shrink-0 text-purple-300" />}
+      </div>
+
+      {isBrainStarted && (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <ConsoleEventField label="Modelo">{model}</ConsoleEventField>
+          <ConsoleEventField label="Reasoning">{reasoningEffort}</ConsoleEventField>
+          <ConsoleEventField label="Verbosity">{verbosity}</ConsoleEventField>
+          <ConsoleEventField label="Etapa">{eventMetadataText(metadata, "stageId")}</ConsoleEventField>
+          <ConsoleEventField label="Objetivo atual">{eventMetadataText(metadata, "currentObjectiveLabel")}</ConsoleEventField>
+          <ConsoleEventField label="Inbounds">{eventMetadataNumber(metadata, "inboundCount")}</ConsoleEventField>
+        </div>
+      )}
+
+      {isBrainMemory && (
+        <div className="mt-3 space-y-2">
+          <ConsoleEventField label="Memórias">{memorySources.join(" · ") || toolsUsed.join(" · ")}</ConsoleEventField>
+          <ConsoleEventField label="Consultas realizadas">{eventMetadataNumber(metadata, "searchCount")}</ConsoleEventField>
+          {eventMetadataNumber(metadata, "relevantPersonaFactsCount") !== null && (
+            <ConsoleEventField label="Fatos relevantes incluídos">{eventMetadataNumber(metadata, "relevantPersonaFactsCount")}</ConsoleEventField>
+          )}
+          <ConsoleEventField label="Motivo da consulta">{eventMetadataText(metadata, "memoryRationale")}</ConsoleEventField>
+        </div>
+      )}
+
+      {isBrainDecision && (
+        <div className="mt-3 space-y-3">
+          <div className="rounded-lg bg-black/20 p-2 text-[10px] text-zinc-300">
+            {model || "Modelo não informado"}
+            {(reasoningEffort || verbosity) && <span className="text-zinc-500"> · Reasoning: {reasoningEffort || "—"} · Verbosity: {verbosity || "—"}</span>}
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ConsoleEventField label="Objetivo · decisão">
+              {objectiveDecisionLabel(objectiveDecision)}{objectiveDecision ? ` (${objectiveDecision})` : ""}
+            </ConsoleEventField>
+            <ConsoleEventField label="Objetivo atual">
+              {eventMetadataText(metadata, "currentObjectiveLabel") || eventMetadataText(metadata, "currentObjectiveId")}
+            </ConsoleEventField>
+            <ConsoleEventField label="Tópico atual">{eventMetadataText(metadata, "currentTopic")}</ConsoleEventField>
+            <ConsoleEventField label="Gancho principal">{eventMetadataText(metadata, "bestHook")}</ConsoleEventField>
+            <ConsoleEventField label="Oportunidade">{eventMetadataText(metadata, "curiosityOpportunity")}</ConsoleEventField>
+            <ConsoleEventField label="Memória">
+              {metadata.memoryConsulted === true ? "Consultada" : metadata.memoryConsulted === false ? "Não consultada" : null}
+              {eventMetadataText(metadata, "memoryRationale") ? ` · ${eventMetadataText(metadata, "memoryRationale")}` : ""}
+            </ConsoleEventField>
+            <ConsoleEventField label="Motivo da decisão">{eventMetadataText(metadata, "reasoningSummary")}</ConsoleEventField>
+            <ConsoleEventField label="Ferramentas usadas">{toolsUsed.join(" · ") || null}</ConsoleEventField>
+          </div>
+          {(eventMetadataText(metadata, "satisfiedObjectiveId") || eventMetadataText(metadata, "evidenceMessageId")) && (
+            <details className="text-[10px] text-zinc-500">
+              <summary className="cursor-pointer">Dados técnicos do objetivo</summary>
+              <div className="mt-2 space-y-1 break-all">
+                {eventMetadataText(metadata, "satisfiedObjectiveId") && <div>Objetivo satisfeito: {eventMetadataText(metadata, "satisfiedObjectiveId")}</div>}
+                {eventMetadataText(metadata, "evidenceMessageId") && <div>Mensagem de evidência: {eventMetadataText(metadata, "evidenceMessageId")}</div>}
+              </div>
+            </details>
+          )}
+          {proposedResponses.length > 0 && (
+            <div>
+              <div className="mb-1 text-[9px] uppercase tracking-wide text-zinc-500">Brain propôs</div>
+              <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-zinc-200">
+                {proposedResponses.map((response, index) => <li key={`${index}-${response}`}>{response}</li>)}
+              </ol>
+            </div>
+          )}
+          {questionIntents.length > 0 && (
+            <details className="text-[10px] text-zinc-500">
+              <summary className="cursor-pointer">Intenções de pergunta ({questionIntents.length})</summary>
+              <ul className="mt-2 list-disc space-y-1 pl-4">
+              {questionIntents.map((intent: unknown, index: number) => {
+                const item = typeof intent === "object" && intent !== null ? intent as Record<string, unknown> : {};
+                const meaning = typeof item.canonicalMeaning === "string" ? item.canonicalMeaning : null;
+                const intentKey = typeof item.intentKey === "string" ? item.intentKey : "intent";
+                return <li key={`${intentKey}-${index}`}>{meaning || intentKey}</li>;
+              })}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+
+      {isResponseReady && (
+        <div className="mt-3">
+          <div className="mb-1 text-[9px] uppercase tracking-wide text-emerald-300/80">Resposta final autorizada · ainda não significa que foi enviada</div>
+          {eventMetadataText(metadata, "payloadType") === "audio" ? (
+            <div className="text-[11px] text-zinc-200">Áudio autorizado para envio</div>
+          ) : responses.length > 0 ? (
+            <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-zinc-100">
+              {responses.map((response, index) => <li key={`${index}-${response}`}>{response}</li>)}
+            </ol>
+          ) : null}
+        </div>
+      )}
+
+      {!isDiagnostic && event.detail && <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{event.detail}</div>}
+    </article>
   );
 }
 
@@ -234,11 +406,7 @@ export function AutoPilotActivityIndicator({
   variant: Variant;
   conversationId?: string;
 }) {
-  if (variant === "floating") {
-    if (!state || !state.isEnabled) return null;
-  } else {
-    if (!isAutoPilotWorking(state)) return null;
-  }
+  const shouldRender = variant === "floating" ? state.isEnabled : isAutoPilotWorking(state);
   const copy = getCopy(state);
   const activity = state.activity;
   const targetId = conversationId || state.conversationId;
@@ -265,11 +433,11 @@ export function AutoPilotActivityIndicator({
 
   // Pensamento/raciocínio único do Brain (com tolerância a chaves legadas preservadas no histórico)
   const rawBrainThought =
-    (activity as any)?.brainThought ||
+    activity?.brainThought ||
     activity?.atriaThought ||
     activity?.solThought ||
     (!isFailed
-      ? (state.lastThoughts as any)?.brainThought ||
+      ? state.lastThoughts?.brainThought ||
         state.lastThoughts?.atriaThought ||
         state.lastThoughts?.solThought
       : undefined);
@@ -297,10 +465,11 @@ export function AutoPilotActivityIndicator({
   const brainThoughtRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!shouldRender) return;
     if (isBrainActive && brainThoughtRef.current) {
       brainThoughtRef.current.scrollTop = brainThoughtRef.current.scrollHeight;
     }
-  }, [validBrainThought, isBrainActive]);
+  }, [validBrainThought, isBrainActive, shouldRender]);
 
   // Reatividade estilo Antigravity: aberto por padrão durante atividade de raciocínio
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(true);
@@ -308,6 +477,7 @@ export function AutoPilotActivityIndicator({
   const lastThoughtsRef = useRef<string>("");
 
   useEffect(() => {
+    if (!shouldRender) return;
     const currentPhase = activity?.phase;
     const thoughtsKey = validBrainThought || "";
 
@@ -319,13 +489,10 @@ export function AutoPilotActivityIndicator({
       lastThoughtsRef.current = thoughtsKey;
       setIsThinkingExpanded(true);
     }
-  }, [activity?.phase, validBrainThought]);
+  }, [activity?.phase, validBrainThought, shouldRender]);
 
   useEffect(() => {
-    setRemainingSeconds(calcInitialCountdown());
-  }, [activity?.countdownSeconds, activity?.currentBalloon, state.scheduledResponseAt, state.stateUpdatedAt]);
-
-  useEffect(() => {
+    if (!shouldRender) return;
     if (isEditing) return;
     const interval = setInterval(() => {
       if (state.scheduledResponseAt && (state.status === "waiting_delay" || activity?.phase === "waiting")) {
@@ -338,18 +505,13 @@ export function AutoPilotActivityIndicator({
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [activity?.countdownSeconds, activity?.updatedAt, state.scheduledResponseAt, state.status, state.stateUpdatedAt, isEditing]);
+  }, [activity?.countdownSeconds, activity?.updatedAt, activity?.phase, state.scheduledResponseAt, state.status, state.stateUpdatedAt, isEditing, shouldRender]);
 
   const currentPreview = activity?.currentResponsePreview;
 
-  useEffect(() => {
-    if (currentPreview && !isEditing) {
-      setEditedText(currentPreview);
-    }
-  }, [currentPreview, isEditing]);
-
   // Ações de intervenção do operador
   const handleStartEdit = async () => {
+    setEditedText(currentPreview || "");
     setIsEditing(true);
     if (!targetId) return;
     try {
@@ -446,6 +608,8 @@ export function AutoPilotActivityIndicator({
       setIsSendingNow(false);
     }
   };
+
+  if (!shouldRender) return null;
 
   // VARIANTE INBOX (Lista de conversas - limpa e elegante)
   if (variant === "inbox") {
@@ -796,7 +960,7 @@ export function AutoPilotActivityIndicator({
               <button type="button" onClick={() => setIsConsoleOpen(false)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"><X className="h-4 w-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-[11px]">
-              {(state.cycleEvents || []).map((event) => <div key={`${event.cycleId}-${event.sequence}`} className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2"><div className="text-zinc-500">{new Date(event.timestamp).toLocaleTimeString("pt-BR")} · #{event.sequence} · {event.phase}</div><div className="text-zinc-200">{event.label}</div>{event.detail && <div className="text-zinc-500 mt-0.5">{event.detail}</div>}</div>)}
+              {(state.cycleEvents || []).map((event) => <ConsoleCycleEventCard key={`${event.cycleId}-${event.sequence}`} event={event} />)}
               {(!state.cycleEvents || state.cycleEvents.length === 0) && <div className="text-zinc-500">Nenhum evento operacional persistido neste ciclo.</div>}
             </div>
           </div>

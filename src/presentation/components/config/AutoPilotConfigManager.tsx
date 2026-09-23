@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useState, useEffect } from "react";
 import {
   Bot,
   Clock,
@@ -36,52 +36,72 @@ export function AutoPilotConfigManager() {
   const [isSaving, setIsSaving] = useState(false);
   const [openAiKey, setOpenAiKey] = useState("");
   const [openAiMaskedKey, setOpenAiMaskedKey] = useState<string | null>(null);
-  const [openAiModel, setOpenAiModel] = useState("gpt-5.6-luna");
+  const [openAiModel, setOpenAiModel] = useState("");
+  const [openAiCurrentModel, setOpenAiCurrentModel] = useState<string | null>(null);
+  const [openAiCurrentModelLabel, setOpenAiCurrentModelLabel] = useState<string | null>(null);
+  const [openAiReasoningEffort, setOpenAiReasoningEffort] = useState("low");
+  const [openAiVerbosity, setOpenAiVerbosity] = useState("low");
+  const [isOpenAiReasoningDirty, setIsOpenAiReasoningDirty] = useState(false);
+  const [isOpenAiVerbosityDirty, setIsOpenAiVerbosityDirty] = useState(false);
   const [isSavingKey, setIsSavingKey] = useState(false);
   const mobileNotifications = useMobileNotifications();
 
-  useEffect(() => {
-    loadConfig();
-    loadOpenAiConfig();
-  }, []);
-
-  const loadOpenAiConfig = async () => {
+  const loadOpenAiConfig = useCallback(async () => {
     try {
       const response = await fetch(OPENAI_CONFIG_ENDPOINT, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "Falha ao carregar configuração OpenAI");
       setOpenAiMaskedKey(data.maskedKey || null);
-      if (data.model) setOpenAiModel(data.model);
+      setOpenAiCurrentModel(data.model || null);
+      setOpenAiCurrentModelLabel(data.modelLabel || null);
+      if (data.model === "gpt-6-luna" || data.model === "gpt-6-sol") setOpenAiModel(data.model);
+      else setOpenAiModel("");
+      if (data.reasoningEffort) setOpenAiReasoningEffort(data.reasoningEffort);
+      if (data.verbosity) setOpenAiVerbosity(data.verbosity);
+      setIsOpenAiReasoningDirty(false);
+      setIsOpenAiVerbosityDirty(false);
     } catch (e) {
       console.warn("Aviso ao carregar configuração OpenAI:", e);
     }
-  };
+  }, []);
 
   const handleSaveOpenAiConfig = async () => {
-    if (!openAiKey.trim() && !openAiModel) return;
+    if (!openAiKey.trim() && !openAiModel && !isOpenAiReasoningDirty && !isOpenAiVerbosityDirty) return;
     setIsSavingKey(true);
     try {
+      const payload: Record<string, string | undefined> = {
+        apiKey: openAiKey.trim() || undefined,
+        model: openAiModel || undefined,
+      };
+      if (isOpenAiReasoningDirty) payload.reasoningEffort = openAiReasoningEffort;
+      if (isOpenAiVerbosityDirty) payload.verbosity = openAiVerbosity;
       const response = await fetch(OPENAI_CONFIG_ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: openAiKey.trim() || undefined, model: openAiModel }),
+        body: JSON.stringify(payload),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "Falha ao salvar configuração OpenAI");
       setOpenAiKey("");
       setOpenAiMaskedKey(data.maskedKey || openAiMaskedKey);
-      setOpenAiModel(data.model || openAiModel);
+      setOpenAiCurrentModel(data.model || openAiCurrentModel);
+      setOpenAiCurrentModelLabel(data.modelLabel || openAiCurrentModelLabel);
+      setOpenAiModel(data.model === "gpt-6-luna" || data.model === "gpt-6-sol" ? data.model : "");
+      setOpenAiReasoningEffort(data.reasoningEffort || openAiReasoningEffort);
+      setOpenAiVerbosity(data.verbosity || openAiVerbosity);
+      setIsOpenAiReasoningDirty(false);
+      setIsOpenAiVerbosityDirty(false);
       toast.success("Configuração do OpenAI — Brain da Larissa salva com sucesso!");
-    } catch (e: any) {
-      toast.error("Erro ao salvar configuração OpenAI: " + (e.message || ""));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error("Erro ao salvar configuração OpenAI: " + message);
     } finally {
       setIsSavingKey(false);
     }
   };
 
-  const loadConfig = async () => {
+  const loadConfig = useCallback(async () => {
     try {
-      setIsLoading(true);
       const data = await autoPilotRepo.getConfig();
       setConfig(data);
     } catch (err) {
@@ -89,7 +109,14 @@ export function AutoPilotConfigManager() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    // A busca assíncrona inicializa os dados da tela; as atualizações ocorrem após I/O.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadConfig();
+    void loadOpenAiConfig();
+  }, [loadConfig, loadOpenAiConfig]);
 
   const handleToggleGlobal = async (checked: boolean) => {
     if (!config) return;
@@ -118,7 +145,7 @@ export function AutoPilotConfigManager() {
     try {
       await autoPilotRepo.saveConfig(partial);
       toast.success("Configuração do Piloto salva com sucesso!");
-    } catch (err: any) {
+    } catch {
       toast.error("Erro ao salvar configuração.");
     } finally {
       setIsSaving(false);
@@ -256,11 +283,33 @@ export function AutoPilotConfigManager() {
             onChange={(e) => setOpenAiModel(e.target.value)}
             className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
           >
-            <option value="gpt-5.6-luna">Luna — Mais econômico</option>
-            <option value="gpt-5.6-terra">Terra — Equilíbrio entre inteligência e custo</option>
-            <option value="gpt-5.6-sol">Sol — Maior capacidade</option>
+            <option value="" disabled>Selecione um modelo GPT-6</option>
+            <option value="gpt-6-luna">GPT-6 Luna — Mais econômico</option>
+            <option value="gpt-6-sol">GPT-6 Sol — Mais capacidade</option>
           </select>
-          <span className="text-[10px] text-zinc-500">Modelo atual: {openAiModel === "gpt-5.6-luna" ? "Luna" : openAiModel === "gpt-5.6-terra" ? "Terra" : "Sol"}</span>
+          <span className="text-[10px] text-zinc-500">
+            Modelo atual: {openAiCurrentModelLabel || openAiCurrentModel || "não identificado"}
+          </span>
+        </div>
+
+        <div className="space-y-1.5 pt-1">
+          <label className="text-[11px] text-zinc-300 font-medium block">Reasoning effort</label>
+          <select value={openAiReasoningEffort} onChange={(e) => { setOpenAiReasoningEffort(e.target.value); setIsOpenAiReasoningDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+          <span className="text-[10px] text-zinc-500">Raciocínio atual: {openAiReasoningEffort.charAt(0).toUpperCase() + openAiReasoningEffort.slice(1)}</span>
+        </div>
+
+        <div className="space-y-1.5 pt-1">
+          <label className="text-[11px] text-zinc-300 font-medium block">Verbosity</label>
+          <select value={openAiVerbosity} onChange={(e) => { setOpenAiVerbosity(e.target.value); setIsOpenAiVerbosityDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+          <span className="text-[10px] text-zinc-500">Verbosity atual: {openAiVerbosity.charAt(0).toUpperCase() + openAiVerbosity.slice(1)}</span>
         </div>
       </div>
 

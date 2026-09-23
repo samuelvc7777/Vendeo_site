@@ -17,6 +17,7 @@ export async function publishAutoPilotState(
 ) {
   try {
     const stateUpdatedAt = new Date().toISOString();
+    const { cycleEvent, appendEvent, eventMetadata, ...statePatch } = patch;
     const { data: row } = await supabase
       .from("instagram_conversations")
       .select("stage_completed_rules")
@@ -30,40 +31,47 @@ export async function publishAutoPilotState(
     };
     const updated = {
       ...current,
-      ...patch,
+      ...statePatch,
       isEnabled:
-        patch.isEnabled !== undefined
-          ? patch.isEnabled
+        statePatch.isEnabled !== undefined
+          ? statePatch.isEnabled
           : current.isEnabled !== undefined
           ? current.isEnabled
           : true,
       conversationId,
       stateUpdatedAt,
     };
-    const cycleId = patch.cycleId || patch.activity?.cycleId || current.cycleId || null;
+    const cycleId = statePatch.cycleId || statePatch.activity?.cycleId || current.cycleId || null;
     if (cycleId) {
+      const isNewCycle = current.cycleId !== cycleId;
       updated.cycleId = cycleId;
-      const previousEvents = Array.isArray(current.cycleEvents) && current.cycleId === cycleId
+      const previousEvents = !isNewCycle && Array.isArray(current.cycleEvents)
         ? current.cycleEvents
         : [];
-      const event = patch.event || patch.activity?.event || patch.activity?.label;
-      if (event) {
-        updated.cycleEvents = [
-          ...previousEvents,
-          {
-            cycleId,
-            conversationId,
-            sequence: previousEvents.length + 1,
-            phase: patch.activity?.phase || patch.status || "idle",
-            event,
-            label: patch.activity?.label || event,
-            detail: patch.activity?.detail,
-            timestamp: stateUpdatedAt,
-            metadata: patch.eventMetadata || undefined,
-          },
-        ].slice(-100);
-      } else if (previousEvents.length > 0) {
-        updated.cycleEvents = previousEvents;
+      updated.cycleEvents = previousEvents;
+
+      const legacyEvent = statePatch.event || statePatch.activity?.event;
+      const shouldAppendEvent = appendEvent !== false && Boolean(cycleEvent || legacyEvent || appendEvent === true);
+      if (shouldAppendEvent) {
+        const eventData = cycleEvent || {};
+        const event = eventData.event || legacyEvent || statePatch.activity?.label;
+        if (event) {
+          const lastSequence = previousEvents[previousEvents.length - 1]?.sequence || 0;
+          updated.cycleEvents = [
+            ...previousEvents,
+            {
+              cycleId,
+              conversationId,
+              sequence: lastSequence + 1,
+              phase: eventData.phase || statePatch.activity?.phase || statePatch.status || "idle",
+              event,
+              label: eventData.label || statePatch.activity?.label || event,
+              detail: eventData.detail ?? statePatch.activity?.detail,
+              timestamp: stateUpdatedAt,
+              metadata: eventData.metadata ?? eventMetadata ?? undefined,
+            },
+          ].slice(-100);
+        }
       }
     }
     states[conversationId] = updated;

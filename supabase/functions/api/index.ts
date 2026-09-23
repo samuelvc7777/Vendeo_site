@@ -3751,11 +3751,17 @@ serve(async (req: Request) => {
     // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
     // ==========================================
     if (path === "/ai/openai-config") {
-      const allowedModels = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as const;
+      const allowedModels = ["gpt-6-luna", "gpt-6-sol"] as const;
+      const legacyModelLabels: Record<string, string> = {
+        "gpt-5.6-luna": "GPT-5.6 Luna (legado)",
+        "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
+        "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
+      };
+      const allowedReasoningEfforts = ["low", "medium", "high"] as const;
+      const allowedVerbosityLevels = ["low", "medium", "high"] as const;
       const labels: Record<string, string> = {
-        "gpt-5.6-luna": "Luna",
-        "gpt-5.6-terra": "Terra",
-        "gpt-5.6-sol": "Sol",
+        "gpt-6-luna": "GPT-6 Luna",
+        "gpt-6-sol": "GPT-6 Sol",
       };
       const { data: configRows, error: configError } = await supabase
         .from("instagram_config")
@@ -3775,36 +3781,63 @@ serve(async (req: Request) => {
         const remote = await getAgent();
         if (!remote.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${remote.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const agent = await remote.json();
-        const model = allowedModels.includes(agent.model) ? agent.model : allowedModels.includes(configs.get("openai_brain_model") as any) ? configs.get("openai_brain_model") : null;
-        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), model, modelLabel: model ? labels[model] : null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const model = String(agent.model || configs.get("openai_brain_model") || "").trim() || null;
+        const reasoningEffort = allowedReasoningEfforts.includes(agent.reasoning?.effort) ? agent.reasoning.effort : null;
+        const verbosity = allowedVerbosityLevels.includes(agent.text?.verbosity) ? agent.text.verbosity : null;
+        const modelLabel = model ? labels[model] || legacyModelLabels[model] || `${model} (legado)` : null;
+        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), model, modelLabel, reasoningEffort, verbosity }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
       if (req.method === "PUT") {
         const body = await req.json().catch(() => ({}));
-        const model = body?.model;
-        if (!allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha Luna, Terra ou Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const hasModel = body?.model !== undefined;
+        const hasReasoningEffort = body?.reasoningEffort !== undefined;
+        const hasVerbosity = body?.verbosity !== undefined;
+        if (!hasModel && !hasReasoningEffort && !hasVerbosity && typeof body?.apiKey !== "string") return new Response(JSON.stringify({ error: "Nenhuma configuração foi informada." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const model = hasModel ? body.model : undefined;
+        const reasoningEffort = hasReasoningEffort ? body.reasoningEffort : undefined;
+        const verbosity = hasVerbosity ? body.verbosity : undefined;
+        if (hasModel && !allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha GPT-6 Luna ou GPT-6 Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha low, medium ou high." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (hasVerbosity && !allowedVerbosityLevels.includes(verbosity)) return new Response(JSON.stringify({ error: "Verbosity inválido. Escolha low, medium ou high." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const suppliedKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
         const effectiveKey = suppliedKey || apiKey;
         if (!effectiveKey) return new Response(JSON.stringify({ error: "Configure a chave da API OpenAI antes de escolher o modelo." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const currentResponse = await fetch(agentUrl, { headers: { Authorization: `Bearer ${effectiveKey}`, "OpenAI-Beta": "agents=v1" } });
         if (!currentResponse.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${currentResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const currentAgent = await currentResponse.json();
-        const updateResponse = await fetch(agentUrl, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${effectiveKey}`, "Content-Type": "application/json", "OpenAI-Beta": "agents=v1" },
-          // PATCH semântico: envia somente model para preservar instructions, tools e demais campos remotos.
-          body: JSON.stringify({ model }),
-        });
-        if (!updateResponse.ok) return new Response(JSON.stringify({ error: `Falha ao atualizar o modelo do Agent remoto (${updateResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const updatedAgent = await updateResponse.json();
-        if (updatedAgent.model !== model) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou o modelo selecionado" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const modelWrite = await supabase.from("instagram_config").upsert({ id: "openai_brain_model", app_secret: model, updated_at: new Date().toISOString() });
-        if (modelWrite.error) return new Response(JSON.stringify({ error: modelWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const targetModel = model || currentAgent.model;
+        const targetReasoningEffort = reasoningEffort || currentAgent.reasoning?.effort;
+        const targetVerbosity = verbosity || currentAgent.text?.verbosity;
+        const remotePatch: Record<string, any> = {};
+        if (hasModel) remotePatch.model = model;
+        if (hasReasoningEffort) remotePatch.reasoning = { ...(currentAgent.reasoning || {}), effort: reasoningEffort };
+        if (hasVerbosity) remotePatch.text = { ...(currentAgent.text || {}), verbosity };
+        let updatedAgent = currentAgent;
+        if (Object.keys(remotePatch).length > 0) {
+          const updateResponse = await fetch(agentUrl, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${effectiveKey}`, "Content-Type": "application/json", "OpenAI-Beta": "agents=v1" },
+            body: JSON.stringify(remotePatch),
+          });
+          if (!updateResponse.ok) return new Response(JSON.stringify({ error: `Falha ao atualizar a configuração do Agent remoto (${updateResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          updatedAgent = await updateResponse.json();
+          if ((hasModel && updatedAgent.model !== model) || (hasReasoningEffort && updatedAgent.reasoning?.effort !== reasoningEffort) || (hasVerbosity && updatedAgent.text?.verbosity !== verbosity)) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou toda a configuração selecionada" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        const writes = [];
+        if (hasModel) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_model", app_secret: model, updated_at: new Date().toISOString() }));
+        if (hasReasoningEffort) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_reasoning_effort", app_secret: reasoningEffort, updated_at: new Date().toISOString() }));
+        if (hasVerbosity) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_verbosity", app_secret: verbosity, updated_at: new Date().toISOString() }));
+        const writeResults = await Promise.all(writes);
+        const writeError = writeResults.find((result: any) => result.error)?.error;
+        if (writeError) return new Response(JSON.stringify({ error: writeError.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         if (suppliedKey) {
           const keyWrite = await supabase.from("instagram_config").upsert({ id: "openai_api_key", app_secret: suppliedKey, updated_at: new Date().toISOString() });
           if (keyWrite.error) return new Response(JSON.stringify({ error: keyWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
-        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), model, modelLabel: labels[model] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const finalModel = updatedAgent.model || targetModel;
+        const modelLabel = finalModel ? labels[finalModel] || legacyModelLabels[finalModel] || `${finalModel} (legado)` : null;
+        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), model: finalModel, modelLabel, reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
     }
 

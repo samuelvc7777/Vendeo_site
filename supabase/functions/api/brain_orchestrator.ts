@@ -1,7 +1,7 @@
 // ============================================================================
 // brain_orchestrator.ts
 // Motor Oficial e Único de Orquestração da Conversa — BRAIN (Clean Architecture)
-// Arquitetura: Backend Determinístico + Agente Único OpenAI (gpt-5.6-luna) + MCP v17
+// Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import {
@@ -156,25 +156,30 @@ export const BRAIN_ORCHESTRATION_BUDGETS = {
 } as const;
 
 /**
- * Modelo oficial do Brain e Executores no runtime de produção.
- * O modelo oficial e exclusivo é gpt-5.6-luna (OpenAI Agent único).
+ * Modelo padrão do Brain e Executores no runtime de produção.
+ * O modelo efetivo é selecionado no Agent OpenAI oficial.
  */
-export const OPENAI_BRAIN_DEFAULT_MODEL = "gpt-5.6-luna";
-export const OPENAI_EXECUTOR_DEFAULT_MODEL = "gpt-5.6-luna";
+export const OPENAI_BRAIN_DEFAULT_MODEL = "gpt-6-luna";
+export const OPENAI_EXECUTOR_DEFAULT_MODEL = "gpt-6-luna";
 export const ALLOWED_OPENAI_BRAIN_MODELS = [
-  "gpt-5.6-luna",
-  "gpt-5.6-terra",
-  "gpt-5.6-sol",
+  "gpt-6-luna",
+  "gpt-6-sol",
 ] as const;
+
+// Valores salvos antes da migração são lidos apenas para preservar o modelo remoto
+// até que alguém selecione explicitamente um modelo GPT-6 no painel.
+const LEGACY_OPENAI_BRAIN_MODELS = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as const;
 
 export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel?: string): Promise<string> {
   if (requestedModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(requestedModel)) return requestedModel;
   try {
     const { data } = await supabase.from("instagram_config").select("app_secret").eq("id", "openai_brain_model").maybeSingle();
     if (data?.app_secret && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
+    if (data?.app_secret && (LEGACY_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
   } catch {}
   const envModel = typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL;
-  return envModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel) ? envModel : OPENAI_BRAIN_DEFAULT_MODEL;
+  if (envModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel)) return envModel;
+  return envModel && (LEGACY_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel) ? envModel : OPENAI_BRAIN_DEFAULT_MODEL;
 }
 
 export function estimateTextTokens(text: string): number {
@@ -494,6 +499,8 @@ export interface ConversationBrainPlan {
   memoryRationale?: string;
   personaMemoryQuery?: string;
   relevantPersonaFacts?: Array<{ fact: string; memoryId?: string; origin?: string; reason?: string }>;
+  questionIntents?: QuestionIntentAnnotation[];
+  resolvedQuestionIntentIds?: string[];
 }
 
 export type OrchestrationPhase = "conexao_inicial" | "descoberta" | "compatibilidade" | (string & {});
@@ -5475,7 +5482,7 @@ async function callModelOrOpenAi(
     }
   }
 
-  const primaryModel = options.model || (Deno?.env?.get?.("OPENAI_BRAIN_MODEL") || OPENAI_BRAIN_DEFAULT_MODEL);
+  const primaryModel = await resolveConfiguredOpenAiModel(options.supabase, options.model);
   const maxRetries = 3;
   let lastError: any = null;
 
@@ -5491,15 +5498,16 @@ async function callModelOrOpenAi(
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_object" },
       };
-      const isReasoningOrGpt5Model =
+      const isReasoningModel =
         currentModel.includes("luna") ||
         currentModel.includes("terra") ||
         currentModel.startsWith("gpt-5") ||
+        currentModel.startsWith("gpt-6") ||
         currentModel.startsWith("o1") ||
         currentModel.startsWith("o3") ||
         currentModel.startsWith("o4");
 
-      if (!isReasoningOrGpt5Model) {
+      if (!isReasoningModel) {
         reqBody.temperature = options.temperature ?? 0.3;
       }
 
@@ -5565,11 +5573,11 @@ const callBrainModel = callModelOrOpenAi;
 
 async function waitForHumanSendDelay({
   supabase, conversationId, seconds, cycleId, phase, label, detail,
-  currentBalloon, totalBalloons, audioDurationSeconds,
+  currentBalloon, totalBalloons, audioDurationSeconds, currentResponsePreview,
 }: {
   supabase: any; conversationId: string; seconds: number; cycleId: string;
   phase: "typing" | "recording_audio"; label: string; detail: string;
-  currentBalloon: number; totalBalloons: number; audioDurationSeconds?: number;
+  currentBalloon: number; totalBalloons: number; audioDurationSeconds?: number; currentResponsePreview?: string;
 }) {
   const deadline = Date.now() + Math.max(0, seconds) * 1000;
   while (Date.now() < deadline) {
@@ -5578,9 +5586,9 @@ async function waitForHumanSendDelay({
       cycleId, status: "processing",
       activity: activity(phase, label, detail, {
         cycleId, currentBalloon, totalBalloons, countdownSeconds: remaining,
-        audioDurationSeconds,
-        event: phase === "typing" ? "text_delay_started" : "audio_delay_started",
+        audioDurationSeconds, currentResponsePreview,
       }),
+      appendEvent: false,
     });
     const { data } = await supabase.from("instagram_conversations")
       .select("ai_auto_respond, stage_completed_rules").eq("id", conversationId).maybeSingle();
@@ -5588,6 +5596,23 @@ async function waitForHumanSendDelay({
     await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(100, deadline - Date.now()))));
   }
   return true;
+}
+
+function safeOperationalConsoleText(value: unknown, maxLength = 500): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return value.trim()
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/gi, "[credencial redigida]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [credencial redigida]")
+    .replace(/\b(OPENAI_API_KEY|META_ACCESS_TOKEN|ACCESS_TOKEN|API[_-]?KEY)\s*[:=]\s*[^\s,;]+/gi, "$1=[credencial redigida]")
+    .slice(0, maxLength);
+}
+
+function safeOperationalStringList(values: unknown, maxItems = 8): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .slice(0, maxItems)
+    .map((value) => safeOperationalConsoleText(value, 500))
+    .filter((value): value is string => Boolean(value));
 }
 
 const META_TEXT_LIMIT = 2000;
@@ -6212,7 +6237,7 @@ export async function runBrainOrchestration(
       activity: activity(
         "brain",
         "Brain • Raciocínio & Decisão",
-        "Processando turno e objetivos com o modelo oficial gpt-5.6-luna...",
+        "Processando turno e objetivos com o modelo configurado no Agent oficial...",
         {
           brainThought: "Processando turno e objetivos...",
           currentPhase,
@@ -6444,9 +6469,16 @@ export async function runBrainOrchestration(
     let brainPlan: ConversationBrainPlan | null = null;
     let brainIterations = 0;
     let currentMemoryScopeId: string | undefined;
+    let configuredAgentModel = OPENAI_BRAIN_DEFAULT_MODEL;
+    let agentSettings = new Map<string, string>();
 
     if (isOpenAiAgentBrain) {
-      const configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
+      configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
+      const { data: agentSettingRows } = await supabase
+        .from("instagram_config")
+        .select("id, app_secret")
+        .in("id", ["openai_brain_reasoning_effort", "openai_brain_verbosity"]);
+      agentSettings = new Map((agentSettingRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
       const latestRelevantMessage = [...finalRecentMessages]
         .filter((message: any) => message?.createdAt)
         .sort((a: any, b: any) => messageTimestampMs(b) - messageTimestampMs(a))[0];
@@ -6480,6 +6512,28 @@ export async function runBrainOrchestration(
       } catch (scopeErr) {
         console.warn("[Orchestrator] Falha ao criar agent_memory_scope:", scopeErr);
       }
+
+      const currentObjective = stageChecklistForRouter.currentObjective;
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        status: "processing",
+        activity: activity("brain", "Brain processando", "Processando o turno com o Agent oficial."),
+        cycleEvent: {
+          phase: "brain",
+          event: "brain_started",
+          label: "Brain iniciado",
+          detail: "O Agent oficial começou a processar o turno.",
+          metadata: {
+            model: configuredAgentModel,
+            reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+            verbosity: agentSettings.get("openai_brain_verbosity") || null,
+            inboundCount: claimedMessages.length,
+            stageId: currentStageId,
+            currentObjectiveId: currentObjective?.id || null,
+            currentObjectiveLabel: currentObjective?.label || currentObjective?.title || null,
+          },
+        },
+      });
 
       try {
         const openAiBrainTurn = await runOpenAiBrainTurn({
@@ -6519,6 +6573,80 @@ export async function runBrainOrchestration(
 
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
           brainPlan = openAiBrainTurn.plan;
+          const memoryToolCalls = openAiBrainTurn.telemetry.toolsRequested.filter((tool: string) =>
+            /(?:persona|contact|conversation|episodic)_memory_search/i.test(tool)
+          );
+          const toolsUsed = safeOperationalStringList(openAiBrainTurn.telemetry.toolsRequested, 12);
+          const relevantPersonaFacts = brainPlan.missionPackage?.relevantPersonaFacts || brainPlan.relevantPersonaFacts || [];
+          const currentObjective = stageChecklistForRouter.currentObjective;
+          const objectiveLabel = currentObjective?.label || currentObjective?.title || null;
+          const planResponses = safeOperationalStringList(brainPlan.responses, 4);
+          const questionIntents = Array.isArray(brainPlan.questionIntents)
+            ? brainPlan.questionIntents.slice(0, 8).map((intent: any) => ({
+              intentKey: safeOperationalConsoleText(intent?.intentKey, 120),
+              canonicalMeaning: safeOperationalConsoleText(intent?.canonicalMeaning, 240),
+              responseIndex: Number.isInteger(intent?.responseIndex) ? intent.responseIndex : null,
+            }))
+            : [];
+
+          if (memoryToolCalls.length > 0) {
+            const memorySources = [...new Set(memoryToolCalls.map((tool: string) => {
+              if (tool.includes("persona_memory_search")) return "PersonaMemory";
+              if (tool.includes("contact_memory_search")) return "ContactMemory";
+              if (tool.includes("conversation_memory_search")) return "ConversationMemory";
+              return "Memória episódica";
+            }))];
+            await publishAutoPilotState(supabase, conversationId, {
+              cycleId: correlationId,
+              status: "processing",
+              cycleEvent: {
+                phase: "brain",
+                event: "brain_memory",
+                label: `Memória consultada • ${memorySources.join(", ")}`,
+                detail: "Consulta confirmada pelos registros de ferramentas do Agent.",
+                metadata: {
+                  toolsUsed: safeOperationalStringList(memoryToolCalls, 8),
+                  memorySources,
+                  searchCount: memoryToolCalls.length,
+                  memoryRationale: safeOperationalConsoleText(brainPlan.memoryRationale, 400) || null,
+                  relevantPersonaFactsCount: relevantPersonaFacts.length,
+                },
+              },
+            });
+          }
+
+          await publishAutoPilotState(supabase, conversationId, {
+            cycleId: correlationId,
+            status: "processing",
+            cycleEvent: {
+              phase: "brain",
+              event: "brain_decision",
+              label: "Brain • Decisão formulada",
+              detail: "Plano estruturado validado pelo Agent e recebido pelo orquestrador.",
+              metadata: {
+                model: configuredAgentModel,
+                reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+                verbosity: agentSettings.get("openai_brain_verbosity") || null,
+                action: brainPlan.action,
+                stageId: currentStageId,
+                objectiveDecision: brainPlan.objectiveDecision,
+                currentObjectiveId: currentObjective?.id || null,
+                currentObjectiveLabel: objectiveLabel,
+                satisfiedObjectiveId: brainPlan.satisfiedObjectiveId || null,
+                evidenceMessageId: brainPlan.evidenceMessageId || null,
+                currentTopic: safeOperationalConsoleText(brainPlan.currentTopic || brainPlan.missionPackage?.currentTopic, 300) || null,
+                bestHook: safeOperationalConsoleText(brainPlan.bestHook || brainPlan.missionPackage?.bestHook, 400) || null,
+                curiosityOpportunity: safeOperationalConsoleText(brainPlan.curiosityOpportunity || brainPlan.missionPackage?.curiosityOpportunity, 400) || null,
+                memoryConsulted: memoryToolCalls.length > 0,
+                memoryRationale: safeOperationalConsoleText(brainPlan.memoryRationale, 400) || null,
+                toolsUsed,
+                relevantPersonaFactsCount: relevantPersonaFacts.length,
+                questionIntents,
+                reasoningSummary: safeOperationalConsoleText(brainPlan.reasoning, 700) || null,
+                proposedResponses: planResponses,
+              },
+            },
+          });
 
           // Processamento determinístico das resoluções semânticas decididas pelo Brain
           if (Array.isArray(brainPlan.resolvedQuestionIntentIds)) {
@@ -6536,6 +6664,8 @@ export async function runBrainOrchestration(
 
           currentCycle.brainModel = configuredAgentModel;
           currentCycle.trace.push(`brain_model: ${configuredAgentModel}`);
+          currentCycle.trace.push(`brain_reasoning_effort=${agentSettings.get("openai_brain_reasoning_effort") || "remote_configured"}`);
+          currentCycle.trace.push(`brain_verbosity=${agentSettings.get("openai_brain_verbosity") || "remote_configured"}`);
           currentCycle.trace.push(`interaction_dna_version: ${LARISSA_INTERACTION_DNA_VERSION}`);
           currentCycle.trace.push(`interaction_dna_hash: ${LARISSA_INTERACTION_DNA_HASH}`);
           currentCycle.trace.push(`recent_style_state_applied: ${Boolean(recentStyleSnippet)}`);
@@ -6848,7 +6978,7 @@ export async function runBrainOrchestration(
       ).join("\n") || "";
 
       if (isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0) {
-        // EXECUÇÃO EM TURNO ÚNICO DO GPT-5.6-LUNA: Brain unificado com Executor
+        // Execução em turno único: o Agent Brain produz o plano e a resposta final.
         const rawResponses = brainPlan.responses
           .map((r: any) => String(r || "").trim())
           .filter(Boolean);
@@ -6928,6 +7058,8 @@ export async function runBrainOrchestration(
       currentCycle.trace.push("single_turn_agent_execution_used: true");
       currentCycle.trace.push("second_model_inference_skipped: true");
       currentCycle.trace.push(`model: ${configuredAgentModel}`);
+      currentCycle.trace.push(`brain_reasoning_effort=${agentSettings.get("openai_brain_reasoning_effort") || "remote_configured"}`);
+      currentCycle.trace.push(`brain_verbosity=${agentSettings.get("openai_brain_verbosity") || "remote_configured"}`);
       currentCycle.trace.push(`brain_safe_responses_count=${finalSubDecision.responses?.length || 0}`);
       currentCycle.trace.push("brain_plan_recovery_mode=none");
       } else {
@@ -7549,6 +7681,34 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         : "outbox_skipped_no_final_payload");
     }
 
+    const finalTextResponsesAreSafe = finalTextBalloons.length > 0 && finalTextBalloons.every(
+      (balloon) => validateFinalTextDispatchPayload(balloon).valid
+    );
+    const responseReady = (decision.action === "reply" || decision.action === "advance_phase" || decision.action === "send_audio") &&
+      (initialContentType === "audio"
+        ? Boolean(resolvedAudio?.audioUrl || decision.audioUrl)
+        : finalTextResponsesAreSafe);
+    if (responseReady) {
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        status: "processing",
+        cycleEvent: {
+          phase: "validating",
+          event: "response_ready",
+          label: "Resposta final autorizada",
+          detail: "Payload final após os gates do pipeline, pronto para o dispatch.",
+          metadata: {
+            action: decision.action,
+            payloadType: initialContentType,
+            totalBalloons: initialContentType === "audio" ? 1 : finalTextBalloons.length,
+            responses: initialContentType === "audio"
+              ? []
+              : safeOperationalStringList(finalTextBalloons, 4),
+          },
+        },
+      });
+    }
+
     let sentBalloonsCount = 0;
     let balloons: string[] = [];
 
@@ -7728,6 +7888,34 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           const humanDelaySeconds = isAudioBalloon
             ? Math.max(0, Number(audioPayload?.duration || 10))
             : 10;
+          await publishAutoPilotState(supabase, conversationId, {
+            cycleId: correlationId,
+            status: "processing",
+            activity: activity(
+              isAudioBalloon ? "recording_audio" : "typing",
+              isAudioBalloon ? `Gravando áudio ${bIndex + 1}/${balloons.length}` : `Digitando resposta ${bIndex + 1}/${balloons.length}`,
+              "Aguardando o tempo humano antes do dispatch.",
+              {
+                cycleId: correlationId,
+                currentBalloon: bIndex + 1,
+                totalBalloons: balloons.length,
+                countdownSeconds: humanDelaySeconds,
+                audioDurationSeconds: isAudioBalloon ? humanDelaySeconds : undefined,
+                currentResponsePreview: isAudioBalloon ? "Áudio selecionado" : balloonText,
+              }
+            ),
+            cycleEvent: {
+              phase: isAudioBalloon ? "recording_audio" : "typing",
+              event: isAudioBalloon ? "recording_started" : "typing_started",
+              label: isAudioBalloon ? `Gravação iniciada ${bIndex + 1}/${balloons.length}` : `Digitação iniciada ${bIndex + 1}/${balloons.length}`,
+              detail: isAudioBalloon ? "Início da preparação do áudio autorizado." : "Início da digitação deste balão.",
+              metadata: {
+                currentBalloon: bIndex + 1,
+                totalBalloons: balloons.length,
+                payloadType: balloonMessageType,
+              },
+            },
+          });
           const delayCompleted = await waitForHumanSendDelay({
             supabase, conversationId, seconds: humanDelaySeconds, cycleId: correlationId,
             phase: isAudioBalloon ? "recording_audio" : "typing",
@@ -7737,6 +7925,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               : "Aguardando o tempo humano antes do dispatch.",
             currentBalloon: bIndex + 1, totalBalloons: balloons.length,
             audioDurationSeconds: isAudioBalloon ? humanDelaySeconds : undefined,
+            currentResponsePreview: isAudioBalloon ? "Áudio selecionado" : balloonText,
           });
           if (!delayCompleted) {
             await releaseExperimentalCycleAtomic({ supabase, conversationId, cycleToken: correlationId, processingStatus: "cancelled", cycleRecord: currentCycle });
@@ -7779,12 +7968,10 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             activity: activity(
               "sending",
               balloons.length > 1
-                ? `Atria enviando balão ${bIndex + 1}/${balloons.length}...`
-                : "Atria enviando...",
-              "Entregando a mensagem pelo Instagram.",
+                ? `Preparando envio do balão ${bIndex + 1}/${balloons.length}...`
+                : "Preparando envio...",
+              "Reservando o envio seguro deste balão.",
               {
-                atriaThought: decision.reasoning,
-                solThought: balloonText,
                 currentResponsePreview: balloonText,
                 totalBalloons: balloons.length,
                 currentBalloon: bIndex + 1,
@@ -7858,6 +8045,24 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             Object.assign(balloonOutbox, claimRes.entry);
           }
 
+          await publishAutoPilotState(supabase, conversationId, {
+            cycleId: correlationId,
+            status: "processing",
+            activity: activity(
+              "sending",
+              `Enviando balão ${bIndex + 1}/${balloons.length}`,
+              "O envio foi reivindicado e será despachado pelo Instagram.",
+              { currentBalloon: bIndex + 1, totalBalloons: balloons.length, currentResponsePreview: isAudioBalloon ? "Áudio selecionado" : balloonText }
+            ),
+            cycleEvent: {
+              phase: "sending",
+              event: "dispatch_started",
+              label: `Envio iniciado ${bIndex + 1}/${balloons.length}`,
+              detail: "O balão foi reivindicado para envio pelo Instagram.",
+              metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType },
+            },
+          });
+
           // 2. DISPATCHER: Envio seguro do balão através da Outbox
           const dispatchRes = await dispatchOutboxEntry({
             supabase,
@@ -7871,6 +8076,18 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             sentSuccessfully = true;
             sentBalloonsCount++;
             currentCycle.trace.push(`meta_dispatched_b${bIndex + 1}: ${dispatchRes.providerMessageId}`);
+
+            await publishAutoPilotState(supabase, conversationId, {
+              cycleId: correlationId,
+              status: "processing",
+              cycleEvent: {
+                phase: "sending",
+                event: "dispatch_completed",
+                label: `Envio confirmado ${bIndex + 1}/${balloons.length}`,
+                detail: "O Instagram confirmou o envio deste balão.",
+                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType },
+              },
+            });
 
             if (isAudioBalloon && audioPayload) {
               await recordAudioDeliveryHistory({
@@ -7910,6 +8127,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             sentSuccessfully = true;
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_uncertain: ${dispatchRes.error}`);
+            await publishAutoPilotState(supabase, conversationId, {
+              cycleId: correlationId,
+              status: "failed",
+              cycleEvent: {
+                phase: "failed",
+                event: "dispatch_uncertain",
+                label: `Confirmação incerta ${bIndex + 1}/${balloons.length}`,
+                detail: "O provedor não confirmou se o balão foi entregue.",
+                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType },
+              },
+            });
             console.warn(
               `[Orchestrator] Envio com status dispatch_uncertain para ${conversationId}. Bloqueando retry automático e fallback legacy para evitar duplicação.`
             );
@@ -7920,6 +8148,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           } else {
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
+            await publishAutoPilotState(supabase, conversationId, {
+              cycleId: correlationId,
+              status: "failed",
+              cycleEvent: {
+                phase: "failed",
+                event: "dispatch_failed",
+                label: `Envio falhou ${bIndex + 1}/${balloons.length}`,
+                detail: "O provedor rejeitou o envio deste balão.",
+                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType },
+              },
+            });
             balloonOutbox.status = "failed";
             balloonOutbox.lastError = dispatchRes.error || "Falha no envio";
             outboxMap[balloonKey] = balloonOutbox;
@@ -8211,6 +8450,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
 
         await publishAutoPilotState(supabase, conversationId, {
+          cycleId: correlationId,
           status: "idle",
           lastThoughts: {
             atriaThought: decision.reasoning,
@@ -8229,6 +8469,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               decision,
             }
           ),
+          cycleEvent: {
+            phase: "completed",
+            event: "cycle_completed",
+            label: "Ciclo concluído",
+            detail: sentBalloonsCount > 0
+              ? "Todos os envios deste ciclo foram confirmados."
+              : "Ciclo concluído sem envio de resposta.",
+            metadata: {
+              action: decision.action,
+              sentBalloonsCount,
+              totalBalloons: balloons.length,
+            },
+          },
         });
 
         // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
