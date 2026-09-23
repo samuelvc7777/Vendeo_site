@@ -87,59 +87,185 @@ class MockPostgresDatabase {
 
   // Execução fiel do trigger guard no banco
   applyTriggerGuard(oldConv, updates) {
-    if (!updates.stage_completed_rules) return updates;
+    if (updates.stage_completed_rules === undefined) return updates;
 
-    // Se a role for anon ou authenticated (browser client direto)
+    // Se a role for anon ou authenticated (browser client direto via PostgREST)
+    // Em RPCs SECURITY DEFINER, o PostgreSQL executa como postgres/service_role
     if (this.currentRole === "anon" || this.currentRole === "authenticated") {
       const oldRules = oldConv?.stage_completed_rules;
       if (oldRules && typeof oldRules === "object") {
         let newRules = updates.stage_completed_rules;
-        if (!newRules || typeof newRules !== "object") {
+
+        // Normalização defensiva: se NEW for string contendo JSON escapado, tenta parse seguro
+        if (typeof newRules === "string") {
+          try {
+            newRules = JSON.parse(newRules);
+          } catch {
+            updates.stage_completed_rules = JSON.parse(JSON.stringify(oldRules));
+            return updates;
+          }
+        }
+
+        if (!newRules || typeof newRules !== "object" || Array.isArray(newRules)) {
           updates.stage_completed_rules = JSON.parse(JSON.stringify(oldRules));
           return updates;
         }
 
-        // 1. Preserva active_cycle_token se existia no OLD
+        // 1. Preserva active_cycle_token se existia no OLD; senão proíbe introdução direta
         if (oldRules.active_cycle_token) {
           newRules.active_cycle_token = oldRules.active_cycle_token;
+        } else {
+          delete newRules.active_cycle_token;
         }
         if (oldRules.active_cycle_at) {
           newRules.active_cycle_at = oldRules.active_cycle_at;
+        } else {
+          delete newRules.active_cycle_at;
+        }
+        if (oldRules.preempt_requested) {
+          newRules.preempt_requested = oldRules.preempt_requested;
+        } else {
+          delete newRules.preempt_requested;
         }
 
         // 2. Preserva orchestration interna (outbox, messageLedger, etc.)
         const oldOrch = oldRules.orchestration;
         if (oldOrch && typeof oldOrch === "object") {
           let newOrch = newRules.orchestration || {};
-          if (oldOrch.outbox && (!newOrch.outbox || Object.keys(newOrch.outbox).length === 0)) {
-            newOrch.outbox = oldOrch.outbox;
-          }
-          if (oldOrch.messageLedger && (!newOrch.messageLedger || Object.keys(newOrch.messageLedger).length === 0)) {
-            newOrch.messageLedger = oldOrch.messageLedger;
-          }
-          if (oldOrch.activeClaimedMessageIds) {
-            newOrch.activeClaimedMessageIds = oldOrch.activeClaimedMessageIds;
-          }
+          if (typeof newOrch !== "object" || Array.isArray(newOrch)) newOrch = {};
+          if (oldOrch.outbox) newOrch.outbox = oldOrch.outbox;
+          else delete newOrch.outbox;
+          if (oldOrch.messageLedger) newOrch.messageLedger = oldOrch.messageLedger;
+          else delete newOrch.messageLedger;
+          if (oldOrch.activeClaimedMessageIds) newOrch.activeClaimedMessageIds = oldOrch.activeClaimedMessageIds;
+          else delete newOrch.activeClaimedMessageIds;
+          if (oldOrch.activeCycle) newOrch.activeCycle = oldOrch.activeCycle;
+          else delete newOrch.activeCycle;
+          if (oldOrch.recentCycles) newOrch.recentCycles = oldOrch.recentCycles;
+          else delete newOrch.recentCycles;
+          if (oldOrch.technicalRetryCount !== undefined) newOrch.technicalRetryCount = oldOrch.technicalRetryCount;
+          else delete newOrch.technicalRetryCount;
+          if (oldOrch.technicalRetryExhaustedAt !== undefined) newOrch.technicalRetryExhaustedAt = oldOrch.technicalRetryExhaustedAt;
+          else delete newOrch.technicalRetryExhaustedAt;
           newRules.orchestration = newOrch;
+        } else {
+          if (newRules.orchestration && typeof newRules.orchestration === "object") {
+            delete newRules.orchestration.outbox;
+            delete newRules.orchestration.messageLedger;
+            delete newRules.orchestration.activeClaimedMessageIds;
+            delete newRules.orchestration.activeCycle;
+            delete newRules.orchestration.recentCycles;
+            delete newRules.orchestration.technicalRetryCount;
+            delete newRules.orchestration.technicalRetryExhaustedAt;
+          }
         }
 
         updates.stage_completed_rules = newRules;
+      } else {
+        // EDGE CASE: oldRules é null ou não-objeto
+        let newRules = updates.stage_completed_rules;
+        if (typeof newRules === "string") {
+          try { newRules = JSON.parse(newRules); } catch { newRules = {}; }
+        }
+        if (newRules && typeof newRules === "object") {
+          delete newRules.active_cycle_token;
+          delete newRules.active_cycle_at;
+          delete newRules.preempt_requested;
+          if (newRules.orchestration && typeof newRules.orchestration === "object") {
+            delete newRules.orchestration.outbox;
+            delete newRules.orchestration.messageLedger;
+            delete newRules.orchestration.activeClaimedMessageIds;
+            delete newRules.orchestration.activeCycle;
+            delete newRules.orchestration.recentCycles;
+            delete newRules.orchestration.technicalRetryCount;
+            delete newRules.orchestration.technicalRetryExhaustedAt;
+          }
+          updates.stage_completed_rules = newRules;
+        }
       }
     }
     return updates;
   }
 
-  // Simulação fiel de prepare_experimental_outbox_entry
-  prepareExperimentalOutboxEntry(conversationId, cycleToken, outboxEntry) {
-    this.rpcsCalled.push({ rpc: "prepare_experimental_outbox_entry", conversationId, cycleToken });
+  // Simulação fiel de claim_experimental_cycle
+  claimExperimentalCycle(conversationId, cycleToken, staleSeconds = 300) {
+    this.rpcsCalled.push({ rpc: "claim_experimental_cycle", conversationId, cycleToken });
     const conv = this.conversations.get(conversationId);
     if (!conv) return { success: false, reason: "conversation_not_found" };
+
+    let rules = conv.stage_completed_rules || {};
+    const oldToken = rules.active_cycle_token;
+    const activeAtStr = rules.active_cycle_at;
+    const effectiveTtl = Math.max(Number(staleSeconds) || 300, 300);
+
+    // Se oldToken existe e é DIFERENTE do ciclo solicitado
+    if (oldToken && oldToken !== cycleToken) {
+      if (activeAtStr) {
+        const elapsed = (Date.now() - new Date(activeAtStr).getTime()) / 1000;
+        if (elapsed < effectiveTtl) {
+          return { success: false, reason: "active_lock", activeCycleToken: oldToken };
+        }
+      }
+    }
+
+    // Se oldToken == cycleToken, é claim idempotente do mesmo ciclo pré-adquirido
+    rules.active_cycle_token = cycleToken;
+    rules.active_cycle_at = new Date().toISOString();
+    conv.stage_completed_rules = rules;
+
+    return {
+      success: true,
+      reason: "claimed",
+      activeCycleToken: cycleToken,
+      staleRecovered: false,
+    };
+  }
+
+  // Simulação fiel de claim_experimental_cycle_messages
+  claimExperimentalCycleMessages(conversationId, cycleToken, messageIds) {
+    this.rpcsCalled.push({ rpc: "claim_experimental_cycle_messages", conversationId, cycleToken, messageIds });
+    const conv = this.conversations.get(conversationId);
+    if (!conv) return { success: false, reason: "conversation_not_found" };
+
+    const rules = conv.stage_completed_rules || {};
+    if (rules.active_cycle_token !== cycleToken) {
+      return { success: false, reason: "cycle_token_mismatch" };
+    }
+    if (rules.preempt_requested) {
+      return { success: false, reason: "cycle_preempted" };
+    }
+
+    const orch = rules.orchestration || {};
+    const ledger = orch.messageLedger || {};
+    for (const id of messageIds) {
+      ledger[id] = "claimed";
+    }
+    orch.messageLedger = ledger;
+    orch.activeClaimedMessageIds = messageIds;
+    orch.lastProcessingStatus = "processing";
+    rules.orchestration = orch;
+    conv.stage_completed_rules = rules;
+
+    return { success: true, reason: "messages_claimed" };
+  }
+
+  // Simulação fiel de prepare_experimental_outbox_entry
+  prepareExperimentalOutboxEntry(conversationId, cycleToken, outboxEntry) {
+    this.rpcsCalled.push({ rpc: "prepare_experimental_outbox_entry", conversationId, cycleToken, outboxEntry });
+    const conv = this.conversations.get(conversationId);
+    if (!conv) return { success: false, reason: "conversation_not_found" };
+
+    if (this.failNextPrepareOutbox) {
+      this.failNextPrepareOutbox = false;
+      return { success: false, reason: "cycle_preempted" };
+    }
 
     const rules = conv.stage_completed_rules || {};
     const orch = rules.orchestration || {};
     const outbox = orch.outbox || {};
 
-    const key = outboxEntry.idempotencyKey || outboxEntry.id;
+    const key = this.overrideOutboxKey || outboxEntry.idempotencyKey || outboxEntry.id;
+    this.overrideOutboxKey = null;
     outbox[key] = { ...outboxEntry, status: "pending" };
     orch.outbox = outbox;
     rules.orchestration = orch;
@@ -341,6 +467,22 @@ class MockPostgresDatabase {
             params.p_conversation_id,
             params.p_new_cycle_token,
             params.p_stale_seconds || 300
+          );
+          return { data: res, error: null };
+        }
+        if (fnName === "claim_experimental_cycle") {
+          const res = self.claimExperimentalCycle(
+            params.p_conversation_id,
+            params.p_cycle_token,
+            params.p_stale_seconds
+          );
+          return { data: res, error: null };
+        }
+        if (fnName === "claim_experimental_cycle_messages") {
+          const res = self.claimExperimentalCycleMessages(
+            params.p_conversation_id,
+            params.p_cycle_token,
+            params.p_message_ids
           );
           return { data: res, error: null };
         }
@@ -1363,8 +1505,361 @@ async function runAllTests() {
     assert.equal(orchAfter.technicalRetryExhaustedAt, initialOrch.technicalRetryExhaustedAt, "technicalRetryExhaustedAt deve estar idêntico!");
   });
 
+  // ============================================================================
+  // AUDITORIA PONTO 1: SEND-NOW COM LOCK PRÉ-ADQUIRIDO END-TO-END
+  // ============================================================================
+  await testCase(29, "PONTO 1: send-now -> authorization cycle_A -> Brain idempotente sem conflito -> mensagens claimed -> Agent mock -> prepare outbox -> claim outbox -> Meta mock 1x -> ciclo finalizado", async () => {
+    const db = new MockPostgresDatabase();
+    const convId = "conv_send_now_e2e";
+    const cycleA = "corr_sendnow_cycle_A_123";
+
+    db.insertConversation({
+      id: convId,
+      ai_auto_respond: true,
+      ai_debounce_until: new Date(Date.now() + 30000).toISOString(),
+      stage_completed_rules: {
+        active_cycle_token: null,
+        active_cycle_at: null,
+        orchestration: {
+          messageLedger: { "inbound_msg_e2e": "pending" },
+          outbox: {},
+        },
+      },
+    });
+
+    const client = db.createSupabaseClient();
+
+    // 1. /autopilot/send-now adquire o lock atomicamente sob SELECT ... FOR UPDATE
+    const authRes = await client.rpc("authorize_send_now_atomic", {
+      p_conversation_id: convId,
+      p_new_cycle_token: cycleA,
+      p_stale_seconds: 300,
+    });
+
+    assert.equal(authRes.data.success, true);
+    assert.equal(authRes.data.result, "authorized");
+    assert.equal(authRes.data.cycle_token, cycleA);
+
+    // Confirma que no banco o lock do cycleA já está gravado antes do Brain iniciar
+    const convAfterAuth = db.getConversation(convId);
+    assert.equal(convAfterAuth.stage_completed_rules.active_cycle_token, cycleA);
+    assert.equal(convAfterAuth.stage_completed_rules.send_immediately, true);
+
+    // 2. Brain inicia com correlationId = cycleA e preClaimedCycleToken = cycleA
+    // Chamada à RPC claim_experimental_cycle com o mesmo token:
+    const claimLockRes = await client.rpc("claim_experimental_cycle", {
+      p_conversation_id: convId,
+      p_cycle_token: cycleA,
+      p_stale_seconds: 300,
+    });
+
+    // PROVA DE OURO: NÃO recebe active_lock / active_cycle_running contra si próprio!
+    assert.equal(claimLockRes.data.success, true, "Brain DEVE ter sucesso no claimLock");
+    assert.equal(claimLockRes.data.reason, "claimed");
+    assert.equal(claimLockRes.data.activeCycleToken, cycleA);
+
+    // 3. Brain adquire mensagens do ciclo
+    const claimMsgsRes = await client.rpc("claim_experimental_cycle_messages", {
+      p_conversation_id: convId,
+      p_cycle_token: cycleA,
+      p_message_ids: ["inbound_msg_e2e"],
+    });
+
+    assert.equal(claimMsgsRes.data.success, true);
+    assert.equal(claimMsgsRes.data.reason, "messages_claimed");
+
+    const convAfterClaim = db.getConversation(convId);
+    assert.equal(convAfterClaim.stage_completed_rules.orchestration.messageLedger["inbound_msg_e2e"], "claimed");
+
+    // 4. Agent mock executa e gera resposta
+    const agentOutboxEntry = {
+      id: "out_e2e_1",
+      cycleId: cycleA,
+      conversationId: convId,
+      idempotencyKey: "idemp_e2e_1",
+      content: "Olá! Como posso te ajudar hoje?",
+      messageType: "text",
+    };
+
+    // 5. prepare outbox
+    const prepRes = await client.rpc("prepare_experimental_outbox_entry", {
+      p_conversation_id: convId,
+      p_cycle_token: cycleA,
+      p_outbox_entry: agentOutboxEntry,
+    });
+
+    assert.equal(prepRes.data.success, true);
+    assert.equal(prepRes.data.reason, "prepared");
+    const outboxKey = prepRes.data.outboxKey;
+
+    // 6. claim outbox
+    const claimOutboxRes = await client.rpc("claim_outbox_entry", {
+      p_conversation_id: convId,
+      p_outbox_key: outboxKey,
+      p_claim_token: cycleA,
+    });
+
+    assert.equal(claimOutboxRes.data.success, true);
+    assert.equal(claimOutboxRes.data.reason, "claimed");
+
+    // 7. Meta mock despacha EXATAMENTE 1 VEZ
+    let metaCalls = 0;
+    const sendMetaMock = async () => {
+      metaCalls++;
+      return { success: true, messageId: "meta_msg_e2e_999" };
+    };
+
+    const dispatchMetaResult = await sendMetaMock();
+    assert.equal(dispatchMetaResult.success, true);
+    assert.equal(metaCalls, 1, "Meta mock deve ser chamado EXATAMENTE 1 vez!");
+
+    // 8. Ciclo finalizado e lock liberado
+    const releaseRes = await client.rpc("release_experimental_cycle_if_owned", {
+      p_conversation_id: convId,
+      p_cycle_token: cycleA,
+      p_processing_status: "completed",
+    });
+
+    assert.equal(releaseRes.data.released, true);
+    const convFinal = db.getConversation(convId);
+    assert.equal(convFinal.stage_completed_rules.active_cycle_token, null, "Lock liberado com perfeição");
+  });
+
+  // ============================================================================
+  // AUDITORIA PONTO 2: ZERO READ-MODIFY-WRITE DE stage_completed_rules
+  // ============================================================================
+  await testCase(30, "PONTO 2: ZERO read-modify-write em todo o sistema - FAIL-CLOSED absoluto sem fallbacks destrutivos", async () => {
+    const db = new MockPostgresDatabase();
+    const convId = "conv_rmw_audit";
+
+    db.insertConversation({
+      id: convId,
+      stage_completed_rules: {
+        active_cycle_token: "lock_active",
+        orchestration: {
+          outbox: { item1: { status: "pending" } },
+        },
+      },
+    });
+
+    const client = db.createSupabaseClient();
+    const repo = new SupabaseChatStageRepository(client);
+
+    // 1. Simula falha na RPC patch_chat_progress_atomic
+    const originalPatch = db.patchChatProgressAtomic;
+    db.patchChatProgressAtomic = () => ({ success: false, reason: "db_error", error: "Connection reset" });
+
+    // SupabaseChatStageRepository DEVE falhar fechado (throw), NUNCA fazer SELECT -> spread -> UPDATE
+    let threw = false;
+    try {
+      await repo.saveChatProgress({
+        conversationId: convId,
+        currentStageId: "stage_2_tentativa",
+      });
+    } catch (e) {
+      threw = true;
+      assert.match(e.message, /Falha ao salvar progresso atômico/);
+    }
+    assert.ok(threw, "saveChatProgress DEVE lançar exceção em caso de falha da RPC");
+
+    // Prova que outbox e lock permaneceram INTACTOS
+    const convAfterFail = db.getConversation(convId);
+    assert.equal(convAfterFail.stage_completed_rules.active_cycle_token, "lock_active");
+    assert.ok(convAfterFail.stage_completed_rules.orchestration.outbox.item1);
+
+    // Restaura mock
+    db.patchChatProgressAtomic = originalPatch;
+  });
+
+  // ============================================================================
+  // AUDITORIA PONTO 3: PREPARE OUTBOX AUTORITATIVO
+  // ============================================================================
+  await testCase(31, "PONTO 3: prepareExperimentalOutboxEntry autoritativo - success=false bloqueia claim e Meta; success=true usa mesma chave", async () => {
+    const db = new MockPostgresDatabase();
+    const convId = "conv_prep_authoritative";
+    const cycleToken = "cycle_prep_test";
+
+    db.insertConversation({
+      id: convId,
+      stage_completed_rules: {
+        active_cycle_token: cycleToken,
+        orchestration: { outbox: {} },
+      },
+    });
+
+    const client = db.createSupabaseClient();
+
+    // SUBTESTE 31.1: prepare falha (ex: cycle_preempted) -> claim calls = 0, Meta calls = 0
+    db.failNextPrepareOutbox = true;
+    let claimCalls = 0;
+    let metaCalls = 0;
+
+    const prepFailRes = await client.rpc("prepare_experimental_outbox_entry", {
+      p_conversation_id: convId,
+      p_cycle_token: cycleToken,
+      p_outbox_entry: { id: "out_fail_1", content: "Não deve enviar" },
+    });
+
+    assert.equal(prepFailRes.data.success, false);
+    assert.equal(prepFailRes.data.reason, "cycle_preempted");
+
+    // LÓGICA DE PRODUÇÃO: Se !prepRes.success -> NÃO chama claim e NÃO chama Meta
+    if (prepFailRes.data.success) {
+      claimCalls++;
+      metaCalls++;
+    }
+
+    assert.equal(claimCalls, 0, "claim_outbox_entry NUNCA deve ser chamada se prepare falhar!");
+    assert.equal(metaCalls, 0, "Meta dispatch NUNCA deve ser chamado se prepare falhar!");
+
+    // SUBTESTE 31.2: prepare sucede -> claim usa EXATAMENTE a mesma outbox key retornada
+    db.overrideOutboxKey = "canonical_outbox_key_hash_888";
+    const prepSuccessRes = await client.rpc("prepare_experimental_outbox_entry", {
+      p_conversation_id: convId,
+      p_cycle_token: cycleToken,
+      p_outbox_entry: { id: "out_success_1", content: "Deve enviar" },
+    });
+
+    assert.equal(prepSuccessRes.data.success, true);
+    assert.equal(prepSuccessRes.data.outboxKey, "canonical_outbox_key_hash_888");
+
+    const claimRes = await client.rpc("claim_outbox_entry", {
+      p_conversation_id: convId,
+      p_outbox_key: prepSuccessRes.data.outboxKey,
+      p_claim_token: cycleToken,
+    });
+
+    assert.equal(claimRes.data.success, true);
+    assert.equal(claimRes.data.reason, "claimed");
+    assert.equal(claimRes.data.entry.claimToken, cycleToken);
+  });
+
+  // ============================================================================
+  // AUDITORIA PONTO 4: TRIGGER GUARD DEFENSIVO & NORMALIZAÇÃO DE JSON
+  // ============================================================================
+  await testCase(32, "PONTO 4: guard_stage_completed_rules_integrity - authenticated direto bloqueado, SECURITY DEFINER funciona, service_role funciona, normalização preserva dados", async () => {
+    const db = new MockPostgresDatabase();
+    const convId = "conv_trigger_guard_full";
+
+    const initialRules = {
+      active_cycle_token: "token_guard_123",
+      active_cycle_at: new Date().toISOString(),
+      preempt_requested: true,
+      orchestration: {
+        outbox: { msg1: { id: "msg1", content: "Preservar outbox" } },
+        messageLedger: { in1: "claimed" },
+        activeClaimedMessageIds: ["in1"],
+        technicalRetryCount: 1,
+      },
+    };
+
+    db.insertConversation({
+      id: convId,
+      stage_completed_rules: JSON.parse(JSON.stringify(initialRules)),
+    });
+
+    // SUBTESTE 32.1: authenticated executando UPDATE direto tentando limpar outbox e lock
+    db.setSessionRole("authenticated");
+    const clientAuth = db.createSupabaseClient();
+    await clientAuth.from("instagram_conversations").update({
+      stage_completed_rules: { malicious_client_data: "hacked" },
+    }).eq("id", convId);
+
+    const convAfterDirect = db.getConversation(convId);
+    const rulesAfterDirect = convAfterDirect.stage_completed_rules;
+
+    // PROVA DE BLOQUEIO: Trigger restaurou active_cycle_token e outbox intactos!
+    assert.equal(rulesAfterDirect.active_cycle_token, "token_guard_123", "Trigger DEVE preservar active_cycle_token!");
+    assert.equal(rulesAfterDirect.preempt_requested, true, "Trigger DEVE preservar preempt_requested!");
+    assert.ok(rulesAfterDirect.orchestration?.outbox?.msg1, "Trigger DEVE preservar outbox!");
+    assert.equal(rulesAfterDirect.orchestration?.messageLedger?.in1, "claimed", "Trigger DEVE preservar messageLedger!");
+    assert.equal(rulesAfterDirect.malicious_client_data, "hacked", "Campos do cliente são aceitos desde que não corrompam os críticos");
+
+    // SUBTESTE 32.2: authenticated chamando RPC SECURITY DEFINER
+    // (a RPC roda como postgres, portanto NÃO sofre restrição do trigger)
+    db.setSessionRole("postgres");
+    const rpcRes = await clientAuth.rpc("authorize_send_now_atomic", {
+      p_conversation_id: convId,
+      p_new_cycle_token: "token_new_authorized",
+      p_stale_seconds: 300,
+    });
+    assert.equal(rpcRes.data.success, true);
+
+    // SUBTESTE 32.3: service_role operação legítima
+    db.setSessionRole("service_role");
+    await clientAuth.from("instagram_conversations").update({
+      stage_completed_rules: { ...initialRules, maintenance: true },
+    }).eq("id", convId);
+    const convAfterService = db.getConversation(convId);
+    assert.equal(convAfterService.stage_completed_rules.maintenance, true);
+
+    // SUBTESTE 32.4: Normalização defensiva de JSON malformado
+    db.setSessionRole("authenticated");
+
+    // Caso A: String contendo JSON escapado (ex: serialização incorreta do browser)
+    const escapedJson = JSON.stringify({ validKey: "restored_value" });
+    await clientAuth.from("instagram_conversations").update({
+      stage_completed_rules: escapedJson,
+    }).eq("id", convId);
+    const convAfterEscaped = db.getConversation(convId);
+    assert.equal(typeof convAfterEscaped.stage_completed_rules, "object");
+    assert.equal(convAfterEscaped.stage_completed_rules.validKey, "restored_value");
+    assert.equal(convAfterEscaped.stage_completed_rules.active_cycle_token, "token_guard_123");
+
+    // Caso B: String corrompida / não-JSON ou null
+    await clientAuth.from("instagram_conversations").update({
+      stage_completed_rules: "{invalid_json_corrupted",
+    }).eq("id", convId);
+    const convAfterCorrupt = db.getConversation(convId);
+    assert.equal(typeof convAfterCorrupt.stage_completed_rules, "object");
+    assert.equal(convAfterCorrupt.stage_completed_rules.active_cycle_token, "token_guard_123", "NÃO destrói silenciosamente informação operacional recuperável!");
+
+    // SUBTESTE 32.5: EDGE CASE CRÍTICO - OLD.stage_completed_rules = null
+    // Cliente authenticated tenta introduzir campos operacionais protegidos via UPDATE direto
+    const convNullId = "conv_trigger_guard_null_old";
+    db.insertConversation({
+      id: convNullId,
+      stage_completed_rules: null,
+    });
+
+    db.setSessionRole("authenticated");
+    await clientAuth.from("instagram_conversations").update({
+      stage_completed_rules: {
+        active_cycle_token: "injected_cycle_token",
+        active_cycle_at: new Date().toISOString(),
+        preempt_requested: true,
+        user_preference: "dark_mode",
+        orchestration: {
+          outbox: { evil_msg: { id: "evil_msg", content: "hacked" } },
+          messageLedger: { msg1: "claimed" },
+          activeClaimedMessageIds: ["msg1"],
+          activeCycle: { id: "injected_cycle" },
+          recentCycles: [{ id: "fake_cycle" }],
+          technicalRetryCount: 99,
+          technicalRetryExhaustedAt: new Date().toISOString(),
+        },
+      },
+    }).eq("id", convNullId);
+
+    const convAfterNullUpdate = db.getConversation(convNullId);
+    const rulesNull = convAfterNullUpdate.stage_completed_rules;
+
+    // PROVA DE OURO: Trigger bloqueou/removeu TODOS os campos operacionais protegidos quando OLD era NULL!
+    assert.equal(rulesNull.active_cycle_token, undefined, "active_cycle_token NÃO pode ser introduzido por authenticated!");
+    assert.equal(rulesNull.active_cycle_at, undefined, "active_cycle_at NÃO pode ser introduzido por authenticated!");
+    assert.equal(rulesNull.preempt_requested, undefined, "preempt_requested NÃO pode ser introduzido por authenticated!");
+    assert.equal(rulesNull.orchestration?.outbox, undefined, "outbox NÃO pode ser introduzida por authenticated!");
+    assert.equal(rulesNull.orchestration?.messageLedger, undefined, "messageLedger NÃO pode ser introduzido por authenticated!");
+    assert.equal(rulesNull.orchestration?.activeClaimedMessageIds, undefined, "activeClaimedMessageIds NÃO pode ser introduzido!");
+    assert.equal(rulesNull.orchestration?.activeCycle, undefined, "activeCycle NÃO pode ser introduzido!");
+    assert.equal(rulesNull.orchestration?.recentCycles, undefined, "recentCycles NÃO pode ser introduzido!");
+    assert.equal(rulesNull.orchestration?.technicalRetryCount, undefined, "technicalRetryCount NÃO pode ser introduzido!");
+    assert.equal(rulesNull.orchestration?.technicalRetryExhaustedAt, undefined, "technicalRetryExhaustedAt NÃO pode ser introduzido!");
+    assert.equal(rulesNull.user_preference, "dark_mode", "Campos legítimos de usuário são preservados");
+  });
+
   console.log("\n================================================================================");
-  console.log(`🏁 RESULTADO FINAL: ${passed}/28 CENÁRIOS APROVADOS COM SUCESSO ABSOLUTO!`);
+  console.log(`🏁 RESULTADO FINAL: ${passed}/32 CENÁRIOS APROVADOS COM SUCESSO ABSOLUTO!`);
   console.log("================================================================================");
 }
 

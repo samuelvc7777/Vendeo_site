@@ -351,8 +351,10 @@ BEGIN
     END IF;
   END IF;
 
-  -- Se não há ciclo ativo recente, limpa o debounce e marca envio imediato pontualmente
+  -- Se não há ciclo ativo recente, limpa o debounce, adquire o lock atômico do ciclo e marca envio imediato pontualmente
   v_rules := jsonb_set(v_rules, '{send_immediately}', 'true'::jsonb);
+  v_rules := jsonb_set(v_rules, '{active_cycle_token}', to_jsonb(p_new_cycle_token));
+  v_rules := jsonb_set(v_rules, '{active_cycle_at}', to_jsonb(now()::text));
   IF v_rules ? 'cancel_current_cycle' THEN
     v_rules := v_rules - 'cancel_current_cycle';
   END IF;
@@ -461,43 +463,60 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- Se for chamada originada por cliente anon ou authenticated diretamente no Supabase REST ou via JWT de cliente
-  IF (
-    current_user IN ('anon', 'authenticated')
-    OR COALESCE(current_setting('request.jwt.claim.role', true), '') IN ('anon', 'authenticated')
-  ) AND OLD.stage_completed_rules IS NOT NULL THEN
-    IF jsonb_typeof(OLD.stage_completed_rules) = 'object' THEN
-      -- Garante que NEW.stage_completed_rules é objeto
-      IF NEW.stage_completed_rules IS NULL OR jsonb_typeof(NEW.stage_completed_rules) <> 'object' THEN
+  -- Bloqueia updates diretos de roles anon ou authenticated via PostgREST / REST API.
+  -- Em RPCs SECURITY DEFINER, o PostgreSQL executa como o proprietário da função (ex: postgres),
+  -- portanto current_user NÃO é anon/authenticated, permitindo as mutações atômicas autorizadas.
+  -- Não verificar request.jwt.claim.role pois SECURITY DEFINER preserva os claims do JWT original.
+  IF current_user IN ('anon', 'authenticated') THEN
+    -- Normalização defensiva: se NEW for string contendo JSON escapado, tenta parse seguro
+    IF jsonb_typeof(NEW.stage_completed_rules) = 'string' THEN
+      BEGIN
+        NEW.stage_completed_rules := (NEW.stage_completed_rules #>> '{}')::jsonb;
+      EXCEPTION WHEN OTHERS THEN
         NEW.stage_completed_rules := OLD.stage_completed_rules;
         RETURN NEW;
-      END IF;
+      END;
+    END IF;
 
-      -- Preserva active_cycle_token se existia no OLD
+    -- Garante que NEW.stage_completed_rules é objeto; se for nulo ou tipo não-objeto,
+    -- restaura OLD.stage_completed_rules para NUNCA destruir silenciosamente dados operacionais recuperáveis.
+    IF NEW.stage_completed_rules IS NULL OR jsonb_typeof(NEW.stage_completed_rules) <> 'object' THEN
+      NEW.stage_completed_rules := OLD.stage_completed_rules;
+      RETURN NEW;
+    END IF;
+
+    IF OLD.stage_completed_rules IS NOT NULL AND jsonb_typeof(OLD.stage_completed_rules) = 'object' THEN
+      -- Preserva active_cycle_token se existia no OLD; se não existia, proíbe introdução direta por client
       IF OLD.stage_completed_rules ? 'active_cycle_token' AND (OLD.stage_completed_rules->>'active_cycle_token') IS NOT NULL THEN
         NEW.stage_completed_rules := jsonb_set(
           NEW.stage_completed_rules,
           '{active_cycle_token}',
           OLD.stage_completed_rules->'active_cycle_token'
         );
+      ELSE
+        NEW.stage_completed_rules := NEW.stage_completed_rules - 'active_cycle_token';
       END IF;
 
-      -- Preserva active_cycle_at se existia no OLD
+      -- Preserva active_cycle_at se existia no OLD; se não existia, proíbe introdução direta por client
       IF OLD.stage_completed_rules ? 'active_cycle_at' AND (OLD.stage_completed_rules->>'active_cycle_at') IS NOT NULL THEN
         NEW.stage_completed_rules := jsonb_set(
           NEW.stage_completed_rules,
           '{active_cycle_at}',
           OLD.stage_completed_rules->'active_cycle_at'
         );
+      ELSE
+        NEW.stage_completed_rules := NEW.stage_completed_rules - 'active_cycle_at';
       END IF;
 
-      -- Preserva preempt_requested se existia no OLD
+      -- Preserva preempt_requested se existia no OLD; se não existia, proíbe introdução direta por client
       IF OLD.stage_completed_rules ? 'preempt_requested' THEN
         NEW.stage_completed_rules := jsonb_set(
           NEW.stage_completed_rules,
           '{preempt_requested}',
           OLD.stage_completed_rules->'preempt_requested'
         );
+      ELSE
+        NEW.stage_completed_rules := NEW.stage_completed_rules - 'preempt_requested';
       END IF;
 
       -- Preserva toda a estrutura interna de orchestration (outbox, messageLedger, etc.)
@@ -506,40 +525,48 @@ BEGIN
         v_new_orch := COALESCE(NEW.stage_completed_rules->'orchestration', '{}'::jsonb);
         IF jsonb_typeof(v_new_orch) <> 'object' THEN v_new_orch := '{}'::jsonb; END IF;
 
-        -- Preserva outbox
-        IF v_old_orch ? 'outbox' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{outbox}', v_old_orch->'outbox');
-        END IF;
+        IF v_old_orch ? 'outbox' THEN v_new_orch := jsonb_set(v_new_orch, '{outbox}', v_old_orch->'outbox');
+        ELSE v_new_orch := v_new_orch - 'outbox'; END IF;
 
-        -- Preserva messageLedger
-        IF v_old_orch ? 'messageLedger' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{messageLedger}', v_old_orch->'messageLedger');
-        END IF;
+        IF v_old_orch ? 'messageLedger' THEN v_new_orch := jsonb_set(v_new_orch, '{messageLedger}', v_old_orch->'messageLedger');
+        ELSE v_new_orch := v_new_orch - 'messageLedger'; END IF;
 
-        -- Preserva activeClaimedMessageIds
-        IF v_old_orch ? 'activeClaimedMessageIds' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{activeClaimedMessageIds}', v_old_orch->'activeClaimedMessageIds');
-        END IF;
+        IF v_old_orch ? 'activeClaimedMessageIds' THEN v_new_orch := jsonb_set(v_new_orch, '{activeClaimedMessageIds}', v_old_orch->'activeClaimedMessageIds');
+        ELSE v_new_orch := v_new_orch - 'activeClaimedMessageIds'; END IF;
 
-        -- Preserva activeCycle
-        IF v_old_orch ? 'activeCycle' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{activeCycle}', v_old_orch->'activeCycle');
-        END IF;
+        IF v_old_orch ? 'activeCycle' THEN v_new_orch := jsonb_set(v_new_orch, '{activeCycle}', v_old_orch->'activeCycle');
+        ELSE v_new_orch := v_new_orch - 'activeCycle'; END IF;
 
-        -- Preserva recentCycles
-        IF v_old_orch ? 'recentCycles' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{recentCycles}', v_old_orch->'recentCycles');
-        END IF;
+        IF v_old_orch ? 'recentCycles' THEN v_new_orch := jsonb_set(v_new_orch, '{recentCycles}', v_old_orch->'recentCycles');
+        ELSE v_new_orch := v_new_orch - 'recentCycles'; END IF;
 
-        -- Preserva retry counters
-        IF v_old_orch ? 'technicalRetryCount' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{technicalRetryCount}', v_old_orch->'technicalRetryCount');
-        END IF;
-        IF v_old_orch ? 'technicalRetryExhaustedAt' THEN
-          v_new_orch := jsonb_set(v_new_orch, '{technicalRetryExhaustedAt}', v_old_orch->'technicalRetryExhaustedAt');
-        END IF;
+        IF v_old_orch ? 'technicalRetryCount' THEN v_new_orch := jsonb_set(v_new_orch, '{technicalRetryCount}', v_old_orch->'technicalRetryCount');
+        ELSE v_new_orch := v_new_orch - 'technicalRetryCount'; END IF;
+
+        IF v_old_orch ? 'technicalRetryExhaustedAt' THEN v_new_orch := jsonb_set(v_new_orch, '{technicalRetryExhaustedAt}', v_old_orch->'technicalRetryExhaustedAt');
+        ELSE v_new_orch := v_new_orch - 'technicalRetryExhaustedAt'; END IF;
 
         NEW.stage_completed_rules := jsonb_set(NEW.stage_completed_rules, '{orchestration}', v_new_orch);
+      ELSE
+        -- Se OLD não tinha orchestration, proíbe introdução de chaves protegidas em orchestration
+        IF NEW.stage_completed_rules ? 'orchestration' THEN
+          v_new_orch := NEW.stage_completed_rules->'orchestration';
+          IF jsonb_typeof(v_new_orch) = 'object' THEN
+            v_new_orch := v_new_orch - 'outbox' - 'messageLedger' - 'activeClaimedMessageIds' - 'activeCycle' - 'recentCycles' - 'technicalRetryCount' - 'technicalRetryExhaustedAt';
+            NEW.stage_completed_rules := jsonb_set(NEW.stage_completed_rules, '{orchestration}', v_new_orch);
+          END IF;
+        END IF;
+      END IF;
+    ELSE
+      -- EDGE CASE: OLD.stage_completed_rules é NULL ou não-objeto.
+      -- O client authenticated não pode introduzir NENHUMA chave operacional protegida via UPDATE direto.
+      NEW.stage_completed_rules := NEW.stage_completed_rules - 'active_cycle_token' - 'active_cycle_at' - 'preempt_requested';
+      IF NEW.stage_completed_rules ? 'orchestration' THEN
+        v_new_orch := NEW.stage_completed_rules->'orchestration';
+        IF jsonb_typeof(v_new_orch) = 'object' THEN
+          v_new_orch := v_new_orch - 'outbox' - 'messageLedger' - 'activeClaimedMessageIds' - 'activeCycle' - 'recentCycles' - 'technicalRetryCount' - 'technicalRetryExhaustedAt';
+          NEW.stage_completed_rules := jsonb_set(NEW.stage_completed_rules, '{orchestration}', v_new_orch);
+        END IF;
       END IF;
     END IF;
   END IF;

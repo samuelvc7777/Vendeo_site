@@ -4472,6 +4472,7 @@ serve(async (req: Request) => {
               supabase,
               conversationId,
               correlationId: cycleId,
+              preClaimedCycleToken: cycleId,
               newMessage: {
                 id: lastMsg.id,
                 text: resolvedAudio.text,

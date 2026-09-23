@@ -6548,7 +6548,7 @@ export async function runBrainOrchestration(
   // apenas o gatilho para recuperar outras inbounds pendentes no mesmo diálogo.
   // 3. BACKEND DETERMINÍSTICO: Lock Atômico via PostgreSQL com SELECT ... FOR UPDATE
   let claimLockRes: ClaimExperimentalCycleResult;
-  if (params.isManualRetry && params.preClaimedCycleToken && params.preClaimedCycleToken === correlationId) {
+  if ((params.isManualRetry || params.preClaimedCycleToken) && params.preClaimedCycleToken === correlationId) {
     claimLockRes = {
       success: true,
       reason: "claimed",
@@ -8749,12 +8749,16 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       currentCycle.outboxEntryId = outboxEntry.id;
       currentCycle.trace.push(`outbox_created: ${outboxEntry.id}`);
 
-      await prepareExperimentalOutboxEntryAtomic({
+      const prepEarlyRes = await prepareExperimentalOutboxEntryAtomic({
         supabase,
         conversationId,
         cycleToken: correlationId,
         outboxEntry,
       });
+      if (!prepEarlyRes.success) {
+        console.warn(`[Brain] prepareExperimentalOutboxEntryAtomic falhou na pré-criação da outbox: motivo=${prepEarlyRes.reason}`);
+        currentCycle.trace.push(`outbox_prepare_early_failed: ${prepEarlyRes.reason}`);
+      }
     } else if (totalActions > 1) {
       currentCycle.trace.push("outbox_deferred_to_final_balloons");
     } else {
@@ -9042,12 +9046,35 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           }
           currentCycle.outboxEntryId = balloonOutbox.id;
 
-          await prepareExperimentalOutboxEntryAtomic({
+          const prepRes = await prepareExperimentalOutboxEntryAtomic({
             supabase,
             conversationId,
             cycleToken: correlationId,
             outboxEntry: balloonOutbox,
           });
+
+          if (!prepRes.success) {
+            console.error(
+              `[Orchestrator] FAIL CLOSED: Falha no prepareExperimentalOutboxEntryAtomic para conv=${conversationId} (balão ${bIndex + 1}): motivo=${prepRes.reason}`
+            );
+            currentCycle.status = "failed";
+            currentCycle.trace.push(`outbox_prepare_failed: ${prepRes.reason}`);
+            await releaseExperimentalCycleAtomic({
+              supabase,
+              conversationId,
+              cycleToken: correlationId,
+              processingStatus: "failed",
+              revertMessageIds: sentBalloonsCount === 0 ? claimedMessageIds : null,
+            });
+            return {
+              handled: false,
+              sentToMeta: sentBalloonsCount > 0,
+              blockLegacyFallback: true,
+              error: `Falha no preparo atômico da outbox (${prepRes.reason}). Fail-closed: envio abortado sem chamada à Meta.`,
+            };
+          }
+
+          const effectiveOutboxKey = prepRes.outboxKey || balloonKey;
 
           await publishAutoPilotState(supabase, conversationId, {
             status: "processing",
@@ -9070,7 +9097,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           const claimRes = await claimOutboxEntryAtomic({
             supabase,
             conversationId,
-            outboxKey: balloonKey,
+            outboxKey: effectiveOutboxKey,
             claimToken: correlationId,
           });
 
