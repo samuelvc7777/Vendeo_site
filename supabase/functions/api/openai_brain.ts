@@ -407,10 +407,30 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
   return { valid: true };
 }
 
-export function buildFallbackBrainPlan(
-  rawResponseText: string
-): any {
-  const defaultText = (rawResponseText || "oi, tudo bem?").trim();
+export function recoverSafeBrainPlan(parsedPlan: any): any | null {
+  if (!parsedPlan || typeof parsedPlan !== "object" || Array.isArray(parsedPlan)) return null;
+  const responses = Array.isArray(parsedPlan.responses) ? parsedPlan.responses : [];
+  if (responses.length < 1 || responses.length > 4) return null;
+  const safeResponses = responses.map((item: unknown) => typeof item === "string" ? item.trim() : "");
+  if (safeResponses.some((item: string) => !item || item.length > 2000 || looksLikeInternalBrainPayload(item))) return null;
+  return {
+    ...parsedPlan,
+    responses: safeResponses,
+    suggestedResponse: safeResponses.join("\n\n"),
+    action: parsedPlan.action === "wait" ? "wait" : "reply",
+  };
+}
+
+function looksLikeInternalBrainPayload(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return false;
+  const markers = ["\"action\"", "\"reasoning\"", "\"memoryWrites\"", "\"questionIntents\"", "\"turnContract\"", "\"responses\""];
+  return markers.filter((marker) => trimmed.includes(marker)).length >= 2;
+}
+
+export function buildFallbackBrainPlan(parsedPlan: any): any {
+  const recovered = recoverSafeBrainPlan(parsedPlan);
+  if (recovered) return recovered;
   const defaultContract = {
     directQuestions: [],
     mustAnswerFirst: true,
@@ -424,13 +444,13 @@ export function buildFallbackBrainPlan(
     objectiveDecision: "none",
     satisfiedObjectiveId: null,
     evidenceMessageId: null,
-    reasoning: defaultText.slice(0, 300),
+    reasoning: "Plano inválido sem respostas seguras",
     liveStatePatch: {},
-    responses: [defaultText || "oi, tudo bem?"],
+    responses: [],
     turnContract: defaultContract,
     missionPackage: {
       objectiveDirective: "none",
-      draftResponse: defaultText,
+      draftResponse: "",
       turnContract: defaultContract,
     },
   };
@@ -1084,7 +1104,19 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       if (!parsedPlan || !validation.valid) {
         telemetry.finalPlanParsed = false;
         console.warn(`[OpenAI Agent] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
-        parsedPlan = buildFallbackBrainPlan(rawResponseText);
+        parsedPlan = recoverSafeBrainPlan(parsedPlan);
+        if (!parsedPlan) {
+          telemetry.finalPlanParsed = false;
+          telemetry.status = "failed";
+          return {
+            success: false,
+            plan: null,
+            error: "BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES",
+            telemetry,
+          };
+        }
+        telemetry.finalPlanParsed = true;
+        telemetry.recoveryMode = "safe_structured_recovery";
       } else {
         telemetry.finalPlanParsed = true;
         console.log(`[OpenAI Agent] plan_validated`);

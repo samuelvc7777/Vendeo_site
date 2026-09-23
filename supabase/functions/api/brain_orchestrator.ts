@@ -2519,6 +2519,14 @@ export async function dispatchOutboxEntry(
     (outboxEntry as any).claimedBy = claimToken;
   }
   outboxEntry.attempts = (outboxEntry.attempts || 0) + (isClaimedByMe ? 0 : 1);
+  if (outboxEntry.messageType === "text") {
+    const payloadCheck = validateFinalTextDispatchPayload(outboxEntry.content);
+    if (!payloadCheck.valid) {
+      outboxEntry.status = "failed";
+      outboxEntry.lastError = payloadCheck.error;
+      return { success: false, error: payloadCheck.error };
+    }
+  }
 
   try {
     if (runtime?.sendMetaTextMessage) {
@@ -5566,6 +5574,18 @@ async function waitForHumanSendDelay({
   }
   return true;
 }
+
+const META_TEXT_LIMIT = 2000;
+
+export function validateFinalTextDispatchPayload(text: unknown): { valid: boolean; error?: string } {
+  if (typeof text !== "string" || !text.trim()) return { valid: false, error: "EMPTY_TEXT_BALLOON" };
+  const value = text.trim();
+  if (value.length > META_TEXT_LIMIT) return { valid: false, error: "TEXT_BALLOON_TOO_LONG" };
+  if (value.startsWith("{") && ["\"action\"", "\"reasoning\"", "\"memoryWrites\"", "\"questionIntents\"", "\"turnContract\"", "\"responses\""].filter((key) => value.includes(key)).length >= 2) {
+    return { valid: false, error: "INTERNAL_BRAIN_PAYLOAD_LEAK_BLOCKED" };
+  }
+  return { valid: true };
+}
 const callModelOrKie = callModelOrOpenAi;
 const callModelOrAtria = callModelOrOpenAi;
 
@@ -6815,9 +6835,11 @@ export async function runBrainOrchestration(
           }
         }
 
-        currentCycle.trace.push("single_turn_agent_execution_used: true");
-        currentCycle.trace.push("second_model_inference_skipped: true");
-        currentCycle.trace.push("model: gpt-5.6-luna");
+      currentCycle.trace.push("single_turn_agent_execution_used: true");
+      currentCycle.trace.push("second_model_inference_skipped: true");
+      currentCycle.trace.push("model: gpt-5.6-luna");
+      currentCycle.trace.push(`brain_safe_responses_count=${finalSubDecision.responses?.length || 0}`);
+      currentCycle.trace.push("brain_plan_recovery_mode=none");
       } else {
         // Constrói prompt do executor enxuto (modo legado)
         const executorPrompt = buildSubagentExecutorPrompt({
@@ -6880,7 +6902,14 @@ export async function runBrainOrchestration(
 
       // Se o subagente gerou balões, aplica sanitização determinística mandatória
       if (finalSubDecision.action === "reply" && (!finalSubDecision.responses || finalSubDecision.responses.length === 0)) {
-        finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
+        if (isOpenAiAgentBrain) {
+          finalSubDecision.action = "wait";
+          finalSubDecision.suggestedResponse = "";
+          finalSubDecision.requiredTools = [];
+          currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
+        } else {
+          finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
+        }
       }
 
       // Registra telemetria completa no trace
@@ -7125,8 +7154,17 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         currentCycle.trace.push(`direct_questions_answered=${qualityResult.directQuestionsAnswered}`);
         currentCycle.trace.push(`parrot_score=${qualityResult.parrotScore.toFixed(3)}`);
         currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
+        currentCycle.trace.push(`question_budget_final_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
         if (isOpenAiAgentBrain) currentCycle.trace.push("conversation_quality_observe_only=true");
+
+        if (isOpenAiAgentBrain && qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
+          finalSubDecision.action = "wait";
+          finalSubDecision.responses = [];
+          finalSubDecision.suggestedResponse = "";
+          finalSubDecision.requiredTools = [];
+          currentCycle.trace.push("QUESTION_BUDGET_HARD_BLOCK");
+        }
 
         // Limite físico de payload: é o único aspecto de balões que pode
         // bloquear o caminho OpenAI, sem reescrever a conversa.
@@ -7367,17 +7405,23 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     }
 
     const initialContentType = isAudioAction && (resolvedAudio?.audioUrl || decision.audioUrl) ? "audio" : "text";
+    const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
+    const finalTextBalloons = isOpenAiAgentBrain
+      ? (Array.isArray(decision.responses) ? decision.responses : [])
+      : (decision.responses?.length
+        ? decision.responses
+        : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []));
     const initialContent = initialContentType === "audio"
       ? (resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${decision.audioUrl}]`)
-      : decision.suggestedResponse;
-
-    const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
-    const finalTextBalloons = decision.responses?.length
-      ? decision.responses
-      : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []);
+      : finalTextBalloons[0] || "";
+    const textPayloadCheck = initialContentType === "text"
+      ? validateFinalTextDispatchPayload(initialContent)
+      : { valid: true };
+    if (!textPayloadCheck.valid) currentCycle.trace.push(`${textPayloadCheck.error?.toLowerCase()}=true`);
     const hasFinalDispatchPayload = Boolean(
       (decision.action === "reply" || decision.action === "advance_phase" || decision.action === "send_audio")
       && initialContent
+      && textPayloadCheck.valid
       && (initialContentType === "audio" || finalTextBalloons.length === 1)
     );
     let outboxEntry: any = hasFinalDispatchPayload ? outboxMap[idempotencyKey] : undefined;
@@ -7447,6 +7491,18 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
         for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
           const balloonText = balloons[bIndex];
+
+          const dispatchPayloadCheck = isAudioAction
+            ? { valid: true }
+            : validateFinalTextDispatchPayload(balloonText);
+          currentCycle.trace.push(`dispatch_balloon_length=${typeof balloonText === "string" ? balloonText.length : 0}`);
+          currentCycle.trace.push(`dispatch_payload_source=${isOpenAiAgentBrain ? "decision.responses" : "legacy"}`);
+          if (!dispatchPayloadCheck.valid) {
+            currentCycle.trace.push(`${dispatchPayloadCheck.error?.toLowerCase()}=true`);
+            currentCycle.status = "failed";
+            balloons = [];
+            break;
+          }
 
           // ------------------------------------------------------------------
           // FRESHNESS GATE 4: Revalidação imediatamente antes de despachar o balão
