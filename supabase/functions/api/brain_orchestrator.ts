@@ -5,6 +5,11 @@
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import {
+  OpenAiCycleUsageAccumulator,
+  parseUsdBrlEstimate,
+  type OpenAiUsageRecord,
+} from "./openai_usage.ts";
+import {
   type ConversationEpisode,
   type EpisodeActor,
   type EpisodeEventType,
@@ -494,6 +499,10 @@ export interface ConversationBrainPlan {
   currentTopic?: string;
   bestHook?: string;
   curiosityOpportunity?: string;
+  objectiveBridgeDetected?: boolean;
+  objectiveBridgeEvidence?: string | null;
+  coveredHooks?: string[];
+  ignoredRelevantHooks?: string[];
   turnContract?: TurnContract;
   memoryConsulted?: boolean;
   memoryRationale?: string;
@@ -5452,6 +5461,7 @@ export interface ModelCallOptions {
   temperature?: number;
   reasoningEffort?: "low" | "medium";
   disallowDowngrade?: boolean;
+  recordOpenAiUsage?: (record: OpenAiUsageRecord) => void;
 }
 
 async function callModelOrOpenAi(
@@ -5525,6 +5535,13 @@ async function callModelOrOpenAi(
         const jsonRes = await oaiRes.json();
         const choice = jsonRes.choices?.[0];
         let content = choice?.message?.content || "";
+        options.recordOpenAiUsage?.({
+          id: typeof jsonRes.id === "string" ? jsonRes.id : "",
+          source: "chat_completion",
+          model: typeof jsonRes.model === "string" ? jsonRes.model : currentModel,
+          usage: jsonRes.usage ?? null,
+          serviceTier: typeof jsonRes.service_tier === "string" ? jsonRes.service_tier : null,
+        });
         const providerInput = jsonRes.usage?.prompt_tokens;
         const providerOutput = jsonRes.usage?.completion_tokens;
         const hasSplitUsage = Number.isFinite(providerInput) && Number.isFinite(providerOutput);
@@ -5705,6 +5722,19 @@ export function buildTemporalContext(cycleNow: Date, lastRelevantMessageAt?: str
   ].join("\n");
 }
 
+function configuredUsdBrlEstimate(): number | null {
+  try {
+    const raw = typeof Deno !== "undefined"
+      ? Deno.env.get("USD_BRL_ESTIMATE")
+      : typeof process !== "undefined"
+      ? process.env.USD_BRL_ESTIMATE
+      : undefined;
+    return parseUsdBrlEstimate(raw);
+  } catch {
+    return null;
+  }
+}
+
 export async function runBrainOrchestration(
   params: RunOrchestrationParams
 ): Promise<OrchestrationResult> {
@@ -5713,6 +5743,12 @@ export async function runBrainOrchestration(
   const cycleNow = new Date();
   const correlationId =
     params.correlationId || `corr_${startTime}_${Math.random().toString(36).slice(2, 7)}`;
+  const cycleOpenAiUsage = new OpenAiCycleUsageAccumulator(correlationId, configuredUsdBrlEstimate());
+  let usageTerminalEventPublished = false;
+  const cycleUsageMetadata = () => {
+    const usage = cycleOpenAiUsage.snapshot();
+    return usage ? { usage } : {};
+  };
   const memoryProvider: MemoryProvider =
     params.memoryProvider ||
     runtime?.memoryProvider ||
@@ -6179,6 +6215,7 @@ export async function runBrainOrchestration(
       }
 
       await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
         status: "idle",
         activity: activity(
           "idle",
@@ -6186,7 +6223,17 @@ export async function runBrainOrchestration(
           "Recalculando com contexto atualizado...",
           {}
         ),
+        ...(cycleOpenAiUsage.snapshot() ? {
+          cycleEvent: {
+            phase: "cancelled",
+            event: "cycle_preempted",
+            label: "Ciclo interrompido por nova mensagem",
+            detail: "O Brain será reexecutado com o contexto atualizado.",
+            metadata: cycleUsageMetadata(),
+          },
+        } : {}),
       });
+      if (cycleOpenAiUsage.snapshot()) usageTerminalEventPublished = true;
 
       return {
         handled: false,
@@ -6571,6 +6618,10 @@ export async function runBrainOrchestration(
             .map((g) => ({ id: g.id, label: g.label, description: g.description, kind: g.kind })),
         });
 
+        for (const sessionUsage of openAiBrainTurn.telemetry.agentUsageSessions || []) {
+          cycleOpenAiUsage.addAgentSession(sessionUsage);
+        }
+
         if (openAiBrainTurn.success && openAiBrainTurn.plan) {
           brainPlan = openAiBrainTurn.plan;
           const memoryToolCalls = openAiBrainTurn.telemetry.toolsRequested.filter((tool: string) =>
@@ -6581,6 +6632,8 @@ export async function runBrainOrchestration(
           const currentObjective = stageChecklistForRouter.currentObjective;
           const objectiveLabel = currentObjective?.label || currentObjective?.title || null;
           const planResponses = safeOperationalStringList(brainPlan.responses, 4);
+          const coveredHooks = safeOperationalStringList(brainPlan.coveredHooks, 4);
+          const ignoredRelevantHooks = safeOperationalStringList(brainPlan.ignoredRelevantHooks, 4);
           const questionIntents = Array.isArray(brainPlan.questionIntents)
             ? brainPlan.questionIntents.slice(0, 8).map((intent: any) => ({
               intentKey: safeOperationalConsoleText(intent?.intentKey, 120),
@@ -6637,6 +6690,10 @@ export async function runBrainOrchestration(
                 currentTopic: safeOperationalConsoleText(brainPlan.currentTopic || brainPlan.missionPackage?.currentTopic, 300) || null,
                 bestHook: safeOperationalConsoleText(brainPlan.bestHook || brainPlan.missionPackage?.bestHook, 400) || null,
                 curiosityOpportunity: safeOperationalConsoleText(brainPlan.curiosityOpportunity || brainPlan.missionPackage?.curiosityOpportunity, 400) || null,
+                objectiveBridgeDetected: typeof brainPlan.objectiveBridgeDetected === "boolean" ? brainPlan.objectiveBridgeDetected : null,
+                objectiveBridgeEvidence: safeOperationalConsoleText(brainPlan.objectiveBridgeEvidence, 240) || null,
+                coveredHooks,
+                ignoredRelevantHooks,
                 memoryConsulted: memoryToolCalls.length > 0,
                 memoryRationale: safeOperationalConsoleText(brainPlan.memoryRationale, 400) || null,
                 toolsUsed,
@@ -6742,7 +6799,12 @@ export async function runBrainOrchestration(
       });
       const configuredBrainModel = await resolveConfiguredOpenAiModel(supabase, params.model);
       currentCycle.trace.push(`configured_brain_model=${configuredBrainModel}`);
-      const brainRes = await callModelOrOpenAi(brainPrompt, { runtime, supabase, model: configuredBrainModel });
+      const brainRes = await callModelOrOpenAi(brainPrompt, {
+        runtime,
+        supabase,
+        model: configuredBrainModel,
+        recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
+      });
       tokenMeasurements.add(brainRes.tokenMeasurement);
       brainInputTokens += brainRes.inputTokens;
       brainOutputTokens += brainRes.outputTokens;
@@ -7095,6 +7157,7 @@ export async function runBrainOrchestration(
           supabase,
           model: brainLegacyModel,
           disallowDowngrade: true,
+          recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
         });
         tokenMeasurements.add(execRes.tokenMeasurement);
         totalTokens += execRes.tokens;
@@ -7217,6 +7280,7 @@ Responda ESTRITAMENTE em JSON puro:
               supabase,
               model: brainLegacyModel,
               disallowDowngrade: true,
+              recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
             });
             totalTokens += retryRes.tokens;
             finalGenerationTokens += retryRes.tokens;
@@ -7301,6 +7365,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               supabase,
               model: brainLegacyModel,
               disallowDowngrade: true,
+              recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
             });
             totalTokens += retryRes.tokens;
             finalGenerationTokens += retryRes.outputTokens;
@@ -7579,6 +7644,20 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       currentCycle.trace.push("cycle_cancelled_before_dispatch");
       for (const id of claimedMessageIds) {
         ledger[id] = "pending";
+      }
+      const cancelledUsage = cycleUsageMetadata();
+      if (cancelledUsage.usage) {
+        await publishAutoPilotState(supabase, conversationId, {
+          cycleId: correlationId,
+          cycleEvent: {
+            phase: "cancelled",
+            event: "cycle_cancelled",
+            label: "Ciclo cancelado antes do envio",
+            detail: "O operador cancelou o ciclo depois da inferência do Brain.",
+            metadata: cancelledUsage,
+          },
+        });
+        usageTerminalEventPublished = true;
       }
       return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
@@ -7929,10 +8008,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           });
           if (!delayCompleted) {
             await releaseExperimentalCycleAtomic({ supabase, conversationId, cycleToken: correlationId, processingStatus: "cancelled", cycleRecord: currentCycle });
+            const cancelledUsage = cycleUsageMetadata();
             await publishAutoPilotState(supabase, conversationId, {
               cycleId: correlationId, isEnabled: false, status: "disabled", scheduledResponseAt: null,
               activity: activity("cancelled", "Ação cancelada", "IA desativada antes do envio.", { event: "cycle_cancelled" }),
+              cycleEvent: {
+                phase: "cancelled",
+                event: "cycle_cancelled",
+                label: "Ação cancelada",
+                detail: "IA desativada antes do envio.",
+                metadata: cancelledUsage,
+              },
             });
+            if (cancelledUsage.usage) usageTerminalEventPublished = true;
             return { handled: true, sentToMeta: sentBalloonsCount > 0, blockLegacyFallback: true };
           }
 
@@ -8127,6 +8215,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             sentSuccessfully = true;
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_uncertain: ${dispatchRes.error}`);
+            const failedUsage = cycleUsageMetadata();
             await publishAutoPilotState(supabase, conversationId, {
               cycleId: correlationId,
               status: "failed",
@@ -8135,9 +8224,10 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 event: "dispatch_uncertain",
                 label: `Confirmação incerta ${bIndex + 1}/${balloons.length}`,
                 detail: "O provedor não confirmou se o balão foi entregue.",
-                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType },
+                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType, ...failedUsage },
               },
             });
+            if (failedUsage.usage) usageTerminalEventPublished = true;
             console.warn(
               `[Orchestrator] Envio com status dispatch_uncertain para ${conversationId}. Bloqueando retry automático e fallback legacy para evitar duplicação.`
             );
@@ -8148,6 +8238,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           } else {
             currentCycle.status = "failed";
             currentCycle.trace.push(`meta_dispatch_failed: ${dispatchRes.error}`);
+            const failedUsage = cycleUsageMetadata();
             await publishAutoPilotState(supabase, conversationId, {
               cycleId: correlationId,
               status: "failed",
@@ -8156,9 +8247,10 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 event: "dispatch_failed",
                 label: `Envio falhou ${bIndex + 1}/${balloons.length}`,
                 detail: "O provedor rejeitou o envio deste balão.",
-                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType },
+                metadata: { currentBalloon: bIndex + 1, totalBalloons: balloons.length, payloadType: balloonMessageType, ...failedUsage },
               },
             });
+            if (failedUsage.usage) usageTerminalEventPublished = true;
             balloonOutbox.status = "failed";
             balloonOutbox.lastError = dispatchRes.error || "Falha no envio";
             outboxMap[balloonKey] = balloonOutbox;
@@ -8449,6 +8541,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         }
 
 
+        const completedUsage = cycleUsageMetadata();
         await publishAutoPilotState(supabase, conversationId, {
           cycleId: correlationId,
           status: "idle",
@@ -8480,9 +8573,14 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               action: decision.action,
               sentBalloonsCount,
               totalBalloons: balloons.length,
+              model: cycleOpenAiUsage.snapshot()?.models[0] || configuredAgentModel || null,
+              reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+              verbosity: agentSettings.get("openai_brain_verbosity") || null,
+              ...completedUsage,
             },
           },
         });
+        usageTerminalEventPublished = Boolean(completedUsage.usage);
 
         // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
         // Executa UMA ÚNICA VEZ por ciclo normal confirmado, após o commit oficial
@@ -8740,6 +8838,20 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         err.message || "Falha na análise do Brain",
         { cycleId: correlationId }
       ),
+      ...(usageTerminalEventPublished ? {} : {
+        cycleEvent: {
+          phase: "failed",
+          event: "cycle_failed",
+          label: "Ciclo falhou",
+          detail: err.message || "Falha na análise do Brain.",
+          metadata: {
+            model: cycleOpenAiUsage.snapshot()?.models[0] || configuredAgentModel || null,
+            reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+            verbosity: agentSettings.get("openai_brain_verbosity") || null,
+            ...cycleUsageMetadata(),
+          },
+        },
+      }),
     });
 
     return {

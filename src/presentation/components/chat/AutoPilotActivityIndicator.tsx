@@ -128,7 +128,68 @@ function formatConsoleModel(model: string | null): string | null {
 }
 
 function formatConsoleSetting(value: string | null): string | null {
-  return value ? value.charAt(0).toUpperCase() + value.slice(1) : null;
+  if (!value) return null;
+  if (value === "xhigh") return "XHigh";
+  if (value === "none") return "None";
+  if (value === "max") return "Max";
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function usageValue(usage: Record<string, unknown>, key: string): number | null {
+  const value = usage[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function formatUsageTokens(value: number | null): string {
+  return value === null ? "Indisponível" : new Intl.NumberFormat("pt-BR").format(value);
+}
+
+function OpenAiUsagePanel({ metadata }: { metadata: Record<string, unknown> }) {
+  const rawUsage = metadata.usage;
+  if (!rawUsage || typeof rawUsage !== "object" || Array.isArray(rawUsage)) return null;
+  const usage = rawUsage as Record<string, unknown>;
+  const requests = usageValue(usage, "requestCount");
+  const input = usageValue(usage, "inputTokens");
+  const cached = usageValue(usage, "cachedInputTokens");
+  const uncached = usageValue(usage, "uncachedInputTokens");
+  const output = usageValue(usage, "outputTokens");
+  const reasoning = usageValue(usage, "reasoningTokens");
+  const total = usageValue(usage, "totalTokens");
+  const cacheHitRate = usageValue(usage, "cacheHitRate");
+  const usd = usageValue(usage, "estimatedUsd");
+  const brl = usageValue(usage, "estimatedBrl");
+  const models = Array.isArray(usage.models) ? usage.models.filter((item): item is string => typeof item === "string") : [];
+  const modelNames = models.map((item) => formatConsoleModel(item) || item).join(" · ") || formatConsoleModel(eventMetadataText(metadata, "model")) || "Modelo não informado";
+  const reasoningEffort = formatConsoleSetting(eventMetadataText(metadata, "reasoningEffort"));
+  const fx = usageValue(usage, "usdBrlEstimate");
+  const tokenRows = [
+    ["Input total", input], ["Cacheado", cached], ["Não cacheado", uncached],
+    ["Output", output], ["↳ Reasoning", reasoning], ["Total", total],
+  ] as const;
+
+  return (
+    <section className="mt-3 rounded-lg border border-cyan-900/50 bg-cyan-950/10 p-2.5" aria-label="Uso OpenAI neste ciclo">
+      <div className="text-[9px] font-semibold uppercase tracking-wider text-cyan-300">Usage OpenAI</div>
+      <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-[10px] text-zinc-300">
+        <span>{modelNames}{reasoningEffort ? ` · Reasoning ${reasoningEffort}` : ""}</span>
+        <span>{requests === null ? "Requests indisponíveis" : `${formatUsageTokens(requests)} requests`}</span>
+      </div>
+      <div className="mt-2 space-y-1 border-t border-zinc-800 pt-2">
+        {tokenRows.map(([label, value]) => <div key={label} className={`flex justify-between gap-3 text-[10px] ${label.startsWith("↳") ? "pl-2 text-zinc-500" : "text-zinc-300"}`}><span>{label}</span><span>{formatUsageTokens(value)}</span></div>)}
+      </div>
+      <div className="mt-2 flex flex-wrap justify-between gap-x-3 border-t border-zinc-800 pt-2 text-[10px] text-zinc-300">
+        <span>Cache hit</span><span>{cacheHitRate === null ? "Indisponível" : `${cacheHitRate.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}</span>
+      </div>
+      <div className="mt-2 border-t border-zinc-800 pt-2">
+        <div className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">Custo estimado · tarifa Standard</div>
+        <div className="mt-0.5 text-[12px] font-medium text-zinc-100">{usd === null ? "Indisponível" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}</div>
+        {brl !== null && <div className="text-[10px] text-zinc-400">≈ R$ {brl.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>}
+        {fx !== null && <div className="mt-0.5 text-[9px] text-zinc-600">Câmbio estimado: R${fx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}/US$</div>}
+        {usage.cacheWriteTokens === null && <div className="mt-1 text-[9px] text-zinc-600">Cache write não informado pela API.</div>}
+        {typeof usage.serviceTier === "string" && <div className="mt-1 text-[9px] text-zinc-600">Tier: {usage.serviceTier}</div>}
+      </div>
+    </section>
+  );
 }
 
 function objectiveDecisionLabel(value: string | null): string | null {
@@ -160,6 +221,9 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
   const proposedResponses = eventMetadataStrings(metadata, "proposedResponses");
   const toolsUsed = eventMetadataStrings(metadata, "toolsUsed");
   const memorySources = eventMetadataStrings(metadata, "memorySources");
+  const coveredHooks = eventMetadataStrings(metadata, "coveredHooks");
+  const ignoredRelevantHooks = eventMetadataStrings(metadata, "ignoredRelevantHooks");
+  const objectiveBridgeDetected = typeof metadata.objectiveBridgeDetected === "boolean" ? metadata.objectiveBridgeDetected : null;
   const objectiveDecision = eventMetadataText(metadata, "objectiveDecision");
   const questionIntents = Array.isArray(metadata.questionIntents) ? metadata.questionIntents : [];
   const isBrainDecision = event.event === "brain_decision";
@@ -220,6 +284,11 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
               {metadata.memoryConsulted === true ? "Consultada" : metadata.memoryConsulted === false ? "Não consultada" : null}
               {eventMetadataText(metadata, "memoryRationale") ? ` · ${eventMetadataText(metadata, "memoryRationale")}` : ""}
             </ConsoleEventField>
+            <ConsoleEventField label="Ponte para objetivo">
+              {objectiveBridgeDetected === null ? null : objectiveBridgeDetected ? `Detectada${eventMetadataText(metadata, "objectiveBridgeEvidence") ? ` · ${eventMetadataText(metadata, "objectiveBridgeEvidence")}` : ""}` : "Não detectada"}
+            </ConsoleEventField>
+            <ConsoleEventField label="Ganchos cobertos">{coveredHooks.join(" · ") || null}</ConsoleEventField>
+            <ConsoleEventField label="Ganchos relevantes não cobertos">{ignoredRelevantHooks.join(" · ") || null}</ConsoleEventField>
             <ConsoleEventField label="Motivo da decisão">{eventMetadataText(metadata, "reasoningSummary")}</ConsoleEventField>
             <ConsoleEventField label="Ferramentas usadas">{toolsUsed.join(" · ") || null}</ConsoleEventField>
           </div>
@@ -270,6 +339,7 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
       )}
 
       {!isDiagnostic && event.detail && <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{event.detail}</div>}
+      <OpenAiUsagePanel metadata={metadata} />
     </article>
   );
 }

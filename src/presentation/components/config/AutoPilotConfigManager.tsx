@@ -293,23 +293,26 @@ export function AutoPilotConfigManager() {
         </div>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-300 font-medium block">Reasoning effort</label>
+          <label className="text-[11px] text-zinc-300 font-medium block">Esforço de raciocínio</label>
           <select value={openAiReasoningEffort} onChange={(e) => { setOpenAiReasoningEffort(e.target.value); setIsOpenAiReasoningDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
+            <option value="none">None — mínimo tempo de raciocínio</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="xhigh">XHigh — muito alto</option>
+            <option value="max">Max — esforço máximo</option>
           </select>
-          <span className="text-[10px] text-zinc-500">Raciocínio atual: {openAiReasoningEffort.charAt(0).toUpperCase() + openAiReasoningEffort.slice(1)}</span>
+          <span className="text-[10px] text-zinc-500">Esforço atual: {openAiReasoningEffort === "xhigh" ? "XHigh" : openAiReasoningEffort.charAt(0).toUpperCase() + openAiReasoningEffort.slice(1)}</span>
         </div>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-300 font-medium block">Verbosity</label>
+          <label className="text-[11px] text-zinc-300 font-medium block">Nível de verbosidade</label>
           <select value={openAiVerbosity} onChange={(e) => { setOpenAiVerbosity(e.target.value); setIsOpenAiVerbosityDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
+            <option value="low">Low — respostas mais concisas</option>
+            <option value="medium">Medium — equilíbrio</option>
+            <option value="high">High — máximo de detalhe suportado</option>
           </select>
-          <span className="text-[10px] text-zinc-500">Verbosity atual: {openAiVerbosity.charAt(0).toUpperCase() + openAiVerbosity.slice(1)}</span>
+          <span className="text-[10px] text-zinc-500">Verbosity atual: {openAiVerbosity.charAt(0).toUpperCase() + openAiVerbosity.slice(1)}{openAiVerbosity === "high" ? " (máxima)" : ""}</span>
         </div>
       </div>
 

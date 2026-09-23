@@ -3757,7 +3757,8 @@ serve(async (req: Request) => {
         "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
         "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
       };
-      const allowedReasoningEfforts = ["low", "medium", "high"] as const;
+      // Valores suportados pelos modelos GPT-6 do Brain; `max` é o teto de esforço.
+      const allowedReasoningEfforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
       const allowedVerbosityLevels = ["low", "medium", "high"] as const;
       const labels: Record<string, string> = {
         "gpt-6-luna": "GPT-6 Luna",
@@ -3798,8 +3799,8 @@ serve(async (req: Request) => {
         const reasoningEffort = hasReasoningEffort ? body.reasoningEffort : undefined;
         const verbosity = hasVerbosity ? body.verbosity : undefined;
         if (hasModel && !allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha GPT-6 Luna ou GPT-6 Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha low, medium ou high." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        if (hasVerbosity && !allowedVerbosityLevels.includes(verbosity)) return new Response(JSON.stringify({ error: "Verbosity inválido. Escolha low, medium ou high." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha none, low, medium, high, xhigh ou max." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (hasVerbosity && !allowedVerbosityLevels.includes(verbosity)) return new Response(JSON.stringify({ error: "Verbosity inválida. Escolha low, medium ou high (máxima)." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const suppliedKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
         const effectiveKey = suppliedKey || apiKey;
         if (!effectiveKey) return new Response(JSON.stringify({ error: "Configure a chave da API OpenAI antes de escolher o modelo." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });

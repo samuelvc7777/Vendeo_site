@@ -20,6 +20,7 @@ import {
   LARISSA_INTERACTION_DNA_VERSION,
   LARISSA_INTERACTION_DNA_HASH,
 } from "./larissa_interaction_dna.ts";
+import type { AgentSessionUsageTelemetry } from "./openai_usage.ts";
 
 export interface OpenAiBrainToolDefinition {
   type: "function";
@@ -503,6 +504,7 @@ export interface OpenAiBrainTurnResult {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    agentUsageSessions: AgentSessionUsageTelemetry[];
     sourcesUsed: string[];
     finalPlanParsed?: boolean;
     interactionDnaApplied?: boolean;
@@ -510,6 +512,90 @@ export interface OpenAiBrainTurnResult {
     interactionDnaHash?: string;
     recentStyleStateApplied?: boolean;
   };
+}
+
+async function fetchAgentGenerationIds(
+  sessionId: string,
+  headers: Record<string, string>,
+): Promise<string[] | null> {
+  const generationIds = new Set<string>();
+  let after: string | null = null;
+
+  for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    const url = new URL(`https://api.openai.com/v1/agents/sessions/${sessionId}/traces`);
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("order", "asc");
+    if (after) url.searchParams.set("after", after);
+
+    try {
+      const response = await fetch(url, { headers });
+      if (!response.ok) return null;
+      const page = await response.json();
+      const traceRows = Array.isArray(page?.data) ? page.data : [];
+      for (const traceRow of traceRows) {
+        const resourceSpans = traceRow?.otlp?.resourceSpans;
+        if (!Array.isArray(resourceSpans)) continue;
+        for (const resourceSpan of resourceSpans) {
+          const scopeSpans = Array.isArray(resourceSpan?.scopeSpans) ? resourceSpan.scopeSpans : [];
+          for (const scopeSpan of scopeSpans) {
+            const spans = Array.isArray(scopeSpan?.spans) ? scopeSpan.spans : [];
+            for (const span of spans) {
+              const name = typeof span?.name === "string" ? span.name.toLowerCase() : "";
+              if (!name.includes("generation")) continue;
+              const spanId = typeof span?.spanId === "string" ? span.spanId : "";
+              if (spanId) generationIds.add(spanId);
+            }
+          }
+        }
+      }
+
+      if (page?.has_more !== true) {
+        return generationIds.size > 0 ? [...generationIds] : null;
+      }
+      if (typeof page.last_id !== "string" || !page.last_id || page.last_id === after) return null;
+      after = page.last_id;
+    } catch {
+      return null;
+    }
+  }
+
+  // Não apresentar uma contagem parcial se a paginação não terminou.
+  return null;
+}
+
+async function fetchAgentSessionUsageTelemetry(
+  sessionId: string,
+  model: string | null,
+  sessionUsage: unknown,
+  headers: Record<string, string>,
+): Promise<AgentSessionUsageTelemetry> {
+  const turns: AgentSessionUsageTelemetry["turns"] = [];
+  let after: string | null = null;
+
+  for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    const url = new URL(`https://api.openai.com/v1/agents/sessions/${sessionId}/turns`);
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("order", "asc");
+    if (after) url.searchParams.set("after", after);
+
+    try {
+      const response = await fetch(url, { headers });
+      if (!response.ok) break;
+      const page = await response.json();
+      for (const turn of Array.isArray(page?.data) ? page.data : []) {
+        if (typeof turn?.id !== "string" || !turn.id) continue;
+        turns.push({ id: turn.id, usage: turn.usage ?? null });
+      }
+      if (page?.has_more !== true) break;
+      if (typeof page.last_id !== "string" || !page.last_id || page.last_id === after) break;
+      after = page.last_id;
+    } catch {
+      break;
+    }
+  }
+
+  const generationIds = await fetchAgentGenerationIds(sessionId, headers);
+  return { sessionId, model, sessionUsage, turns, generationIds };
 }
 
 export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): string {
@@ -643,13 +729,18 @@ Para decidir a resposta e a condução, considere rigorosamente nesta ordem:
 5. CONNECTION OPPORTUNITY (avaliar se o tópico pessoal tem potencial de conexão; ASSUNTO VIVO COM POTENCIAL DE CONEXÃO > PRÓXIMO CHECKLIST);
 6. APROFUNDAR TÓPICO VIVO & JANELA CONVERSACIONAL RECENTE (acompanhar o ritmo sem dead-end fático nem salto brusco);
 7. RECIPROCIDADE (compartilhar fato verdadeiro fundamentado da Larissa na PersonaMemory quando houver gancho);
-8. OBJETIVOS DA ETAPA (podem ser adiados quando competirem com saliência social ou conexão viva);
+8. OBJETIVOS DA ETAPA (podem avançar DENTRO do assunto vivo quando houver ponte natural; não são uma pauta concorrente);
 9. FERRAMENTAS MCP sob demanda se houver dúvida factual ou gancho de afinidade.
 
 Antes de responder, defina bestHook como o maior sinal humano/relacional do lote e derive curiosityOpportunity dele. Em áudios, use a transcrição como texto semântico, escolha 1 ou 2 elementos salientes e reaja a um detalhe específico.
 
+GANCHO HUMANO, ANTI-PAPAGAIO E OBJETIVO:
+- Use o fato recém-dito como gancho para acrescentar reação, opinião, humor, conexão verdadeira ou curiosidade; não devolva apenas uma paráfrase. Só retome o fato quando trouxer algo novo. Se o balão apenas reorganiza o que ele disse, reescreva.
+- Selecione os ganchos humanos mais fortes do lote; não responda cada mensagem com uma paráfrase. Quando houver dois ganchos relevantes, pode reagir a ambos em 1–3 balões curtos, respeitando o turnContract e sem transformar a conversa em questionário.
+- Antes de escolher defer, procure uma ponte semântica entre o assunto atual e o objetivo ativo. Se existir e couber naturalmente, prefira pursue dentro do assunto; não force mudança de tema. Use defer se não houver ponte genuína, se houver prioridade emocional, risco de soar como entrevista ou pergunta excessiva. Não infira fatos não revelados.
+
 CHECAGEM PRÉ-FINALIZAÇÃO:
-Antes de emitir responses[], confirme: "Existe alguma pergunta, elogio, informação nova, provocação, plano ou comentário relevante nas NOVAS MENSAGENS que minha resposta ignorou?", "Estou cortando um assunto de conexão viva para pular mecanicamente para um checklist?" e "bestHook, curiosityOpportunity e responses[] estão coerentes?". Se sim, cubra com afeto, reciprocidade e naturalidade.
+Revise sem expor a revisão: algum balão apenas repete o pretendente? Algum gancho humano relevante foi ignorado? Há ponte natural com o objetivo que estou adiando? A pergunta nasce do assunto e respeita o turnContract? Reescreva se necessário, mantendo reação, curiosidade e naturalidade.
 
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
@@ -668,6 +759,10 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "currentTopic": "tópico atual",
   "bestHook": "gancho principal",
   "curiosityOpportunity": "oportunidade de curiosidade",
+  "objectiveBridgeDetected": true,
+  "objectiveBridgeEvidence": "trecho curto da mensagem que cria uma ponte natural, ou null",
+  "coveredHooks": ["gancho humano efetivamente usado"],
+  "ignoredRelevantHooks": [],
   "memoryConsulted": true | false,
   "memoryRationale": "justificativa da consulta ou da não consulta",
   "personaMemoryQuery": "query executada se memoryConsulted=true",
@@ -704,7 +799,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "balão 2"
   ]
 }
-Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Em turnos normais, use 0 a 1 emoji; em turnos afetivos, flerte ou lotes de 2-4 balões, podem aparecer até 2 emojis naturais (máximo 2). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado).`
+Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Em turnos normais, use 0 a 1 emoji; em turnos afetivos, flerte ou lotes de 2-4 balões, podem aparecer até 2 emojis naturais (máximo 2). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado). Os campos objectiveBridgeDetected, objectiveBridgeEvidence, coveredHooks e ignoredRelevantHooks são observabilidade opcionais; relate somente o que o plano sustenta, sem inventar evidências.`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
@@ -759,6 +854,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    agentUsageSessions: [],
     sourcesUsed: [],
     actualMemoryToolCalled: false,
     interactionDnaApplied: true,
@@ -849,7 +945,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       if (params.strictOpenAiPilot) {
         if (!mockResult.plan || !validation.valid) {
           if (!params.schemaRetryCount) {
-            return runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "plan_null" });
+            const retryResult = await runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "plan_null" });
+            retryResult.telemetry.agentUsageSessions = [...telemetry.agentUsageSessions, ...retryResult.telemetry.agentUsageSessions];
+            return retryResult;
           }
           const errMsg = `[OpenAI Agent Strict Mode Mock] Plano inválido ou ausente: ${validation.error || "plan_null"}`;
           console.error(errMsg);
@@ -904,11 +1002,46 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     };
   }
 
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "OpenAI-Beta": "agents=v1",
+  };
+  let activeSessionId: string | null = null;
+  let latestSessionData: any = null;
+  let sessionUsageCollected = false;
+  let collectSessionUsage: (() => Promise<void>) | null = null;
+
   try {
-    const headers = {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "OpenAI-Beta": "agents=v1",
+    collectSessionUsage = async () => {
+      if (!activeSessionId || sessionUsageCollected) return;
+      try {
+        const finalSessionRes = await fetch(`https://api.openai.com/v1/agents/sessions/${activeSessionId}`, { headers });
+        if (finalSessionRes.ok) latestSessionData = await finalSessionRes.json();
+      } catch {}
+      const sessionTelemetry = await fetchAgentSessionUsageTelemetry(
+        activeSessionId,
+        typeof latestSessionData?.agent?.model === "string" ? latestSessionData.agent.model : null,
+        latestSessionData?.usage ?? null,
+        headers,
+      );
+      telemetry.agentUsageSessions.push(sessionTelemetry);
+      sessionUsageCollected = true;
+
+      const turnUsage = sessionTelemetry.turns.filter((turn) => turn.usage && typeof turn.usage === "object");
+      for (const turn of turnUsage) {
+        if (turn.id) telemetry.turnId = turn.id;
+        const usage = turn.usage as Record<string, any>;
+        telemetry.inputTokens += usage.input_tokens ?? usage.prompt_tokens ?? 0;
+        telemetry.outputTokens += usage.output_tokens ?? usage.completion_tokens ?? 0;
+        telemetry.totalTokens += usage.total_tokens ?? 0;
+      }
+      if (telemetry.inputTokens === 0 && sessionTelemetry.sessionUsage && typeof sessionTelemetry.sessionUsage === "object") {
+        const usage = sessionTelemetry.sessionUsage as Record<string, any>;
+        telemetry.inputTokens = usage.input_tokens ?? 0;
+        telemetry.outputTokens = usage.output_tokens ?? 0;
+        telemetry.totalTokens = usage.total_tokens ?? 0;
+      }
     };
 
     console.log(`[OpenAI Agent] session_created: agentId=${agentId}`);
@@ -958,6 +1091,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     const sessionData = await sessionRes.json();
     const sessionId = sessionData.id;
+    activeSessionId = typeof sessionId === "string" ? sessionId : null;
+    latestSessionData = sessionData;
     telemetry.sessionId = sessionId;
     console.log(`[OpenAI Agent] session_created: sessionId=${sessionId}`);
     console.log(`[OpenAI Agent] turn_started: sessionId=${sessionId}`);
@@ -984,54 +1119,29 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
 
       const pollData = await pollRes.json();
+      latestSessionData = pollData;
       finalStatus = pollData.status;
 
       if (finalStatus === "failed") {
-        const errorDetail = pollData.error ? JSON.stringify(pollData.error) : "Erro desconhecido";
-        throw new Error(`OpenAI Agent session falhou: ${errorDetail}`);
+        break;
       }
     }
 
     telemetry.status = finalStatus || "timeout";
+
+    // Usage é coletado inclusive para turns que falharam ou expiraram.
+    await collectSessionUsage();
+
+    if (finalStatus === "failed") {
+      const errorDetail = latestSessionData?.error ? JSON.stringify(latestSessionData.error) : "Erro desconhecido";
+      throw new Error(`OpenAI Agent session falhou: ${errorDetail}`);
+    }
 
     if (finalStatus !== "completed" && finalStatus !== "idle") {
       throw new Error(`OpenAI Agent session não concluiu a tempo (status: ${finalStatus})`);
     }
 
     console.log(`[OpenAI Agent] turn_completed: status=${finalStatus}`);
-
-    // Busca turnos para métricas de tokens
-    try {
-      const turnsRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}/turns`, { headers });
-      if (turnsRes.ok) {
-        const turnsData = await turnsRes.json();
-        const turns = turnsData.data || [];
-        for (const t of turns) {
-          if (t.id) telemetry.turnId = t.id;
-          if (t.usage) {
-            telemetry.inputTokens += t.usage.input_tokens || t.usage.prompt_tokens || 0;
-            telemetry.outputTokens += t.usage.output_tokens || t.usage.completion_tokens || 0;
-            telemetry.totalTokens += t.usage.total_tokens || 0;
-          }
-        }
-      }
-    } catch (turnsErr) {
-      console.warn(`[OpenAI Agent] Aviso ao coletar métricas de turns:`, turnsErr);
-    }
-
-    if (telemetry.inputTokens === 0) {
-      try {
-        const finalSessionRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}`, { headers });
-        if (finalSessionRes.ok) {
-          const finalSessionData = await finalSessionRes.json();
-          if (finalSessionData?.usage) {
-            telemetry.inputTokens = finalSessionData.usage.input_tokens || 0;
-            telemetry.outputTokens = finalSessionData.usage.output_tokens || 0;
-            telemetry.totalTokens = finalSessionData.usage.total_tokens || 0;
-          }
-        }
-      } catch (_sessErr) {}
-    }
 
     // Busca itens da sessão para identificar resposta do assistente e uso de MCP
     const itemsRes = await fetch(`https://api.openai.com/v1/agents/sessions/${sessionId}/items`, { headers });
@@ -1089,7 +1199,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {
         if (!params.schemaRetryCount) {
-          return runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "JSON estruturado não encontrado" });
+          const retryResult = await runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "JSON estruturado não encontrado" });
+          retryResult.telemetry.agentUsageSessions = [...telemetry.agentUsageSessions, ...retryResult.telemetry.agentUsageSessions];
+          return retryResult;
         }
         const errorMsg = `[OpenAI Agent Strict Mode] Plano inválido ou ausente retornado pelo Brain: ${validation.error || "JSON estruturado não encontrado"}`;
         console.error(errorMsg);
@@ -1135,6 +1247,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry,
     };
   } catch (err: any) {
+    try {
+      await collectSessionUsage?.();
+    } catch {}
     console.error("[Brain] Erro durante turno do OpenAI Agent Brain:", err);
     telemetry.durationMs = Date.now() - startTime;
     telemetry.status = "failed";
