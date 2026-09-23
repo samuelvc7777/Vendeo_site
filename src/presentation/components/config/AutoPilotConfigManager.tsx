@@ -20,6 +20,7 @@ import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/Supab
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
 
 const autoPilotRepo = new SupabaseAutoPilotRepository();
+const OPENAI_CONFIG_ENDPOINT = `${process.env.NEXT_PUBLIC_SUPABASE_URL || ""}/functions/v1/api/ai/openai-config`;
 
 const PRESET_DELAYS = [
   { label: "1 min (Testes)", value: 1 },
@@ -46,7 +47,7 @@ export function AutoPilotConfigManager() {
 
   const loadOpenAiConfig = async () => {
     try {
-      const response = await fetch("/api/ai/openai-config", { cache: "no-store" });
+      const response = await fetch(OPENAI_CONFIG_ENDPOINT, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "Falha ao carregar configuração OpenAI");
       setOpenAiMaskedKey(data.maskedKey || null);
@@ -60,7 +61,7 @@ export function AutoPilotConfigManager() {
     if (!openAiKey.trim() && !openAiModel) return;
     setIsSavingKey(true);
     try {
-      const response = await fetch("/api/ai/openai-config", {
+      const response = await fetch(OPENAI_CONFIG_ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: openAiKey.trim() || undefined, model: openAiModel }),
