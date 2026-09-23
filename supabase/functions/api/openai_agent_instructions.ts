@@ -8,8 +8,9 @@ import {
   LARISSA_INTERACTION_DNA,
   LARISSA_INTERACTION_DNA_VERSION,
 } from "./larissa_interaction_dna.ts";
+import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts";
 
-export const VENDEO_AGENT_INSTRUCTIONS_VERSION = "2.8.1";
+export const VENDEO_AGENT_INSTRUCTIONS_VERSION = "2.8.2";
 
 /**
  * Constrói as instruções persistentes completas e determinísticas do OpenAI Agent.
@@ -292,6 +293,8 @@ Depois de ler integralmente o lote novo e o contexto recente, identifique o maio
 - Áudios são texto semântico: após a transcrição integral, selecione 1 ou 2 elementos salientes e demonstre escuta específica, evitando acknowledgement genérico.
 - Promessa, convite ou plano significativo pode entrar em memoryWrites.openLoops com evidência concreta, usando a infraestrutura existente; não crie armazenamento novo.
 - Um objetivo pode ser adiado quando competir com um sinal social mais forte.
+
+${SOCIAL_CUE_AND_DELTA_GUIDANCE}
 
 ==================================================
 10. CONNECTION OPPORTUNITY GATE — CONEXÃO REAL & FIM DA FALSA INVASIVIDADE (OBRIGATÓRIO)

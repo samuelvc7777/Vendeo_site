@@ -21,6 +21,7 @@ import {
   LARISSA_INTERACTION_DNA_VERSION,
   LARISSA_INTERACTION_DNA_HASH,
 } from "./larissa_interaction_dna.ts";
+import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts";
 import type { AgentSessionUsageTelemetry } from "./openai_usage.ts";
 import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
 
@@ -539,6 +540,46 @@ export interface RunOpenAiBrainParams {
   recentQuestionIntentsSnippet?: string;
   nextObjectives?: Array<{ id: string; label: string; description?: string; kind?: string }>;
   temporalContext?: string;
+  contextPipeline?: {
+    candidateCount: number;
+    deduplicatedCount: number;
+    budgetedCount: number;
+    messageLimitCut: boolean;
+    tokenBudgetCut: boolean;
+    mandatoryTokenOverflow: boolean;
+    lastLarissaOutboundId: string | null;
+    mandatoryMessageIds?: string[];
+    replyTargetIds?: string[];
+  };
+}
+
+export interface OpenAiContextWindowTelemetry {
+  candidateCount: number;
+  deduplicatedCount: number;
+  budgetedCount: number;
+  includedCount: number;
+  includedMessages: Array<{ id: string | null; sender: "Larissa" | "Pretendente"; timestamp: string | null }>;
+  previews: Array<{ id: string | null; sender: "Larissa" | "Pretendente"; timestamp: string | null; text: string }>;
+  lastLarissaOutboundId: string | null;
+  finalMandatoryMessageIds: string[];
+  mandatoryCount: number;
+  lastLarissaOutboundRequired: boolean;
+  lastLarissaOutboundIncluded: boolean | null;
+  replyTargetRequiredCount: number;
+  replyTargetsIncludedCount: number;
+  currentInboundDuplicateCount: number;
+  droppedNonMandatoryCount: number;
+  mandatoryContextOverflow: boolean;
+  cutByMessageLimit: boolean;
+  cutByCharLimit: boolean;
+  windowCharacterCount: number;
+  cuts: {
+    messageLimit: boolean;
+    tokenBudget: boolean;
+    finalCharacters: boolean;
+    messageTextLimit: boolean;
+    mandatoryTokenOverflow: boolean;
+  };
 }
 
 export interface OpenAiBrainTurnResult {
@@ -565,6 +606,7 @@ export interface OpenAiBrainTurnResult {
     interactionDnaVersion?: string;
     interactionDnaHash?: string;
     recentStyleStateApplied?: boolean;
+    contextWindow?: OpenAiContextWindowTelemetry;
   };
 }
 
@@ -652,20 +694,149 @@ async function fetchAgentSessionUsageTelemetry(
   return { sessionId, model, sessionUsage, turns, generationIds };
 }
 
-export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): string {
+function buildAgentRecentWindow(params: RunOpenAiBrainParams): {
+  text: string;
+  includedRecentMessages: RunOpenAiBrainParams["recentMessages"];
+  telemetry: OpenAiContextWindowTelemetry;
+} {
+  const recentMessages = params.recentMessages || [];
+  const currentInboundMessages = params.currentInboundMessages || [];
+  const inboundIds = new Set(currentInboundMessages.map((message) => String(message.id || "")).filter(Boolean));
+  const priorMessages = recentMessages.filter((message) => !message.id || !inboundIds.has(String(message.id)));
+  const lastLarissaOutboundId = params.contextPipeline?.lastLarissaOutboundId
+    ?? [...recentMessages].reverse().find((message) => message.sender === "larissa")?.id
+    ?? null;
+  const mandatoryIds = new Set((params.contextPipeline?.mandatoryMessageIds || []).map(String).filter(Boolean));
+  const replyTargetIds = new Set((params.contextPipeline?.replyTargetIds || []).map(String).filter(Boolean));
+  if (lastLarissaOutboundId) mandatoryIds.add(String(lastLarissaOutboundId));
+  for (const id of replyTargetIds) mandatoryIds.add(id);
+
+  const mandatoryRecentMessages = priorMessages.filter((message) => message.id && mandatoryIds.has(String(message.id)));
+  const normalRecentMessages = priorMessages.filter((message) => !message.id || !mandatoryIds.has(String(message.id)));
+  const selectedMessageIds = new Set(mandatoryRecentMessages.map((message) => String(message.id)));
+  const availableNormalSlots = Math.max(0, 20 - mandatoryRecentMessages.length);
+  const selectedNormalMessages = availableNormalSlots > 0 ? normalRecentMessages.slice(-availableNormalSlots) : [];
+  const selectedNormalMessageSet = new Set(selectedNormalMessages);
+  const anonymousMessageKeys = new WeakMap<object, string>();
+  priorMessages.forEach((message, index) => {
+    if (!message.id) anonymousMessageKeys.set(message, `anonymous-${index}`);
+  });
+  for (const message of selectedNormalMessages) {
+    if (message.id) selectedMessageIds.add(String(message.id));
+  }
+  const includedRecentMessages = priorMessages.filter((message) =>
+    (message.id && selectedMessageIds.has(String(message.id))) || selectedNormalMessageSet.has(message)
+  );
+  const cutByMessageLimit = priorMessages.length > 20;
+  const messageKey = (message: RunOpenAiBrainParams["recentMessages"][number]) =>
+    message.id ? String(message.id) : anonymousMessageKeys.get(message) || "anonymous-unknown";
+  const droppedNonMandatoryKeys = new Set(priorMessages
+    .map((message) => ({ message, key: messageKey(message) }))
+    .filter(({ message }) => !message.id || !mandatoryIds.has(String(message.id)))
+    .filter(({ message }) => !selectedNormalMessageSet.has(message))
+    .map(({ key }) => key));
+  const renderMessage = (message: RunOpenAiBrainParams["recentMessages"][number]) => {
+    const role = message.sender === "user" ? "Pretendente" : "Larissa";
+    const idSnippet = message.id ? ` | id="${message.id}"` : "";
+    let cleanText = String(message.text || "").trim();
+    if (cleanText.length > 600) cleanText = cleanText.slice(0, 600) + " [...]";
+    const timestamp = message.createdAt
+      ? ` | ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(message.createdAt))}`
+      : "";
+    return `[${role}${idSnippet}${timestamp}]:\n${cleanText}`;
+  };
+  const windowLines = includedRecentMessages.map(renderMessage);
+  let cutByCharLimit = false;
+  while (windowLines.join("\n\n").length > 9000) {
+    const oldestDiscardableIndex = includedRecentMessages.findIndex((message) =>
+      !message.id || !mandatoryIds.has(String(message.id))
+    );
+    if (oldestDiscardableIndex < 0) break;
+    const [droppedMessage] = includedRecentMessages.splice(oldestDiscardableIndex, 1);
+    windowLines.splice(oldestDiscardableIndex, 1);
+    droppedNonMandatoryKeys.add(messageKey(droppedMessage));
+    cutByCharLimit = true;
+  }
+  const mandatoryContextOverflow = mandatoryRecentMessages.length > 20 || windowLines.join("\n\n").length > 9000;
+
+  const records = new Map<string, OpenAiContextWindowTelemetry["includedMessages"][number]>();
+  const previews = new Map<string, OpenAiContextWindowTelemetry["previews"][number]>();
+  const addRecord = (message: { id?: string; sender: "user" | "larissa"; text: string; createdAt?: string }, previewText: string) => {
+    const id = message.id ? String(message.id) : null;
+    const key = id || `anonymous-${records.size}`;
+    const sender = message.sender === "larissa" ? "Larissa" as const : "Pretendente" as const;
+    const timestamp = typeof message.createdAt === "string" && message.createdAt ? message.createdAt : null;
+    records.set(key, { id, sender, timestamp });
+    previews.set(key, { id, sender, timestamp, text: previewText.slice(0, 180) });
+  };
+  for (const message of includedRecentMessages) {
+    const text = String(message.text || "").trim();
+    addRecord(message, text.length > 600 ? `${text.slice(0, 600)} [...]` : text);
+  }
+  for (const message of currentInboundMessages) {
+    if (message.id && records.has(String(message.id))) continue;
+    addRecord({ ...message, sender: "user" }, String(message.text || ""));
+  }
+
+  const timestampOf = (message: { timestamp: string | null }) => message.timestamp || "";
+  const includedMessages = [...records.values()].sort((a, b) => timestampOf(a).localeCompare(timestampOf(b)));
+  const includedKeys = new Set(includedMessages.map((message) => message.id).filter((id): id is string => Boolean(id)));
+  const includedMandatoryIds = [...mandatoryIds].filter((id) => includedKeys.has(id));
+  const replyTargetsIncludedCount = [...replyTargetIds].filter((id) => includedKeys.has(id)).length;
+  const telemetry: OpenAiContextWindowTelemetry = {
+    candidateCount: params.contextPipeline?.candidateCount ?? recentMessages.length,
+    deduplicatedCount: params.contextPipeline?.deduplicatedCount ?? recentMessages.length,
+    budgetedCount: params.contextPipeline?.budgetedCount ?? recentMessages.length,
+    includedCount: includedMessages.length,
+    includedMessages,
+    finalMandatoryMessageIds: includedMandatoryIds,
+    mandatoryCount: includedMandatoryIds.length,
+    lastLarissaOutboundRequired: Boolean(lastLarissaOutboundId),
+    previews: [...previews.values()]
+      .sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""))
+      .slice(-8),
+    lastLarissaOutboundId: lastLarissaOutboundId ? String(lastLarissaOutboundId) : null,
+    lastLarissaOutboundIncluded: lastLarissaOutboundId
+      ? includedKeys.has(String(lastLarissaOutboundId))
+      : null,
+    replyTargetRequiredCount: replyTargetIds.size,
+    replyTargetsIncludedCount,
+    currentInboundDuplicateCount: recentMessages.length - priorMessages.length,
+    droppedNonMandatoryCount: droppedNonMandatoryKeys.size,
+    mandatoryContextOverflow,
+    cutByMessageLimit,
+    cutByCharLimit,
+    windowCharacterCount: windowLines.join("\n\n").length,
+    cuts: {
+      messageLimit: Boolean(params.contextPipeline?.messageLimitCut || cutByMessageLimit),
+      tokenBudget: Boolean(params.contextPipeline?.tokenBudgetCut),
+      finalCharacters: cutByCharLimit,
+      messageTextLimit: includedRecentMessages.some((message) => String(message.text || "").trim().length > 600),
+      mandatoryTokenOverflow: Boolean(params.contextPipeline?.mandatoryTokenOverflow),
+    },
+  };
+
+  return { text: windowLines.join("\n\n"), includedRecentMessages, telemetry };
+}
+
+export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenAiBrainParams): {
+  contextMessage: string;
+  contextWindow: OpenAiContextWindowTelemetry;
+} {
   const {
     currentStageId,
     currentObjectiveId,
     currentObjectiveLabel,
     currentObjectiveDescription,
     inboundMessages,
-    recentMessages,
     contactMemorySummary,
     landmarksSummary,
     liveStateContext,
     recentStyleStateSnippet,
     recentQuestionIntentsSnippet,
   } = params;
+
+  const recentWindow = buildAgentRecentWindow(params);
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
   const objectiveType = "[OBRIGATÓRIO]";
@@ -708,46 +879,9 @@ export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): st
     sections.push(`\n## MARCOS HISTÓRICOS DA CONVERSA\n${landmarksSummary}`);
   }
 
-  // ------------------------------------------------------------------------
-  // JANELA CONVERSACIONAL RECENTE (Últimas 20 mensagens reais Pretendente + Larissa)
-  // ------------------------------------------------------------------------
-  const inboundIdSet = new Set<string>();
-  if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
-    for (const m of params.currentInboundMessages) {
-      if (m.id) inboundIdSet.add(String(m.id));
-    }
-  }
-
-  // Filtra mensagens que pertencem ao lote atual de inbounds para evitar duplicação
-  const priorMessages = recentMessages.filter((m) => {
-    if (m.id && inboundIdSet.has(String(m.id))) return false;
-    return true;
-  });
-
-  // Seleciona as últimas 20 mensagens totais (Pretendente + Larissa somados)
-  const last20Messages = priorMessages.slice(-20);
-
-  if (last20Messages.length > 0) {
-    // Formata cada mensagem preservando autor, id e texto real (com proteção simples contra mensagens gigantes)
-    const windowLines = last20Messages.map((m) => {
-      const role = m.sender === "user" ? "Pretendente" : "Larissa";
-      const idSnippet = m.id ? ` | id="${m.id}"` : "";
-      let cleanText = String(m.text || "").trim();
-      if (cleanText.length > 600) {
-        cleanText = cleanText.slice(0, 600) + " [...]";
-      }
-      const timestamp = m.createdAt ? ` | ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(m.createdAt))}` : "";
-      return `[${role}${idSnippet}${timestamp}]:\n${cleanText}`;
-    });
-
-    // Controle de tamanho: preserva prioritariamente as mais recentes se exceder 9000 caracteres
-    const MAX_WINDOW_CHARS = 9000;
-    while (windowLines.length > 5 && windowLines.join("\n\n").length > MAX_WINDOW_CHARS) {
-      windowLines.shift();
-    }
-
-    sections.push(`\n## JANELA CONVERSACIONAL RECENTE\n${windowLines.join("\n\n")}`);
-  }
+  // A janela final mantém mensagens obrigatórias e remove primeiro o histórico
+  // normal mais antigo; a telemetria descreve exatamente o payload montado.
+  if (recentWindow.text) sections.push(`\n## JANELA CONVERSACIONAL RECENTE\n${recentWindow.text}`);
 
   let inboundsText = "[Nenhuma mensagem nova]";
   if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
@@ -787,8 +921,10 @@ GANCHO HUMANO, ANTI-PAPAGAIO E OBJETIVO:
 - Selecione os ganchos humanos mais fortes do lote; não responda cada mensagem com uma paráfrase. Quando houver dois ganchos relevantes, pode reagir a ambos em 1–3 balões curtos, respeitando o turnContract e sem transformar a conversa em questionário.
 - Antes de escolher defer, procure uma ponte semântica entre o assunto atual e o objetivo ativo. Se existir e couber naturalmente, prefira pursue dentro do assunto; não force mudança de tema. Use defer se não houver ponte genuína, se houver prioridade emocional, risco de soar como entrevista ou pergunta excessiva. Não infira fatos não revelados.
 
+${SOCIAL_CUE_AND_DELTA_GUIDANCE}
+
 CHECAGEM PRÉ-FINALIZAÇÃO:
-Revise sem expor a revisão: algum balão apenas repete o pretendente? Algum gancho humano relevante foi ignorado? Há ponte natural com o objetivo que estou adiando? A pergunta nasce do assunto e respeita o turnContract? Reescreva se necessário, mantendo reação, curiosidade e naturalidade.
+Revise sem expor a revisão: algum balão apenas repete o pretendente ou a Larissa? Algum gancho humano relevante foi ignorado? Há ponte natural com o objetivo que estou adiando? A pergunta nasce do assunto e respeita o turnContract? Reescreva se necessário, mantendo reação, curiosidade e naturalidade.
 
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
@@ -811,6 +947,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "objectiveBridgeEvidence": "trecho curto da mensagem que cria uma ponte natural, ou null",
   "coveredHooks": ["gancho humano efetivamente usado"],
   "ignoredRelevantHooks": [],
+  "socialCueInterpretation": { "primaryIntent": "intenção principal", "socialCueType": "direct_compliment" | "vocative" | "explicit_flirt" | "pickup_line" | "mixed" | "none", "socialCueExpression": null, "requiresExplicitAcknowledgement": false },
+  "selfFactRepeatedRisk": false,
   "memoryConsulted": true | false,
   "memoryRationale": "justificativa da consulta ou da não consulta",
   "personaMemoryQuery": "query executada se memoryConsulted=true",
@@ -847,11 +985,15 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "balão 2"
   ]
 }
-Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Em turnos normais, use 0 a 1 emoji; em turnos afetivos, flerte ou lotes de 2-4 balões, podem aparecer até 2 emojis naturais (máximo 2). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado). Os campos objectiveBridgeDetected, objectiveBridgeEvidence, coveredHooks e ignoredRelevantHooks são observabilidade opcionais; relate somente o que o plano sustenta, sem inventar evidências.`
+Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Em turnos normais, use 0 a 1 emoji; em turnos afetivos, flerte ou lotes de 2-4 balões, podem aparecer até 2 emojis naturais (máximo 2). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado). Os campos objectiveBridgeDetected, objectiveBridgeEvidence, coveredHooks, ignoredRelevantHooks, socialCueInterpretation e selfFactRepeatedRisk são observabilidade opcionais; relate somente o que o plano sustenta, sem inventar evidências. Os campos sociais não acionam lógica de correção no backend.`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
-  return sections.join("\n");
+  return { contextMessage: sections.join("\n"), contextWindow: recentWindow.telemetry };
+}
+
+export function buildOpenAiBrainContextMessage(params: RunOpenAiBrainParams): string {
+  return buildOpenAiBrainContextMessageWithObservability(params).contextMessage;
 }
 
 /**
@@ -912,7 +1054,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     recentStyleStateApplied: Boolean(params.recentStyleStateSnippet),
   };
 
-  const contextMessage = buildOpenAiBrainContextMessage(params);
+  const builtContext = buildOpenAiBrainContextMessageWithObservability(params);
+  telemetry.contextWindow = builtContext.contextWindow;
+  const contextMessage = builtContext.contextMessage;
 
   // 1. Suporte a runtime de teste injetado (Zero dependência de rede em testes unitários)
   if (params.runtime && typeof params.runtime.callOpenAiAgent === "function") {

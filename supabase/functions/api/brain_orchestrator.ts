@@ -205,7 +205,21 @@ export function buildBudgetedRecentContext(params: {
   claimedMessageIds: string[];
   tokenBudget?: number;
   messageLimit?: number;
-}): { messages: CanonicalMessage[]; estimatedTokens: number; budgetOverflowRequired: boolean } {
+  candidateCount?: number;
+}): {
+  messages: CanonicalMessage[];
+  estimatedTokens: number;
+  budgetOverflowRequired: boolean;
+  candidateCount: number;
+  deduplicatedCount: number;
+  budgetedCount: number;
+  messageLimitCut: boolean;
+  tokenBudgetCut: boolean;
+  mandatoryTokenOverflow: boolean;
+  lastLarissaOutboundId: string | null;
+  mandatoryMessageIds: string[];
+  replyTargetIds: string[];
+} {
   const tokenBudget = params.tokenBudget ?? BRAIN_ORCHESTRATION_BUDGETS.recent_context_token_budget;
   const messageLimit = params.messageLimit ?? BRAIN_ORCHESTRATION_BUDGETS.recent_message_limit;
   const timestampOf = (message: CanonicalMessage) => String(
@@ -225,17 +239,39 @@ export function buildBudgetedRecentContext(params: {
   const selected = chronological.filter((m) => mandatoryIds.has(String(m.id)));
   let estimatedTokens = selected.reduce((sum, m) => sum + estimateTextTokens(m.text || ""), 0);
   const budgetOverflowRequired = estimatedTokens > tokenBudget;
+  let messageLimitCut = false;
+  let tokenBudgetCut = false;
   const selectedIds = new Set(selected.map((m) => String(m.id)));
   for (const message of [...chronological].reverse()) {
     if (selectedIds.has(String(message.id))) continue;
     const cost = estimateTextTokens(message.text || "");
-    if (selected.length >= messageLimit || estimatedTokens + cost > tokenBudget) continue;
+    if (selected.length >= messageLimit) {
+      messageLimitCut = true;
+      continue;
+    }
+    if (estimatedTokens + cost > tokenBudget) {
+      tokenBudgetCut = true;
+      continue;
+    }
     selected.push(message);
     selectedIds.add(String(message.id));
     estimatedTokens += cost;
   }
   selected.sort((a, b) => timestampOf(a).localeCompare(timestampOf(b)));
-  return { messages: selected, estimatedTokens, budgetOverflowRequired };
+  return {
+    messages: selected,
+    estimatedTokens,
+    budgetOverflowRequired,
+    candidateCount: params.candidateCount ?? params.messages.length,
+    deduplicatedCount: params.messages.length,
+    budgetedCount: selected.length,
+    messageLimitCut,
+    tokenBudgetCut,
+    mandatoryTokenOverflow: budgetOverflowRequired,
+    lastLarissaOutboundId: lastLarissa?.id ? String(lastLarissa.id) : null,
+    mandatoryMessageIds: Array.from(mandatoryIds),
+    replyTargetIds: Array.from(replyTargetIds),
+  };
 }
 
 export async function loadMandatoryBrainContextCandidates(params: {
@@ -5632,6 +5668,59 @@ function safeOperationalStringList(values: unknown, maxItems = 8): string[] {
     .filter((value): value is string => Boolean(value));
 }
 
+function safeContextWindowConsoleMetadata(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const safeMessages = (items: unknown, withPreview: boolean) => Array.isArray(items)
+    ? items.slice(withPreview ? -8 : 0, withPreview ? undefined : 25).map((rawItem: unknown) => {
+      const item = rawItem && typeof rawItem === "object" && !Array.isArray(rawItem)
+        ? rawItem as Record<string, unknown>
+        : {};
+      return {
+        id: safeOperationalConsoleText(item.id, 120) || null,
+        sender: item.sender === "Larissa" ? "Larissa" : "Pretendente",
+        timestamp: safeOperationalConsoleText(item.timestamp, 80) || null,
+        ...(withPreview ? { text: safeOperationalConsoleText(item.text, 180) || "" } : {}),
+      };
+    })
+    : [];
+  const cuts = source.cuts && typeof source.cuts === "object" && !Array.isArray(source.cuts)
+    ? source.cuts as Record<string, unknown>
+    : {};
+  const safeNumber = (raw: unknown) => Number.isInteger(raw) && Number(raw) >= 0 ? Number(raw) : 0;
+  const safeIds = Array.isArray(source.finalMandatoryMessageIds)
+    ? source.finalMandatoryMessageIds.slice(0, 30).map((id) => safeOperationalConsoleText(id, 120)).filter((id): id is string => Boolean(id))
+    : [];
+  return {
+    candidateCount: safeNumber(source.candidateCount),
+    deduplicatedCount: safeNumber(source.deduplicatedCount),
+    budgetedCount: safeNumber(source.budgetedCount),
+    includedCount: safeNumber(source.includedCount),
+    includedMessages: safeMessages(source.includedMessages, false),
+    previews: safeMessages(source.previews, true),
+    lastLarissaOutboundId: safeOperationalConsoleText(source.lastLarissaOutboundId, 120) || null,
+    finalMandatoryMessageIds: safeIds,
+    mandatoryCount: safeNumber(source.mandatoryCount),
+    lastLarissaOutboundRequired: source.lastLarissaOutboundRequired === true,
+    lastLarissaOutboundIncluded: typeof source.lastLarissaOutboundIncluded === "boolean" ? source.lastLarissaOutboundIncluded : null,
+    replyTargetRequiredCount: safeNumber(source.replyTargetRequiredCount),
+    replyTargetsIncludedCount: safeNumber(source.replyTargetsIncludedCount),
+    currentInboundDuplicateCount: safeNumber(source.currentInboundDuplicateCount),
+    droppedNonMandatoryCount: safeNumber(source.droppedNonMandatoryCount),
+    mandatoryContextOverflow: source.mandatoryContextOverflow === true,
+    cutByMessageLimit: source.cutByMessageLimit === true,
+    cutByCharLimit: source.cutByCharLimit === true,
+    windowCharacterCount: safeNumber(source.windowCharacterCount),
+    cuts: {
+      messageLimit: cuts.messageLimit === true,
+      tokenBudget: cuts.tokenBudget === true,
+      finalCharacters: cuts.finalCharacters === true,
+      messageTextLimit: cuts.messageTextLimit === true,
+      mandatoryTokenOverflow: cuts.mandatoryTokenOverflow === true,
+    },
+  };
+}
+
 const META_TEXT_LIMIT = 2000;
 
 export function validateFinalTextDispatchPayload(text: unknown): { valid: boolean; error?: string } {
@@ -6390,6 +6479,7 @@ export async function runBrainOrchestration(
       claimedMessageIds,
       tokenBudget,
       messageLimit: recentMessageLimit,
+      candidateCount: allRecentCandidates.length,
     });
     const finalRecentMessages = budgetedRecentContext.messages;
     currentCycle.trace.push(`brain_recent_context_estimated_tokens: ${budgetedRecentContext.estimatedTokens}`);
@@ -6617,6 +6707,17 @@ export async function runBrainOrchestration(
           nextObjectives: (stageChecklistForRouter.goals || [])
             .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
             .map((g) => ({ id: g.id, label: g.label, description: g.description, kind: g.kind })),
+          contextPipeline: {
+            candidateCount: budgetedRecentContext.candidateCount,
+            deduplicatedCount: budgetedRecentContext.deduplicatedCount,
+            budgetedCount: budgetedRecentContext.budgetedCount,
+            messageLimitCut: budgetedRecentContext.messageLimitCut,
+            tokenBudgetCut: budgetedRecentContext.tokenBudgetCut,
+            mandatoryTokenOverflow: budgetedRecentContext.mandatoryTokenOverflow,
+            lastLarissaOutboundId: budgetedRecentContext.lastLarissaOutboundId,
+            mandatoryMessageIds: budgetedRecentContext.mandatoryMessageIds,
+            replyTargetIds: budgetedRecentContext.replyTargetIds,
+          },
         });
 
         for (const sessionUsage of openAiBrainTurn.telemetry.agentUsageSessions || []) {
@@ -6648,6 +6749,22 @@ export async function runBrainOrchestration(
               responseIndex: Number.isInteger(intent?.responseIndex) ? intent.responseIndex : null,
             }))
             : [];
+          const contextWindow = safeContextWindowConsoleMetadata(openAiBrainTurn.telemetry.contextWindow);
+          const rawSocialCue = brainPlan.socialCueInterpretation && typeof brainPlan.socialCueInterpretation === "object"
+            ? brainPlan.socialCueInterpretation
+            : null;
+          const socialCueTypes = ["direct_compliment", "vocative", "explicit_flirt", "pickup_line", "mixed", "none"];
+          const socialCueInterpretation = rawSocialCue ? {
+            primaryIntent: safeOperationalConsoleText(rawSocialCue.primaryIntent, 120) || null,
+            socialCueType: socialCueTypes.includes(rawSocialCue.socialCueType) ? rawSocialCue.socialCueType : null,
+            socialCueExpression: safeOperationalConsoleText(rawSocialCue.socialCueExpression, 120) || null,
+            requiresExplicitAcknowledgement: typeof rawSocialCue.requiresExplicitAcknowledgement === "boolean"
+              ? rawSocialCue.requiresExplicitAcknowledgement
+              : null,
+          } : null;
+          const selfFactRepeatedRisk = typeof brainPlan.selfFactRepeatedRisk === "boolean"
+            ? brainPlan.selfFactRepeatedRisk
+            : null;
 
           if (memoryToolCalls.length > 0 || memoryToolResults.length > 0) {
             const memorySources = [...new Set(memoryToolCalls.map((tool: string) => {
@@ -6710,6 +6827,9 @@ export async function runBrainOrchestration(
                 objectiveBridgeEvidence: safeOperationalConsoleText(brainPlan.objectiveBridgeEvidence, 240) || null,
                 coveredHooks,
                 ignoredRelevantHooks,
+                socialCueInterpretation,
+                selfFactRepeatedRisk,
+                contextWindow,
                 memoryConsulted: memoryToolCalls.length > 0,
                 memoryStatus: memoryToolResults.some((result: any) => result.status === "tool_error")
                   ? "tool_error"

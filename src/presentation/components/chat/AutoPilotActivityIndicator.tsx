@@ -238,6 +238,21 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
   const coveredHooks = eventMetadataStrings(metadata, "coveredHooks");
   const ignoredRelevantHooks = eventMetadataStrings(metadata, "ignoredRelevantHooks");
   const objectiveBridgeDetected = typeof metadata.objectiveBridgeDetected === "boolean" ? metadata.objectiveBridgeDetected : null;
+  const contextWindow = metadata.contextWindow && typeof metadata.contextWindow === "object" && !Array.isArray(metadata.contextWindow)
+    ? metadata.contextWindow as Record<string, unknown>
+    : null;
+  const contextWindowMessages = contextWindow && Array.isArray(contextWindow.includedMessages)
+    ? contextWindow.includedMessages.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const contextWindowPreviews = contextWindow && Array.isArray(contextWindow.previews)
+    ? contextWindow.previews.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const contextWindowCuts = contextWindow?.cuts && typeof contextWindow.cuts === "object" && !Array.isArray(contextWindow.cuts)
+    ? contextWindow.cuts as Record<string, unknown>
+    : {};
+  const socialCue = metadata.socialCueInterpretation && typeof metadata.socialCueInterpretation === "object" && !Array.isArray(metadata.socialCueInterpretation)
+    ? metadata.socialCueInterpretation as Record<string, unknown>
+    : null;
   const objectiveDecision = eventMetadataText(metadata, "objectiveDecision");
   const questionIntents = Array.isArray(metadata.questionIntents) ? metadata.questionIntents : [];
   const isBrainDecision = event.event === "brain_decision";
@@ -293,6 +308,61 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
 
       {isBrainDecision && (
         <div className="mt-3 space-y-3">
+          {contextWindow && (
+            <details className="rounded-lg border border-cyan-900/50 bg-cyan-950/10 p-2.5 text-[10px] text-zinc-300">
+              <summary className="cursor-pointer font-semibold uppercase tracking-wider text-cyan-300">Contexto enviado ao Brain</summary>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <ConsoleEventField label="Mensagens candidatas">{eventMetadataNumber(contextWindow, "candidateCount")}</ConsoleEventField>
+                <ConsoleEventField label="Após deduplicação">{eventMetadataNumber(contextWindow, "deduplicatedCount")}</ConsoleEventField>
+                <ConsoleEventField label="Após budget">{eventMetadataNumber(contextWindow, "budgetedCount")}</ConsoleEventField>
+                <ConsoleEventField label="Mensagens enviadas">{eventMetadataNumber(contextWindow, "includedCount")}</ConsoleEventField>
+                <ConsoleEventField label="Obrigatórias preservadas">{eventMetadataNumber(contextWindow, "mandatoryCount")}</ConsoleEventField>
+                <ConsoleEventField label="Última outbound da Larissa incluída">
+                  {contextWindow.lastLarissaOutboundIncluded === true ? "Sim" : contextWindow.lastLarissaOutboundIncluded === false ? "Não" : "Sem outbound identificada"}
+                  {eventMetadataText(contextWindow, "lastLarissaOutboundId") ? ` · ${eventMetadataText(contextWindow, "lastLarissaOutboundId")}` : ""}
+                </ConsoleEventField>
+                <ConsoleEventField label="Reply targets preservados">
+                  {eventMetadataNumber(contextWindow, "replyTargetsIncludedCount")}/{eventMetadataNumber(contextWindow, "replyTargetRequiredCount")}
+                </ConsoleEventField>
+                <ConsoleEventField label="Removidas por limites">{eventMetadataNumber(contextWindow, "droppedNonMandatoryCount")}</ConsoleEventField>
+                <ConsoleEventField label="Overflow obrigatório">{contextWindow.mandatoryContextOverflow === true ? "Sim" : "Não"}</ConsoleEventField>
+                <ConsoleEventField label="Duplicatas inbound removidas">{eventMetadataNumber(contextWindow, "currentInboundDuplicateCount")}</ConsoleEventField>
+                <ConsoleEventField label="Corte por limite de mensagens">{contextWindow.cutByMessageLimit === true || contextWindowCuts.messageLimit === true ? "Sim" : "Não"}</ConsoleEventField>
+                <ConsoleEventField label="Corte por token budget">{contextWindowCuts.tokenBudget === true ? "Sim" : "Não"}</ConsoleEventField>
+                <ConsoleEventField label="Corte por caracteres">{contextWindow.cutByCharLimit === true || contextWindowCuts.finalCharacters === true ? "Sim" : "Não"}</ConsoleEventField>
+                {contextWindowCuts.mandatoryTokenOverflow === true && <ConsoleEventField label="Observação de budget">Mensagens obrigatórias excederam o budget</ConsoleEventField>}
+              </div>
+              {contextWindowMessages.length > 0 && (
+                <details className="mt-2 border-t border-zinc-800 pt-2">
+                  <summary className="cursor-pointer">Mensagens incluídas ({contextWindowMessages.length})</summary>
+                  {Array.isArray(contextWindow.finalMandatoryMessageIds) && contextWindow.finalMandatoryMessageIds.length > 0 && (
+                    <div className="mt-2 break-all text-cyan-300">Obrigatórias preservadas: {contextWindow.finalMandatoryMessageIds.filter((id): id is string => typeof id === "string").join(" · ")}</div>
+                  )}
+                  <ol className="mt-2 space-y-1">
+                    {contextWindowMessages.map((item, index) => (
+                      <li key={`${String(item.id || "message")}-${index}`} className="break-all text-zinc-400">
+                        {typeof item.sender === "string" ? item.sender : "Mensagem"}
+                        {typeof item.timestamp === "string" ? ` · ${item.timestamp}` : ""}
+                        {typeof item.id === "string" ? ` · ${item.id}` : ""}
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
+              {contextWindowPreviews.length > 0 && (
+                <div className="mt-2 border-t border-zinc-800 pt-2">
+                  <div className="text-[9px] uppercase tracking-wide text-zinc-500">Prévia segura · últimas mensagens</div>
+                  <ol className="mt-1 space-y-1 text-zinc-300">
+                    {contextWindowPreviews.map((item, index) => (
+                      <li key={`${String(item.id || "preview")}-${index}`}>
+                        {typeof item.sender === "string" ? item.sender : "Mensagem"}: “{typeof item.text === "string" ? item.text : ""}”
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </details>
+          )}
           <div className="rounded-lg bg-black/20 p-2 text-[10px] text-zinc-300">
             {model || "Modelo não informado"}
             {(reasoningEffort || verbosity) && <span className="text-zinc-500"> · Reasoning: {reasoningEffort || "—"} · Verbosity: {verbosity || "—"}</span>}
@@ -307,6 +377,21 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
             <ConsoleEventField label="Tópico atual">{eventMetadataText(metadata, "currentTopic")}</ConsoleEventField>
             <ConsoleEventField label="Gancho principal">{eventMetadataText(metadata, "bestHook")}</ConsoleEventField>
             <ConsoleEventField label="Oportunidade">{eventMetadataText(metadata, "curiosityOpportunity")}</ConsoleEventField>
+            {socialCue && (
+              <ConsoleEventField label="Leitura social · Agent">
+                {[socialCue.socialCueType, socialCue.primaryIntent, socialCue.socialCueExpression]
+                  .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+                  .join(" · ") || null}
+                {typeof socialCue.requiresExplicitAcknowledgement === "boolean"
+                  ? ` · reconhecimento explícito ${socialCue.requiresExplicitAcknowledgement ? "indicado" : "não necessário"}`
+                  : ""}
+              </ConsoleEventField>
+            )}
+            {typeof metadata.selfFactRepeatedRisk === "boolean" && (
+              <ConsoleEventField label="Risco de repetição de fato próprio">
+                {metadata.selfFactRepeatedRisk ? "Indicado pelo Agent" : "Não indicado pelo Agent"}
+              </ConsoleEventField>
+            )}
             <ConsoleEventField label="Memória">
               {metadata.memoryConsulted === true ? "Consultada" : metadata.memoryConsulted === false ? "Não consultada" : null}
               {eventMetadataText(metadata, "memoryRationale") ? ` · ${eventMetadataText(metadata, "memoryRationale")}` : ""}
