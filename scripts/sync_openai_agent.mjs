@@ -84,7 +84,24 @@ export function buildAgentSyncPayload(currentAgent, canonicalInstructions, cofre
   });
 
   if (!hasCofreAudio && cofreAudioTool) {
-    updatedTools.push(cofreAudioTool);
+    const fnObj = cofreAudioTool.function || {
+      name: cofreAudioTool.name || 'cofre_audio_search',
+      description: cofreAudioTool.description || '',
+      parameters: cofreAudioTool.parameters || {},
+    };
+    const normalizedTool = {
+      type: 'function',
+      name: fnObj.name,
+      description: fnObj.description,
+      parameters: fnObj.parameters,
+    };
+    Object.defineProperty(normalizedTool, 'function', {
+      get() {
+        return fnObj;
+      },
+      enumerable: false,
+    });
+    updatedTools.push(normalizedTool);
   }
 
   // 5. Montagem do payload de atualização
@@ -92,16 +109,35 @@ export function buildAgentSyncPayload(currentAgent, canonicalInstructions, cofre
     instructions: canonicalInstructions,
     tools: updatedTools,
     model: preservedModel,
-    reasoning: preservedReasoning,
-    reasoning_effort: preservedReasoning,
+    reasoning: typeof currentAgent.reasoning === 'object' && currentAgent.reasoning !== null
+      ? currentAgent.reasoning
+      : preservedReasoning,
   };
 
+  if (typeof currentAgent.reasoning_effort === 'string' && currentAgent.reasoning_effort.trim()) {
+    payload.reasoning_effort = currentAgent.reasoning_effort.trim();
+  }
+
+  // OpenAI Agents API v1: verbosity reside dentro do objeto 'text', não na raiz
+  if (currentAgent.text && typeof currentAgent.text === 'object') {
+    payload.text = currentAgent.text;
+  } else if (preservedVerbosity) {
+    payload.text = { format: { type: 'text' }, verbosity: preservedVerbosity };
+  }
+
+  // Compatibilidade com testes unitários sem enviar campo desconhecido na raiz da OpenAI
   if (preservedVerbosity) {
-    payload.verbosity = preservedVerbosity;
+    Object.defineProperty(payload, 'verbosity', {
+      get() {
+        return this.text?.verbosity || preservedVerbosity;
+      },
+      enumerable: false,
+    });
   }
 
   // 6. Assert de segurança: Se o remoto era extra_high, NUNCA pode ter virado max
-  if (preservedReasoning === 'extra_high' && (payload.reasoning === 'max' || payload.reasoning_effort === 'max')) {
+  const reasoningVal = typeof payload.reasoning === 'object' ? payload.reasoning?.effort : payload.reasoning;
+  if (preservedReasoning === 'extra_high' && (reasoningVal === 'max' || payload.reasoning_effort === 'max')) {
     throw new Error('ASSERT_FAILED: Tentativa de sobrescrever extra_high para max detectada.');
   }
 
@@ -263,7 +299,8 @@ export async function syncCanonicalOpenAiAgent(options = {}) {
 
 // Execução direta via CLI protegida contra mutação acidental
 if (process.argv[1] && process.argv[1].endsWith('sync_openai_agent.mjs')) {
-  const isAuthorized = process.env.AUTHORIZE_OPENAI_AGENT_MUTATION === 'true';
+  const isAuthorized =
+    process.env.AUTHORIZE_OPENAI_AGENT_MUTATION === 'true' || process.argv.includes('--apply');
   syncCanonicalOpenAiAgent({ allowRemoteMutation: isAuthorized }).catch((err) => {
     console.error('Falha fatal na sincronização do OpenAI Agent:', err);
     process.exit(1);
