@@ -1951,8 +1951,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           }
 
           // ── SUBMIT com retry para rede/5xx, FAIL CLOSED para 4xx ──
-          // idempotency_key estável: derivado de IDs determinísticos, não muda entre retries
+          // Idempotency-Key estável: enviado como HEADER HTTP, não no JSON body
           const idempotencyKey = `${sessionId}:${actionTurnId}:${callId}`;
+          const submitHeaders = {
+            ...headers,
+            "Idempotency-Key": idempotencyKey,
+          };
           const submitBody = JSON.stringify({
             events: [{
               type: "agent.session.input.tool_result",
@@ -1961,7 +1965,6 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
               success: true,
               output: outputString,
             }],
-            idempotency_key: idempotencyKey,
           });
 
           const MAX_SUBMIT_RETRIES = 3;
@@ -1978,7 +1981,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             try {
               submitRes = await fetchOpenAiBounded(
                 `https://api.openai.com/v1/agents/sessions/${sessionId}/events`,
-                { method: "POST", headers, body: submitBody },
+                { method: "POST", headers: submitHeaders, body: submitBody },
                 Math.min(10_000, submitRemaining),
               );
             } catch (submitErr) {

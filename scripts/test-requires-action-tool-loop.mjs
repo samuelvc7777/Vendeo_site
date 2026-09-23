@@ -87,6 +87,7 @@ async function withToolLoopAgent(options, run) {
     sessionPolls: 0,
     turnPolls: 0,
     eventSubmissions: [],
+    eventHeaders: [],
     turnsListCalls: 0,
   };
 
@@ -112,9 +113,11 @@ async function withToolLoopAgent(options, run) {
     // POST /agents/sessions/{id}/events — submit de tool result
     if (address.includes('/agents/sessions/sess_ra_test/events') && method === 'POST') {
       const body = fetchOptions.body ? JSON.parse(fetchOptions.body) : {};
+      const headers = fetchOptions.headers || {};
       state.eventSubmissions.push(body);
+      state.eventHeaders.push(headers);
       if (typeof options.eventHandler === 'function') {
-        return options.eventHandler(body);
+        return options.eventHandler(body, headers);
       }
       return { ok: true, status: 202, json: async () => ({}), text: async () => '' };
     }
@@ -624,6 +627,7 @@ test('J. deadline esgota durante requires_action → agent_requires_action_unhan
 
 // ---------------------------------------------------------------------------
 // Cenário K: submit retorna 202 → tool executada 1x → nenhuma duplicação
+// Idempotency-Key no HEADER HTTP (não no body)
 // ---------------------------------------------------------------------------
 test('K. submit retorna 202 → tool executada 1x → polling continua → turn completa', async () => {
   let searchCount = 0;
@@ -669,31 +673,34 @@ test('K. submit retorna 202 → tool executada 1x → polling continua → turn 
       assert.equal(searchCount, 1, 'searchCofreAudios chamada exatamente 1x');
       assert.equal(submitCount, 1, 'Submit feito exatamente 1x (202 no primeiro attempt)');
       assert.equal(state.eventSubmissions.length, 1, '1 submission registrada');
-      // Valida formato exato do body enviado
-      const evt = state.eventSubmissions[0].events[0];
+      // Valida formato exato do body enviado: NÃO deve conter idempotency_key
+      const body = state.eventSubmissions[0];
+      assert.equal(body.idempotency_key, undefined, 'body NÃO deve conter idempotency_key');
+      const evt = body.events[0];
       assert.equal(evt.type, 'agent.session.input.tool_result');
       assert.equal(evt.turn_id, 'turn_ra');
       assert.equal(evt.call_id, 'exec_k_001');
       assert.equal(evt.success, true);
       assert.equal(typeof evt.output, 'string', 'output deve ser string serializada');
-      // Valida idempotency_key estável
+      // Valida Idempotency-Key no HEADER HTTP
       assert.equal(
-        state.eventSubmissions[0].idempotency_key,
+        state.eventHeaders[0]['Idempotency-Key'],
         'sess_ra_test:turn_ra:exec_k_001',
-        'idempotency_key deve ser sessionId:turn_id:call_id',
+        'Idempotency-Key deve ser enviado no header HTTP como sessionId:turn_id:call_id',
       );
+      assert.equal(state.eventHeaders[0]['OpenAI-Beta'], 'agents=v1', 'OpenAI-Beta header preservado');
     },
   );
 });
 
 // ---------------------------------------------------------------------------
 // Cenário L: network error no primeiro submit → retry com mesmo output → 202
-// Tool executada apenas 1x; mesma idempotency_key nos dois submits
+// Tool executada apenas 1x; mesmo Idempotency-Key header nos dois submits
 // ---------------------------------------------------------------------------
-test('L. network error no submit → retry com output cacheado → mesmo idempotency_key → 202 → turn completa', async () => {
+test('L. network error no submit → retry com output cacheado → mesmo Idempotency-Key header → 202 → turn completa', async () => {
   let searchCount = 0;
   let submitCount = 0;
-  const submittedKeys = [];
+  const submittedHeaderKeys = [];
 
   await withToolLoopAgent(
     {
@@ -724,9 +731,9 @@ test('L. network error no submit → retry com output cacheado → mesmo idempot
         searchCount++;
         return [{ audioId: 'aud_l', title: 'L', transcript: 'ok', whenToUse: 'teste', duration: 2 }];
       },
-      eventHandler: (body) => {
+      eventHandler: (body, headers) => {
         submitCount++;
-        submittedKeys.push(body.idempotency_key);
+        submittedHeaderKeys.push(headers['Idempotency-Key']);
         if (submitCount === 1) {
           // Simula network error no primeiro attempt lançando exceção
           throw new Error('Network error simulado');
@@ -735,25 +742,29 @@ test('L. network error no submit → retry com output cacheado → mesmo idempot
         return { ok: true, status: 202, json: async () => ({}), text: async () => '' };
       },
     },
-    (result) => {
+    (result, state) => {
       assert.equal(result.success, true, 'Deve ter sucesso após retry');
       assert.equal(searchCount, 1, 'searchCofreAudios chamada apenas 1x (cache protegeu retry)');
       assert.equal(submitCount, 2, 'Submit tentado 2x (1 network error + 1 sucesso)');
-      // Ambos os submits devem usar a MESMA idempotency_key
-      assert.equal(submittedKeys[0], submittedKeys[1], 'idempotency_key deve ser idêntica nos dois attempts');
-      assert.equal(submittedKeys[0], 'sess_ra_test:turn_ra:exec_l_001');
+      // Ambos os submits devem usar o MESMO Idempotency-Key no header HTTP
+      assert.equal(submittedHeaderKeys[0], submittedHeaderKeys[1], 'Idempotency-Key no header deve ser idêntico nos dois attempts');
+      assert.equal(submittedHeaderKeys[0], 'sess_ra_test:turn_ra:exec_l_001');
+      // Bodies NÃO devem conter idempotency_key
+      assert.equal(state.eventSubmissions[0].idempotency_key, undefined, 'Body 1 não deve ter idempotency_key');
+      assert.equal(state.eventSubmissions[1].idempotency_key, undefined, 'Body 2 não deve ter idempotency_key');
     },
   );
 });
 
 // ---------------------------------------------------------------------------
 // Cenário M: submit retorna 500 e depois 202 → execução local 1x → retry com
-// mesmo call_id/output/idempotency_key
+// mesmo call_id/output e mesmo Idempotency-Key no header HTTP
 // ---------------------------------------------------------------------------
-test('M. submit 500 → retry → 202 → output e idempotency_key idênticos', async () => {
+test('M. submit 500 → retry → 202 → output e Idempotency-Key no header idênticos', async () => {
   let searchCount = 0;
   let submitCount = 0;
   const submittedBodies = [];
+  const submittedHeaderKeys = [];
 
   await withToolLoopAgent(
     {
@@ -784,9 +795,10 @@ test('M. submit 500 → retry → 202 → output e idempotency_key idênticos', 
         searchCount++;
         return [{ audioId: 'aud_m', title: 'M', transcript: 'ok', whenToUse: 'teste', duration: 1 }];
       },
-      eventHandler: (body) => {
+      eventHandler: (body, headers) => {
         submitCount++;
         submittedBodies.push(JSON.parse(JSON.stringify(body)));
+        submittedHeaderKeys.push(headers['Idempotency-Key']);
         if (submitCount === 1) {
           return { ok: false, status: 500, json: async () => ({}), text: async () => 'Internal Server Error' };
         }
@@ -802,8 +814,12 @@ test('M. submit 500 → retry → 202 → output e idempotency_key idênticos', 
       assert.equal(submittedBodies[1].events[0].call_id, 'exec_m_001');
       // output idêntico
       assert.equal(submittedBodies[0].events[0].output, submittedBodies[1].events[0].output, 'output deve ser idêntico nos dois attempts');
-      // idempotency_key idêntica
-      assert.equal(submittedBodies[0].idempotency_key, submittedBodies[1].idempotency_key, 'idempotency_key deve ser idêntica');
+      // body NÃO deve conter idempotency_key
+      assert.equal(submittedBodies[0].idempotency_key, undefined, 'Body 1 não deve ter idempotency_key');
+      assert.equal(submittedBodies[1].idempotency_key, undefined, 'Body 2 não deve ter idempotency_key');
+      // Idempotency-Key no header HTTP idêntico
+      assert.equal(submittedHeaderKeys[0], submittedHeaderKeys[1], 'Idempotency-Key no header HTTP deve ser idêntica');
+      assert.equal(submittedHeaderKeys[0], 'sess_ra_test:turn_ra:exec_m_001');
     },
   );
 });
