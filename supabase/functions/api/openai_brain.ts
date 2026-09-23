@@ -336,6 +336,104 @@ export async function executeCofreAudioSearch(params: {
   return filtered.slice(0, Math.min(limit, 3)).map(({ score, ...c }) => c);
 }
 
+export const MAX_APP_TOOL_ROUNDS = 4;
+
+export interface ExecuteOpenAiAppToolParams {
+  toolName: string;
+  toolArgs: any;
+  supabase: any;
+  conversationId: string;
+  searchCofreAudios?: (params: { supabase: any; conversationId: string; query: string; limit?: number }) => Promise<any[]>;
+  telemetry: OpenAiBrainTurnResult["telemetry"];
+}
+
+export interface AppToolExecutionResult {
+  success: boolean;
+  output: Record<string, any>;
+  error?: string;
+  unsupportedTool?: string;
+}
+
+export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): Promise<AppToolExecutionResult> {
+  const { toolName, toolArgs, supabase, conversationId, searchCofreAudios, telemetry } = params;
+
+  if (toolName !== "cofre_audio_search") {
+    return {
+      success: false,
+      output: { status: "tool_error", reasonCode: "unsupported_tool", toolName },
+      unsupportedTool: toolName,
+      error: `agent_app_tool_unsupported:${toolName}`,
+    };
+  }
+
+  // Validação estrita de argumentos para cofre_audio_search
+  let rawQuery: any = toolArgs;
+  if (typeof toolArgs === "object" && toolArgs !== null) {
+    rawQuery = toolArgs.query;
+  }
+  if (typeof rawQuery !== "string" || !rawQuery.trim()) {
+    console.warn("[OpenAI Agent] cofre_audio_search argumentos inválidos ou query vazia:", toolArgs);
+    return {
+      success: false,
+      output: {
+        status: "tool_error",
+        reasonCode: "invalid_arguments",
+      },
+    };
+  }
+
+  const query = rawQuery.trim().slice(0, 200);
+
+  telemetry.toolsRequested.push(toolName);
+  telemetry.toolExecutionsCount++;
+  if (!telemetry.sourcesUsed.includes("cofre_audio")) {
+    telemetry.sourcesUsed.push("cofre_audio");
+  }
+
+  let candidates: any[] = [];
+  try {
+    if (typeof searchCofreAudios === "function") {
+      candidates = await searchCofreAudios({
+        supabase,
+        conversationId,
+        query,
+        limit: 3,
+      });
+    } else {
+      candidates = await executeCofreAudioSearch({
+        supabase,
+        conversationId,
+        query,
+        limit: 3,
+      });
+    }
+  } catch (err: any) {
+    console.warn("[Brain] Erro na busca de áudio do cofre:", err);
+  }
+
+  const sanitizedCandidates = (Array.isArray(candidates) ? candidates : []).slice(0, 3).map((c: any) => ({
+    audioId: String(c.audioId || c.audio_id || c.id),
+    title: String(c.title || ""),
+    transcript: String(c.transcript || c.full_transcript || ""),
+    whenToUse: String(c.whenToUse || c.when_to_use || c.usageInstruction || c.usage_instruction || ""),
+    ...(c.duration != null ? { duration: Number(c.duration) } : {}),
+  }));
+
+  telemetry.authorizedCandidateAudios = sanitizedCandidates;
+  console.log(`[Brain] audio_candidates_returned count=${sanitizedCandidates.length}`);
+
+  const output = {
+    status: sanitizedCandidates.length > 0 ? "success_with_results" : "success_no_results",
+    count: sanitizedCandidates.length,
+    candidates: sanitizedCandidates,
+  };
+
+  return {
+    success: true,
+    output,
+  };
+}
+
 export interface PlanValidationResult {
   valid: boolean;
   error?: string;
@@ -1414,49 +1512,19 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           }
           if (toolName === "cofre_audio_search") {
             console.log(`[Brain] tool_requested ${toolName}`);
-            telemetry.toolsRequested.push(toolName);
-            telemetry.toolExecutionsCount++;
-            if (!telemetry.sourcesUsed.includes("cofre_audio")) {
-              telemetry.sourcesUsed.push("cofre_audio");
+            const appToolRes = await executeOpenAiAppTool({
+              toolName,
+              toolArgs,
+              supabase: params.supabase,
+              conversationId: params.conversationId,
+              searchCofreAudios: params.searchCofreAudios,
+              telemetry,
+            });
+            if (appToolRes.unsupportedTool) {
+              throw new Error(`Tool não suportada: ${toolName}`);
             }
-            const query = typeof toolArgs?.query === "string" ? toolArgs.query.trim().slice(0, 200) : "";
-            let candidates: any[] = [];
-            try {
-              if (typeof params.searchCofreAudios === "function") {
-                candidates = await params.searchCofreAudios({
-                  supabase: params.supabase,
-                  conversationId: params.conversationId,
-                  query,
-                  limit: 3,
-                });
-              } else {
-                candidates = await executeCofreAudioSearch({
-                  supabase: params.supabase,
-                  conversationId: params.conversationId,
-                  query,
-                  limit: 3,
-                });
-              }
-            } catch (err: any) {
-              console.warn("[Brain] Erro na busca de áudio do cofre:", err);
-            }
-
-            const sanitizedCandidates = candidates.slice(0, 3).map((c: any) => ({
-              audioId: String(c.audioId || c.audio_id || c.id),
-              title: String(c.title || ""),
-              transcript: String(c.transcript || c.full_transcript || ""),
-              whenToUse: String(c.whenToUse || c.when_to_use || c.usageInstruction || c.usage_instruction || ""),
-              ...(c.duration != null ? { duration: Number(c.duration) } : {}),
-            }));
-
-            telemetry.authorizedCandidateAudios = sanitizedCandidates;
-            console.log(`[Brain] audio_candidates_returned count=${sanitizedCandidates.length}`);
             console.log("[Brain] tool_output_submitted");
-            return {
-              status: sanitizedCandidates.length > 0 ? "success_with_results" : "success_no_results",
-              count: sanitizedCandidates.length,
-              candidates: sanitizedCandidates,
-            };
+            return appToolRes.output;
           }
           throw new Error(`Tool não suportada: ${toolName}`);
         },
@@ -1663,6 +1731,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     let turnData: any = null;
     let identifyAttempt = 0;
     let lastLoggedPendingBucket = -1;
+    let appToolRound = 0;
+    const appToolCallCache = new Map<string, string>();
 
     if (typeof sessionData?.current_turn?.id === "string" && sessionData.current_turn.id) {
       turnId = sessionData.current_turn.id;
@@ -1703,10 +1773,10 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     // 2. Polling contínuo e unificado dentro da MESMA janela AGENT_LOCAL_WAIT_MS
     for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
-      if (turnStatus === "completed" || ["failed", "cancelled", "expired", "requires_action"].includes(turnStatus)) {
+      if (turnStatus === "completed" || ["failed", "cancelled", "expired"].includes(turnStatus)) {
         break;
       }
-      if (sessionStatus === "requires_action" || sessionStatus === "failed" || sessionStatus === "cancelled") {
+      if (sessionStatus === "failed" || sessionStatus === "cancelled") {
         break;
       }
 
@@ -1808,8 +1878,149 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         }
       }
 
-      if (turnStatus === "requires_action" || sessionStatus === "requires_action") {
-        break;
+      // LOOP DE APP TOOLS: quando session entra em requires_action, executa a tool e submete o resultado
+      if (sessionStatus === "requires_action" && turnId) {
+        if (appToolRound >= MAX_APP_TOOL_ROUNDS) {
+          const elapsedMs = Date.now() - executionStartTimeMs;
+          console.error(`[OpenAI Agent] app_tool_max_rounds_exceeded sessionId=${sessionId} turnId=${turnId} rounds=${appToolRound} elapsedMs=${elapsedMs}`);
+          telemetry.status = "requires_action";
+          throw new Error(`agent_app_tool_max_rounds_exceeded: excedeu ${MAX_APP_TOOL_ROUNDS} rodadas`);
+        }
+        appToolRound++;
+        const elapsedMs = Date.now() - executionStartTimeMs;
+        const remainingWaitMs = Math.max(0, waitDeadlineMs - Date.now());
+        console.log(`[OpenAI Agent] agent_requires_action_detected sessionId=${sessionId} turnId=${turnId} round=${appToolRound} elapsedMs=${elapsedMs} remainingWaitMs=${remainingWaitMs}`);
+
+        const requiredActions: any[] = Array.isArray(latestSessionData?.required_actions)
+          ? latestSessionData.required_actions
+          : [];
+
+        for (const action of requiredActions) {
+          if (action?.type !== "function_call") continue;
+          const callId = String(action.call_id || "");
+          const actionTurnId = String(action.turn_id || "");
+          const toolName = String(action.name || "");
+
+          // ── VALIDAÇÃO: action.turn_id DEVE corresponder ao turn acompanhado ──
+          if (actionTurnId !== turnId) {
+            console.error(`[OpenAI Agent] app_tool_turn_mismatch callId=${callId} actionTurnId=${actionTurnId} trackedTurnId=${turnId}`);
+            telemetry.status = "requires_action";
+            throw new Error(`agent_app_tool_turn_mismatch: action.turn_id=${actionTurnId} differs from tracked turnId=${turnId}`);
+          }
+
+          // ── PARSE seguro de arguments (objeto direto ou string JSON) ──
+          let toolArgs: Record<string, any>;
+          if (typeof action.arguments === "string") {
+            try {
+              const parsed = JSON.parse(action.arguments);
+              toolArgs = (parsed !== null && typeof parsed === "object") ? parsed : {};
+            } catch {
+              console.warn(`[OpenAI Agent] app_tool_args_parse_error callId=${callId} toolName=${toolName}`);
+              toolArgs = {};
+            }
+          } else {
+            toolArgs = (action.arguments !== null && typeof action.arguments === "object") ? action.arguments : {};
+          }
+
+
+          let outputString: string;
+          if (appToolCallCache.has(callId)) {
+            outputString = appToolCallCache.get(callId)!;
+            console.log(`[OpenAI Agent] app_tool_cache_hit callId=${callId} toolName=${toolName}`);
+          } else {
+            console.log(`[OpenAI Agent] app_tool_requested: ${toolName} callId=${callId} round=${appToolRound}`);
+
+            const toolRes = await executeOpenAiAppTool({
+              toolName,
+              toolArgs,
+              supabase: params.supabase,
+              conversationId: params.conversationId,
+              searchCofreAudios: params.searchCofreAudios,
+              telemetry,
+            });
+
+            if (toolRes.unsupportedTool) {
+              telemetry.status = "requires_action";
+              throw new Error(toolRes.error || `agent_app_tool_unsupported:${toolName}`);
+            }
+
+            outputString = JSON.stringify(toolRes.output);
+            appToolCallCache.set(callId, outputString);
+            const candidateCount = (toolRes.output as any)?.count ?? 0;
+            console.log(`[OpenAI Agent] app_tool_candidates_count=${candidateCount} callId=${callId} round=${appToolRound}`);
+          }
+
+          // ── SUBMIT com retry para rede/5xx, FAIL CLOSED para 4xx ──
+          // idempotency_key estável: derivado de IDs determinísticos, não muda entre retries
+          const idempotencyKey = `${sessionId}:${actionTurnId}:${callId}`;
+          const submitBody = JSON.stringify({
+            events: [{
+              type: "agent.session.input.tool_result",
+              turn_id: actionTurnId,
+              call_id: callId,
+              success: true,
+              output: outputString,
+            }],
+            idempotency_key: idempotencyKey,
+          });
+
+          const MAX_SUBMIT_RETRIES = 3;
+          let submitConfirmed = false;
+          for (let submitAttempt = 1; submitAttempt <= MAX_SUBMIT_RETRIES; submitAttempt++) {
+            const submitRemaining = Math.max(0, waitDeadlineMs - Date.now());
+            if (submitRemaining <= 0) {
+              console.warn(`[OpenAI Agent] app_tool_submit_deadline_expired callId=${callId} attempt=${submitAttempt}`);
+              break;
+            }
+
+            let submitRes: { ok: boolean; status: number; text: () => Promise<string> } | null = null;
+            let networkError = false;
+            try {
+              submitRes = await fetchOpenAiBounded(
+                `https://api.openai.com/v1/agents/sessions/${sessionId}/events`,
+                { method: "POST", headers, body: submitBody },
+                Math.min(10_000, submitRemaining),
+              );
+            } catch (submitErr) {
+              networkError = true;
+              console.warn(`[OpenAI Agent] app_tool_submit_network_error callId=${callId} attempt=${submitAttempt}/${MAX_SUBMIT_RETRIES}:`, submitErr);
+            }
+
+            if (!networkError && submitRes !== null) {
+              if (submitRes.ok || submitRes.status === 202) {
+                // Aceito — NÃO reenviar imediatamente, continua polling
+                console.log(`[OpenAI Agent] app_tool_output_submitted callId=${callId} toolName=${toolName} round=${appToolRound} attempt=${submitAttempt} idempotencyKey=${idempotencyKey}`);
+                submitConfirmed = true;
+                break;
+              } else if (submitRes.status >= 400 && submitRes.status < 500) {
+                // 4xx definitivo — FAIL CLOSED, sem retry
+                const errText = await submitRes.text().catch(() => "");
+                console.error(`[OpenAI Agent] app_tool_submit_4xx_fatal callId=${callId} status=${submitRes.status} body=${errText}`);
+                telemetry.status = "requires_action";
+                throw new Error(`agent_app_tool_submit_failed: HTTP ${submitRes.status} ao submeter tool_result para callId=${callId}`);
+              } else {
+                // 5xx — retry com backoff, reutilizando mesmo output cacheado e mesma idempotency_key
+                const errText = await submitRes.text().catch(() => "");
+                console.warn(`[OpenAI Agent] app_tool_submit_5xx callId=${callId} status=${submitRes.status} attempt=${submitAttempt}/${MAX_SUBMIT_RETRIES} body=${errText}`);
+              }
+            }
+
+            // Backoff antes de retry (rede ou 5xx), respeitando o deadline original
+            if (submitAttempt < MAX_SUBMIT_RETRIES) {
+              const backoffMs = Math.min(2_000 * submitAttempt, Math.max(0, waitDeadlineMs - Date.now()));
+              if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
+            }
+          }
+
+          if (!submitConfirmed) {
+            // Esgotou retries sem 202 — polling continua; se agent persistir em requires_action,
+            // MAX_APP_TOOL_ROUNDS será atingido e o erro será lançado lá
+            console.warn(`[OpenAI Agent] app_tool_submit_unconfirmed callId=${callId} — continuando polling`);
+          }
+        }
+
+        console.log(`[OpenAI Agent] app_tool_resumed sessionId=${sessionId} turnId=${turnId} round=${appToolRound}`);
+        // Não faz break — continua polling normalmente
       }
 
       if (Date.now() >= waitDeadlineMs) break;
@@ -1852,7 +2063,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     // Se turnId foi identificado (ou resgatado na reconciliação final) mas ainda não concluiu,
     // faz a leitura final autoritativa direta do Turn
-    if (turnId && !["completed", "failed", "cancelled", "expired", "requires_action"].includes(turnStatus)) {
+    if (turnId && !["completed", "failed", "cancelled", "expired"].includes(turnStatus)) {
       try {
         const finalTurnRes = await fetchOpenAiBounded(
           `https://api.openai.com/v1/agents/sessions/${sessionId}/turns/${turnId}`,
@@ -1895,7 +2106,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     // 5. TRATAMENTO FAIL-CLOSED DE TERMINAL STATUS OU AUSÊNCIA DE TURN
     if (turnStatus === "requires_action" || sessionStatus === "requires_action") {
       telemetry.status = "requires_action";
-      throw new Error("agent_requires_action_unhandled: sessão requer ação do aplicativo");
+      throw new Error("agent_requires_action_unhandled: sessão permaneceu em requires_action após esgotamento do deadline");
     }
 
     if (turnStatus === "failed" || sessionStatus === "failed") {
