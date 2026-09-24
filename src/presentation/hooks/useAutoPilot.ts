@@ -116,25 +116,14 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
     toast.success(isEnabled ? "Piloto Automático ativado neste chat." : "Piloto Automático desativado neste chat.");
 
-    // Sincroniza via endpoint oficial do backend para garantir travas atômicas na nuvem
+    // Sincroniza via endpoint oficial do backend para armar o piloto e registrar o watermark
     void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversationId, isEnabled }),
     }).catch((err) => console.warn("Aviso ao notificar toggle-chat:", err));
 
-    if (isEnabled) {
-      void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/trigger", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId }),
-      }).then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (data?.triggered) {
-          toast.info("A IA já começou a responder a mensagem pendente deste contato!");
-        }
-      }).catch((err) => console.warn("Aviso ao disparar trigger de ativação:", err));
-    } else {
+    if (!isEnabled) {
       void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/pause", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -156,11 +145,11 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
     toast.success("Piloto Automático retomado no backend.");
 
-    void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/trigger", {
+    void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId }),
-    }).catch((err) => console.warn("Aviso ao disparar trigger de retomada:", err));
+      body: JSON.stringify({ conversationId, isEnabled: true }),
+    }).catch((err) => console.warn("Aviso ao sincronizar retomada:", err));
 
     return updated;
   }, []);

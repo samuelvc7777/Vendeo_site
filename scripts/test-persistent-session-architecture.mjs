@@ -86,6 +86,9 @@ function createMockSupabase(initialState = {}) {
         persistent_agent_session_enabled: true,
         ...(initialState.stage_completed_rules?.config || {}),
       },
+      openai_session_id: initialState.stage_completed_rules?.openai_session_id ?? null,
+      openai_session_kind: initialState.stage_completed_rules?.openai_session_kind ?? (initialState.stage_completed_rules?.openai_session_id ? 'persistent' : null),
+      persistent_session_version: initialState.stage_completed_rules?.persistent_session_version ?? (initialState.stage_completed_rules?.openai_session_id ? 1 : null),
       orchestration: {
         currentStageId: 'stage_1_conexao',
         currentPhase: 'conexao_inicial',
@@ -94,7 +97,10 @@ function createMockSupabase(initialState = {}) {
           goals: defaultStages[0].goals,
           currentObjective: defaultStages[0].goals[0],
         },
-        openai_session_id: null,
+        openai_session_id: initialState.stage_completed_rules?.orchestration?.openai_session_id ?? initialState.stage_completed_rules?.openai_session_id ?? null,
+        openai_session_kind: initialState.stage_completed_rules?.orchestration?.openai_session_kind ?? (initialState.stage_completed_rules?.openai_session_id ? 'persistent' : null),
+        persistent_session_version: initialState.stage_completed_rules?.orchestration?.persistent_session_version ?? (initialState.stage_completed_rules?.openai_session_id ? 1 : null),
+        ...(initialState.stage_completed_rules?.orchestration || {}),
       },
       ...initialState.stage_completed_rules,
       active_cycle_token: initialState.stage_completed_rules?.active_cycle_token !== undefined
@@ -967,7 +973,11 @@ test('16. Padrão Global Persistent & Suporte a Rollback Técnico para Legacy', 
     correlationId: 'corr_a_1',
     stage_completed_rules: {
       config: {}, // Sem flag -> padrão agora é TRUE
-      orchestration: { openai_session_id: 'sess_a_persisted_111' },
+      orchestration: {
+        openai_session_id: 'sess_a_persisted_111',
+        openai_session_kind: 'persistent',
+        persistent_session_version: 1,
+      },
     },
   });
 

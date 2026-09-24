@@ -115,6 +115,9 @@ function createMockSupabaseWithHistory(options = {}) {
       config: {
         persistent_agent_session_enabled: true,
       },
+      openai_session_id: options.initialSessionId !== undefined ? options.initialSessionId : null,
+      openai_session_kind: options.initialSessionId ? 'persistent' : null,
+      persistent_session_version: options.initialSessionId ? 1 : null,
       orchestration: {
         currentStageId: 'stage_1_conexao',
         currentPhase: 'conexao_inicial',
@@ -124,6 +127,8 @@ function createMockSupabaseWithHistory(options = {}) {
           currentObjective: defaultStages[0].goals[0],
         },
         openai_session_id: options.initialSessionId !== undefined ? options.initialSessionId : null,
+        openai_session_kind: options.initialSessionId ? 'persistent' : null,
+        persistent_session_version: options.initialSessionId ? 1 : null,
         messageLedger: defaultLedger,
         lastProcessedMessageId: options.messages?.length ? options.messages[options.messages.length - 1].id : null,
       },

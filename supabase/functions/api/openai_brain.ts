@@ -150,6 +150,67 @@ export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   },
 };
 
+export interface OpenAiAgentFunctionToolDefinition {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, any>;
+  defer_loading?: boolean;
+}
+
+/**
+ * Definição canônica de tool para a OpenAI Agents API (sessions e agents).
+ * No schema da Agents API, o parâmetro 'name' é obrigatório no topo do objeto da tool,
+ * diferentemente da Chat Completions API legada que envelopava dentro de 'function'.
+ */
+export const COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION: OpenAiAgentFunctionToolDefinition = {
+  type: "function",
+  name: "cofre_audio_search",
+  description:
+    "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente (hobbies, rotina, gostos, faculdade, tempo livre, preferências). Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description:
+          "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'hobbies e tempo livre', 'rotina da faculdade', 'comida preferida').",
+      },
+    },
+    required: ["query"],
+  },
+  defer_loading: false,
+};
+
+/**
+ * Normaliza qualquer definição de ferramenta de função para o schema real da OpenAI Agents API.
+ * Garante que 'name', 'description' e 'parameters' fiquem na raiz do objeto.
+ */
+export function normalizeToAgentToolDefinition(tool: any): any {
+  if (!tool || typeof tool !== "object") return tool;
+  if (tool.type === "function") {
+    if (typeof tool.name === "string" && tool.name) {
+      return {
+        type: "function",
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.parameters || { type: "object", properties: {} },
+        defer_loading: Boolean(tool.defer_loading),
+      };
+    }
+    if (tool.function && typeof tool.function.name === "string") {
+      return {
+        type: "function",
+        name: tool.function.name,
+        description: tool.function.description || "",
+        parameters: tool.function.parameters || { type: "object", properties: {} },
+        defer_loading: false,
+      };
+    }
+  }
+  return tool;
+}
+
 export function buildSessionAgentToolsWithMemoryScope(agentTools: unknown, scopeId: string): any[] {
   if (!Array.isArray(agentTools)) throw new Error("OpenAI Agent configuration is missing its tools array.");
   let matched = false;
@@ -1786,12 +1847,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
   const instructions = buildCanonicalAgentInstructions({ persistentMode });
   const activeToolsForEstimates = persistentMode
-    ? [COFRE_AUDIO_SEARCH_TOOL_DEFINITION]
+    ? [COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION]
     : [
         PERSONA_MEMORY_TOOL_DEFINITION,
         CONTACT_MEMORY_TOOL_DEFINITION,
         CONVERSATION_MEMORY_TOOL_DEFINITION,
-        COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
+        COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION,
       ];
 
   telemetry.agentInstructionChars = instructions.length;
@@ -1812,12 +1873,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   if (params.runtime && typeof params.runtime.callOpenAiAgent === "function") {
     try {
       const activeTools = persistentMode
-        ? [COFRE_AUDIO_SEARCH_TOOL_DEFINITION]
+        ? [COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION]
         : [
             PERSONA_MEMORY_TOOL_DEFINITION,
             CONTACT_MEMORY_TOOL_DEFINITION,
             CONVERSATION_MEMORY_TOOL_DEFINITION,
-            COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
+            COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION,
           ];
 
       const mockResult = await params.runtime.callOpenAiAgent({
@@ -2250,8 +2311,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           telemetry.agentSessionReasoningRequested = requestedReasoning;
           telemetry.agentSessionReasoningActual = actualReasoning;
 
-          const modelMismatch = Boolean(requestedModel && actualModel && actualModel !== requestedModel);
-          const reasoningMismatch = Boolean(requestedReasoning && actualReasoning && actualReasoning !== requestedReasoning);
+          const modelMismatch = Boolean(requestedModel && actualModel !== requestedModel);
+          const reasoningMismatch = Boolean(requestedReasoning && actualReasoning !== requestedReasoning);
 
           if (modelMismatch || reasoningMismatch) {
             console.log(`[OpenAI Agent] session_config_divergence_detected: sessionId=${sessionId} actualModel=${actualModel} requestedModel=${requestedModel} actualReasoning=${actualReasoning} requestedReasoning=${requestedReasoning}. Sincronizando...`);
@@ -2282,8 +2343,15 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
               console.log(`[OpenAI Agent] session_config_updated_success: sessionId=${sessionId} model=${requestedModel} reasoningEffort=${requestedReasoning}`);
             } else {
               const errText = await updateRes.text().catch(() => "");
-              console.warn(`[OpenAI Agent] session_config_update_failed (HTTP ${updateRes.status}): ${errText}`);
+              console.warn(`[OpenAI Agent] session_config_update_failed (HTTP ${updateRes.status}): ${errText}. Recriando sessão limpa para garantir modelo/reasoning configurado...`);
+              // Fail-closed: se a sessão existente não puder ser atualizada, recria limpa para nunca executar modelo divergente
+              sessionId = null;
+              telemetry.sessionFallbackTriggered = true;
+              telemetry.agentSessionRecoveryTriggered = true;
             }
+          } else {
+            telemetry.agentSessionModelActual = actualModel || requestedModel;
+            telemetry.agentSessionReasoningActual = actualReasoning || requestedReasoning;
           }
         } else if (currentSessionRes.status === 404 || currentSessionRes.status === 410) {
           console.warn(`[OpenAI Agent] session_reuse_session_not_found (HTTP ${currentSessionRes.status}): sessionId=${sessionId}. Recriando sessão (recovery)...`);
@@ -2450,12 +2518,16 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         }
       } else {
         // No modo persistente: utiliza as instruções enxutas persistentes (sem memory tools/gates)
-        // e define estritamente [COFRE_AUDIO_SEARCH_TOOL_DEFINITION] como tool
+        // e define estritamente [COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION] como tool (schema da Agents API com name na raiz)
         sessionPayload.agent = {
           ...(sessionPayload.agent || {}),
           instructions: buildCanonicalAgentInstructions({ persistentMode: true }),
-          tools: [COFRE_AUDIO_SEARCH_TOOL_DEFINITION],
+          tools: [COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION],
         };
+      }
+
+      if (sessionPayload.agent?.tools && Array.isArray(sessionPayload.agent.tools)) {
+        sessionPayload.agent.tools = sessionPayload.agent.tools.map(normalizeToAgentToolDefinition);
       }
 
       const sessionRes = await fetchOpenAiBounded("https://api.openai.com/v1/agents/sessions", {

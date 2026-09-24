@@ -9,6 +9,7 @@ import {
   requestBrainCyclePreemptionAtomic,
   authorizeManualAutopilotRetryAtomic,
   releaseExperimentalCycleAtomic,
+  runDurableOutboxDispatcher,
 } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import {
@@ -869,26 +870,62 @@ serve(async (req: Request) => {
               }
             }
 
-            const { error: msgSaveErr } = await supabase.from("instagram_messages").upsert({
-              id: messageId,
-              conversation_id: conversationId,
-              contact_id: rawContactId,
-              sender_id: isEcho ? "me" : senderId,
-              text: text,
-              timestamp: timestamp,
-              is_mine: isEcho,
-              status: "delivered",
-              media_url: audioUrl || imageUrl || null,
-              media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
-              reply_to_message_id: replyToMid,
-              direction: isEcho ? "outbound" : "inbound",
-              audio_transcript: audioTranscript,
-              audio_transcribed_at: audioTranscript ? new Date().toISOString() : null,
-              audio_transcription_error: audioTranscriptionError,
-            });
-
-            if (msgSaveErr) {
-              console.error("[Webhook] Erro ao persistir mensagem no Supabase:", msgSaveErr);
+            let inboundRpcData: any = null;
+            if (!isEcho) {
+              try {
+                const { data, error: inboundRpcErr } = await supabase.rpc(
+                  "record_inbound_message_atomic",
+                  {
+                    p_conversation_id: conversationId,
+                    p_message_id: messageId,
+                    p_contact_id: rawContactId,
+                    p_sender_id: senderId,
+                    p_text: text,
+                    p_timestamp: timestamp,
+                    p_media_url: audioUrl || imageUrl || null,
+                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                    p_reply_to_message_id: replyToMid,
+                    p_audio_transcript: audioTranscript,
+                    p_audio_transcription_error: audioTranscriptionError,
+                  }
+                );
+                if (inboundRpcErr || !data?.success) {
+                  console.error(
+                    `[Webhook] record_inbound_message_atomic falhou (fail-closed): conv=${conversationId} msg=${messageId}`,
+                    inboundRpcErr || data
+                  );
+                  continue; // FAIL-CLOSED ESTRITO: NUNCA cai para gravação não-serializada
+                }
+                inboundRpcData = data;
+              } catch (rErr) {
+                console.error(
+                  `[Webhook] record_inbound_message_atomic exception (fail-closed): conv=${conversationId} msg=${messageId}`,
+                  rErr
+                );
+                continue; // FAIL-CLOSED ESTRITO: NUNCA cai para gravação não-serializada
+              }
+            } else {
+              // Echos de mensagens enviadas por nós no app oficial (outbound)
+              const { error: echoSaveErr } = await supabase.from("instagram_messages").upsert({
+                id: messageId,
+                conversation_id: conversationId,
+                contact_id: rawContactId,
+                sender_id: "me",
+                text: text,
+                timestamp: timestamp,
+                is_mine: true,
+                status: "delivered",
+                media_url: audioUrl || imageUrl || null,
+                media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                reply_to_message_id: replyToMid,
+                direction: "outbound",
+                audio_transcript: audioTranscript,
+                audio_transcribed_at: audioTranscript ? new Date().toISOString() : null,
+                audio_transcription_error: audioTranscriptionError,
+              });
+              if (echoSaveErr) {
+                console.error("[Webhook] Erro ao persistir echo no Supabase:", echoSaveErr);
+              }
             }
 
             // Dispara Broadcast Realtime imediato (< 20ms) para todas as telas conectadas
@@ -984,6 +1021,8 @@ serve(async (req: Request) => {
                   isExplicitlyDisabled ||
                   convRow?.is_restricted === true;
 
+                const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
+
                 if (isPaused) {
                   console.log(
                     `[AutoPilot] Conversa ${conversationId} está desativada/pausada manualmente (ai_auto_respond=${convRow?.ai_auto_respond}, status=${convRules.status}, isExplicitlyDisabled=${isExplicitlyDisabled}). Não respondendo.`
@@ -994,10 +1033,14 @@ serve(async (req: Request) => {
                       .update({ ai_debounce_until: null })
                       .eq("id", conversationId);
                   }
+                } else if (!isEligibleByWatermark) {
+                  console.log(
+                    `[AutoPilot] Inbound ${messageId} para conv ${conversationId} pertence ao baseline do watermark (rev=${inboundRpcData?.inbound_revision} <= watermark=${inboundRpcData?.watermark_revision}). Zero Brain.`
+                  );
                 }
 
                 // BRAIN: Único orquestrador oficial de produção (fail-closed)
-                if (!isPaused && isEnabledGlobally && !isManual) {
+                if (!isPaused && isEnabledGlobally && !isManual && isEligibleByWatermark) {
                   const delayMinutes =
                     typeof apConfig?.responseDelayMinutes === "number"
                       ? apConfig.responseDelayMinutes
@@ -3928,6 +3971,7 @@ serve(async (req: Request) => {
 
             // A mensagem mais recente pode já ter sido processada enquanto uma
             // inbound anterior continua pendente. Pagina apenas a janela de 48h.
+            const watermark = conv.stage_completed_rules?.orchestration?.activation_watermark;
             const ledger = conv.stage_completed_rules?.orchestration?.messageLedger || {};
             let lastMsg: any = null;
             let messageOffset = 0;
@@ -3941,11 +3985,21 @@ serve(async (req: Request) => {
                 .order("created_at", { ascending: false })
                 .range(messageOffset, messageOffset + 99);
               if (inboundError || !inboundPage?.length) break;
-              lastMsg = inboundPage.find((message: any) =>
-                message.sender_id !== "me" &&
-                ledger[message.id] !== "processed" &&
-                message.id !== conv.stage_completed_rules?.orchestration?.lastProcessedMessageId
-              );
+              lastMsg = inboundPage.find((message: any) => {
+                if (message.sender_id === "me") return false;
+                if (ledger[message.id] === "processed") return false;
+                if (message.id === conv.stage_completed_rules?.orchestration?.lastProcessedMessageId) return false;
+                // Regra P0: Autoridade estrita por inboundRevision monotônica (Zero heurísticas temporais)
+                if (watermark && typeof watermark.inboundRevision === "number") {
+                  const msgRevs = conv.stage_completed_rules?.orchestration?.messageInboundRevisions;
+                  const msgRev = msgRevs?.[message.id];
+                  if (typeof msgRev === "number" && msgRev <= watermark.inboundRevision) return false;
+
+                  const currentRev = conv.stage_completed_rules?.orchestration?.inboundRevision || 0;
+                  if (currentRev <= watermark.inboundRevision) return false;
+                }
+                return true;
+              });
               if (inboundPage.length < 100) break;
               messageOffset += 100;
             }
@@ -3990,6 +4044,42 @@ serve(async (req: Request) => {
           }
         }
 
+        // 2. DISPATCHER DESACOPLADO (P0): Despacha ações de outbox pendentes que já maturaram (not_before <= now)
+        try {
+          const { data: outboxConvs } = await supabase
+            .from("instagram_conversations")
+            .select("id, stage_completed_rules")
+            .eq("ai_auto_respond", true)
+            .not("stage_completed_rules->orchestration->outbox", "is", null)
+            .limit(30);
+
+          if (outboxConvs && outboxConvs.length > 0) {
+            for (const oc of outboxConvs) {
+              const outbox = oc.stage_completed_rules?.orchestration?.outbox || {};
+              const entries = Object.values(outbox) as any[];
+              const hasMaturePending = entries.some(
+                (e: any) => e && e.status === "pending" && (!e.notBefore || e.notBefore <= nowIso)
+              );
+
+              if (hasMaturePending) {
+                console.log(`[Cloud AutoPilot] cron:tick despachando outbox pendente madura para conv=${oc.id}`);
+                const dispatchPromise = runDurableOutboxDispatcher({
+                  supabase,
+                  conversationId: oc.id,
+                });
+
+                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                  (globalThis as any).EdgeRuntime.waitUntil(dispatchPromise);
+                } else {
+                  void dispatchPromise;
+                }
+              }
+            }
+          }
+        } catch (outboxTickErr: any) {
+          console.warn(`[Cloud AutoPilot] cron:tick erro ao verificar outbox pendente:`, outboxTickErr?.message || outboxTickErr);
+        }
+
         return new Response(JSON.stringify({ success: true, processedCount: processed.length, processed }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -4016,16 +4106,25 @@ serve(async (req: Request) => {
           });
         }
 
-        // 1. Busca a última mensagem registrada para esta conversa
+        // 1. Busca a conversa para verificar o activation_watermark determinístico
+        const { data: convData } = await supabase
+          .from("instagram_conversations")
+          .select("stage_completed_rules, ai_auto_respond")
+          .eq("id", conversationId)
+          .maybeSingle();
+
+        const activationWatermark = convData?.stage_completed_rules?.orchestration?.activation_watermark;
+
+        // 2. Busca a última mensagem registrada para esta conversa
         const { data: lastMsgs, error: msgErr } = await supabase
           .from("instagram_messages")
-          .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
+          .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url, audio_transcript")
           .eq("conversation_id", conversationId)
           .order("timestamp", { ascending: false })
           .limit(1);
 
         if (msgErr || !lastMsgs || lastMsgs.length === 0) {
-          return new Response(JSON.stringify({ triggered: false, reason: "Nenhuma mensagem encontrada." }), {
+          return new Response(JSON.stringify({ triggered: false, status: "idle", reason: "no_messages_found", detail: "Nenhuma mensagem encontrada." }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
@@ -4033,14 +4132,40 @@ serve(async (req: Request) => {
         const lastMsg = lastMsgs[0];
         const isFromThem = !lastMsg.is_mine && lastMsg.sender_id !== "me";
 
-        // Se a última mensagem for do pretendente, ele está no vácuo aguardando resposta!
+        // 3. Validação determinística contra o Watermark de Ativação
+        // Autoridade unicamente baseada em inboundRevision monotônica sob lock FOR UPDATE
         if (isFromThem) {
+          const currentInboundRev = convData?.stage_completed_rules?.orchestration?.inboundRevision || 0;
+          const watermarkRev = typeof activationWatermark?.inboundRevision === "number"
+            ? activationWatermark.inboundRevision
+            : null;
+
+          const isPriorToWatermark = Boolean(
+            activationWatermark &&
+            watermarkRev !== null &&
+            currentInboundRev <= watermarkRev
+          );
+
+          if (isPriorToWatermark) {
+            console.log(`[Autopilot] activation_noop_no_new_inbound conv=${conversationId} rev=${currentInboundRev} <= watermarkRev=${watermarkRev}`);
+            return new Response(JSON.stringify({
+              triggered: false,
+              status: "idle",
+              reason: "activation_noop_no_new_inbound",
+              detail: "Autopiloto armado em espera. Nenhuma nova mensagem recebida após a ativação.",
+            }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          // Se a mensagem for comprovadamente NOVA pós-ativação:
+          console.log(`[Autopilot] new_inbound_after_activation conv=${conversationId} rev=${currentInboundRev} > watermarkRev=${watermarkRev}`);
+
           // Limpa agendamento e travas manuais antigas para que o ciclo execute imediatamente
           await supabase.from("instagram_conversations").update({
             ai_auto_respond: true,
             ai_debounce_until: null,
           }).eq("id", conversationId);
-          // Limpa travas manuais antigas via RPC atômica blindada no PostgreSQL
           try {
             await supabase.rpc("patch_autopilot_pause_atomic", {
               p_conversation_id: conversationId,
@@ -4075,7 +4200,7 @@ serve(async (req: Request) => {
             triggered: true,
             messageId: lastMsg.id,
             status: "processing",
-            detail: "Pretendente estava aguardando resposta. Autopiloto iniciado na nuvem imediatamente!",
+            detail: "Nova mensagem pós-ativação detectada. Autopiloto iniciado!",
           }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
@@ -4233,34 +4358,43 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: convRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
+        if (isEnabled) {
+          // Ativação atômica via RPC: busca a última mensagem sob lock FOR UPDATE e grava o watermark + ai_auto_respond = true sem janela de race!
+          const { data: armResult, error: armErr } = await supabase.rpc(
+            "arm_autopilot_with_watermark_atomic",
+            { p_conversation_id: conversationId }
+          );
 
-        const currentRules = convRow?.stage_completed_rules || {};
-
-        // 1. Mutação atômica via RPC protegendo outbox e active_cycle_token
-        const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
-          "patch_autopilot_pause_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_paused: !isEnabled,
-            p_reason: !isEnabled ? "paused_manual" : null,
+          if (armErr || !armResult?.success) {
+            console.warn(`[Autopilot] arm_autopilot_with_watermark_atomic falhou para conv=${conversationId}, aplicando fallback seguro...`, armErr?.message || armErr);
+            await supabase.from("instagram_conversations").update({
+              ai_auto_respond: true,
+              ai_debounce_until: null,
+            }).eq("id", conversationId);
+          } else {
+            console.log(`[Autopilot] autopilot_armed_atomic conv=${conversationId} watermark_rev=${armResult?.inbound_revision ?? armResult?.watermark?.inboundRevision}`);
           }
-        );
+        } else {
+          // Desativação atômica via RPC protegendo outbox e active_cycle_token
+          const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
+            "patch_autopilot_pause_atomic",
+            {
+              p_conversation_id: conversationId,
+              p_paused: true,
+              p_reason: "paused_manual",
+            }
+          );
 
-        if (pauseRpcErr || !pauseRpcResult?.success) {
-          // FAIL-CLOSED: se a RPC falhar ou for inacessível, atualiza somente a coluna física ai_auto_respond sem tocar em stage_completed_rules
-          console.warn(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}. Atualizando somente coluna física ai_auto_respond.`);
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              ai_auto_respond: isEnabled,
-              ai_debounce_until: isEnabled ? undefined : null,
-            })
-            .eq("id", conversationId);
+          if (pauseRpcErr || !pauseRpcResult?.success) {
+            console.warn(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}. Atualizando somente coluna física ai_auto_respond.`);
+            await supabase
+              .from("instagram_conversations")
+              .update({
+                ai_auto_respond: false,
+                ai_debounce_until: null,
+              })
+              .eq("id", conversationId);
+          }
         }
 
         // Atualiza __autopilot_states__
