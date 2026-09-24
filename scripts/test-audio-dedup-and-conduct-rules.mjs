@@ -13,6 +13,7 @@ import {
   detectAcceptedOutingInvite,
   isPhoneRequest,
   detectPhoneNumberLeak,
+  isTextRedundantWithAudioTranscript,
 } from "../supabase/functions/api/ConversationQualityGate.ts";
 
 test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por searchPersonaAudios nem por searchCofreAudios", async () => {
@@ -195,3 +196,50 @@ test("FALLBACK DE SEGURANÇA: safeHighConfidenceFallback para convites e pedidos
   assert.ok(phoneFallback && phoneFallback.length > 0, "Deve gerar fallback para pedido de WhatsApp");
   assert.equal(phoneFallback[0].includes("direct"), true, "Fallback de WhatsApp deve manter no direct com charme");
 });
+
+test("ANTI-DUPLICAÇÃO DE ÁUDIO & TEXTO: isTextRedundantWithAudioTranscript poda balão redundante e preserva acolhimento", () => {
+  const audioTranscript = "eu faço faculdade de enfermagem, faço estágio durante o dia no hospital e aula teórica à noite, e também trabalho em casa com vendas online pelo celular";
+
+  // 1. O balão exato que ocorreu no bug real
+  const bugBalloon = "eu estudo Enfermagem, faço estágio no hospital e tenho aula à noite, tbm trabalho com vendas online em casa";
+  assert.equal(
+    isTextRedundantWithAudioTranscript(bugBalloon, audioTranscript),
+    true,
+    "Balão repetindo o trabalho/estudo da Larissa deve ser classificado como redundante com o áudio"
+  );
+
+  // 2. Balão de acolhimento ao trabalho do pretendente (soldador)
+  const pretendenteReactionBalloon = "nossaa, soldador industrial deve exigir muito foco e força né kkk";
+  assert.equal(
+    isTextRedundantWithAudioTranscript(pretendenteReactionBalloon, audioTranscript),
+    false,
+    "Balão de acolhimento ao pretendente NUNCA deve ser classificado como redundante"
+  );
+
+  // 3. Balão devolvendo pergunta (reciprocidade)
+  const reciprocityBalloon = "e vc, trabalha com oq por aí?";
+  assert.equal(
+    isTextRedundantWithAudioTranscript(reciprocityBalloon, audioTranscript),
+    false,
+    "Balão de reciprocidade não pode ser classificado como redundante"
+  );
+
+  // 4. Simulação da poda determinística de outboundActions
+  const rawActions = [
+    { type: "text", text: bugBalloon },
+    { type: "text", text: pretendenteReactionBalloon },
+    { type: "audio", audioId: "audio_faculdade_trabalho" },
+  ];
+
+  const prunedActions = rawActions.filter((act) => {
+    if (act.type === "text" && isTextRedundantWithAudioTranscript(act.text, audioTranscript)) {
+      return false; // PODADO!
+    }
+    return true;
+  });
+
+  assert.equal(prunedActions.length, 2, "Deverá restar exatamente 2 ações (áudio + texto de acolhimento)");
+  assert.equal(prunedActions[0].text, pretendenteReactionBalloon, "O texto que sobrou deve ser o acolhimento ao rapaz");
+  assert.equal(prunedActions[1].type, "audio", "O áudio deve ser preservado intacto");
+});
+

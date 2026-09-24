@@ -47,7 +47,8 @@ export type ConversationQualityIssueCode =
   | "GENERIC_ASSISTANT_RESPONSE"
   | "MISSING_WELLBEING_QUESTION"
   | "ACCEPTED_OUTING_INVITE"
-  | "PHONE_NUMBER_LEAK";
+  | "PHONE_NUMBER_LEAK"
+  | "TEXT_DUPLICATES_AUDIO_TRANSCRIPT";
 
 export interface ConversationQualityIssue {
   code: ConversationQualityIssueCode;
@@ -204,6 +205,59 @@ export function detectPhoneNumberLeak(outbound: string): boolean {
   const hasPhonePhrase = /\b(?:meu (?:whats|whatsapp|zap|numero|celular|telefone) e|anota ai|chama la no zap|me chama no zap)\b/i.test(norm);
   const hasPhoneNumberPattern = /\b(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9\d{4}[-\s]?\d{4}\b/.test(outbound);
   return hasPhonePhrase || hasPhoneNumberPattern;
+}
+
+/**
+ * Detecta determinísticamente se um balão de texto duplica o conteúdo já dito em um áudio do Cofre.
+ * Evita a gafe de mandar o áudio falando da faculdade/trabalho e um texto repetindo a mesma coisa.
+ */
+export function isTextRedundantWithAudioTranscript(text: string, transcript: string): boolean {
+  if (!text || !transcript) return false;
+
+  const normalizeForComparison = (s: string) =>
+    String(s || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const normText = normalizeForComparison(text);
+  const normTranscript = normalizeForComparison(transcript);
+
+  const STOPWORDS = new Set([
+    "o", "a", "os", "as", "um", "uma", "uns", "umas",
+    "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
+    "e", "ou", "que", "com", "por", "pra", "para", "se", "seu", "sua",
+    "vc", "voce", "eu", "ele", "ela", "me", "te", "tbm", "tb", "ja",
+    "sim", "nao", "mas", "so", "so", "bem", "mais", "muito", "muita"
+  ]);
+
+  const textTokens = normText
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+
+  if (textTokens.length === 0) return false;
+
+  let matches = 0;
+  for (const token of textTokens) {
+    if (normTranscript.includes(token)) {
+      matches++;
+    }
+  }
+
+  const matchRatio = matches / textTokens.length;
+
+  const isFirstPersonStatement = /\b(?:eu|moro|sou|estudo|faco|tenho|trabalho|estagio|plantao|curso|vendo|vendas|minha|meu)\b/i.test(normText);
+
+  // Se mais da metade dos termos substantivos do texto já estão no áudio E é declaração em 1ª pessoa:
+  // ou se a sobreposição for extrema (>= 70%):
+  if ((isFirstPersonStatement && matchRatio >= 0.45) || matchRatio >= 0.70) {
+    return true;
+  }
+
+  return false;
 }
 
 function extractQuestions(text: string): string[] {

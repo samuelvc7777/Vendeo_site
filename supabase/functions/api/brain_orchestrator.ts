@@ -74,6 +74,7 @@ import {
   safeHighConfidenceFallback,
   isActionableInboundMessage,
   isPureEmojiMessage,
+  isTextRedundantWithAudioTranscript,
   type TurnContract,
 } from "./ConversationQualityGate.ts";
 export {
@@ -9183,12 +9184,34 @@ export async function runBrainOrchestration(
             objectiveCompletion: brainObjectiveCompletion || undefined,
           };
         } else {
-          // Reconstruir lista de outboundActions autorizadas respeitando o guard de texto
+          // Se houver áudio selecionado, recupera a transcrição para podar qualquer texto redundante
+          let selectedAudioTranscript = "";
+          if (audioSelection.selectedAudioId) {
+            const cand = audioSelection.candidateAudios?.[0];
+            selectedAudioTranscript = cand?.transcript || cand?.title || "";
+            if (!selectedAudioTranscript) {
+              const foundCand = brainAudioCandidates.find(
+                (c) => c.audio_id === audioSelection.selectedAudioId || (c as any).audioId === audioSelection.selectedAudioId
+              );
+              selectedAudioTranscript = foundCand?.full_transcript || foundCand?.transcript || foundCand?.title || "";
+            }
+          }
+
+          // Reconstruir lista de outboundActions autorizadas respeitando o guard de texto e anti-duplicação de áudio
           const allowedOutboundActions: OutboundAction[] = [];
           for (const act of rawActions) {
             if (act.type === "text") {
               const textVal = String(act.text || "").trim();
-              if (textVal && intentGuard.allowedBalloons.includes(textVal)) {
+              if (!textVal) continue;
+
+              // PODA DETERMINÍSTICA: Se há áudio selecionado e o balão repete o conteúdo do áudio, CORTA O TEXTO!
+              if (selectedAudioTranscript && isTextRedundantWithAudioTranscript(textVal, selectedAudioTranscript)) {
+                currentCycle.trace.push(`redundant_audio_text_pruned: ${textVal.slice(0, 60)}`);
+                console.warn(`[Orchestrator] PODADO: Balão de texto duplicava a transcrição do áudio enviado: "${textVal}"`);
+                continue;
+              }
+
+              if (intentGuard.allowedBalloons.includes(textVal)) {
                 allowedOutboundActions.push({ type: "text", text: textVal });
               }
             } else if (act.type === "audio") {
@@ -9890,6 +9913,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
         resolvedAudio = undefined;
       } else {
+        // Poda determinística no Outbox: remove qualquer texto redundante com a transcrição do áudio
+        if (resolvedAudio && (resolvedAudio.transcript || resolvedAudio.title)) {
+          const trans = resolvedAudio.transcript || resolvedAudio.title || "";
+          canonicalOutboundActions = canonicalOutboundActions.filter((act) => {
+            if (act.type === "text" && isTextRedundantWithAudioTranscript(act.text, trans)) {
+              currentCycle.trace.push(`outbox_redundant_audio_text_pruned: ${act.text.slice(0, 60)}`);
+              console.warn(`[Orchestrator] OUTBOX PODADO: Texto redundante com áudio removido: "${act.text}"`);
+              return false;
+            }
+            return true;
+          });
+        }
+
         // 3. Trava 2 Anti-repetição atômica pré-dispatch com RESERVA (CLAIM)
         const claimResult = await claimAudioDeliveryReservation({
           supabase,
