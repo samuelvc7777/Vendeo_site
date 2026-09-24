@@ -1013,13 +1013,15 @@ serve(async (req: Request) => {
 
                 const convRules = convRow?.stage_completed_rules || {};
                 const isPaused =
-                  convRules.status === "paused_manual" ||
+                  convRow?.ai_auto_respond === false ||
+                  convRow?.is_restricted === true ||
                   convRules.status === "paused_handoff" ||
                   convRules.status === "paused_guardrail" ||
-                  convRules.status === "disabled" ||
-                  convRow?.ai_auto_respond === false ||
-                  isExplicitlyDisabled ||
-                  convRow?.is_restricted === true;
+                  (convRow?.ai_auto_respond !== true && (
+                    convRules.status === "paused_manual" ||
+                    convRules.status === "disabled" ||
+                    isExplicitlyDisabled
+                  ));
 
                 const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
 

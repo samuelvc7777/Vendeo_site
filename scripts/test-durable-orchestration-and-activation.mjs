@@ -1091,3 +1091,50 @@ test('29. Pacing: ciclo principal não aguarda waitForHumanSendDelay entre balõ
 
   assert.doesNotMatch(dispatchLoop, /await waitForHumanSendDelay\(/, 'Brain não deve permanecer vivo esperando pacing');
 });
+
+test('30. Migration possui cast seguro de timestamp para timestamptz na RPC record_inbound_message_atomic', () => {
+  const migrationSource = fs.readFileSync(
+    new URL('../supabase/migrations/20260924170000_fix_inbound_timestamp_cast_and_autopilot_arm_status.sql', import.meta.url),
+    'utf8'
+  );
+  assert.match(
+    migrationSource,
+    /v_parsed_timestamp := p_timestamp::timestamptz;/,
+    'migration deve fazer o cast explícito de p_timestamp para timestamptz'
+  );
+  assert.match(
+    migrationSource,
+    /p_text, v_parsed_timestamp,/,
+    'INSERT deve usar v_parsed_timestamp tipado para coluna timestamp'
+  );
+});
+
+test('31. arm_autopilot_with_watermark_atomic reseta status de pausa residual para active', () => {
+  const migrationSource = fs.readFileSync(
+    new URL('../supabase/migrations/20260924170000_fix_inbound_timestamp_cast_and_autopilot_arm_status.sql', import.meta.url),
+    'utf8'
+  );
+  assert.match(
+    migrationSource,
+    /IF \(v_rules->>'status'\) IN \('paused_manual', 'paused_handoff', 'paused_guardrail', 'disabled'\) THEN/,
+    'arm_autopilot deve detectar status residuais de pausa'
+  );
+  assert.match(
+    migrationSource,
+    /v_rules := jsonb_set\(v_rules, '\{status\}', '"active"'::jsonb\);/,
+    'arm_autopilot deve resetar status para active'
+  );
+});
+
+test('32. isPaused no Webhook não bloqueia conversa quando ai_auto_respond é true', () => {
+  const apiSource = fs.readFileSync(
+    new URL('../supabase/functions/api/index.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(
+    apiSource,
+    /convRow\?\.ai_auto_respond !== true && \(\s*convRules\.status === "paused_manual"/,
+    'paused_manual só deve pausar se ai_auto_respond não for true'
+  );
+});
+
