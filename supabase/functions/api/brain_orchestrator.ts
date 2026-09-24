@@ -72,6 +72,8 @@ import {
   normalizeBrainTurnContract,
   runConversationQualityGate,
   safeHighConfidenceFallback,
+  isActionableInboundMessage,
+  isPureEmojiMessage,
   type TurnContract,
 } from "./ConversationQualityGate.ts";
 export {
@@ -7798,6 +7800,36 @@ export async function runBrainOrchestration(
         cycleToken: correlationId,
         processingStatus: "idle",
         markProcessedIds: staleMessageIds,
+        cycleRecord: currentCycle,
+      });
+      return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };
+    }
+
+    // REGRA MANDATÓRIA: A IA só deve responder a áudios e textos substantivos.
+    // Ignora emojis sozinhos, fotos isoladas, vídeos isolados ou mídias não suportadas.
+    const actionablePending = pendingMessages.filter((msg) =>
+      isActionableInboundMessage({
+        text: msg.text,
+        mediaType: msg.type,
+        audioTranscript: msg.audioTranscript,
+      })
+    );
+
+    if (actionablePending.length === 0) {
+      console.log(
+        `[Orchestrator] Todas as mensagens pendentes (${pendingMessages.length}) em ${conversationId} são não-acionáveis (apenas emojis isolados, fotos ou mídias sem áudio/texto). Marcando como processadas no ledger e finalizando sem disparar IA.`
+      );
+      const unactionableIds = pendingMessages.map((m) => String(m.id));
+      for (const id of unactionableIds) {
+        ledger[id] = "processed";
+        currentCycle.trace.push(`unactionable_inbound_ignored: ${id}`);
+      }
+      await releaseExperimentalCycleAtomic({
+        supabase,
+        conversationId,
+        cycleToken: correlationId,
+        processingStatus: "idle",
+        markProcessedIds: [...staleMessageIds, ...unactionableIds],
         cycleRecord: currentCycle,
       });
       return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };

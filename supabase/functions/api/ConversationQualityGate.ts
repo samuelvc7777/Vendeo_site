@@ -112,6 +112,64 @@ export function isGreetingOrWellbeing(text: string): boolean {
   return isGreeting(text) || isWellbeingQuestion(text);
 }
 
+export const EMOJI_DETECTION_REGEX = /[\p{Extended_Pictographic}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;
+
+export function isPureEmojiMessage(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const raw = String(text).trim();
+  if (!raw) return false;
+
+  if (raw.startsWith("[audio:") || raw.startsWith("[image:") || raw.startsWith("[video:") || raw.startsWith("[file:")) {
+    return false;
+  }
+
+  const withoutEmojis = raw.replace(EMOJI_DETECTION_REGEX, "");
+  const remaining = withoutEmojis.replace(/[\s\r\n\t.,!?~_–—\-:;()'"*#@]/g, "");
+  const hasEmoji = EMOJI_DETECTION_REGEX.test(raw);
+  return hasEmoji && remaining.length === 0;
+}
+
+export function isActionableInboundMessage(msg: {
+  text?: string | null;
+  mediaType?: string | null;
+  media_type?: string | null;
+  type?: string | null;
+  audioTranscript?: string | null;
+  audio_transcript?: string | null;
+}): boolean {
+  const mediaType = String(msg.mediaType || msg.media_type || msg.type || "").toLowerCase();
+  const text = String(msg.text || "").trim();
+  const transcript = String(msg.audioTranscript || msg.audio_transcript || "").trim();
+
+  // 1. Mensagens de voz/áudio são sempre acionáveis
+  if (mediaType === "audio" || text.startsWith("[audio:") || transcript.length > 0) {
+    return true;
+  }
+
+  // 2. Fotos / Imagens isoladas NÃO são acionáveis
+  if (mediaType === "image" || text.startsWith("[image:")) {
+    return false;
+  }
+
+  // 3. Vídeos ou arquivos isolados NÃO são acionáveis
+  if (mediaType === "video" || text.startsWith("[video:") || mediaType === "file" || text.startsWith("[file:")) {
+    return false;
+  }
+
+  // 4. Mensagens vazias NÃO são acionáveis
+  if (!text) {
+    return false;
+  }
+
+  // 5. Emojis isolados / sozinhos NÃO são acionáveis
+  if (isPureEmojiMessage(text)) {
+    return false;
+  }
+
+  // 6. Texto com conteúdo substantivo real
+  return true;
+}
+
 function isWellbeingQuestion(text: string): boolean {
   const norm = rawNormalize(text);
   return /\b(?:tudo bem|ta bem|como (?:vc|voce|c|ce) ta|tudo certo|ta tudo bem)\b/.test(norm)

@@ -18,6 +18,10 @@ import {
   resolveInboundAudioMessage,
 } from "./audio_transcription.ts";
 export { getGroqApiKey, transcribeWithGroqCloud, resolveInboundAudioMessage };
+import {
+  isActionableInboundMessage,
+  isPureEmojiMessage,
+} from "./ConversationQualityGate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1024,6 +1028,11 @@ serve(async (req: Request) => {
                   ));
 
                 const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
+                const isActionable = isActionableInboundMessage({
+                  text,
+                  mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+                  audioTranscript,
+                });
 
                 if (isPaused) {
                   console.log(
@@ -1039,10 +1048,14 @@ serve(async (req: Request) => {
                   console.log(
                     `[AutoPilot] Inbound ${messageId} para conv ${conversationId} pertence ao baseline do watermark (rev=${inboundRpcData?.inbound_revision} <= watermark=${inboundRpcData?.watermark_revision}). Zero Brain.`
                   );
+                } else if (!isActionable) {
+                  console.log(
+                    `[AutoPilot] Inbound ${messageId} para conv ${conversationId} ignorado para resposta da IA (apenas emoji isolado, foto ou mídia sem texto/áudio). Zero Brain.`
+                  );
                 }
 
                 // BRAIN: Único orquestrador oficial de produção (fail-closed)
-                if (!isPaused && isEnabledGlobally && !isManual && isEligibleByWatermark) {
+                if (!isPaused && isEnabledGlobally && !isManual && isEligibleByWatermark && isActionable) {
                   const delayMinutes =
                     typeof apConfig?.responseDelayMinutes === "number"
                       ? apConfig.responseDelayMinutes

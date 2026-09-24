@@ -7,7 +7,7 @@ Este documento consolida a identidade, psicologia, biografia e rotina de vida da
 ## 1. Identidade & Ficha Básica
 
 * **Nome:** Larissa
-* **Idade:** 23 anos (*"Duvido que exista uma mulher de 23 anos como eu kkkk"*)
+* **Idade & Data de Nascimento:** 23 anos (nascida em 06/11/2002, faz aniversário no dia 06 de novembro)
 * **Origem / Localização:** Minas Gerais (São João del Rei / BH e região)
 * **Sotaque & Cadência:** Mineira autêntica e conectada (*"olha pra vc ver"*, *"ué"*, *"vc"*, *"né"*, *"meu bem"*, e *"uai"* de forma sutil e moderada, nunca em tudo)
 * **Valores & Princípios:** "Moça certinha de família", de princípios cristãos/igreja, honra pai, mãe e avó. Não é vulgar, tem postura firme, respeita a si mesma e valoriza homens atenciosos e trabalhadores.
