@@ -826,6 +826,9 @@ export function buildFallbackBrainPlan(parsedPlan: any): any {
 export interface RunOpenAiBrainParams {
   supabase: any;
   conversationId: string;
+  sessionId?: string | null;
+  persistentSessionEnabled?: boolean;
+  replyTargets?: Record<string, { id: string; sender: string; text: string }>;
   searchCofreAudios?: (params: any) => Promise<any[]>;
   currentStageId: string;
   currentObjectiveId?: string | null;
@@ -901,18 +904,19 @@ export interface OpenAiBrainTurnResult {
   plan: any | null;
   error?: string;
   telemetry: {
-    agentId: string;sessionId?: string;
-turnId?: string;
-status?: string;
-sessionStatus?: string;
-turnStatus?: string;
-turnStartedAt?: string;
-turnCompletedAt?: string;
-completionSource?: "turn" | "session" | "pending";
+    agentId: string;
+    sessionId?: string;
+    turnId?: string;
+    status?: string;
+    sessionStatus?: string;
+    turnStatus?: string;
+    turnStartedAt?: string;
+    turnCompletedAt?: string;
+    completionSource?: "turn" | "session" | "pending";
     identifyAttempt?: number;
-localWaitDeadlineReached?: boolean;
-recoveryMode?: string;
-toolsRequested: string[];
+    localWaitDeadlineReached?: boolean;
+    recoveryMode?: string;
+    toolsRequested: string[];
     toolExecutionsCount: number;
     memoryToolResults: Array<{ toolName: string; status: string; reasonCode?: string; resultCount?: number }>;
     authorizedCandidateAudios?: Array<{ audioId: string; title: string; transcript: string; whenToUse: string; duration?: number }>;
@@ -930,7 +934,100 @@ toolsRequested: string[];
     interactionDnaHash?: string;
     recentStyleStateApplied?: boolean;
     contextWindow?: OpenAiContextWindowTelemetry;
+    persistentAgentSessionEnabled?: boolean;
+    agentSessionReused?: boolean;
+    agentSessionCreated?: boolean;
+    sessionFallbackUsed?: boolean;
+    sessionFallbackTriggered?: boolean;
+    agentSessionRecoveryTriggered?: boolean;
+    agentSessionBootstrapInjected?: boolean;
+    agentSessionBootstrapMessageCount?: number;
+    manualRecentHistoryInjected?: boolean;
+    contactMemoryInjected?: boolean;
+    episodicMemoryInjected?: boolean;
+    personaMemoryToolEnabled?: boolean;
+    contactMemoryToolEnabled?: boolean;
+    conversationMemoryToolEnabled?: boolean;
+    audioSearchToolEnabled?: boolean;
   };
+}
+
+/**
+ * Recupera histórico recente de instagram_messages (15 a 20 mensagens) exclusivamente
+ * para o bootstrap de uma nova sessão (recuperação de sessão perdida ou primeira sessão
+ * de conversa pré-existente). Não utiliza nenhuma memória MCP.
+ */
+export async function fetchSessionRecoveryBootstrap(
+  supabase: any,
+  conversationId: string,
+  excludeMessageIds: string[] = []
+): Promise<{ text: string; messageCount: number }> {
+  if (!supabase || !conversationId) {
+    return { text: "", messageCount: 0 };
+  }
+
+  try {
+    const { data: rows, error } = await supabase
+      .from("instagram_messages")
+      .select("id, sender_id, is_from_me, text, message, created_at, timestamp")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(35);
+
+    if (error || !Array.isArray(rows) || rows.length === 0) {
+      return { text: "", messageCount: 0 };
+    }
+
+    const excludeSet = new Set(excludeMessageIds.map((id) => String(id)));
+    const filteredRows = rows.filter((r: any) => {
+      const idStr = String(r.id || "");
+      if (idStr && excludeSet.has(idStr)) return false;
+      const content = String(r.text || r.message || "").trim();
+      return Boolean(content);
+    });
+
+    if (filteredRows.length === 0) {
+      return { text: "", messageCount: 0 };
+    }
+
+    // Recupera entre 15 e 20 mensagens mais recentes (limite de 20)
+    const targetSlice = filteredRows.slice(0, 20);
+
+    // Ordena cronologicamente (da mais antiga para a mais recente)
+    targetSlice.sort((a: any, b: any) => {
+      const tA = new Date(a.created_at || a.timestamp || 0).getTime();
+      const tB = new Date(b.created_at || b.timestamp || 0).getTime();
+      return tA - tB;
+    });
+
+    const lines: string[] = [
+      "## RECUPERAÇÃO EXCEPCIONAL DE CONTEXTO",
+      "",
+      "Histórico recente real da conversa:",
+    ];
+
+    for (const msg of targetSlice) {
+      const isLarissa = Boolean(
+        msg.is_from_me ||
+        msg.sender_id === "me" ||
+        msg.sender_id === "larissa"
+      );
+      const senderLabel = isLarissa ? "Larissa" : "Pretendente";
+      const idPart = msg.id ? ` | id=${msg.id}` : "";
+      const text = String(msg.text || msg.message || "").trim();
+      lines.push("");
+      lines.push(`[${senderLabel}${idPart}]`);
+      lines.push(text);
+    }
+
+    return {
+      text: lines.join("\n"),
+      messageCount: targetSlice.length,
+    };
+  } catch (err) {
+    console.warn("[OpenAI Agent] Falha ao carregar bootstrap excepcional:", err);
+    return { text: "", messageCount: 0 };
+  }
 }
 
 async function fetchAgentGenerationIds(
@@ -1163,7 +1260,41 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     recentQuestionIntentsSnippet,
   } = params;
 
-  const recentWindow = buildAgentRecentWindow(params);
+  const persistentMode = Boolean(params.persistentSessionEnabled);
+  const recentWindow = persistentMode
+    ? {
+        text: "",
+        includedRecentMessages: [],
+        telemetry: {
+          candidateCount: 0,
+          deduplicatedCount: 0,
+          budgetedCount: 0,
+          includedCount: 0,
+          includedMessages: [],
+          previews: [],
+          lastLarissaOutboundId: null,
+          finalMandatoryMessageIds: [],
+          mandatoryCount: 0,
+          lastLarissaOutboundRequired: false,
+          lastLarissaOutboundIncluded: null,
+          replyTargetRequiredCount: 0,
+          replyTargetsIncludedCount: 0,
+          currentInboundDuplicateCount: 0,
+          droppedNonMandatoryCount: 0,
+          mandatoryContextOverflow: false,
+          cutByMessageLimit: false,
+          cutByCharLimit: false,
+          windowCharacterCount: 0,
+          cuts: {
+            messageLimit: false,
+            tokenBudget: false,
+            finalCharacters: false,
+            messageTextLimit: false,
+            mandatoryTokenOverflow: false,
+          },
+        },
+      }
+    : buildAgentRecentWindow(params);
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
   const objectiveType = "[OBRIGATÓRIO]";
@@ -1184,7 +1315,8 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     );
   }
 
-  if (liveStateContext) {
+  // No modo persistente, liveStateContext conversacional redundante não é injetado
+  if (!persistentMode && liveStateContext) {
     sections.push(`\n## ESTADO VIVO\n${liveStateContext}`);
   }
   if (params.temporalContext) {
@@ -1194,20 +1326,29 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     sections.push(`\n## EVIDÊNCIAS CANDIDATAS DE OBJETIVO (NÃO CONCLUEM NADA SOZINHAS)\n${params.candidateEvidence.map((e) => `- objetivo=${e.objectiveId}; mensagem=${e.evidenceMessageId}; evidência=${e.summary}`).join("\n")}`);
   }
 
-  if (recentQuestionIntentsSnippet && recentQuestionIntentsSnippet.trim()) {
+  // No modo persistente, recentQuestionIntents não é injetado (a Session mantém o contexto natural)
+  if (!persistentMode && recentQuestionIntentsSnippet && recentQuestionIntentsSnippet.trim()) {
     sections.push(`\n## PERGUNTAS RECENTES (SEMANTIC QUESTION INTENTS)\n${recentQuestionIntentsSnippet.trim()}`);
   }
 
-  if (contactMemorySummary) {
+  // No modo persistente, ContactMemory e Landmarks não são injetados (a Session é a memória primária)
+  if (!persistentMode && contactMemorySummary) {
     sections.push(`\n## FATOS CONHECIDOS DO PRETENDENTE\n${contactMemorySummary}`);
   }
 
-  if (landmarksSummary) {
+  if (!persistentMode && landmarksSummary) {
     sections.push(`\n## MARCOS HISTÓRICOS DA CONVERSA\n${landmarksSummary}`);
   }
 
-  // A janela final mantém mensagens obrigatórias e remove primeiro o histórico
-  // normal mais antigo; a telemetria descreve exatamente o payload montado.
+  // Se houver mensagem respondida explicitamente (reply/quote), injeta o reply target
+  if (params.replyTargets && Object.keys(params.replyTargets).length > 0) {
+    const replyLines = Object.values(params.replyTargets).map(
+      (r) => `[RESPONDENDO A ${r.sender.toUpperCase()} id="${r.id}"]: "${r.text}"`
+    );
+    sections.push(`\n## MENSAGEM REFERENCIADA (REPLY TARGET)\n${replyLines.join("\n")}`);
+  }
+
+  // A janela final mantém mensagens obrigatórias no modo legado; no modo persistente, a Session retém o histórico
   if (recentWindow.text) sections.push(`\n## JANELA CONVERSACIONAL RECENTE\n${recentWindow.text}`);
 
   let inboundsText = "[Nenhuma mensagem nova]";
@@ -1384,6 +1525,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   }
 
   agentId = agentId || "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482";
+  const persistentMode = Boolean(params.persistentSessionEnabled);
 
   const telemetry: OpenAiBrainTurnResult["telemetry"] = {
     agentId,
@@ -1401,24 +1543,44 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     interactionDnaVersion: LARISSA_INTERACTION_DNA_VERSION,
     interactionDnaHash: LARISSA_INTERACTION_DNA_HASH,
     recentStyleStateApplied: Boolean(params.recentStyleStateSnippet),
+    persistentAgentSessionEnabled: persistentMode,
+    personaMemoryToolEnabled: !persistentMode,
+    contactMemoryToolEnabled: !persistentMode,
+    conversationMemoryToolEnabled: !persistentMode,
+    audioSearchToolEnabled: true,
+    agentSessionRecoveryTriggered: false,
+    agentSessionBootstrapInjected: false,
+    agentSessionBootstrapMessageCount: 0,
   };
 
   const builtContext = buildOpenAiBrainContextMessageWithObservability(params);
   telemetry.contextWindow = builtContext.contextWindow;
+  telemetry.manualRecentHistoryInjected = !persistentMode && Boolean(builtContext.contextWindow?.includedCount && builtContext.contextWindow.includedCount > 0);
+  telemetry.contactMemoryInjected = !persistentMode && Boolean(params.contactMemorySummary);
+  telemetry.episodicMemoryInjected = !persistentMode && Boolean(params.landmarksSummary);
   const contextMessage = builtContext.contextMessage;
 
   // 1. Suporte a runtime de teste injetado (Zero dependência de rede em testes unitários)
   if (params.runtime && typeof params.runtime.callOpenAiAgent === "function") {
     try {
+      const activeTools = persistentMode
+        ? [COFRE_AUDIO_SEARCH_TOOL_DEFINITION]
+        : [
+            PERSONA_MEMORY_TOOL_DEFINITION,
+            CONTACT_MEMORY_TOOL_DEFINITION,
+            CONVERSATION_MEMORY_TOOL_DEFINITION,
+            COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
+          ];
+
       const mockResult = await params.runtime.callOpenAiAgent({
         agentId,
+        sessionId: params.sessionId || null,
         context: contextMessage,
-        tools: [
-          PERSONA_MEMORY_TOOL_DEFINITION,
-          CONTACT_MEMORY_TOOL_DEFINITION,
-          CONVERSATION_MEMORY_TOOL_DEFINITION,
-        ],
+        tools: activeTools,
         executeTool: async (toolName: string, toolArgs: any) => {
+          if (persistentMode && (toolName === "persona_memory_search" || toolName === "contact_memory_search" || toolName === "conversation_memory_search")) {
+            throw new Error(`Tool de memória '${toolName}' desativada no modo de sessão persistente.`);
+          }
           if (toolName === "persona_memory_search") {
             console.log(`[Brain] tool_requested ${toolName}`);
             telemetry.toolsRequested.push(toolName);
@@ -1533,7 +1695,57 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       console.log("[Brain] turn_completed");
       telemetry.durationMs = Date.now() - startTime;
       telemetry.totalTokens = mockResult.tokens || 100;
-      telemetry.sessionId = mockResult.sessionId || `sess_runtime_${Date.now()}`;
+      if (params.sessionId) {
+        telemetry.sessionId = mockResult.sessionId || params.sessionId;
+        telemetry.agentSessionReused = mockResult.sessionCreated ? false : true;
+        telemetry.agentSessionCreated = Boolean(mockResult.sessionCreated);
+        telemetry.sessionFallbackTriggered = Boolean(mockResult.sessionCreated);
+        telemetry.agentSessionRecoveryTriggered = Boolean(mockResult.sessionCreated);
+      } else {
+        telemetry.sessionId = mockResult.sessionId || `sess_runtime_${Date.now()}`;
+        telemetry.agentSessionReused = false;
+        telemetry.agentSessionCreated = true;
+        telemetry.agentSessionRecoveryTriggered = false;
+      }
+
+      if (persistentMode) {
+        if (telemetry.agentSessionCreated) {
+          if (mockResult.bootstrapInjected !== undefined) {
+            telemetry.agentSessionBootstrapInjected = Boolean(mockResult.bootstrapInjected);
+            telemetry.agentSessionBootstrapMessageCount = mockResult.bootstrapMessageCount || 0;
+          } else if (params.supabase) {
+            const currentInboundIds = (params.currentInboundMessages || []).map((m) => String(m.id)).filter(Boolean);
+            const bootstrap = await fetchSessionRecoveryBootstrap(
+              params.supabase,
+              params.conversationId,
+              currentInboundIds
+            );
+            telemetry.agentSessionBootstrapInjected = bootstrap.messageCount > 0;
+            telemetry.agentSessionBootstrapMessageCount = bootstrap.messageCount;
+          } else {
+            telemetry.agentSessionBootstrapInjected = false;
+            telemetry.agentSessionBootstrapMessageCount = 0;
+          }
+        } else {
+          telemetry.agentSessionBootstrapInjected = false;
+          telemetry.agentSessionBootstrapMessageCount = 0;
+        }
+      }
+
+      if (mockResult.telemetry) {
+        if (Array.isArray(mockResult.telemetry.authorizedCandidateAudios)) {
+          telemetry.authorizedCandidateAudios = mockResult.telemetry.authorizedCandidateAudios;
+        }
+        if (Array.isArray(mockResult.telemetry.toolsRequested)) {
+          telemetry.toolsRequested = [...new Set([...telemetry.toolsRequested, ...mockResult.telemetry.toolsRequested])];
+        }
+        if (Array.isArray(mockResult.telemetry.sourcesUsed)) {
+          telemetry.sourcesUsed = [...new Set([...telemetry.sourcesUsed, ...mockResult.telemetry.sourcesUsed])];
+        }
+        if (mockResult.telemetry.actualMemoryToolCalled !== undefined) {
+          telemetry.actualMemoryToolCalled = Boolean(mockResult.telemetry.actualMemoryToolCalled);
+        }
+      }
 
       const basicValidation = validateConversationBrainPlan(mockResult.plan);
       const invariantValidation = validatePersonaMemoryExecutionInvariant(mockResult.plan, telemetry.actualMemoryToolCalled);
@@ -1637,13 +1849,24 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       sessionUsageCollected = true;
 
       if (telemetry.inputTokens === 0 && telemetry.outputTokens === 0) {
-        const turnUsage = sessionTelemetry.turns.filter((turn) => turn.usage && typeof turn.usage === "object");
-        for (const turn of turnUsage) {
-          if (turn.id && !telemetry.turnId) telemetry.turnId = turn.id;
-          const usage = turn.usage as Record<string, any>;
-          telemetry.inputTokens += usage.input_tokens ?? usage.prompt_tokens ?? 0;
-          telemetry.outputTokens += usage.output_tokens ?? usage.completion_tokens ?? 0;
-          telemetry.totalTokens += usage.total_tokens ?? 0;
+        if (turnId) {
+          const matchingTurn = sessionTelemetry.turns.find((turn) => turn.id === turnId);
+          if (matchingTurn && matchingTurn.usage && typeof matchingTurn.usage === "object") {
+            const usage = matchingTurn.usage as Record<string, any>;
+            telemetry.inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
+            telemetry.outputTokens = usage.output_tokens ?? usage.completion_tokens ?? 0;
+            telemetry.totalTokens = usage.total_tokens ?? (telemetry.inputTokens + telemetry.outputTokens);
+          }
+        }
+        if (telemetry.inputTokens === 0 && telemetry.outputTokens === 0) {
+          const turnUsage = sessionTelemetry.turns.filter((turn) => turn.usage && typeof turn.usage === "object");
+          for (const turn of turnUsage) {
+            if (turn.id && !telemetry.turnId) telemetry.turnId = turn.id;
+            const usage = turn.usage as Record<string, any>;
+            telemetry.inputTokens += usage.input_tokens ?? usage.prompt_tokens ?? 0;
+            telemetry.outputTokens += usage.output_tokens ?? usage.completion_tokens ?? 0;
+            telemetry.totalTokens += usage.total_tokens ?? 0;
+          }
         }
       }
       if (telemetry.inputTokens === 0 && telemetry.outputTokens === 0 && sessionTelemetry.sessionUsage && typeof sessionTelemetry.sessionUsage === "object") {
@@ -1654,72 +1877,191 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
     };
 
-    console.log(`[OpenAI Agent] session_created: agentId=${agentId}`);
+    let sessionId: string | null = params.sessionId || null;
+    let sessionData: any = null;
+    let sessionReused = false;
 
-    const defaultVaultId =
-      (typeof Deno !== "undefined"
-        ? Deno.env.get("OPENAI_MCP_VAULT_ID")
-        : process.env.OPENAI_MCP_VAULT_ID) ||
-      "vault_06e9b5cb8d2d4b0a9fb5bfcbd8700af3cfbe57dc729c4c4e8f";
+    // 1. Se sessionId foi fornecido, tenta reutilizar a sessão existente via POST /events
+    if (sessionId) {
+      console.log(`[OpenAI Agent] session_reuse_attempt: sessionId=${sessionId}`);
+      const eventPayload = {
+        events: [
+          {
+            type: "agent.session.input.message",
+            input: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "input_text",
+                    text: contextMessage,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
 
-    const sessionVaultIds =
-      params.vaultIds && params.vaultIds.length > 0
-        ? params.vaultIds
-        : (defaultVaultId ? [defaultVaultId] : undefined);
-
-    // Cria a sessão com o contexto compacto do turno e associa o Vault para autenticação MCP
-    const sessionPayload: any = {
-      agent_id: agentId,
-      environment: { type: "none" },
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: contextMessage,
-            },
-          ],
-        },
-      ],
-    };
-
-    if (sessionVaultIds && sessionVaultIds.length > 0) {
-      sessionPayload.vault_ids = sessionVaultIds;
-    }
-
-    if (params.memoryScopeId) {
       try {
-        const agentConfigRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/${agentId}`, { headers });
-        if (!agentConfigRes.ok) throw new Error(`HTTP ${agentConfigRes.status}`);
-        const agentConfig = await agentConfigRes.json();
-        sessionPayload.agent = {
-          tools: buildSessionAgentToolsWithMemoryScope(agentConfig?.tools, params.memoryScopeId),
-        };
-      } catch {
-        // A sessão continua. A chamada MCP sem header falhará fechada com memory_scope_missing.
-        telemetry.memoryToolResults.push({ toolName: "memory_scope_context", status: "tool_error", reasonCode: "memory_scope_context_unavailable" });
-        console.warn("[OpenAI Agent] memory_scope_context_unavailable: sessão criada sem enriquecimento de contexto.");
+        const eventRes = await fetchOpenAiBounded(
+          `https://api.openai.com/v1/agents/sessions/${sessionId}/events`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(eventPayload),
+          },
+          15_000,
+        );
+
+        if (eventRes.ok || eventRes.status === 202) {
+          activeSessionId = sessionId;
+          sessionReused = true;
+          telemetry.sessionId = sessionId;
+          telemetry.agentSessionReused = true;
+          telemetry.agentSessionCreated = false;
+          telemetry.sessionFallbackTriggered = false;
+          telemetry.agentSessionRecoveryTriggered = false;
+          telemetry.agentSessionBootstrapInjected = false;
+          telemetry.agentSessionBootstrapMessageCount = 0;
+          console.log(`[OpenAI Agent] session_reused_success: sessionId=${sessionId}`);
+
+          // Busca dados atuais da sessão para inicializar sessionStatus
+          const currentSessionRes = await fetchOpenAiBounded(
+            `https://api.openai.com/v1/agents/sessions/${sessionId}`,
+            { headers },
+            5_000,
+          );
+          if (currentSessionRes.ok) {
+            sessionData = await currentSessionRes.json();
+            latestSessionData = sessionData;
+          }
+        } else {
+          const errText = await eventRes.text().catch(() => "");
+          console.warn(`[OpenAI Agent] session_reuse_rejected (HTTP ${eventRes.status}): ${errText}. Recriando sessão (fallback)...`);
+          sessionId = null;
+          telemetry.sessionFallbackTriggered = true;
+          telemetry.agentSessionRecoveryTriggered = true;
+        }
+      } catch (reuseErr) {
+        console.warn(`[OpenAI Agent] session_reuse_network_error: ${reuseErr}. Recriando sessão (fallback)...`);
+        sessionId = null;
+        telemetry.sessionFallbackTriggered = true;
+        telemetry.agentSessionRecoveryTriggered = true;
       }
     }
 
-    const sessionRes = await fetchOpenAiBounded("https://api.openai.com/v1/agents/sessions", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(sessionPayload),
-    }, 20_000);
+    // 2. Se não havia sessionId ou se o reuso falhou (fallback), cria nova sessão
+    if (!sessionId || !sessionReused) {
+      console.log(`[OpenAI Agent] session_create_started: agentId=${agentId}`);
 
-    if (!sessionRes.ok) {
-      const errText = await sessionRes.text();
-      throw new Error(`Falha HTTP ao criar sessão na OpenAI Agents API: ${sessionRes.status} - ${errText}`);
+      let initialInputText = contextMessage;
+      if (persistentMode) {
+        const currentInboundIds = (params.currentInboundMessages || []).map((m) => String(m.id)).filter(Boolean);
+        const bootstrapRes = await fetchSessionRecoveryBootstrap(
+          params.supabase,
+          params.conversationId,
+          currentInboundIds
+        );
+        if (bootstrapRes.messageCount > 0) {
+          initialInputText = `${bootstrapRes.text}\n\n---\n\n${contextMessage}`;
+          telemetry.agentSessionBootstrapInjected = true;
+          telemetry.agentSessionBootstrapMessageCount = bootstrapRes.messageCount;
+          console.log(`[OpenAI Agent] session_bootstrap_injected: count=${bootstrapRes.messageCount}, recovery=${telemetry.agentSessionRecoveryTriggered}`);
+        } else {
+          telemetry.agentSessionBootstrapInjected = false;
+          telemetry.agentSessionBootstrapMessageCount = 0;
+        }
+      }
+
+      const defaultVaultId =
+        (typeof Deno !== "undefined"
+          ? Deno.env.get("OPENAI_MCP_VAULT_ID")
+          : process.env.OPENAI_MCP_VAULT_ID) ||
+        "vault_06e9b5cb8d2d4b0a9fb5bfcbd8700af3cfbe57dc729c4c4e8f";
+
+      const sessionVaultIds =
+        params.vaultIds && params.vaultIds.length > 0
+          ? params.vaultIds
+          : (defaultVaultId ? [defaultVaultId] : undefined);
+
+      const sessionPayload: any = {
+        agent_id: agentId,
+        environment: { type: "none" },
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: initialInputText,
+              },
+            ],
+          },
+        ],
+      };
+
+      if (!persistentMode) {
+        if (sessionVaultIds && sessionVaultIds.length > 0) {
+          sessionPayload.vault_ids = sessionVaultIds;
+        }
+
+        if (params.memoryScopeId) {
+          try {
+            const agentConfigRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/${agentId}`, { headers });
+            if (!agentConfigRes.ok) throw new Error(`HTTP ${agentConfigRes.status}`);
+            const agentConfig = await agentConfigRes.json();
+            sessionPayload.agent = {
+              tools: buildSessionAgentToolsWithMemoryScope(agentConfig?.tools, params.memoryScopeId),
+            };
+          } catch {
+            telemetry.memoryToolResults.push({ toolName: "memory_scope_context", status: "tool_error", reasonCode: "memory_scope_context_unavailable" });
+            console.warn("[OpenAI Agent] memory_scope_context_unavailable: sessão criada sem enriquecimento de contexto.");
+          }
+        }
+      } else {
+        // No modo persistente: filtra as ferramentas da sessão para remover MCP de memória, preservando cofre_audio_search
+        try {
+          const agentConfigRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/${agentId}`, { headers });
+          if (agentConfigRes.ok) {
+            const agentConfig = await agentConfigRes.json();
+            if (Array.isArray(agentConfig?.tools)) {
+              const nonMemoryTools = agentConfig.tools.filter((t: any) =>
+                t?.name === "cofre_audio_search" || (t?.type === "function" && !t?.name?.includes("memory"))
+              );
+              sessionPayload.agent = {
+                tools: nonMemoryTools,
+              };
+            }
+          }
+        } catch (filterErr) {
+          console.warn("[OpenAI Agent] falha ao buscar config para filtrar tools na sessão persistente:", filterErr);
+        }
+      }
+
+      const sessionRes = await fetchOpenAiBounded("https://api.openai.com/v1/agents/sessions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(sessionPayload),
+      }, 20_000);
+
+      if (!sessionRes.ok) {
+        const errText = await sessionRes.text();
+        throw new Error(`Falha HTTP ao criar sessão na OpenAI Agents API: ${sessionRes.status} - ${errText}`);
+      }
+
+      sessionData = await sessionRes.json();
+      sessionId = sessionData.id;
+      activeSessionId = typeof sessionId === "string" ? sessionId : null;
+      latestSessionData = sessionData;
+      telemetry.sessionId = sessionId;
+      telemetry.agentSessionCreated = true;
+      telemetry.agentSessionReused = false;
+      if (telemetry.agentSessionRecoveryTriggered === undefined) {
+        telemetry.agentSessionRecoveryTriggered = false;
+      }
+      console.log(`[OpenAI Agent] session_created: sessionId=${sessionId}, recovery=${telemetry.agentSessionRecoveryTriggered}, bootstrap=${telemetry.agentSessionBootstrapInjected}, count=${telemetry.agentSessionBootstrapMessageCount}`);
     }
-
-    const sessionData = await sessionRes.json();
-    const sessionId = sessionData.id;
-    activeSessionId = typeof sessionId === "string" ? sessionId : null;
-    latestSessionData = sessionData;
-    telemetry.sessionId = sessionId;
-    console.log(`[OpenAI Agent] session_created: sessionId=${sessionId}`);
 
     // 1. Identificação inicial do Turn correspondente a esta execução
     const executionStartTimeMs = startTime;
@@ -2176,16 +2518,20 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
     }
 
-    for (const item of items) {
+    // No modo de múltiplos turnos (sessão persistente), isola itens pertencentes ao turnId atual
+    const currentTurnItems = turnId ? items.filter((it: any) => it.turn_id === turnId) : items;
+    const itemsToProcess = currentTurnItems.length > 0 ? currentTurnItems : items;
+
+    for (const item of itemsToProcess) {
       const isToolCall = item.type === "tool_call" || item.type === "mcp_call";
       const rawName = String(item.name || "");
-      if (isToolCall || rawName.includes("memory_search")) {
-        const toolName = rawName || "memory_search";
-        console.log(`[MCP] tool_called ${toolName}`);
+      if (isToolCall || rawName.includes("memory_search") || rawName === "cofre_audio_search") {
+        const toolName = rawName || "tool_call";
+        console.log(`[Tool] tool_called ${toolName}`);
         telemetry.toolsRequested.push(toolName);
         telemetry.toolExecutionsCount++;
-        telemetry.actualMemoryToolCalled = true;
-        if (/(?:persona|contact|conversation)_memory_search/.test(toolName)) {
+        if (toolName.includes("memory_search")) {
+          telemetry.actualMemoryToolCalled = true;
           telemetry.memoryToolResults.push(parseMemoryToolTelemetry(item, toolName));
         }
         if (toolName.includes("persona_memory_search") && !telemetry.sourcesUsed.includes("persona_memory")) {
@@ -2197,13 +2543,21 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         if (toolName.includes("conversation_memory_search") && !telemetry.sourcesUsed.includes("conversation_memory")) {
           telemetry.sourcesUsed.push("conversation_memory");
         }
+        if (toolName === "cofre_audio_search" && !telemetry.sourcesUsed.includes("audio_vault")) {
+          telemetry.sourcesUsed.push("audio_vault");
+        }
       }
     }
 
-    // Identifica mensagem final do assistente
-    const assistantMsg = [...items].reverse().find(
+    // Identifica mensagem final do assistente (priorizando o escopo do turno atual)
+    let assistantMsg = [...itemsToProcess].reverse().find(
       (it) => it.type === "message" && it.role === "assistant" && (it.phase === "final_answer" || !it.phase)
     );
+    if (!assistantMsg && itemsToProcess !== items) {
+      assistantMsg = [...items].reverse().find(
+        (it) => it.type === "message" && it.role === "assistant" && (it.phase === "final_answer" || !it.phase)
+      );
+    }
 
     const rawResponseText = assistantMsg?.content?.[0]?.text || "";
     if (!rawResponseText) {

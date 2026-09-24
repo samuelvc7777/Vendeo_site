@@ -764,6 +764,7 @@ export interface ConversationOrchestrationState {
   memory?: ContactMemoryStore;
   liveState?: ConversationLiveState;
   recentQuestionIntents?: RecentQuestionIntentEntry[];
+  openai_session_id?: string | null;
 }
 
 export interface RecentQuestionIntentEntry {
@@ -1911,9 +1912,11 @@ export async function checkFreshnessGate(
       const isMine = Boolean(row.is_mine || row.sender_id === "me" || row.direction === "outbound");
       // Somente mensagens inbound relevantes do pretendente (não da Larissa/Vendeo)
       if (!isMine && !claimedSet.has(row.id)) {
-        const msgCreatedAt = Date.parse(row.created_at || row.timestamp || 0);
+        // CANÔNICO: o timestamp real da mensagem na Meta (row.timestamp) define o tempo do evento.
+        // row.created_at é apenas a datação técnica da inserção na base Supabase.
+        const msgRealTimestamp = Date.parse(row.timestamp || row.created_at || 0);
         const cycleStartMs = Date.parse(cycleStartedAt);
-        if (msgCreatedAt >= cycleStartMs - 1000) {
+        if (msgRealTimestamp >= cycleStartMs - 1000) {
           newerIds.push(row.id);
         }
       }
@@ -4322,12 +4325,12 @@ export async function searchPersonaAudios(params: {
     if (audioRows && Array.isArray(audioRows) && audioRows.length > 0) {
       audios = audioRows.map((r: any) => ({
         id: r.id,
-        stageId: r.stage_id || undefined,
+        stageId: r.stage_id || r.stageId || undefined,
         title: r.title,
-        audioUrl: r.audio_url,
+        audioUrl: r.audio_url || r.audioUrl,
         duration: r.duration != null ? Number(r.duration) : undefined,
-        transcript: r.transcript || "",
-        usageInstruction: r.usage_instruction || "",
+        transcript: r.transcript || r.full_transcript || "",
+        usageInstruction: r.usage_instruction || r.when_to_use || r.usageInstruction || "",
         enabled: r.enabled ?? true,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
@@ -7164,6 +7167,23 @@ export async function runBrainOrchestration(
     // CONVERSATION BRAIN & ESCADA DE MEMÓRIA EM 6 NÍVEIS
     // ------------------------------------------------------------------------
 
+    const persistentAgentSessionEnabled =
+      typeof (params as any)?.persistentAgentSessionEnabled === "boolean"
+        ? (params as any).persistentAgentSessionEnabled
+        : typeof stageRules?.config?.persistent_agent_session_enabled === "boolean"
+        ? stageRules.config.persistent_agent_session_enabled
+        : (typeof Deno !== "undefined"
+            ? Deno.env.get("PERSISTENT_AGENT_SESSION_ENABLED")
+            : process.env.PERSISTENT_AGENT_SESSION_ENABLED) === "true";
+
+    const persistentSessionId =
+      stageRules?.orchestration?.openai_session_id ||
+      orchState?.openai_session_id ||
+      stageRules?.openai_session_id ||
+      null;
+
+    let currentSessionId: string | null = persistentSessionId;
+
     // NÍVEL 0: LiveState
     let currentLiveState: ConversationLiveState = orchState.liveState
       ? { ...orchState.liveState }
@@ -7363,19 +7383,55 @@ export async function runBrainOrchestration(
         (params as any)?.options?.strictOpenAiPilot
       );
 
-      try {
-        const scopeRes = await createAgentMemoryScope({
-          supabase,
-          conversationId,
-          cycleId: correlationId,
-          agentId,
-          durationSeconds: 300,
-        });
-        currentMemoryScopeId = scopeRes;
-        currentCycle.trace.push("agent_memory_scope_created=true");
-      } catch (scopeErr) {
+      // Reply targets lookup pontual para inbounds respondendo a mensagens anteriores
+      const replyTargets: Record<string, { id: string; sender: string; text: string }> = {};
+      for (const m of claimedMessages as any[]) {
+        const replyId = m.reply_to_message_id || m.replyToMessageId;
+        if (replyId && !replyTargets[replyId]) {
+          const found = deduplicatedRecentCandidates.find((c) => String(c.id) === String(replyId));
+          if (found) {
+            replyTargets[replyId] = {
+              id: String(found.id),
+              sender: found.sender === "pretendente" ? "pretendente" : "larissa",
+              text: String(found.text || ""),
+            };
+          } else {
+            try {
+              const { data: replyRow } = await supabase
+                .from("instagram_messages")
+                .select("id, is_from_me, text, message")
+                .eq("id", replyId)
+                .maybeSingle();
+              if (replyRow) {
+                replyTargets[replyId] = {
+                  id: String(replyRow.id),
+                  sender: replyRow.is_from_me ? "larissa" : "pretendente",
+                  text: String(replyRow.text || replyRow.message || ""),
+                };
+              }
+            } catch {}
+          }
+        }
+      }
+
+      if (!persistentAgentSessionEnabled) {
+        try {
+          const scopeRes = await createAgentMemoryScope({
+            supabase,
+            conversationId,
+            cycleId: correlationId,
+            agentId,
+            durationSeconds: 300,
+          });
+          currentMemoryScopeId = scopeRes;
+          currentCycle.trace.push("agent_memory_scope_created=true");
+        } catch (scopeErr) {
+          currentCycle.trace.push("agent_memory_scope_created=false");
+          console.warn("[Orchestrator] Falha ao criar agent_memory_scope:", scopeErr instanceof Error ? scopeErr.message : "unknown_error");
+        }
+      } else {
         currentCycle.trace.push("agent_memory_scope_created=false");
-        console.warn("[Orchestrator] Falha ao criar agent_memory_scope:", scopeErr instanceof Error ? scopeErr.message : "unknown_error");
+        currentCycle.trace.push("persistent_agent_session_active=true");
       }
 
       const currentObjective = stageChecklistForRouter.currentObjective;
@@ -7417,6 +7473,9 @@ export async function runBrainOrchestration(
         const openAiBrainTurn = await runOpenAiBrainTurn({
           supabase,
           conversationId,
+          sessionId: persistentAgentSessionEnabled ? persistentSessionId : null,
+          persistentSessionEnabled: persistentAgentSessionEnabled,
+          replyTargets,
           currentStageId,
           currentObjectiveId: stageChecklistForRouter.currentObjective?.id,
           currentObjectiveLabel: stageChecklistForRouter.currentObjective?.label,
@@ -7427,15 +7486,17 @@ export async function runBrainOrchestration(
           currentInboundMessages: claimedMessages
             .map((m: any) => ({ id: String(m.id || ""), text: String(m.text || ""), createdAt: m.createdAt || m.created_at || m.timestamp }))
             .filter((m: any) => m.id && m.text),
-          recentMessages: finalRecentMessages.map((m) => ({
-            id: m.id,
-            sender: (m.sender === "pretendente" ? "user" : "larissa") as "user" | "larissa",
-            text: m.text,
-            createdAt: m.createdAt,
-          })),
-          contactMemorySummary,
-          landmarksSummary,
-          liveStateContext: JSON.stringify(currentLiveState),
+          recentMessages: persistentAgentSessionEnabled
+            ? []
+            : finalRecentMessages.map((m) => ({
+                id: m.id,
+                sender: (m.sender === "pretendente" ? "user" : "larissa") as "user" | "larissa",
+                text: m.text,
+                createdAt: m.createdAt,
+              })),
+          contactMemorySummary: persistentAgentSessionEnabled ? "" : contactMemorySummary,
+          landmarksSummary: persistentAgentSessionEnabled ? "" : landmarksSummary,
+          liveStateContext: persistentAgentSessionEnabled ? "" : JSON.stringify(currentLiveState),
           temporalContext,
           candidateEvidence: candidateObjectiveEvidence,
           agentId,
@@ -7443,7 +7504,7 @@ export async function runBrainOrchestration(
           strictOpenAiPilot: isStrict,
           recentStyleStateSnippet: recentStyleSnippet,
           memoryScopeId: currentMemoryScopeId,
-          recentQuestionIntentsSnippet: formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
+          recentQuestionIntentsSnippet: persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
           searchCofreAudios: (p) => searchCofreAudios({
             supabase,
             conversationId: p.conversationId,
@@ -7651,10 +7712,30 @@ export async function runBrainOrchestration(
             brainMemorySourcesUsed.add(s);
           }
           if (openAiBrainTurn.telemetry.sessionId) {
+            currentSessionId = openAiBrainTurn.telemetry.sessionId;
             currentCycle.trace.push(`openai_agent_session_created: ${openAiBrainTurn.telemetry.sessionId}`);
             currentCycle.trace.push("openai_agent_turn_started");
             currentCycle.trace.push("openai_agent_turn_completed");
           }
+          currentCycle.trace.push(`persistent_agent_session_enabled=${persistentAgentSessionEnabled}`);
+          if (openAiBrainTurn.telemetry.agentSessionReused) {
+            currentCycle.trace.push("agent_session_reused=true");
+          } else if (openAiBrainTurn.telemetry.agentSessionCreated) {
+            currentCycle.trace.push("agent_session_created=true");
+          }
+          if (openAiBrainTurn.telemetry.sessionId) {
+            currentCycle.trace.push(`agent_session_id=${openAiBrainTurn.telemetry.sessionId}`);
+          }
+          currentCycle.trace.push(`agent_session_recovery_triggered=${Boolean(openAiBrainTurn.telemetry.agentSessionRecoveryTriggered)}`);
+          currentCycle.trace.push(`agent_session_bootstrap_injected=${Boolean(openAiBrainTurn.telemetry.agentSessionBootstrapInjected)}`);
+          currentCycle.trace.push(`agent_session_bootstrap_message_count=${openAiBrainTurn.telemetry.agentSessionBootstrapMessageCount || 0}`);
+          currentCycle.trace.push(`manual_recent_history_injected=${openAiBrainTurn.telemetry.manualRecentHistoryInjected}`);
+          currentCycle.trace.push(`contact_memory_injected=${openAiBrainTurn.telemetry.contactMemoryInjected}`);
+          currentCycle.trace.push(`episodic_memory_injected=${openAiBrainTurn.telemetry.episodicMemoryInjected}`);
+          currentCycle.trace.push(`persona_memory_tool_enabled=${openAiBrainTurn.telemetry.personaMemoryToolEnabled}`);
+          currentCycle.trace.push(`contact_memory_tool_enabled=${openAiBrainTurn.telemetry.contactMemoryToolEnabled}`);
+          currentCycle.trace.push(`conversation_memory_tool_enabled=${openAiBrainTurn.telemetry.conversationMemoryToolEnabled}`);
+          currentCycle.trace.push(`audio_search_tool_enabled=${openAiBrainTurn.telemetry.audioSearchToolEnabled}`);
           for (const tool of openAiBrainTurn.telemetry.toolsRequested) {
             currentCycle.trace.push(`openai_agent_mcp_used=${tool}`);
           }
@@ -7922,7 +8003,45 @@ export async function runBrainOrchestration(
         ["pursue", "defer", "already_satisfied", "none"].includes(requestedDirective)
           ? requestedDirective
           : "pursue";
-      const audioSelection = authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
+      let audioSelection = authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
+      if (isOpenAiAgentBrain) {
+        let agentSelectedAudioId: string | null = null;
+        if (Array.isArray(brainPlan.outboundActions)) {
+          const audioAct = brainPlan.outboundActions.find((a: any) => a && a.type === "audio");
+          if (audioAct && typeof audioAct.audioId === "string" && audioAct.audioId.trim()) {
+            agentSelectedAudioId = audioAct.audioId.trim();
+          }
+        }
+        if (!agentSelectedAudioId && (brainPlan.selectedAudioId || brainPlan.audioId)) {
+          agentSelectedAudioId = String(brainPlan.selectedAudioId || brainPlan.audioId).trim();
+        }
+
+        if (agentSelectedAudioId) {
+          const authorizedCand = brainAudioCandidates.find(
+            (c) => c.audio_id === agentSelectedAudioId || (c as any).audioId === agentSelectedAudioId
+          );
+          if (authorizedCand) {
+            audioSelection = {
+              selectedAudioId: authorizedCand.audio_id || (authorizedCand as any).audioId,
+              candidateAudios: [{
+                audioId: authorizedCand.audio_id || (authorizedCand as any).audioId,
+                title: authorizedCand.title,
+                transcript: authorizedCand.full_transcript || authorizedCand.transcript,
+                instruction: authorizedCand.when_to_use || authorizedCand.usage_instruction,
+                adherenceScore: authorizedCand.match_score || 0,
+              }],
+              preferAudio: true,
+            };
+          } else {
+            // Fail closed: o áudio selecionado pelo Agent NÃO está entre os candidatos autorizados do Turn
+            audioSelection = {
+              selectedAudioId: null,
+              candidateAudios: [],
+              preferAudio: false,
+            };
+          }
+        }
+      }
       const turnContract = isOpenAiAgentBrain
         ? normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4)
         : buildTurnContract(
@@ -8179,6 +8298,7 @@ export async function runBrainOrchestration(
           action: "wait",
           audioId: undefined,
           audioUrl: undefined,
+          outboundActions: [],
           responses: [],
           suggestedResponse: "",
           requiredTools: [],
@@ -8662,7 +8782,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     // OUTBOX PATTERN: Sequência Canônica de Ações de Saída (Texto e/ou Áudio)
     // ------------------------------------------------------------------------
     let canonicalOutboundActions: OutboundAction[] = [];
-    if (Array.isArray(decision.outboundActions) && decision.outboundActions.length > 0) {
+    if (decision.action === "wait") {
+      canonicalOutboundActions = [];
+    } else if (Array.isArray(decision.outboundActions) && decision.outboundActions.length > 0) {
       canonicalOutboundActions = [...decision.outboundActions];
     } else if (decision.action === "send_audio" || Boolean(decision.audioId)) {
       const texts = (decision.responses && decision.responses.length > 0)
@@ -8687,9 +8809,23 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       const allAudios = await searchPersonaAudios({ supabase, conversationId, intent: "", stageId: undefined });
       resolvedAudio = allAudios.find((a) => a.id === audioAction.audioId);
 
-      // 2. Trava de autorização: deve existir e estar habilitado
-      if (!resolvedAudio || resolvedAudio.enabled === false) {
-        currentCycle.trace.push(!resolvedAudio ? "audio_rejected_not_authorized" : "audio_rejected_disabled");
+      // 2. Trava de autorização: deve existir, estar habilitado e possuir URL HTTP pública válida (não blob / não data)
+      const hasValidPublicUrl = Boolean(
+        resolvedAudio?.audioUrl &&
+        typeof resolvedAudio.audioUrl === "string" &&
+        (resolvedAudio.audioUrl.startsWith("http://") || resolvedAudio.audioUrl.startsWith("https://")) &&
+        !resolvedAudio.audioUrl.startsWith("blob:") &&
+        !resolvedAudio.audioUrl.startsWith("data:")
+      );
+
+      if (!resolvedAudio || resolvedAudio.enabled === false || !hasValidPublicUrl) {
+        currentCycle.trace.push(
+          !resolvedAudio
+            ? "audio_rejected_not_authorized"
+            : resolvedAudio.enabled === false
+            ? "audio_rejected_disabled"
+            : "audio_rejected_invalid_url"
+        );
         canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
         resolvedAudio = undefined;
       } else {
@@ -8785,6 +8921,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       currentCycle.trace.push("outbox_deferred_to_final_balloons");
     } else {
       currentCycle.trace.push("outbox_skipped_no_final_payload");
+      if (reservedAudioId && !sentSuccessfully) {
+        try {
+          await releaseAudioDeliveryReservation({
+            supabase,
+            conversationId,
+            audioId: reservedAudioId,
+            reservationToken: correlationId,
+            reason: "no_final_payload_pre_dispatch",
+          });
+          currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+        } catch (_relErr) {}
+        reservedAudioId = undefined;
+      }
     }
 
     const responseReady = hasFinalDispatchPayload;
@@ -9076,6 +9225,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             console.error(
               `[Orchestrator] FAIL CLOSED: Falha no prepareExperimentalOutboxEntryAtomic para conv=${conversationId} (balão ${bIndex + 1}): motivo=${prepRes.reason}`
             );
+            if (sentBalloonsCount === 0 && reservedAudioId) {
+              try {
+                await releaseAudioDeliveryReservation({
+                  supabase,
+                  conversationId,
+                  audioId: reservedAudioId,
+                  reservationToken: correlationId,
+                  reason: `outbox_prepare_failed: ${prepRes.reason}`,
+                });
+                currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+              } catch (_relErr) {}
+              reservedAudioId = undefined;
+            }
             currentCycle.status = "failed";
             currentCycle.trace.push(`outbox_prepare_failed: ${prepRes.reason}`);
             await releaseExperimentalCycleAtomic({
@@ -9125,6 +9287,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               `[Orchestrator] Falha no claim atômico da outbox para ${conversationId} (balão ${bIndex + 1}): motivo=${claimRes.reason}`
             );
             if (claimRes.reason === "cycle_preempted") {
+              if (sentBalloonsCount === 0 && reservedAudioId) {
+                try {
+                  await releaseAudioDeliveryReservation({
+                    supabase,
+                    conversationId,
+                    audioId: reservedAudioId,
+                    reservationToken: correlationId,
+                    reason: "cycle_preempted_pre_dispatch",
+                  });
+                  currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+                } catch (_relErr) {}
+                reservedAudioId = undefined;
+              }
               return await handleCyclePreemption("before_first_balloon_claim", {
                 isFresh: false,
                 newerInboundCount: 0,
@@ -9147,6 +9322,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               };
             } else if (claimRes.isInfraFailure) {
               sentSuccessfully = false;
+              if (sentBalloonsCount === 0 && reservedAudioId) {
+                try {
+                  await releaseAudioDeliveryReservation({
+                    supabase,
+                    conversationId,
+                    audioId: reservedAudioId,
+                    reservationToken: correlationId,
+                    reason: `outbox_claim_infra_failure: ${claimRes.reason}`,
+                  });
+                  currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+                } catch (_relErr) {}
+                reservedAudioId = undefined;
+              }
               currentCycle.status = "failed";
               currentCycle.trace.push(`outbox_claim_infra_failure: ${claimRes.reason}`);
               await releaseExperimentalCycleAtomic({
@@ -9165,6 +9353,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               };
             } else {
               sentSuccessfully = false;
+              if (sentBalloonsCount === 0 && reservedAudioId) {
+                try {
+                  await releaseAudioDeliveryReservation({
+                    supabase,
+                    conversationId,
+                    audioId: reservedAudioId,
+                    reservationToken: correlationId,
+                    reason: `outbox_claim_unsuccessful: ${claimRes.reason}`,
+                  });
+                  currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+                } catch (_relErr) {}
+                reservedAudioId = undefined;
+              }
               currentCycle.status = "failed";
               currentCycle.trace.push(`outbox_claim_unsuccessful: ${claimRes.reason}`);
               if (sentBalloonsCount === 0) {
@@ -9191,6 +9392,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           }
 
           if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
+            if (sentBalloonsCount === 0 && reservedAudioId) {
+              try {
+                await releaseAudioDeliveryReservation({
+                  supabase,
+                  conversationId,
+                  audioId: reservedAudioId,
+                  reservationToken: correlationId,
+                  reason: "late_agent_result_discarded",
+                });
+                currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+              } catch (_relErr) {}
+              reservedAudioId = undefined;
+            }
             currentCycle.status = "superseded";
             currentCycle.trace.push("late_agent_result_discarded");
             console.warn(`[Brain] late_agent_result_discarded after outbox claim cycle=${correlationId}`);
@@ -9374,6 +9588,19 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         }
       } else {
         // Ação 'wait' ou sem resposta: marca mensagens como processadas para não reavaliar no vácuo
+        if (reservedAudioId && !sentSuccessfully) {
+          try {
+            await releaseAudioDeliveryReservation({
+              supabase,
+              conversationId,
+              audioId: reservedAudioId,
+              reservationToken: correlationId,
+              reason: "cycle_completed_wait_no_dispatch",
+            });
+            currentCycle.trace.push(`audio_reservation_released: ${reservedAudioId}`);
+          } catch (_relErr) {}
+          reservedAudioId = undefined;
+        }
         for (const id of claimedMessageIds) {
           ledger[id] = "processed";
         }
@@ -9577,6 +9804,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           memory: mergedMemory,
           liveState: currentLiveState,
           recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
+          openai_session_id: currentSessionId || persistentSessionId || orchState.openai_session_id || null,
           technicalRetryCount: 0,
           technicalRetryExhaustedAt: null,
           manualRetryAttempt: null,
@@ -9617,6 +9845,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           active_cycle_token: null,
           active_cycle_at: null,
           preempt_requested: false,
+          openai_session_id: currentSessionId || persistentSessionId || freshRules.openai_session_id || null,
           orchestration: updatedState,
         };
 
