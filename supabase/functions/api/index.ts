@@ -3993,10 +3993,10 @@ serve(async (req: Request) => {
                 if (watermark && typeof watermark.inboundRevision === "number") {
                   const msgRevs = conv.stage_completed_rules?.orchestration?.messageInboundRevisions;
                   const msgRev = msgRevs?.[message.id];
-                  if (typeof msgRev === "number" && msgRev <= watermark.inboundRevision) return false;
-
-                  const currentRev = conv.stage_completed_rules?.orchestration?.inboundRevision || 0;
-                  if (currentRev <= watermark.inboundRevision) return false;
+                  // Fail-closed: sem revisão individual não existe prova de que a mensagem
+                  // foi admitida depois do watermark. Revisão global da conversa não basta.
+                  if (typeof msgRev !== "number") return false;
+                  if (msgRev <= watermark.inboundRevision) return false;
                 }
                 return true;
               });
@@ -4139,15 +4139,21 @@ serve(async (req: Request) => {
           const watermarkRev = typeof activationWatermark?.inboundRevision === "number"
             ? activationWatermark.inboundRevision
             : null;
+          const messageInboundRevisions = convData?.stage_completed_rules?.orchestration?.messageInboundRevisions || {};
+          const msgRev = messageInboundRevisions[lastMsg.id];
+          const isProvenPostWatermark = Boolean(
+            watermarkRev === null ||
+            (typeof msgRev === "number" && msgRev > watermarkRev)
+          );
 
           const isPriorToWatermark = Boolean(
             activationWatermark &&
             watermarkRev !== null &&
-            currentInboundRev <= watermarkRev
+            !isProvenPostWatermark
           );
 
           if (isPriorToWatermark) {
-            console.log(`[Autopilot] activation_noop_no_new_inbound conv=${conversationId} rev=${currentInboundRev} <= watermarkRev=${watermarkRev}`);
+            console.log(`[Autopilot] activation_noop_no_new_inbound conv=${conversationId} msgRev=${typeof msgRev === "number" ? msgRev : "missing"} watermarkRev=${watermarkRev} currentRev=${currentInboundRev}`);
             return new Response(JSON.stringify({
               triggered: false,
               status: "idle",

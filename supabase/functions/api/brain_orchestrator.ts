@@ -761,6 +761,8 @@ export interface ConversationOrchestrationState {
   tokens?: number;
   updatedAt: string;
   inboundRevision?: number;
+  activation_watermark?: { inboundRevision?: number; [key: string]: any } | null;
+  messageInboundRevisions?: Record<string, number>;
   preemptRequested?: boolean;
   // Campos incrementais da arquitetura com Ledger, Cycle e Outbox
   activeCycle?: ProcessingCycle | null;
@@ -3456,6 +3458,7 @@ export interface RunDurableOutboxDispatcherParams {
   dispatcherToken?: string;
   maxActionsPerRun?: number;
   outboxMap?: Record<string, OutboxEntry>;
+  targetCycleId?: string;
 }
 
 export interface RunDurableOutboxDispatcherResult {
@@ -3483,6 +3486,7 @@ export async function runDurableOutboxDispatcher(
     dispatcherToken = `disp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     maxActionsPerRun = 10,
     outboxMap: providedOutboxMap,
+    targetCycleId,
   } = params;
 
   const result: RunDurableOutboxDispatcherResult = {
@@ -3514,13 +3518,25 @@ export async function runDurableOutboxDispatcher(
     outboxMap = orch.outbox || {};
   }
 
-  const entries: OutboxEntry[] = Object.values(outboxMap);
+  const allEntries: OutboxEntry[] = Object.values(outboxMap);
+  const entries: OutboxEntry[] = targetCycleId
+    ? allEntries.filter((entry) => entry.cycleId === targetCycleId)
+    : allEntries;
   if (entries.length === 0) {
     return result;
   }
 
-  // 2. Ordena estritamente por actionIndex (ou createdAt se não houver index)
+  const cycleScopeKey = (entry: OutboxEntry): string =>
+    entry.cycleId || `legacy:${entry.idempotencyKey || entry.id}`;
+
+  // 2. Ordem estrita existe apenas dentro do mesmo ciclo/lote. Entre ciclos,
+  // usa createdAt apenas para dar prioridade previsível sem criar dependência cruzada.
   entries.sort((a, b) => {
+    const cycleA = cycleScopeKey(a);
+    const cycleB = cycleScopeKey(b);
+    if (cycleA !== cycleB) {
+      return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+    }
     const idxA = a.actionIndex !== undefined ? a.actionIndex : 0;
     const idxB = b.actionIndex !== undefined ? b.actionIndex : 0;
     if (idxA !== idxB) return idxA - idxB;
@@ -3528,6 +3544,7 @@ export async function runDurableOutboxDispatcher(
   });
 
   const nowMs = Date.now();
+  const blockedCycleKeys = new Set<string>();
 
   for (const entry of entries) {
     if (result.dispatchedCount >= maxActionsPerRun) {
@@ -3535,6 +3552,11 @@ export async function runDurableOutboxDispatcher(
     }
 
     const entryKey = entry.idempotencyKey || entry.id;
+    const entryCycleKey = cycleScopeKey(entry);
+
+    if (blockedCycleKeys.has(entryCycleKey)) {
+      continue;
+    }
 
     // A. Já enviado: avança
     if (entry.status === "sent") {
@@ -3556,22 +3578,25 @@ export async function runDurableOutboxDispatcher(
         continue;
       }
 
-      // FAIL-CLOSED: ação incerta não reconciliada bloqueia estritamente todas as ações subsequentes!
+      // FAIL-CLOSED apenas para o lote desta ação. Outros ciclos independentes continuam elegíveis.
       result.uncertainCount++;
       result.blockedCount++;
+      blockedCycleKeys.add(entryCycleKey);
       console.warn(`[Dispatcher] Ação ${entry.id} está em dispatch_uncertain. Interrompendo envio do lote por segurança.`);
-      break;
+      continue;
     }
 
-    // C. Status failed permanente: não tenta enviar
+    // C. Status failed permanente: encerra somente este ciclo histórico.
     if (entry.status === "failed") {
       result.blockedCount++;
-      break;
+      blockedCycleKeys.add(entryCycleKey);
+      continue;
     }
 
-    // GAP 5: Garantir que qualquer ação anterior 'failed', 'dispatch_uncertain' ou inacabada bloqueie estritamente ações posteriores!
+    // Ordem estrita somente dentro do mesmo cycleId/lote.
     const entryIdx = entry.actionIndex !== undefined ? entry.actionIndex : 0;
     const hasUnfinishedPrior = entries.some((other) => {
+      if (cycleScopeKey(other) !== entryCycleKey) return false;
       const otherIdx = other.actionIndex !== undefined ? other.actionIndex : 0;
       return otherIdx < entryIdx && other.status !== "sent";
     });
@@ -3579,11 +3604,13 @@ export async function runDurableOutboxDispatcher(
     if (hasUnfinishedPrior) {
       result.blockedCount++;
       const priorBlocked = entries.find((other) => {
+        if (cycleScopeKey(other) !== entryCycleKey) return false;
         const otherIdx = other.actionIndex !== undefined ? other.actionIndex : 0;
         return otherIdx < entryIdx && other.status !== "sent";
       });
       console.warn(`[Dispatcher] Ação ${entry.id} (index ${entryIdx}) bloqueada por ação anterior (${priorBlocked?.id}, status=${priorBlocked?.status}).`);
-      break;
+      blockedCycleKeys.add(entryCycleKey);
+      continue;
     }
 
     // D. Status pending: verifica temporalidade notBefore
@@ -3593,8 +3620,9 @@ export async function runDurableOutboxDispatcher(
         if (notBeforeMs > nowMs) {
           // Ação ainda não maturou (respeita pacing humano)
           result.pendingCount++;
-          // Em ordem estrita, não podemos pular para a próxima se esta ainda não maturou
-          break;
+          // Em ordem estrita, bloqueia apenas as próximas ações deste mesmo lote.
+          blockedCycleKeys.add(entryCycleKey);
+          continue;
         }
       }
 
@@ -3608,23 +3636,28 @@ export async function runDurableOutboxDispatcher(
 
       if (!claimRes.success) {
         if (claimRes.reason === "already_sent") {
+          entry.status = "sent";
           continue;
         }
         if (claimRes.reason === "action_not_due_yet") {
           result.pendingCount++;
-          break;
+          blockedCycleKeys.add(entryCycleKey);
+          continue;
         }
         if (claimRes.reason === "blocked_by_prior_action") {
           result.blockedCount++;
-          break;
+          blockedCycleKeys.add(entryCycleKey);
+          continue;
         }
         if (claimRes.isUncertain || claimRes.reason === "dispatch_uncertain" || claimRes.reason === "sending_stale_uncertain") {
           result.uncertainCount++;
-          break;
+          blockedCycleKeys.add(entryCycleKey);
+          continue;
         }
         // Outro motivo (ex: sending_active por outro worker)
         result.blockedCount++;
-        break;
+        blockedCycleKeys.add(entryCycleKey);
+        continue;
       }
 
       // Claim adquirido com sucesso: executa o despacho
@@ -3661,6 +3694,8 @@ export async function runDurableOutboxDispatcher(
           status: "sent",
           providerMessageId: providerId,
         });
+        entry.status = "sent";
+        entry.providerMessageId = providerId;
 
         // Se for áudio, commita reserva de áudio caso exista
         if (isAudio && claimedEntry.vaultAudioId) {
@@ -3713,9 +3748,12 @@ export async function runDurableOutboxDispatcher(
           status: "dispatch_uncertain",
           error: dispatchRes.error,
         });
+        entry.status = "dispatch_uncertain";
+        entry.isUncertain = true;
         result.uncertainCount++;
         result.errors.push(`dispatch_uncertain:${dispatchRes.error}`);
-        break;
+        blockedCycleKeys.add(entryCycleKey);
+        continue;
       } else {
         // Falha determinística
         const nextStatus = (claimedEntry.attempts || 1) >= (claimedEntry.maxAttempts || 3) ? "failed" : "pending";
@@ -3726,8 +3764,10 @@ export async function runDurableOutboxDispatcher(
           status: nextStatus,
           error: dispatchRes.error,
         });
+        entry.status = nextStatus;
         result.errors.push(`dispatch_failed:${dispatchRes.error}`);
-        break;
+        blockedCycleKeys.add(entryCycleKey);
+        continue;
       }
     }
   }
@@ -3771,8 +3811,19 @@ export function scheduleNextOutboxDispatch(params: {
 }): void {
   if (!params.supabase) return;
   const entries = Object.values(params.outboxMap || {});
+  const cycleScopeKey = (entry: OutboxEntry): string =>
+    entry.cycleId || `legacy:${entry.idempotencyKey || entry.id}`;
   const nextPending = entries
-    .filter((e) => e.status === "pending" && e.notBefore)
+    .filter((e) => {
+      if (e.status !== "pending" || !e.notBefore) return false;
+      const entryIdx = e.actionIndex !== undefined ? e.actionIndex : 0;
+      const entryCycleKey = cycleScopeKey(e);
+      return !entries.some((other) => {
+        if (cycleScopeKey(other) !== entryCycleKey) return false;
+        const otherIdx = other.actionIndex !== undefined ? other.actionIndex : 0;
+        return otherIdx < entryIdx && other.status !== "sent";
+      });
+    })
     .sort((a, b) => new Date(a.notBefore!).getTime() - new Date(b.notBefore!).getTime())[0];
 
   if (!nextPending || !nextPending.notBefore) return;
@@ -3792,6 +3843,7 @@ export function scheduleNextOutboxDispatch(params: {
         conversationId: params.conversationId,
         runtime: params.runtime,
         dispatcherToken: `pacing_bg_${Date.now()}`,
+        targetCycleId: nextPending.cycleId,
       });
     } catch (err: any) {
       console.warn(`[Outbox] Erro no background pacing dispatch:`, err?.message || err);
@@ -7455,6 +7507,7 @@ export async function runBrainOrchestration(
 
   let claimedMessageIds: string[] = [];
   let staleMessageIds: string[] = [];
+  let baselineMessageIds: string[] = [];
   let sentSuccessfully = false;
   let currentCycle: ProcessingCycle | null = null;
   let currentMemoryScopeId: string | undefined;
@@ -7472,6 +7525,17 @@ export async function runBrainOrchestration(
   };
   const ledger: Record<string, MessageProcessingStatus> = { ...(orchState.messageLedger || {}) };
   const outboxMap: Record<string, OutboxEntry> = { ...(orchState.outbox || {}) };
+  const activationWatermarkRev =
+    typeof orchState.activation_watermark?.inboundRevision === "number"
+      ? orchState.activation_watermark.inboundRevision
+      : null;
+  const messageInboundRevisions: Record<string, number> = { ...(orchState.messageInboundRevisions || {}) };
+  const isExplicitManualCycle = params.isManualRetry === true || Boolean(params.preClaimedCycleToken);
+  const isInboundEligibleForCycle = (messageId: string): boolean => {
+    if (isExplicitManualCycle || activationWatermarkRev === null) return true;
+    const msgRev = messageInboundRevisions[messageId];
+    return typeof msgRev === "number" && msgRev > activationWatermarkRev;
+  };
   let reservedAudioId: string | undefined;
 
   try {
@@ -7623,6 +7687,13 @@ export async function runBrainOrchestration(
             ledger[msg.id] === "processed" ||
             (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
 
+          if (!isProcessed && !isInboundEligibleForCycle(msg.id)) {
+            baselineMessageIds.push(String(msg.id));
+            ledger[msg.id] = "processed";
+            currentCycle.trace.push(`baseline_inbound_ignored: ${msg.id}`);
+            continue;
+          }
+
           if (!isProcessed) {
             collectedPendingRaw.push({ ...msg, status: "pending" });
           }
@@ -7643,7 +7714,11 @@ export async function runBrainOrchestration(
       const isProcessed =
         ledger[newMessage.id] === "processed" ||
         (orchState.lastProcessedMessageId && newMessage.id === orchState.lastProcessedMessageId);
-      if (!isProcessed) {
+      if (!isProcessed && !isInboundEligibleForCycle(newMessage.id)) {
+        baselineMessageIds.push(String(newMessage.id));
+        ledger[newMessage.id] = "processed";
+        currentCycle.trace.push(`baseline_inbound_ignored: ${newMessage.id}`);
+      } else if (!isProcessed) {
         pendingMessages.push(
           normalizeToCanonicalMessage(
             {
@@ -7677,7 +7752,10 @@ export async function runBrainOrchestration(
       if (timestampMs > 0 && ageMs > STALE_INBOUND_CUTOFF_MS) stalePendingMessages.push(msg);
       else freshPendingMessages.push(msg);
     }
-    staleMessageIds = stalePendingMessages.map((msg) => String(msg.id));
+    baselineMessageIds = Array.from(new Set(baselineMessageIds));
+    staleMessageIds = Array.from(
+      new Set([...baselineMessageIds, ...stalePendingMessages.map((msg) => String(msg.id))])
+    );
     for (const id of staleMessageIds) {
       ledger[id] = "processed";
       currentCycle.trace.push(`stale_inbound_ignored: ${id}`);
@@ -9901,92 +9979,43 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         },
       });
 
-      // 2. DISPATCHER: Executa o envio ordenado das ações através da Outbox Durável
-      for (let bIndex = 0; bIndex < balloons.length; bIndex++) {
-        const balloonText = balloons[bIndex];
-        const isAudioBalloon = balloonText.startsWith("[audio:");
+      // 2. DISPATCHER: o Brain só tenta a primeira ação já madura do lote atual.
+      // Ações seguintes permanecem pending/notBefore e são responsabilidade do
+      // dispatcher em background + cron, sem manter a Edge Function dormindo.
+      const dispatchResult = await runDurableOutboxDispatcher({
+        supabase,
+        conversationId,
+        runtime,
+        dispatcherToken: correlationId,
+        maxActionsPerRun: 1,
+        outboxMap,
+        targetCycleId: correlationId,
+      });
 
-        // Pacing humano para balões subsequentes (bIndex > 0)
-        if (bIndex > 0) {
-          const humanDelaySeconds = isAudioBalloon
-            ? Math.max(0, Number(audioPayload?.duration || 10))
-            : 8;
-
-          await publishAutoPilotState(supabase, conversationId, {
-            cycleId: correlationId,
-            status: "processing",
-            activity: activity(
-              isAudioBalloon ? "recording_audio" : "typing",
-              isAudioBalloon ? `Gravando áudio ${bIndex + 1}/${balloons.length}` : `Digitando resposta ${bIndex + 1}/${balloons.length}`,
-              "Aguardando o tempo humano antes do dispatch.",
-              {
-                cycleId: correlationId,
-                currentBalloon: bIndex + 1,
-                totalBalloons: balloons.length,
-                countdownSeconds: humanDelaySeconds,
-                audioDurationSeconds: isAudioBalloon ? humanDelaySeconds : undefined,
-                currentResponsePreview: isAudioBalloon ? "Áudio selecionado" : balloonText,
-              }
-            ),
-          });
-
-          const delayCompleted = await waitForHumanSendDelay({
-            supabase,
-            conversationId,
-            seconds: humanDelaySeconds,
-            cycleId: correlationId,
-            phase: isAudioBalloon ? "recording_audio" : "typing",
-            label: isAudioBalloon ? `Gravando áudio ${bIndex + 1}/${balloons.length}` : `Digitando resposta ${bIndex + 1}/${balloons.length}`,
-            detail: "Aguardando o tempo humano antes do dispatch.",
-            currentBalloon: bIndex + 1,
-            totalBalloons: balloons.length,
-            audioDurationSeconds: isAudioBalloon ? humanDelaySeconds : undefined,
-            currentResponsePreview: isAudioBalloon ? "Áudio selecionado" : balloonText,
-          });
-
-          if (!delayCompleted) {
-            console.log(`[Brain] Envio interrompido pelo operador durante o delay.`);
-            break;
-          }
+      if (dispatchResult.dispatchedCount > 0) {
+        sentBalloonsCount = 1;
+        sentSuccessfully = true;
+        currentCycle.trace.push("meta_dispatched_b1: success");
+      } else if (dispatchResult.uncertainCount > 0) {
+        sentSuccessfully = true;
+        currentCycle.status = "failed";
+        currentCycle.trace.push("meta_dispatch_uncertain_b1");
+        const firstBalloonIsAudio = balloons[0]?.startsWith("[audio:") === true;
+        if (firstBalloonIsAudio && audioPayload) {
+          try {
+            await updateAudioDeliveryStatus({
+              supabase,
+              conversationId,
+              audioId: audioPayload.id,
+              reservationToken: correlationId,
+              status: "dispatch_uncertain",
+              error: dispatchResult.errors.join("; "),
+            });
+            currentCycle.trace.push(`audio_dispatch_uncertain: ${audioPayload.id}`);
+          } catch {}
         }
-
-        // Despacha a ação corrente usando o dispatcher desacoplado
-        const dispatchResult = await runDurableOutboxDispatcher({
-          supabase,
-          conversationId,
-          runtime,
-          dispatcherToken: correlationId,
-          maxActionsPerRun: 1,
-          outboxMap,
-        });
-
-        if (dispatchResult.dispatchedCount > 0) {
-          sentBalloonsCount++;
-          sentSuccessfully = true;
-          currentCycle.trace.push(`meta_dispatched_b${bIndex + 1}: success`);
-        } else if (dispatchResult.uncertainCount > 0) {
-          sentSuccessfully = true;
-          currentCycle.status = "failed";
-          currentCycle.trace.push(`meta_dispatch_uncertain_b${bIndex + 1}`);
-          if (isAudioBalloon && audioPayload) {
-            try {
-              await updateAudioDeliveryStatus({
-                supabase,
-                conversationId,
-                audioId: audioPayload.id,
-                reservationToken: correlationId,
-                status: "dispatch_uncertain",
-                error: dispatchResult.errors.join("; "),
-              });
-              currentCycle.trace.push(`audio_dispatch_uncertain: ${audioPayload.id}`);
-            } catch {}
-          }
-          break;
-        } else {
-          // Bloqueado ou falhou
-          currentCycle.trace.push(`meta_dispatch_halted_b${bIndex + 1}`);
-          break;
-        }
+      } else {
+        currentCycle.trace.push("meta_dispatch_halted_b1");
       }
 
       if (sentBalloonsCount === balloons.length) {

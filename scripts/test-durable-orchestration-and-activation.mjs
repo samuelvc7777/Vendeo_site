@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   persistDurableOutboxBatchAtomic,
   claimOutboxEntryAtomic,
@@ -147,10 +148,11 @@ function createDurableMockSupabase(initialState = {}) {
           return { data: { success: false, claimed: false, reason: 'not_due_yet', notBefore: entry.notBefore }, error: null };
         }
 
-        // Validação de ordem estrita por actionIndex
+        // Validação de ordem estrita por actionIndex apenas dentro do mesmo ciclo
         const entryIdx = entry.actionIndex ?? 0;
         const allEntries = Object.values(outbox);
         const hasUnfinishedPrior = allEntries.some((other) => {
+          if (!entry.cycleId || other.cycleId !== entry.cycleId) return false;
           const otherIdx = other.actionIndex ?? 0;
           return otherIdx < entryIdx && other.status !== 'sent';
         });
@@ -875,8 +877,8 @@ test('21. Ordem: ação a0 em sending ou dispatch_uncertain -> ação a1 é bloq
   const convId = 'conv_durable_test';
 
   supabase._store.conversations[convId].stage_completed_rules.orchestration.outbox = {
-    out_a0: { id: 'out_a0', actionIndex: 0, actionType: 'text', payload: { text: 'a0' }, status: 'dispatch_uncertain' },
-    out_a1: { id: 'out_a1', actionIndex: 1, actionType: 'text', payload: { text: 'a1' }, status: 'pending' },
+    out_a0: { id: 'out_a0', cycleId: 'cycle_order', actionIndex: 0, actionType: 'text', payload: { text: 'a0' }, status: 'dispatch_uncertain' },
+    out_a1: { id: 'out_a1', cycleId: 'cycle_order', actionIndex: 1, actionType: 'text', payload: { text: 'a1' }, status: 'pending' },
   };
 
   const claimA1 = await claimOutboxEntryAtomic({
@@ -960,4 +962,132 @@ test('24. Resiliência: nenhuma recuperação de delivery chama a OpenAI ou rege
   });
 
   assert.equal(supabase.getAgentCallsCount(), 0, 'Custo zero de tokens na entrega do outbox persistido');
+});
+
+// ==========================================================================
+// 19.8 REGRESSÕES PÓS-DEPLOY — GUILHERME PRATA (Testes 25 a 29)
+// ==========================================================================
+
+test('25. Guilherme: failed terminal de ciclo antigo NÃO bloqueia a0 pending de ciclo novo', async () => {
+  const supabase = createDurableMockSupabase();
+  const convId = 'conv_durable_test';
+
+  supabase._store.conversations[convId].stage_completed_rules.orchestration.outbox = {
+    old_failed_a0: {
+      id: 'old_failed_a0',
+      cycleId: 'cycle_old',
+      actionIndex: 0,
+      actionType: 'text',
+      payload: { text: 'falha histórica' },
+      status: 'failed',
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    },
+    new_pending_a0: {
+      id: 'new_pending_a0',
+      cycleId: 'cycle_new',
+      actionIndex: 0,
+      actionType: 'text',
+      payload: { text: 'mensagem nova' },
+      status: 'pending',
+      notBefore: new Date(Date.now() - 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+    },
+  };
+
+  const res = await runDurableOutboxDispatcher({
+    supabase,
+    conversationId: convId,
+  });
+
+  assert.equal(res.dispatchedCount, 1, 'ciclo novo deve despachar mesmo com failed histórico de outro ciclo');
+  assert.equal(
+    supabase._store.conversations[convId].stage_completed_rules.orchestration.outbox.new_pending_a0.status,
+    'sent'
+  );
+});
+
+test('26. Ordem estrita continua valendo dentro do MESMO cycleId', async () => {
+  const supabase = createDurableMockSupabase();
+  const convId = 'conv_durable_test';
+
+  supabase._store.conversations[convId].stage_completed_rules.orchestration.outbox = {
+    cycle_new_a0: {
+      id: 'cycle_new_a0',
+      cycleId: 'cycle_new',
+      actionIndex: 0,
+      actionType: 'text',
+      payload: { text: 'a0' },
+      status: 'pending',
+      notBefore: new Date(Date.now() + 60_000).toISOString(),
+    },
+    cycle_new_a1: {
+      id: 'cycle_new_a1',
+      cycleId: 'cycle_new',
+      actionIndex: 1,
+      actionType: 'text',
+      payload: { text: 'a1' },
+      status: 'pending',
+      notBefore: new Date(Date.now() - 1000).toISOString(),
+    },
+  };
+
+  const res = await runDurableOutboxDispatcher({
+    supabase,
+    conversationId: convId,
+  });
+
+  assert.equal(res.dispatchedCount, 0, 'a1 não pode ultrapassar a0 do mesmo ciclo');
+  assert.equal(
+    supabase._store.conversations[convId].stage_completed_rules.orchestration.outbox.cycle_new_a1.status,
+    'pending'
+  );
+});
+
+test('27. Replay inbound: migration possui retorno idempotente duplicate=true antes de incrementar inboundRevision', () => {
+  const migrationSource = fs.readFileSync(
+    new URL('../supabase/migrations/20260924154011_fix_guilherme_outbox_replay_idempotency.sql', import.meta.url),
+    'utf8'
+  );
+  const start = migrationSource.indexOf('CREATE OR REPLACE FUNCTION record_inbound_message_atomic(');
+  const end = migrationSource.indexOf('-- 5. FINALIZAÇÃO ATÔMICA DE OUTBOX ENTRY', start);
+  const fnSql = migrationSource.slice(start, end);
+
+  const duplicatePos = fnSql.indexOf("'duplicate', true");
+  const incrementPos = fnSql.indexOf('v_new_rev := v_current_rev + 1');
+  assert.ok(duplicatePos >= 0, 'RPC deve retornar duplicate=true para replay do mesmo message_id');
+  assert.ok(duplicatePos < incrementPos, 'replay deve retornar antes de incrementar inboundRevision');
+});
+
+test('28. Mensagem sem messageInboundRevision não é elegível automaticamente após watermark', () => {
+  const apiSource = fs.readFileSync(
+    new URL('../supabase/functions/api/index.ts', import.meta.url),
+    'utf8'
+  );
+
+  const cronStart = apiSource.indexOf('// Regra P0: Autoridade estrita por inboundRevision monotônica');
+  const cronEnd = apiSource.indexOf('return true;', cronStart);
+  const cronBlock = apiSource.slice(cronStart, cronEnd);
+  assert.match(
+    cronBlock,
+    /typeof msgRev !== "number"\) return false/,
+    'cron deve rejeitar mensagem sem revisão individual quando watermark possui inboundRevision'
+  );
+
+  const triggerStart = apiSource.indexOf('// 3. Validação determinística contra o Watermark de Ativação');
+  const triggerEnd = apiSource.indexOf('// Limpa agendamento e travas manuais antigas', triggerStart);
+  const triggerBlock = apiSource.slice(triggerStart, triggerEnd);
+  assert.match(triggerBlock, /messageInboundRevisions/, '/autopilot/trigger deve consultar revisão individual da mensagem');
+  assert.match(triggerBlock, /typeof msgRev === "number" && msgRev > watermarkRev/, '/autopilot/trigger deve exigir prova positiva de revisão pós-watermark');
+});
+
+test('29. Pacing: ciclo principal não aguarda waitForHumanSendDelay entre balões', () => {
+  const orchestratorSource = fs.readFileSync(
+    new URL('../supabase/functions/api/brain_orchestrator.ts', import.meta.url),
+    'utf8'
+  );
+  const loopStart = orchestratorSource.indexOf('// 2. DISPATCHER: Executa o envio ordenado das ações através da Outbox Durável');
+  const loopEnd = orchestratorSource.indexOf('if (sentBalloonsCount === balloons.length)', loopStart);
+  const dispatchLoop = orchestratorSource.slice(loopStart, loopEnd);
+
+  assert.doesNotMatch(dispatchLoop, /await waitForHumanSendDelay\(/, 'Brain não deve permanecer vivo esperando pacing');
 });
