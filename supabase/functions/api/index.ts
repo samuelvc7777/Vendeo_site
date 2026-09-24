@@ -4359,12 +4359,15 @@ serve(async (req: Request) => {
         const body = await req.json().catch(() => ({}));
         const conversationId = body?.conversationId;
         const isEnabled = Boolean(body?.isEnabled);
+        const triggerImmediate = Boolean(body?.triggerImmediate || body?.mode === "immediate");
         if (!conversationId) {
           return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
+
+        let immediateResult: { started: boolean; reason?: string; cycleId?: string } | null = null;
 
         if (isEnabled) {
           // Ativação atômica via RPC: busca a última mensagem sob lock FOR UPDATE e grava o watermark + ai_auto_respond = true sem janela de race!
@@ -4381,6 +4384,68 @@ serve(async (req: Request) => {
             }).eq("id", conversationId);
           } else {
             console.log(`[Autopilot] autopilot_armed_atomic conv=${conversationId} watermark_rev=${armResult?.inbound_revision ?? armResult?.watermark?.inboundRevision}`);
+          }
+
+          // Se o operador solicitou resposta imediata à última mensagem pendente:
+          if (triggerImmediate) {
+            const { data: lastMsgs } = await supabase
+              .from("instagram_messages")
+              .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
+              .eq("conversation_id", conversationId)
+              .order("timestamp", { ascending: false })
+              .limit(1);
+            const lastMsg = lastMsgs?.[0];
+
+            if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
+              const proposedCycleId = `corr_toggle_imm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+              const { data: authResult } = await supabase.rpc(
+                "authorize_send_now_atomic",
+                {
+                  p_conversation_id: conversationId,
+                  p_new_cycle_token: proposedCycleId,
+                  p_stale_seconds: 300,
+                }
+              );
+
+              if (authResult?.success) {
+                const cycleId = authResult.cycleToken || proposedCycleId;
+                const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+                await publishAutoPilotState(supabase, conversationId, {
+                  cycleId,
+                  status: "starting",
+                  activity: activity("starting", "Iniciando...", "Ciclo iniciado imediatamente ao ativar o piloto.", { cycleId, event: "toggle_immediate_started" }),
+                  scheduledResponseAt: null,
+                });
+
+                const brainPromise = runBrainOrchestration({
+                  supabase,
+                  conversationId,
+                  correlationId: cycleId,
+                  preClaimedCycleToken: cycleId,
+                  newMessage: {
+                    id: lastMsg.id,
+                    text: resolvedAudio.text,
+                    timestamp: lastMsg.timestamp,
+                    sender: lastMsg.sender_id || "them",
+                    mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+                    audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
+                  },
+                });
+
+                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                  (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
+                } else {
+                  void brainPromise;
+                }
+                immediateResult = { started: true, cycleId };
+              } else if (authResult?.reason === "already_processing") {
+                immediateResult = { started: true, reason: "already_processing", cycleId: authResult.active_cycle_token };
+              } else {
+                immediateResult = { started: false, reason: authResult?.reason || "auth_failed" };
+              }
+            } else {
+              immediateResult = { started: false, reason: "nothing_to_answer" };
+            }
           }
         } else {
           // Desativação atômica via RPC protegendo outbox e active_cycle_token
@@ -4443,7 +4508,16 @@ serve(async (req: Request) => {
           payload: { ...updated, timestamp: nowIso },
         });
 
-        return new Response(JSON.stringify({ success: true, isEnabled, detail: isEnabled ? "Piloto ativado no chat." : "Piloto desativado no chat." }), {
+        return new Response(JSON.stringify({
+          success: true,
+          isEnabled,
+          immediateTriggered: immediateResult?.started === true,
+          immediateReason: immediateResult?.reason,
+          cycleId: immediateResult?.cycleId,
+          detail: isEnabled
+            ? (immediateResult?.started ? "Piloto ativado e resposta imediata iniciada!" : "Piloto ativado no chat.")
+            : "Piloto desativado no chat.",
+        }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (err: unknown) {

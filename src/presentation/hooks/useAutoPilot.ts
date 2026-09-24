@@ -134,6 +134,53 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     return updated;
   }, []);
 
+  const activateAutoPilotWithChoice = useCallback(async (
+    conversationId: string,
+    mode: "immediate" | "wait_next"
+  ) => {
+    const isImmediate = mode === "immediate";
+    const nowIso = new Date().toISOString();
+    const updated = await autoPilotRepo.saveChatState(conversationId, {
+      isEnabled: true,
+      enabledAt: nowIso,
+      status: isImmediate ? "processing" : "idle",
+      pauseReason: undefined,
+      pausedAt: undefined,
+    });
+    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
+
+    try {
+      const res = await fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId,
+          isEnabled: true,
+          triggerImmediate: isImmediate,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (isImmediate) {
+        if (data.immediateTriggered || data.result === "started") {
+          toast.success("Piloto ativado! A IA está respondendo a mensagem pendente agora.");
+        } else if (data.immediateReason === "nothing_to_answer" || data.result === "nothing_to_answer") {
+          toast.info("Piloto ativado! A última mensagem já foi respondida; a IA aguardará a próxima mensagem do cliente.");
+        } else {
+          toast.success("Piloto Automático ativado!");
+        }
+      } else {
+        toast.success("Piloto Automático ativado em espera!");
+      }
+    } catch (err) {
+      console.warn("Aviso ao ativar piloto com modo:", err);
+      toast.error("Erro ao sincronizar ativação com o backend.");
+    }
+
+    return updated;
+  }, []);
+
   const registerClientMessage = useCallback(async (conversationId: string, timestamp?: string) => {
     if (!chatStatesRef.current[conversationId]?.isEnabled) return;
     const updated = await autoPilotRepo.resetChatDebounce(conversationId, timestamp);
@@ -177,5 +224,5 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }

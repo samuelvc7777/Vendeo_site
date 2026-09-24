@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import Image from "next/image";
@@ -57,6 +57,7 @@ import {
 } from "./audio-converter";
 import { FloatingVaultModal } from "./FloatingVaultModal";
 import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
+import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
@@ -629,6 +630,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [aiTargetMessageId, setAiTargetMessageId] = useState<string | null>(null);
   const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
   const [isPersonaAudioModalOpen, setIsPersonaAudioModalOpen] = useState(false);
+  const [isAutoPilotActivationModalOpen, setIsAutoPilotActivationModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const [selectedProfileForModal, setSelectedProfileForModal] = useState<DirectConversation | null>(null);
@@ -3763,7 +3765,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {activeChat.type === "instagram" && (
               <button
                 type="button"
-                onClick={() => autoPilot.toggleAutoPilotForChat(activeChat.id)}
+                onClick={() => {
+                  if (autoPilot.chatStates[activeChat.id]?.isEnabled) {
+                    autoPilot.toggleAutoPilotForChat(activeChat.id, false);
+                  } else {
+                    setIsAutoPilotActivationModalOpen(true);
+                  }
+                }}
                 className={`px-2.5 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shrink-0 ${
                   autoPilot.chatStates[activeChat.id]?.isEnabled
                     ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25"
@@ -4497,6 +4505,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           }}
         />
 
+
+        {/* Modal de Escolha do Modo de Inicialização do Piloto Automático */}
+        <AutoPilotActivationModal
+          isOpen={isAutoPilotActivationModalOpen}
+          onClose={() => setIsAutoPilotActivationModalOpen(false)}
+          chatName={activeChat.fullName || activeChat.username}
+          onConfirm={async (mode) => {
+            await autoPilot.activateAutoPilotWithChoice(activeChat.id, mode);
+          }}
+        />
 
         {/* Modal de Perfil Completo estilo Tinder */}
         <TinderProfileModal
