@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 const MCP_DIR = path.resolve(import.meta.dirname, '../supabase/functions/vendeo-brain-mcp');
+const SHARED_DIR = path.resolve(import.meta.dirname, '../supabase/functions/_shared');
 
 const files = [
   {
@@ -15,6 +16,10 @@ const files = [
   {
     name: 'vendeo-brain-mcp/_shared/persona_memory.ts',
     content: fs.readFileSync(path.join(MCP_DIR, '_shared/persona_memory.ts'), 'utf8'),
+  },
+  {
+    name: '_shared/memory_tool_context.ts',
+    content: fs.readFileSync(path.join(SHARED_DIR, 'memory_tool_context.ts'), 'utf8'),
   },
 ];
 
