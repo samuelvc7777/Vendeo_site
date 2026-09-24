@@ -44,7 +44,8 @@ export type ConversationQualityIssueCode =
   | "UNRELATED_FOLLOWUP"
   | "MISSING_REQUIRED_FACT"
   | "TOO_MANY_BALLOONS_FOR_SIMPLE_TURN"
-  | "GENERIC_ASSISTANT_RESPONSE";
+  | "GENERIC_ASSISTANT_RESPONSE"
+  | "MISSING_WELLBEING_QUESTION";
 
 export interface ConversationQualityIssue {
   code: ConversationQualityIssueCode;
@@ -65,6 +66,16 @@ const STOPWORDS = new Set([
   "a", "as", "o", "os", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas",
   "um", "uma", "que", "com", "pra", "para", "por", "vc", "voce", "eu", "ele", "ela", "me", "te",
 ]);
+
+function rawNormalize(value: string): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9?\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function normalize(value: string): string {
   return String(value || "")
@@ -92,14 +103,17 @@ function jaccard(left: string[], right: string[]): number {
   return intersection / new Set([...a, ...b]).size;
 }
 
+export function isGreeting(text: string): boolean {
+  const value = rawNormalize(text);
+  return /^(?:oi+e*|ola+|opa|e ai|bom dia|boa tarde|boa noite)(?:\s|\?|$)/i.test(value);
+}
+
 export function isGreetingOrWellbeing(text: string): boolean {
-  const value = normalize(text);
-  return isWellbeingQuestion(text)
-    || /^(?:oi+e*|ola|opa|e ai|bom dia|boa tarde|boa noite)(?:\s|\?|$)/.test(value);
+  return isGreeting(text) || isWellbeingQuestion(text);
 }
 
 function isWellbeingQuestion(text: string): boolean {
-  const norm = normalize(text);
+  const norm = rawNormalize(text);
   return /\b(?:tudo bem|ta bem|como (?:vc|voce|c|ce) ta|tudo certo|ta tudo bem)\b/.test(norm)
     || /\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/.test(norm)
     || /\be\s+(?:vc|voce)\s+(?:como\s+ta|ta\s+bem)\b/.test(norm);
@@ -179,17 +193,19 @@ export function buildTurnContract(
     directQuestions,
     mustAnswerFirst,
     reactionTarget: requested?.reactionTarget ?? (directQuestions.length === 0 ? inbound || null : null),
-    newQuestionBudget: requested?.newQuestionBudget === 0 || requested?.newQuestionBudget === 1
-      ? requested.newQuestionBudget
-      : 1,
-    responseShape: shape && ["answer_only", "answer_and_reciprocate", "react_only", "react_and_question", "free_conversation"].includes(shape)
-      ? shape
+    newQuestionBudget: greeting
+      ? 1
+      : (requested?.newQuestionBudget === 0 || requested?.newQuestionBudget === 1
+          ? requested.newQuestionBudget
+          : 1),
+    responseShape: shape && ["answer_only", "answer_and_reciprocate", "react_only", "react_and_question", "free_conversation"].includes(shape) && !(greeting && shape === "react_only")
+      ? (greeting ? (directQuestions.length > 0 ? "answer_and_reciprocate" : "react_and_question") : shape)
       : directQuestions.length > 0
         ? (greeting ? "answer_and_reciprocate" : "answer_only")
-        : ((requested as any)?.objectiveDirective === "pursue" && requested?.newQuestionBudget !== 0 ? "react_and_question" : "react_only"),
+        : (greeting || ((requested as any)?.objectiveDirective === "pursue" && requested?.newQuestionBudget !== 0) ? "react_and_question" : "react_only"),
     avoidEchoPhrases: Array.isArray(requested?.avoidEchoPhrases) ? requested!.avoidEchoPhrases!.map(String) : detectedQuestions,
     avoidTopics: Array.isArray(requested?.avoidTopics) ? requested!.avoidTopics!.map(String) : [],
-    maxBalloons: Math.max(1, Math.min(4, Number(requested?.maxBalloons || (greeting ? 1 : 4)))),
+    maxBalloons: Math.max(1, Math.min(4, Number(requested?.maxBalloons || (greeting ? 2 : 4)))),
     preferNoEmoji: requested?.preferNoEmoji ?? false,
   };
 }
@@ -339,6 +355,9 @@ export function runConversationQualityGate(params: {
   if (candidateBalloons.length > turnContract.maxBalloons) {
     add("TOO_MANY_BALLOONS_FOR_SIMPLE_TURN", `Foram usados ${candidateBalloons.length} balões; o limite do turno é ${turnContract.maxBalloons}.`);
   }
+  if (isGreetingOrWellbeing(inbound) && questionCount === 0) {
+    add("MISSING_WELLBEING_QUESTION", "Toda saudação exige perguntar se o pretendente está bem ou devolver a pergunta reciprocamente.");
+  }
   if (wellbeing && /\b(?:como ta seu dia|fez o que hoje|vai fazer o que|ta fazendo o que)\b/i.test(normalize(outbound))) {
     add("UNRELATED_FOLLOWUP", "Saudação simples recebeu uma pergunta genérica não relacionada.");
   }
@@ -362,13 +381,16 @@ export function runConversationQualityGate(params: {
 
 export function safeHighConfidenceFallback(inboundMessages: string[], turnContract: TurnContract): string[] | null {
   const inbound = inboundMessages.join(" ");
-  if (isGreetingOrWellbeing(inbound) && turnContract.mustAnswerFirst) {
-    if (/\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/i.test(normalize(inbound))) {
-      return turnContract.newQuestionBudget === 0
-        ? ["Tô bem também!"]
-        : ["Tô bem sim, e vc?"];
+  if (isGreetingOrWellbeing(inbound)) {
+    if (turnContract.mustAnswerFirst || isWellbeingQuestion(inbound)) {
+      if (/\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/i.test(rawNormalize(inbound))) {
+        return turnContract.newQuestionBudget === 0
+          ? ["Tô bem tbm"]
+          : ["Tô bem simm, e vc como tá?"];
+      }
+      return ["Oiii, tô bem simm e vc?"];
     }
-    return ["Oii, tô bem sim, e vc?"];
+    return ["Oiii", "tudo bem com vc?"];
   }
   return null;
 }
