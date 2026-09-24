@@ -7174,7 +7174,7 @@ export async function runBrainOrchestration(
         ? stageRules.config.persistent_agent_session_enabled
         : (typeof Deno !== "undefined"
             ? Deno.env.get("PERSISTENT_AGENT_SESSION_ENABLED")
-            : process.env.PERSISTENT_AGENT_SESSION_ENABLED) === "true";
+            : process.env.PERSISTENT_AGENT_SESSION_ENABLED) !== "false";
 
     const persistentSessionId =
       stageRules?.orchestration?.openai_session_id ||

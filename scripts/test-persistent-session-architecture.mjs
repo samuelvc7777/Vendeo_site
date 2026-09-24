@@ -958,20 +958,20 @@ test('15. Isolamento de mensagens de resposta por turn_id (resposta do turno 2 n
   assert.strictEqual(assistantMsg.content[0].text.includes('Resposta do Turno 1 ANTIGA'), false, 'NÃO pode conter a resposta do Turno 1');
 });
 
-test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Session persistente; Chats sem flag permanecem no modo legado', withAcceleratedTimers(async () => {
-  // Prova que a ativação da conversa canário NÃO afeta outra conversa.
+test('16. Padrão Global Persistent & Suporte a Rollback Técnico para Legacy', withAcceleratedTimers(async () => {
+  // Prova que conversas sem flag usam Persistent por padrão, e que rollback técnico por config ou env var continua 100% funcional.
   
-  // 1. Chat A (sem flag): persistent_agent_session_enabled ausente -> modo legado
+  // 1. Chat A (sem flag): persistent_agent_session_enabled ausente -> MODO PERSISTENT POR PADRÃO
   const supabaseA = createMockSupabase({
-    conversationId: 'conv_chat_a_legacy',
+    conversationId: 'conv_chat_a_default',
     correlationId: 'corr_a_1',
     stage_completed_rules: {
-      config: {}, // Sem flag
-      orchestration: { openai_session_id: 'sess_a_ignored' },
+      config: {}, // Sem flag -> padrão agora é TRUE
+      orchestration: { openai_session_id: 'sess_a_persisted_111' },
     },
   });
 
-  let sessionPassedA = 'not_called';
+  let sessionPassedA = null;
   let toolsPassedA = [];
   const runtimeA = {
     sendMetaTextMessage: async () => ({ ok: true, message_id: 'meta_a' }),
@@ -979,11 +979,12 @@ test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Ses
       sessionPassedA = args.sessionId;
       toolsPassedA = args.tools.map((t) => t.function?.name || t.name);
       return {
-        sessionId: 'sess_a_temp',
+        sessionId: 'sess_a_persisted_111',
+        sessionCreated: false,
         plan: {
           action: 'reply',
-          responses: ['Olá do chat A legado'],
-          outboundActions: [{ type: 'text', text: 'Olá do chat A legado' }],
+          responses: ['Olá do chat A persistente por padrão'],
+          outboundActions: [{ type: 'text', text: 'Olá do chat A persistente por padrão' }],
           objectiveDecision: 'continue',
           turnContract: defaultTurnContract,
         },
@@ -993,7 +994,7 @@ test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Ses
 
   const resA = await runBrainOrchestration({
     supabase: supabaseA,
-    conversationId: 'conv_chat_a_legacy',
+    conversationId: 'conv_chat_a_default',
     correlationId: 'corr_a_1',
     preClaimedCycleToken: 'corr_a_1',
     isManualRetry: true,
@@ -1002,21 +1003,21 @@ test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Ses
   });
 
   assert.strictEqual(resA.handled, true);
-  assert.ok(resA.trace.includes('persistent_agent_session_enabled=false'), 'Chat A sem flag deve registrar flag como false');
-  assert.strictEqual(sessionPassedA, null, 'Chat A legado não deve enviar sessionId');
-  assert.ok(toolsPassedA.includes('persona_memory_search'), 'Chat A legado deve ter persona_memory_search ativa');
+  assert.ok(resA.trace.includes('persistent_agent_session_enabled=true'), 'Chat A sem flag DEVE usar persistent mode por padrão');
+  assert.strictEqual(sessionPassedA, 'sess_a_persisted_111', 'Chat A padrão DEVE enviar e reutilizar sessionId persistente');
+  assert.ok(!toolsPassedA.includes('persona_memory_search'), 'Chat A padrão NÃO deve ter persona_memory_search');
 
-  // 2. Chat B (Canário): stageRules.config.persistent_agent_session_enabled = true -> Session persistente
+  // 2. Chat B (Rollback Granular por Conversa): config.persistent_agent_session_enabled = false -> Modo Legado
   const supabaseB = createMockSupabase({
-    conversationId: 'conv_chat_b_canary',
+    conversationId: 'conv_chat_b_rollback',
     correlationId: 'corr_b_1',
     stage_completed_rules: {
-      config: { persistent_agent_session_enabled: true },
-      orchestration: { openai_session_id: 'sess_b_persisted_999' },
+      config: { persistent_agent_session_enabled: false }, // Rollback explícito nesta conversa
+      orchestration: { openai_session_id: 'sess_b_ignored' },
     },
   });
 
-  let sessionPassedB = null;
+  let sessionPassedB = 'not_called';
   let toolsPassedB = [];
   const runtimeB = {
     sendMetaTextMessage: async () => ({ ok: true, message_id: 'meta_b' }),
@@ -1024,12 +1025,11 @@ test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Ses
       sessionPassedB = args.sessionId;
       toolsPassedB = args.tools.map((t) => t.function?.name || t.name);
       return {
-        sessionId: 'sess_b_persisted_999',
-        sessionCreated: false,
+        sessionId: 'sess_b_temp',
         plan: {
           action: 'reply',
-          responses: ['Olá do chat B canário persistente'],
-          outboundActions: [{ type: 'text', text: 'Olá do chat B canário persistente' }],
+          responses: ['Olá do chat B em rollback legado'],
+          outboundActions: [{ type: 'text', text: 'Olá do chat B em rollback legado' }],
           objectiveDecision: 'continue',
           turnContract: defaultTurnContract,
         },
@@ -1039,7 +1039,7 @@ test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Ses
 
   const resB = await runBrainOrchestration({
     supabase: supabaseB,
-    conversationId: 'conv_chat_b_canary',
+    conversationId: 'conv_chat_b_rollback',
     correlationId: 'corr_b_1',
     preClaimedCycleToken: 'corr_b_1',
     isManualRetry: true,
@@ -1048,52 +1048,62 @@ test('16. Isolamento Canário por Conversa: Chat Canário com flag ativa usa Ses
   });
 
   assert.strictEqual(resB.handled, true);
-  assert.ok(resB.trace.includes('persistent_agent_session_enabled=true'), 'Chat B canário deve registrar flag como true');
-  assert.strictEqual(sessionPassedB, 'sess_b_persisted_999', 'Chat B canário DEVE reutilizar a sessionId persistente');
-  assert.ok(!toolsPassedB.includes('persona_memory_search'), 'Chat B canário NÃO deve ter persona_memory_search');
+  assert.ok(resB.trace.includes('persistent_agent_session_enabled=false'), 'Chat B em rollback deve registrar flag como false');
+  assert.strictEqual(sessionPassedB, null, 'Chat B em rollback legado NÃO deve enviar sessionId');
+  assert.ok(toolsPassedB.includes('persona_memory_search'), 'Chat B em rollback legado DEVE ter persona_memory_search ativa');
 
-  // 3. Chat C (Segundo chat sem flag): continua em modo legado sem sofrer interferência do Chat B
-  const supabaseC = createMockSupabase({
-    conversationId: 'conv_chat_c_legacy',
-    correlationId: 'corr_c_1',
-    stage_completed_rules: {
-      config: {}, // Sem flag
-      orchestration: { openai_session_id: 'sess_c_ignored' },
-    },
-  });
+  // 3. Chat C (Rollback Emergencial Global via env var): PERSISTENT_AGENT_SESSION_ENABLED="false"
+  const prevEnv = process.env.PERSISTENT_AGENT_SESSION_ENABLED;
+  try {
+    process.env.PERSISTENT_AGENT_SESSION_ENABLED = 'false';
+    const supabaseC = createMockSupabase({
+      conversationId: 'conv_chat_c_env_rollback',
+      correlationId: 'corr_c_1',
+      stage_completed_rules: {
+        config: {}, // Sem flag na conversa, mas com env var false
+        orchestration: { openai_session_id: 'sess_c_ignored' },
+      },
+    });
 
-  let sessionPassedC = 'not_called';
-  let toolsPassedC = [];
-  const runtimeC = {
-    sendMetaTextMessage: async () => ({ ok: true, message_id: 'meta_c' }),
-    callOpenAiAgent: async (args) => {
-      sessionPassedC = args.sessionId;
-      toolsPassedC = args.tools.map((t) => t.function?.name || t.name);
-      return {
-        sessionId: 'sess_c_temp',
-        plan: {
-          action: 'reply',
-          responses: ['Olá do chat C legado isolado'],
-          outboundActions: [{ type: 'text', text: 'Olá do chat C legado isolado' }],
-          objectiveDecision: 'continue',
-          turnContract: defaultTurnContract,
-        },
-      };
-    },
-  };
+    let sessionPassedC = 'not_called';
+    let toolsPassedC = [];
+    const runtimeC = {
+      sendMetaTextMessage: async () => ({ ok: true, message_id: 'meta_c' }),
+      callOpenAiAgent: async (args) => {
+        sessionPassedC = args.sessionId;
+        toolsPassedC = args.tools.map((t) => t.function?.name || t.name);
+        return {
+          sessionId: 'sess_c_temp',
+          plan: {
+            action: 'reply',
+            responses: ['Olá do chat C em rollback via env var'],
+            outboundActions: [{ type: 'text', text: 'Olá do chat C em rollback via env var' }],
+            objectiveDecision: 'continue',
+            turnContract: defaultTurnContract,
+          },
+        };
+      },
+    };
 
-  const resC = await runBrainOrchestration({
-    supabase: supabaseC,
-    conversationId: 'conv_chat_c_legacy',
-    correlationId: 'corr_c_1',
-    preClaimedCycleToken: 'corr_c_1',
-    isManualRetry: true,
-    newMessage: { id: 'm_c_1', sender: 'user', text: 'Oi C', timestamp: new Date().toISOString() },
-    runtime: runtimeC,
-  });
+    const resC = await runBrainOrchestration({
+      supabase: supabaseC,
+      conversationId: 'conv_chat_c_env_rollback',
+      correlationId: 'corr_c_1',
+      preClaimedCycleToken: 'corr_c_1',
+      isManualRetry: true,
+      newMessage: { id: 'm_c_1', sender: 'user', text: 'Oi C', timestamp: new Date().toISOString() },
+      runtime: runtimeC,
+    });
 
-  assert.strictEqual(resC.handled, true);
-  assert.ok(resC.trace.includes('persistent_agent_session_enabled=false'), 'Chat C deve permanecer no legado');
-  assert.strictEqual(sessionPassedC, null, 'Chat C legado não deve enviar sessionId');
-  assert.ok(toolsPassedC.includes('persona_memory_search'), 'Chat C legado deve ter persona_memory_search ativa');
+    assert.strictEqual(resC.handled, true);
+    assert.ok(resC.trace.includes('persistent_agent_session_enabled=false'), 'Chat C deve cair em legado via rollback global por env var');
+    assert.strictEqual(sessionPassedC, null, 'Chat C em rollback legado não deve enviar sessionId');
+    assert.ok(toolsPassedC.includes('persona_memory_search'), 'Chat C em rollback legado deve ter persona_memory_search ativa');
+  } finally {
+    if (prevEnv !== undefined) {
+      process.env.PERSISTENT_AGENT_SESSION_ENABLED = prevEnv;
+    } else {
+      delete process.env.PERSISTENT_AGENT_SESSION_ENABLED;
+    }
+  }
 }));
