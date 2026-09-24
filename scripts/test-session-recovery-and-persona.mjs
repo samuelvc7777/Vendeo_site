@@ -45,6 +45,37 @@ const defaultTurnContract = {
 };
 
 // --------------------------------------------------------------------------
+// Schema canônico real da tabela instagram_messages no PostgreSQL/Supabase
+// Usado para garantir que o mock rejeite qualquer coluna inexistente (como is_from_me ou message)
+// --------------------------------------------------------------------------
+export const VALID_INSTAGRAM_MESSAGES_COLUMNS = new Set([
+  'id',
+  'conversation_id',
+  'sender_id',
+  'text',
+  'timestamp',
+  'is_mine',
+  'status',
+  'created_at',
+  'contact_id',
+  'media_url',
+  'media_type',
+  'direction',
+  'is_echo',
+  'transcription',
+  'type',
+  'is_edited',
+  'edited_at',
+  'audio_transcript',
+  'audio_transcribed_at',
+  'audio_transcription_error',
+  'reply_to_message_id',
+  'deliver_at',
+  'seen_at',
+  '*',
+]);
+
+// --------------------------------------------------------------------------
 // Helper para criar mock do Supabase com mensagens históricas
 // --------------------------------------------------------------------------
 function createMockSupabaseWithHistory(options = {}) {
@@ -120,9 +151,25 @@ function createMockSupabaseWithHistory(options = {}) {
     from: (table) => {
       let conditions = [];
       let updatePayload = null;
+      let schemaError = null;
 
       const queryBuilder = {
-        select: () => queryBuilder,
+        select: (cols) => {
+          if (table === 'instagram_messages' && typeof cols === 'string' && cols !== '*') {
+            const requestedCols = cols.split(',').map((c) => c.trim()).filter(Boolean);
+            for (const col of requestedCols) {
+              if (!VALID_INSTAGRAM_MESSAGES_COLUMNS.has(col)) {
+                schemaError = {
+                  message: `column instagram_messages.${col} does not exist`,
+                  code: '42703',
+                  details: `Column ${col} is not part of canonical instagram_messages schema`,
+                };
+                break;
+              }
+            }
+          }
+          return queryBuilder;
+        },
         eq: (col, val) => {
           conditions.push({ col, val, op: 'eq' });
           return queryBuilder;
@@ -153,6 +200,9 @@ function createMockSupabaseWithHistory(options = {}) {
           return Promise.resolve({ data: null, error: null });
         },
         maybeSingle: async () => {
+          if (schemaError) {
+            return { data: null, error: schemaError };
+          }
           if (table === 'instagram_conversations') {
             return { data: store.conversations[convId] || null, error: null };
           }
@@ -164,12 +214,18 @@ function createMockSupabaseWithHistory(options = {}) {
           return { data: null, error: null };
         },
         single: async () => {
+          if (schemaError) {
+            return { data: null, error: schemaError };
+          }
           if (table === 'instagram_conversations') {
             return { data: store.conversations[convId] || null, error: null };
           }
           return { data: null, error: null };
         },
         then: (resolve) => {
+          if (schemaError) {
+            return Promise.resolve({ data: null, error: schemaError }).then(resolve);
+          }
           if (updatePayload && table === 'instagram_conversations') {
             const conv = store.conversations[convId];
             if (conv) Object.assign(conv, updatePayload);
@@ -316,9 +372,9 @@ test('Teste A - Session válida: reutiliza Session, zero bootstrap e zero histó
 
 test('Teste B - Session inválida: detecta falha, busca últimas mensagens de instagram_messages, cria nova Session, injeta bootstrap e persiste', withAcceleratedTimers(async () => {
   const historyMessages = [
-    { id: 'msg_h1', conversation_id: 'conv_inv_test', sender_id: 'user', is_from_me: false, text: 'Oi Larissa!', created_at: '2026-09-24T00:00:00Z' },
-    { id: 'msg_h2', conversation_id: 'conv_inv_test', sender_id: 'larissa', is_from_me: true, text: 'Oii! Como vc tá?', created_at: '2026-09-24T00:01:00Z' },
-    { id: 'msg_h3', conversation_id: 'conv_inv_test', sender_id: 'user', is_from_me: false, text: 'Tô bem, trabalhando bastante', created_at: '2026-09-24T00:02:00Z' },
+    { id: 'msg_h1', conversation_id: 'conv_inv_test', sender_id: 'user', is_mine: false, text: 'Oi Larissa!', created_at: '2026-09-24T00:00:00Z' },
+    { id: 'msg_h2', conversation_id: 'conv_inv_test', sender_id: 'larissa', is_mine: true, text: 'Oii! Como vc tá?', created_at: '2026-09-24T00:01:00Z' },
+    { id: 'msg_h3', conversation_id: 'conv_inv_test', sender_id: 'user', is_mine: false, text: 'Tô bem, trabalhando bastante', created_at: '2026-09-24T00:02:00Z' },
   ];
 
   const supabase = createMockSupabaseWithHistory({
@@ -385,8 +441,8 @@ test('Teste B - Session inválida: detecta falha, busca últimas mensagens de in
 
 test('Teste C - Turno posterior ao recovery: usa a nova Session persistida e NÃO injeta bootstrap novamente', withAcceleratedTimers(async () => {
   const historyMessages = [
-    { id: 'msg_h1', conversation_id: 'conv_post_test', sender_id: 'user', is_from_me: false, text: 'Oi Larissa!', created_at: '2026-09-24T00:00:00Z' },
-    { id: 'msg_h2', conversation_id: 'conv_post_test', sender_id: 'larissa', is_from_me: true, text: 'Oii!', created_at: '2026-09-24T00:01:00Z' },
+    { id: 'msg_h1', conversation_id: 'conv_post_test', sender_id: 'user', is_mine: false, text: 'Oi Larissa!', created_at: '2026-09-24T00:00:00Z' },
+    { id: 'msg_h2', conversation_id: 'conv_post_test', sender_id: 'larissa', is_mine: true, text: 'Oii!', created_at: '2026-09-24T00:01:00Z' },
   ];
 
   // Simula que a conversa já tem a nova sessão persistida após o recovery
@@ -445,9 +501,9 @@ test('Teste C - Turno posterior ao recovery: usa a nova Session persistida e NÃ
 
 test('Teste D - Conversa antiga sem openai_session_id, mas com histórico: primeira criação recebe bootstrap e persiste; turnos seguintes voltam a zero-history', withAcceleratedTimers(async () => {
   const existingHistory = [
-    { id: 'm1', conversation_id: 'conv_legacy_test', sender_id: 'user', is_from_me: false, text: 'Oi moça', created_at: '2026-09-23T20:00:00Z' },
-    { id: 'm2', conversation_id: 'conv_legacy_test', sender_id: 'larissa', is_from_me: true, text: 'Oii tudo bem?', created_at: '2026-09-23T20:01:00Z' },
-    { id: 'm3', conversation_id: 'conv_legacy_test', sender_id: 'user', is_from_me: false, text: 'Tudo ótimo, sou de Betim', created_at: '2026-09-23T20:02:00Z' },
+    { id: 'm1', conversation_id: 'conv_legacy_test', sender_id: 'user', is_mine: false, text: 'Oi moça', created_at: '2026-09-23T20:00:00Z' },
+    { id: 'm2', conversation_id: 'conv_legacy_test', sender_id: 'larissa', is_mine: true, text: 'Oii tudo bem?', created_at: '2026-09-23T20:01:00Z' },
+    { id: 'm3', conversation_id: 'conv_legacy_test', sender_id: 'user', is_mine: false, text: 'Tudo ótimo, sou de Betim', created_at: '2026-09-23T20:02:00Z' },
   ];
 
   // Conversa sem openai_session_id (null)
@@ -666,3 +722,195 @@ test('Validação automática da Persona nas instructions canônicas do Agent', 
     'Não deve conter a instrução antiga que proibia biografia nas instructions'
   );
 });
+
+// --------------------------------------------------------------------------
+// TESTES DO SCHEMA REAL DE INSTAGRAM_MESSAGES E RESILIÊNCIA DE BOOTSTRAP
+// --------------------------------------------------------------------------
+
+test('Teste F - Strict Schema Guard: mock rejeita colunas inexistentes (is_from_me, message) com erro 42703', async () => {
+  const supabase = createMockSupabaseWithHistory({
+    conversationId: 'conv_schema_guard',
+    messages: [
+      { id: 'm1', conversation_id: 'conv_schema_guard', sender_id: 'user', is_mine: false, text: 'Oi', created_at: '2026-09-24T00:00:00Z' },
+    ],
+  });
+
+  // 1. Tentar consultar colunas inexistentes diretamente no mock
+  const { data: badData, error: badError } = await supabase
+    .from('instagram_messages')
+    .select('id, sender_id, is_from_me, text, message, created_at, timestamp')
+    .eq('conversation_id', 'conv_schema_guard');
+
+  assert.strictEqual(badData, null, 'Query com colunas inválidas deve retornar data = null');
+  assert.ok(badError, 'Query com colunas inválidas deve retornar erro');
+  assert.strictEqual(badError.code, '42703', 'Código de erro deve ser 42703 (coluna inexistente)');
+  assert.ok(
+    badError.message.includes('is_from_me') || badError.message.includes('message'),
+    'Mensagem de erro deve identificar a coluna inexistente'
+  );
+
+  // 2. Provar que a query canônica atual passa sem erro
+  const { data: goodData, error: goodError } = await supabase
+    .from('instagram_messages')
+    .select('id, sender_id, is_mine, text, created_at, timestamp')
+    .eq('conversation_id', 'conv_schema_guard');
+
+  assert.strictEqual(goodError, null, 'Query canônica não deve retornar erro');
+  assert.ok(Array.isArray(goodData), 'Query canônica deve retornar array');
+  assert.strictEqual(goodData.length, 1, 'Deve retornar 1 mensagem');
+});
+
+test('Teste G - fetchSessionRecoveryBootstrap usa estritamente colunas canônicas e retorna queryFailed=false', async () => {
+  const supabase = createMockSupabaseWithHistory({
+    conversationId: 'conv_bootstrap_real',
+    messages: [
+      { id: 'm1', conversation_id: 'conv_bootstrap_real', sender_id: 'user', is_mine: false, text: 'Você gosta de praia?', created_at: '2026-09-24T00:00:00Z' },
+      { id: 'm2', conversation_id: 'conv_bootstrap_real', sender_id: 'larissa', is_mine: true, text: 'Amo praia demais!', created_at: '2026-09-24T00:01:00Z' },
+    ],
+  });
+
+  const bootstrap = await fetchSessionRecoveryBootstrap(supabase, 'conv_bootstrap_real', []);
+  assert.strictEqual(bootstrap.queryFailed, false, 'queryFailed deve ser false');
+  assert.strictEqual(bootstrap.errorMessage, null, 'errorMessage deve ser null');
+  assert.strictEqual(bootstrap.messageCount, 2, 'Deve recuperar 2 mensagens');
+  assert.ok(bootstrap.text.includes('[Pretendente | id=m1]'), 'Deve identificar pretendente');
+  assert.ok(bootstrap.text.includes('Você gosta de praia?'), 'Deve conter texto do pretendente');
+  assert.ok(bootstrap.text.includes('[Larissa | id=m2]'), 'Deve identificar Larissa via is_mine');
+  assert.ok(bootstrap.text.includes('Amo praia demais!'), 'Deve conter texto da Larissa');
+});
+
+test('Teste H - Resiliência e telemetria: falha na query de bootstrap não quebra o ciclo e é registrada no trace', withAcceleratedTimers(async () => {
+  // Criar mock onde a tabela instagram_messages falha simulando erro de banco
+  const defaultStages = [
+    {
+      id: 'stage_1_conexao',
+      name: 'Conexão Inicial',
+      order: 1,
+      goals: [{ id: 'goal_initial_reciprocity', label: 'Reciprocidade', required: true, status: 'pending', kind: 'conversation_state' }],
+    },
+  ];
+
+  const convRecord = {
+    id: 'conv_err_test',
+    is_restricted: false,
+    ai_auto_respond: true,
+    stage_completed_rules: {
+      current_stage: 'stage_1_conexao',
+      stages: defaultStages,
+      completed_goals: [],
+      cancel_current_cycle: false,
+      config: { persistent_agent_session_enabled: true },
+      orchestration: {
+        currentStageId: 'stage_1_conexao',
+        currentPhase: 'conexao_inicial',
+        checkpoint: 'chk_saudacao_feita',
+        stageChecklist: { goals: defaultStages[0].goals, currentObjective: defaultStages[0].goals[0] },
+        openai_session_id: 'sess_failing_reuse_1',
+        messageLedger: {},
+        lastProcessedMessageId: null,
+      },
+      active_cycle_token: 'corr_err_1',
+    },
+  };
+
+  const failingSupabase = {
+    channel: () => ({ send: async () => ({}), subscribe: () => ({}) }),
+    from: (table) => {
+      let updatePayload = null;
+      const qb = {
+        select: () => qb,
+        eq: () => qb,
+        neq: () => qb,
+        in: () => qb,
+        or: () => qb,
+        order: () => qb,
+        limit: () => qb,
+        update: (payload) => { updatePayload = payload; return qb; },
+        upsert: () => ({ data: null, error: null, select: () => Promise.resolve({ data: null, error: null }), then: (r) => Promise.resolve({ data: null, error: null }).then(r) }),
+        insert: () => Promise.resolve({ data: null, error: null }),
+        maybeSingle: async () => {
+          if (table === 'instagram_conversations') return { data: convRecord, error: null };
+          return { data: null, error: null };
+        },
+        single: async () => {
+          if (table === 'instagram_conversations') return { data: convRecord, error: null };
+          return { data: null, error: null };
+        },
+        then: (resolve) => {
+          if (table === 'instagram_messages') {
+            // Simula erro de banco na consulta de mensagens
+            return Promise.resolve({
+              data: null,
+              error: { message: 'relation "instagram_messages" connection timeout', code: '08006' },
+            }).then(resolve);
+          }
+          if (updatePayload && table === 'instagram_conversations') {
+            Object.assign(convRecord, updatePayload);
+            return Promise.resolve({ data: convRecord, error: null }).then(resolve);
+          }
+          if (table === 'instagram_conversations') return Promise.resolve({ data: convRecord, error: null }).then(resolve);
+          if (table === 'instagram_config') return Promise.resolve({ data: [], error: null }).then(resolve);
+          if (table === 'chat_stages') return Promise.resolve({ data: defaultStages, error: null }).then(resolve);
+          return Promise.resolve({ data: [], error: null }).then(resolve);
+        },
+      };
+      return qb;
+    },
+    rpc: async (fnName, args) => {
+      if (fnName === 'claim_experimental_cycle_atomic' || fnName === 'claim_experimental_cycle') {
+        convRecord.stage_completed_rules.active_cycle_token = args.p_cycle_token;
+        return { data: { success: true, reason: 'claimed', activeCycleToken: args.p_cycle_token }, error: null };
+      }
+      if (fnName === 'claim_experimental_cycle_messages_atomic' || fnName === 'claim_experimental_cycle_messages') {
+        return { data: { success: true, claimed_count: 1, claimed_ids: ['msg_err_in'], inbound_revision: 1 }, error: null };
+      }
+      if (fnName === 'prepare_experimental_outbox_entry') {
+        return { data: { success: true, reason: 'prepared', outboxKey: args?.p_outbox_entry?.idempotencyKey }, error: null };
+      }
+      if (fnName === 'claim_outbox_entry_atomic' || fnName === 'claim_outbox_entry') {
+        return { data: { success: true, reason: 'claimed', entry: { status: 'claimed_to_send' } }, error: null };
+      }
+      if (fnName === 'commit_experimental_cycle_if_owned' || fnName === 'commit_experimental_cycle_atomic') {
+        if (args.p_new_stage_completed_rules) convRecord.stage_completed_rules = args.p_new_stage_completed_rules;
+        return { data: { success: true, committed: true, active_token: null }, error: null };
+      }
+      return { data: { success: true, committed: true }, error: null };
+    },
+  };
+
+  const runtime = {
+    sendMetaTextMessage: async () => ({ ok: true, message_id: 'meta_err_1' }),
+    callOpenAiAgent: async () => ({
+      sessionId: 'sess_new_after_db_error',
+      sessionCreated: true,
+      plan: {
+        action: 'reply',
+        responses: ['Oi! Tudo bem?'],
+        outboundActions: [{ type: 'text', text: 'Oi! Tudo bem?' }],
+        objectiveDecision: 'continue',
+        turnContract: defaultTurnContract,
+      },
+    }),
+  };
+
+  const result = await runBrainOrchestration({
+    supabase: failingSupabase,
+    conversationId: 'conv_err_test',
+    correlationId: 'corr_err_1',
+    preClaimedCycleToken: 'corr_err_1',
+    isManualRetry: true,
+    newMessage: { id: 'msg_err_in', sender: 'user', text: 'Oi', timestamp: new Date().toISOString() },
+    runtime,
+  });
+
+  assert.strictEqual(result.handled, true, 'O ciclo não deve quebrar mesmo com erro no bootstrap');
+  const trace = result.trace || [];
+  assert.ok(
+    trace.includes('agent_session_bootstrap_query_failed=true'),
+    'Trace DEVE registrar agent_session_bootstrap_query_failed=true'
+  );
+  assert.ok(
+    trace.some((t) => t.startsWith('agent_session_bootstrap_error=')),
+    'Trace DEVE registrar o detalhe do erro do bootstrap'
+  );
+}));

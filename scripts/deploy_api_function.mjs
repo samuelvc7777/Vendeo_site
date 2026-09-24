@@ -4,7 +4,7 @@
  * utilizando o servidor MCP oficial da Supabase (https://mcp.supabase.com/mcp).
  */
 
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { resolve, join } from 'path';
 
 const MCP_URL = 'https://mcp.supabase.com/mcp';
@@ -34,6 +34,22 @@ for (const f of fileNames) {
       name: `api/${f}`,
       content,
     });
+  }
+}
+
+// Coleta arquivos de supabase/functions/_shared se existirem
+const sharedDir = resolve(process.cwd(), 'supabase/functions/_shared');
+if (existsSync(sharedDir)) {
+  const sharedFileNames = readdirSync(sharedDir);
+  for (const f of sharedFileNames) {
+    const fullPath = join(sharedDir, f);
+    if (statSync(fullPath).isFile()) {
+      const content = readFileSync(fullPath, 'utf8');
+      files.push({
+        name: `_shared/${f}`,
+        content,
+      });
+    }
   }
 }
 

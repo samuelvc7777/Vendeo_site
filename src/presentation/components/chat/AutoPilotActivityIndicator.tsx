@@ -229,8 +229,15 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
     ? metadata.memoryToolResults.filter((result): result is Record<string, unknown> => Boolean(result) && typeof result === "object").slice(0, 8)
     : [];
   const model = formatConsoleModel(eventMetadataText(metadata, "model"));
+  const configuredModel = formatConsoleModel(eventMetadataText(metadata, "configuredModel"));
+  const executedModel = formatConsoleModel(eventMetadataText(metadata, "executedModel"));
   const reasoningEffort = formatConsoleSetting(eventMetadataText(metadata, "reasoningEffort"));
+  const configuredReasoning = formatConsoleSetting(eventMetadataText(metadata, "configuredReasoningEffort"));
+  const executedReasoning = formatConsoleSetting(eventMetadataText(metadata, "executedReasoningEffort"));
   const verbosity = formatConsoleSetting(eventMetadataText(metadata, "verbosity"));
+  const hasModelDivergence = Boolean(configuredModel && executedModel && configuredModel !== executedModel);
+  const hasReasoningDivergence = Boolean(configuredReasoning && executedReasoning && configuredReasoning !== executedReasoning);
+  const hasDivergence = hasModelDivergence || hasReasoningDivergence;
   const responses = eventMetadataStrings(metadata, "responses");
   const proposedResponses = eventMetadataStrings(metadata, "proposedResponses");
   const toolsUsed = eventMetadataStrings(metadata, "toolsUsed");
@@ -273,8 +280,28 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
 
       {isBrainStarted && (
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <ConsoleEventField label="Modelo">{model}</ConsoleEventField>
-          <ConsoleEventField label="Reasoning">{reasoningEffort}</ConsoleEventField>
+          <ConsoleEventField label="Modelo">
+            {hasModelDivergence ? (
+              <span>
+                <span className="text-amber-400">Cfg: {configuredModel}</span>
+                <span className="mx-1 text-zinc-500">·</span>
+                <span className="text-emerald-400">Exec: {executedModel}</span>
+              </span>
+            ) : (
+              executedModel || model
+            )}
+          </ConsoleEventField>
+          <ConsoleEventField label="Reasoning">
+            {hasReasoningDivergence ? (
+              <span>
+                <span className="text-amber-400">Cfg: {configuredReasoning}</span>
+                <span className="mx-1 text-zinc-500">·</span>
+                <span className="text-emerald-400">Exec: {executedReasoning}</span>
+              </span>
+            ) : (
+              executedReasoning || reasoningEffort
+            )}
+          </ConsoleEventField>
           <ConsoleEventField label="Verbosity">{verbosity}</ConsoleEventField>
           <ConsoleEventField label="Etapa">{eventMetadataText(metadata, "stageId")}</ConsoleEventField>
           <ConsoleEventField label="Objetivo atual">{eventMetadataText(metadata, "currentObjectiveLabel")}</ConsoleEventField>
@@ -364,8 +391,23 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
             </details>
           )}
           <div className="rounded-lg bg-black/20 p-2 text-[10px] text-zinc-300">
-            {model || "Modelo não informado"}
-            {(reasoningEffort || verbosity) && <span className="text-zinc-500"> · Reasoning: {reasoningEffort || "—"} · Verbosity: {verbosity || "—"}</span>}
+            {hasDivergence ? (
+              <div className="space-y-1">
+                <div>
+                  <span className="font-semibold text-amber-400">Configurado:</span> {configuredModel || model || "Modelo não informado"}
+                  {(configuredReasoning || reasoningEffort) && <span className="text-zinc-500"> · Reasoning: {configuredReasoning || reasoningEffort}</span>}
+                </div>
+                <div>
+                  <span className="font-semibold text-emerald-400">Executado:</span> {executedModel || model || "Modelo não informado"}
+                  {(executedReasoning || reasoningEffort) && <span className="text-zinc-500"> · Reasoning: {executedReasoning || reasoningEffort}</span>}
+                </div>
+              </div>
+            ) : (
+              <>
+                {executedModel || model || "Modelo não informado"}
+                {(reasoningEffort || verbosity) && <span className="text-zinc-500"> · Reasoning: {reasoningEffort || "—"} · Verbosity: {verbosity || "—"}</span>}
+              </>
+            )}
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <ConsoleEventField label="Objetivo · decisão">

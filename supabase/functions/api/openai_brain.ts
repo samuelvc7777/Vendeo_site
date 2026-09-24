@@ -22,9 +22,10 @@ import {
   LARISSA_INTERACTION_DNA_HASH,
 } from "./larissa_interaction_dna.ts";
 import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts";
-import type { AgentSessionUsageTelemetry } from "./openai_usage.ts";
+import { normalizeOpenAiUsage, type AgentSessionUsageTelemetry } from "./openai_usage.ts";
 import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
 import { AGENT_LOCAL_WAIT_MS } from "./autopilot_cycle_safety.ts";
+import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
 
 function fetchOpenAiBounded(url: string | URL, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
@@ -341,10 +342,12 @@ export const MAX_APP_TOOL_ROUNDS = 4;
 export interface ExecuteOpenAiAppToolParams {
   toolName: string;
   toolArgs: any;
+  callId?: string;
   supabase: any;
   conversationId: string;
   searchCofreAudios?: (params: { supabase: any; conversationId: string; query: string; limit?: number }) => Promise<any[]>;
   telemetry: OpenAiBrainTurnResult["telemetry"];
+  seenToolCallIds?: Set<string>;
 }
 
 export interface AppToolExecutionResult {
@@ -355,7 +358,7 @@ export interface AppToolExecutionResult {
 }
 
 export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): Promise<AppToolExecutionResult> {
-  const { toolName, toolArgs, supabase, conversationId, searchCofreAudios, telemetry } = params;
+  const { toolName, toolArgs, callId, supabase, conversationId, searchCofreAudios, telemetry, seenToolCallIds } = params;
 
   if (toolName !== "cofre_audio_search") {
     return {
@@ -384,8 +387,17 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
 
   const query = rawQuery.trim().slice(0, 200);
 
-  telemetry.toolsRequested.push(toolName);
-  telemetry.toolExecutionsCount++;
+  // Deduplicação estrita de tool calls por callId
+  if (callId && seenToolCallIds) {
+    if (!seenToolCallIds.has(callId)) {
+      seenToolCallIds.add(callId);
+      telemetry.toolsRequested.push(toolName);
+      telemetry.toolExecutionsCount++;
+    }
+  } else {
+    telemetry.toolsRequested.push(toolName);
+    telemetry.toolExecutionsCount++;
+  }
   if (!telemetry.sourcesUsed.includes("cofre_audio")) {
     telemetry.sourcesUsed.push("cofre_audio");
   }
@@ -536,6 +548,11 @@ export function validateConversationBrainPlan(
   if (!turnContract || typeof turnContract !== "object") {
     return { valid: false, error: "turnContract ausente ou inválido no plano" };
   }
+  if (turnContract.mustAnswerFirst === undefined) turnContract.mustAnswerFirst = true;
+  if (turnContract.responseShape === undefined) turnContract.responseShape = "natural";
+  if (!Array.isArray(turnContract.directQuestions)) turnContract.directQuestions = [];
+  if (turnContract.newQuestionBudget === undefined) turnContract.newQuestionBudget = 1;
+  if (!Number.isInteger(turnContract.maxBalloons)) turnContract.maxBalloons = 2;
   if (typeof turnContract.mustAnswerFirst !== "boolean") {
     return { valid: false, error: "turnContract.mustAnswerFirst deve ser booleano" };
   }
@@ -926,6 +943,15 @@ export interface OpenAiBrainTurnResult {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    turnInputTokens?: number | null;
+    turnCachedInputTokens?: number | null;
+    turnUncachedInputTokens?: number | null;
+    turnOutputTokens?: number | null;
+    turnReasoningTokens?: number | null;
+    turnTotalTokens?: number | null;
+    turnCacheWriteTokens?: number | null;
+    sessionUsageTotal?: number | null;
+    tokenMeasurement?: "turn" | "unavailable";
     agentUsageSessions: AgentSessionUsageTelemetry[];
     sourcesUsed: string[];
     finalPlanParsed?: boolean;
@@ -937,11 +963,19 @@ export interface OpenAiBrainTurnResult {
     persistentAgentSessionEnabled?: boolean;
     agentSessionReused?: boolean;
     agentSessionCreated?: boolean;
+    agentSessionConfigChecked?: boolean;
+    agentSessionConfigUpdated?: boolean;
+    agentSessionModelRequested?: string | null;
+    agentSessionModelActual?: string | null;
+    agentSessionReasoningRequested?: string | null;
+    agentSessionReasoningActual?: string | null;
     sessionFallbackUsed?: boolean;
     sessionFallbackTriggered?: boolean;
     agentSessionRecoveryTriggered?: boolean;
     agentSessionBootstrapInjected?: boolean;
     agentSessionBootstrapMessageCount?: number;
+    agentSessionBootstrapQueryFailed?: boolean;
+    agentSessionBootstrapError?: string | null;
     manualRecentHistoryInjected?: boolean;
     contactMemoryInjected?: boolean;
     episodicMemoryInjected?: boolean;
@@ -949,6 +983,14 @@ export interface OpenAiBrainTurnResult {
     contactMemoryToolEnabled?: boolean;
     conversationMemoryToolEnabled?: boolean;
     audioSearchToolEnabled?: boolean;
+    agentInstructionChars?: number;
+    agentInstructionEstimatedTokens?: number;
+    turnContextChars?: number;
+    turnContextEstimatedTokens?: number;
+    toolSchemaEstimatedTokens?: number;
+    modelGenerationCount?: number;
+    agentToolCallCount?: number;
+    toolNamesUsed?: string[];
   };
 }
 
@@ -956,38 +998,55 @@ export interface OpenAiBrainTurnResult {
  * Recupera histórico recente de instagram_messages (15 a 20 mensagens) exclusivamente
  * para o bootstrap de uma nova sessão (recuperação de sessão perdida ou primeira sessão
  * de conversa pré-existente). Não utiliza nenhuma memória MCP.
+ * Utiliza estritamente as colunas canônicas da tabela: id, sender_id, is_mine, text, created_at, timestamp.
  */
 export async function fetchSessionRecoveryBootstrap(
   supabase: any,
   conversationId: string,
   excludeMessageIds: string[] = []
-): Promise<{ text: string; messageCount: number }> {
+): Promise<{
+  text: string;
+  messageCount: number;
+  queryFailed?: boolean;
+  errorMessage?: string | null;
+}> {
   if (!supabase || !conversationId) {
-    return { text: "", messageCount: 0 };
+    return { text: "", messageCount: 0, queryFailed: false, errorMessage: null };
   }
 
   try {
     const { data: rows, error } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_from_me, text, message, created_at, timestamp")
+      .select("id, sender_id, is_mine, text, created_at, timestamp")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
       .limit(35);
 
-    if (error || !Array.isArray(rows) || rows.length === 0) {
-      return { text: "", messageCount: 0 };
+    if (error) {
+      const errMsg = error.message || error.details || String(error);
+      console.error("[OpenAI Agent] agent_session_bootstrap_query_failed:", errMsg);
+      return {
+        text: "",
+        messageCount: 0,
+        queryFailed: true,
+        errorMessage: errMsg.slice(0, 200),
+      };
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { text: "", messageCount: 0, queryFailed: false, errorMessage: null };
     }
 
     const excludeSet = new Set(excludeMessageIds.map((id) => String(id)));
     const filteredRows = rows.filter((r: any) => {
       const idStr = String(r.id || "");
       if (idStr && excludeSet.has(idStr)) return false;
-      const content = String(r.text || r.message || "").trim();
+      const content = String(r.text || "").trim();
       return Boolean(content);
     });
 
     if (filteredRows.length === 0) {
-      return { text: "", messageCount: 0 };
+      return { text: "", messageCount: 0, queryFailed: false, errorMessage: null };
     }
 
     // Recupera entre 15 e 20 mensagens mais recentes (limite de 20)
@@ -1008,13 +1067,13 @@ export async function fetchSessionRecoveryBootstrap(
 
     for (const msg of targetSlice) {
       const isLarissa = Boolean(
-        msg.is_from_me ||
+        msg.is_mine ||
         msg.sender_id === "me" ||
         msg.sender_id === "larissa"
       );
       const senderLabel = isLarissa ? "Larissa" : "Pretendente";
       const idPart = msg.id ? ` | id=${msg.id}` : "";
-      const text = String(msg.text || msg.message || "").trim();
+      const text = String(msg.text || "").trim();
       lines.push("");
       lines.push(`[${senderLabel}${idPart}]`);
       lines.push(text);
@@ -1023,10 +1082,18 @@ export async function fetchSessionRecoveryBootstrap(
     return {
       text: lines.join("\n"),
       messageCount: targetSlice.length,
+      queryFailed: false,
+      errorMessage: null,
     };
-  } catch (err) {
-    console.warn("[OpenAI Agent] Falha ao carregar bootstrap excepcional:", err);
-    return { text: "", messageCount: 0 };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    console.error("[OpenAI Agent] agent_session_bootstrap_exception:", errMsg);
+    return {
+      text: "",
+      messageCount: 0,
+      queryFailed: true,
+      errorMessage: errMsg.slice(0, 200),
+    };
   }
 }
 
@@ -1087,6 +1154,7 @@ async function fetchAgentSessionUsageTelemetry(
   sessionUsage: unknown,
   headers: Record<string, string>,
   deadlineMs = Date.now() + 15_000,
+  currentTurnId?: string | null,
 ): Promise<AgentSessionUsageTelemetry> {
   const turns: AgentSessionUsageTelemetry["turns"] = [];
   let after: string | null = null;
@@ -1115,7 +1183,7 @@ async function fetchAgentSessionUsageTelemetry(
   }
 
   const generationIds = Date.now() < deadlineMs ? await fetchAgentGenerationIds(sessionId, headers, deadlineMs) : null;
-  return { sessionId, model, sessionUsage, turns, generationIds };
+  return { sessionId, model, sessionUsage, turns, generationIds, currentTurnId };
 }
 
 function buildAgentRecentWindow(params: RunOpenAiBrainParams): {
@@ -1243,10 +1311,149 @@ function buildAgentRecentWindow(params: RunOpenAiBrainParams): {
   return { text: windowLines.join("\n\n"), includedRecentMessages, telemetry };
 }
 
+/**
+ * Constrói o contexto enxuto e operacional exclusivo para o modo Persistent Agent Session.
+ * Não duplica regras conversacionais, DNA, diretrizes anti-papagaio ou instruções da Persona,
+ * que já estão consolidadas nas instruções canônicas persistentes do Agent.
+ * Reduz em ~90% o payload por turno.
+ */
+export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string {
+  const objectiveDesc = params.currentObjectiveDescription ? ` - Descrição: ${params.currentObjectiveDescription}` : "";
+  const objectiveType = "[OBRIGATÓRIO]";
+  const objectiveLine = params.currentObjectiveId
+    ? `${params.currentObjectiveId} ("${params.currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
+    : "Nenhum objetivo pendente";
+
+  const sections: string[] = [
+    "# TURNO ATUAL DA CONVERSA",
+    `ETAPA ATUAL: ${params.currentStageId || "identificacao"}`,
+    `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
+  ];
+
+  if (params.nextObjectives && params.nextObjectives.length > 0) {
+    sections.push(
+      `PRÓXIMOS OBJETIVOS PENDENTES DA ETAPA:\n` +
+        params.nextObjectives
+          .map((o) => `• ${o.id} ("${o.label}")${o.description ? ` - ${o.description}` : ""}`)
+          .join("\n")
+    );
+  }
+
+  if (params.temporalContext) {
+    sections.push(`\n${params.temporalContext.trim()}`);
+  }
+
+  if (params.candidateEvidence && params.candidateEvidence.length > 0) {
+    sections.push(
+      `\n## EVIDÊNCIAS CANDIDATAS DE OBJETIVO (NÃO CONCLUEM NADA SOZINHAS)\n${params.candidateEvidence
+        .map((e) => `- objetivo=${e.objectiveId}; mensagem=${e.evidenceMessageId}; evidência=${e.summary}`)
+        .join("\n")}`
+    );
+  }
+
+  if (params.replyTargets && Object.keys(params.replyTargets).length > 0) {
+    const replyLines = Object.values(params.replyTargets).map(
+      (r) => `[RESPONDENDO A ${r.sender.toUpperCase()} id="${r.id}"]: "${r.text}"`
+    );
+    sections.push(`\n## MENSAGEM REFERENCIADA (REPLY TARGET)\n${replyLines.join("\n")}`);
+  }
+
+  let inboundsText = "[Nenhuma mensagem nova]";
+  if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
+    inboundsText = params.currentInboundMessages
+      .map(
+        (m) =>
+          `[MENSAGEM id="${m.id}"${
+            m.createdAt
+              ? ` | ${new Intl.DateTimeFormat("pt-BR", {
+                  timeZone: "America/Sao_Paulo",
+                  day: "2-digit",
+                  month: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false,
+                }).format(new Date(m.createdAt))}`
+              : ""
+          }]: "${m.text}"`
+      )
+      .join("\n");
+  } else if (params.inboundMessages && params.inboundMessages.length > 0) {
+    inboundsText = params.inboundMessages.map((msg, i) => `[Mensagem ${i + 1}]: "${msg}"`).join("\n");
+  }
+  sections.push(
+    `\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}\n(Responda a perguntas diretas e reconheça conteúdos substantivos com naturalidade)`
+  );
+
+  if (params.recentStyleStateSnippet && params.recentStyleStateSnippet.trim()) {
+    sections.push(`\n${params.recentStyleStateSnippet.trim()}`);
+  }
+
+  sections.push(
+    `\n## FORMATO DE SAÍDA JSON
+Emita EXCLUSIVAMENTE um único objeto JSON:
+{
+  "action": "reply",
+  "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
+  "satisfiedObjectiveId": null,
+  "evidenceMessageId": null,
+  "reasoning": "sua justificativa estratégica sucinta",
+  "liveStatePatch": { "currentTopic": "..." },
+  "turnContract": { "mustAnswerFirst": true, "newQuestionBudget": 1, "responseShape": "natural", "directQuestions": [], "maxBalloons": 2 },
+  "outboundActions": [
+    { "type": "text", "text": "..." }
+  ],
+  "responses": ["..."]
+}
+(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e evidenceMessageId devem ser o id exato de uma das mensagens deste turno; senão null. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
+  );
+
+  if (params.schemaFeedback) {
+    sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou no schema: ${params.schemaFeedback}. Reenvie JSON válido.`);
+  }
+
+  return sections.join("\n");
+}
+
 export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenAiBrainParams): {
   contextMessage: string;
   contextWindow: OpenAiContextWindowTelemetry;
 } {
+  const persistentMode = Boolean(params.persistentSessionEnabled);
+
+  if (persistentMode) {
+    return {
+      contextMessage: buildPersistentTurnContext(params),
+      contextWindow: {
+        candidateCount: 0,
+        deduplicatedCount: 0,
+        budgetedCount: 0,
+        includedCount: 0,
+        includedMessages: [],
+        previews: [],
+        lastLarissaOutboundId: null,
+        finalMandatoryMessageIds: [],
+        mandatoryCount: 0,
+        lastLarissaOutboundRequired: false,
+        lastLarissaOutboundIncluded: null,
+        replyTargetRequiredCount: 0,
+        replyTargetsIncludedCount: 0,
+        currentInboundDuplicateCount: 0,
+        droppedNonMandatoryCount: 0,
+        mandatoryContextOverflow: false,
+        cutByMessageLimit: false,
+        cutByCharLimit: false,
+        windowCharacterCount: 0,
+        cuts: {
+          messageLimit: false,
+          tokenBudget: false,
+          finalCharacters: false,
+          messageTextLimit: false,
+          mandatoryTokenOverflow: false,
+        },
+      },
+    };
+  }
+
   const {
     currentStageId,
     currentObjectiveId,
@@ -1260,7 +1467,6 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     recentQuestionIntentsSnippet,
   } = params;
 
-  const persistentMode = Boolean(params.persistentSessionEnabled);
   const recentWindow = persistentMode
     ? {
         text: "",
@@ -1536,6 +1742,21 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    turnInputTokens: null,
+    turnCachedInputTokens: null,
+    turnUncachedInputTokens: null,
+    turnOutputTokens: null,
+    turnReasoningTokens: null,
+    turnTotalTokens: null,
+    turnCacheWriteTokens: null,
+    sessionUsageTotal: null,
+    tokenMeasurement: "turn",
+    agentSessionConfigChecked: false,
+    agentSessionConfigUpdated: false,
+    agentSessionModelRequested: params.model || null,
+    agentSessionModelActual: null,
+    agentSessionReasoningRequested: params.reasoningEffort || null,
+    agentSessionReasoningActual: null,
     agentUsageSessions: [],
     sourcesUsed: [],
     actualMemoryToolCalled: false,
@@ -1551,7 +1772,31 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     agentSessionRecoveryTriggered: false,
     agentSessionBootstrapInjected: false,
     agentSessionBootstrapMessageCount: 0,
+    agentSessionBootstrapQueryFailed: false,
+    agentSessionBootstrapError: null,
+    agentInstructionChars: undefined,
+    agentInstructionEstimatedTokens: undefined,
+    turnContextChars: undefined,
+    turnContextEstimatedTokens: undefined,
+    toolSchemaEstimatedTokens: undefined,
+    modelGenerationCount: 1,
+    agentToolCallCount: 0,
+    toolNamesUsed: [],
   };
+
+  const instructions = buildCanonicalAgentInstructions({ persistentMode });
+  const activeToolsForEstimates = persistentMode
+    ? [COFRE_AUDIO_SEARCH_TOOL_DEFINITION]
+    : [
+        PERSONA_MEMORY_TOOL_DEFINITION,
+        CONTACT_MEMORY_TOOL_DEFINITION,
+        CONVERSATION_MEMORY_TOOL_DEFINITION,
+        COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
+      ];
+
+  telemetry.agentInstructionChars = instructions.length;
+  telemetry.agentInstructionEstimatedTokens = Math.ceil(instructions.length / 4);
+  telemetry.toolSchemaEstimatedTokens = Math.ceil(JSON.stringify(activeToolsForEstimates).length / 4);
 
   const builtContext = buildOpenAiBrainContextMessageWithObservability(params);
   telemetry.contextWindow = builtContext.contextWindow;
@@ -1559,6 +1804,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   telemetry.contactMemoryInjected = !persistentMode && Boolean(params.contactMemorySummary);
   telemetry.episodicMemoryInjected = !persistentMode && Boolean(params.landmarksSummary);
   const contextMessage = builtContext.contextMessage;
+
+  telemetry.turnContextChars = contextMessage.length;
+  telemetry.turnContextEstimatedTokens = Math.ceil(contextMessage.length / 4);
 
   // 1. Suporte a runtime de teste injetado (Zero dependência de rede em testes unitários)
   if (params.runtime && typeof params.runtime.callOpenAiAgent === "function") {
@@ -1694,7 +1942,49 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
       console.log("[Brain] turn_completed");
       telemetry.durationMs = Date.now() - startTime;
-      telemetry.totalTokens = mockResult.tokens || 100;
+      telemetry.agentToolCallCount = telemetry.toolsRequested.length;
+      telemetry.modelGenerationCount = 1 + telemetry.toolsRequested.length;
+      telemetry.toolNamesUsed = [...telemetry.toolsRequested];
+
+      if (mockResult.tokenMeasurement === "unavailable" || mockResult.turnUsage === null) {
+        telemetry.tokenMeasurement = "unavailable";
+        telemetry.turnTotalTokens = null;
+        telemetry.inputTokens = 0;
+        telemetry.outputTokens = 0;
+        telemetry.totalTokens = 0;
+      } else if (mockResult.turnUsage || mockResult.usage) {
+        const u = mockResult.turnUsage || mockResult.usage;
+        const normalized = normalizeOpenAiUsage(u);
+        if (normalized) {
+          telemetry.turnInputTokens = normalized.inputTokens;
+          telemetry.turnCachedInputTokens = normalized.cachedInputTokens;
+          telemetry.turnUncachedInputTokens = normalized.uncachedInputTokens;
+          telemetry.turnOutputTokens = normalized.outputTokens;
+          telemetry.turnReasoningTokens = normalized.reasoningTokens;
+          telemetry.turnTotalTokens = normalized.totalTokens;
+          telemetry.turnCacheWriteTokens = normalized.cacheWriteTokens;
+          telemetry.inputTokens = normalized.inputTokens ?? 0;
+          telemetry.outputTokens = normalized.outputTokens ?? 0;
+          telemetry.totalTokens = normalized.totalTokens ?? (telemetry.inputTokens + telemetry.outputTokens);
+          telemetry.tokenMeasurement = "turn";
+        }
+      } else if (mockResult.tokens !== undefined) {
+        telemetry.totalTokens = mockResult.tokens;
+        telemetry.turnTotalTokens = mockResult.tokens;
+        telemetry.tokenMeasurement = "turn";
+      } else {
+        telemetry.tokenMeasurement = "unavailable";
+        telemetry.turnTotalTokens = null;
+        telemetry.inputTokens = 0;
+        telemetry.outputTokens = 0;
+        telemetry.totalTokens = 0;
+      }
+
+      if (mockResult.sessionUsage) {
+        const su = normalizeOpenAiUsage(mockResult.sessionUsage);
+        telemetry.sessionUsageTotal = su?.totalTokens ?? null;
+      }
+
       if (params.sessionId) {
         telemetry.sessionId = mockResult.sessionId || params.sessionId;
         telemetry.agentSessionReused = mockResult.sessionCreated ? false : true;
@@ -1706,6 +1996,47 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         telemetry.agentSessionReused = false;
         telemetry.agentSessionCreated = true;
         telemetry.agentSessionRecoveryTriggered = false;
+      }
+
+      const mockDesiredModel = params.model || "gpt-6-sol";
+      const mockDesiredReasoning = params.reasoningEffort || "medium";
+      telemetry.agentSessionConfigChecked = true;
+      telemetry.agentSessionModelRequested = mockDesiredModel;
+      telemetry.agentSessionReasoningRequested = mockDesiredReasoning;
+
+      const mockCurrentModel = mockResult.existingSessionConfig?.model || mockResult.currentSessionModel || mockResult.sessionModel || (params.sessionId ? (mockResult.configuredModel || "gpt-6-luna") : mockDesiredModel);
+      const mockCurrentReasoning = mockResult.existingSessionConfig?.reasoning?.effort || mockResult.currentSessionReasoning || mockResult.sessionReasoning || (params.sessionId ? (mockResult.configuredReasoning || "xhigh") : mockDesiredReasoning);
+      const hasConfigDiff = params.sessionId && (mockCurrentModel !== mockDesiredModel || mockCurrentReasoning !== mockDesiredReasoning);
+
+      telemetry.agentSessionConfigUpdated = Boolean(mockResult.sessionConfigUpdated ?? hasConfigDiff);
+      telemetry.agentSessionModelActual = mockResult.executedModel || (telemetry.agentSessionConfigUpdated ? mockDesiredModel : mockCurrentModel);
+      telemetry.agentSessionReasoningActual = mockResult.executedReasoning || (telemetry.agentSessionConfigUpdated ? mockDesiredReasoning : mockCurrentReasoning);
+
+      const mockTurnId = mockResult.turnId || `turn_mock_${Date.now()}`;
+      telemetry.turnId = mockTurnId;
+
+      if (mockResult.agentUsageSessions) {
+        telemetry.agentUsageSessions = mockResult.agentUsageSessions;
+      } else {
+        telemetry.agentUsageSessions = [
+          {
+            sessionId: telemetry.sessionId,
+            model: telemetry.agentSessionModelActual || mockDesiredModel,
+            currentTurnId: mockTurnId,
+            turns: [
+              {
+                id: mockTurnId,
+                usage: mockResult.turnUsage || mockResult.usage || {
+                  input_tokens: telemetry.inputTokens || 50,
+                  output_tokens: telemetry.outputTokens || 50,
+                  total_tokens: telemetry.totalTokens || 100,
+                },
+              },
+            ],
+            sessionUsage: mockResult.sessionUsage || null,
+            generationIds: null,
+          },
+        ];
       }
 
       if (persistentMode) {
@@ -1722,13 +2053,19 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             );
             telemetry.agentSessionBootstrapInjected = bootstrap.messageCount > 0;
             telemetry.agentSessionBootstrapMessageCount = bootstrap.messageCount;
+            telemetry.agentSessionBootstrapQueryFailed = Boolean(bootstrap.queryFailed);
+            telemetry.agentSessionBootstrapError = bootstrap.errorMessage || null;
           } else {
             telemetry.agentSessionBootstrapInjected = false;
             telemetry.agentSessionBootstrapMessageCount = 0;
+            telemetry.agentSessionBootstrapQueryFailed = false;
+            telemetry.agentSessionBootstrapError = null;
           }
         } else {
           telemetry.agentSessionBootstrapInjected = false;
           telemetry.agentSessionBootstrapMessageCount = 0;
+          telemetry.agentSessionBootstrapQueryFailed = false;
+          telemetry.agentSessionBootstrapError = null;
         }
       }
 
@@ -1827,6 +2164,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   };
   let activeSessionId: string | null = null;
   let latestSessionData: any = null;
+  let turnId: string | null = null;
+  let turnData: any = null;
+  const seenToolCallIds = new Set<string>();
   let sessionUsageCollected = false;
   let collectSessionUsage: (() => Promise<void>) | null = null;
 
@@ -1838,42 +2178,44 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         const finalSessionRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/sessions/${activeSessionId}`, { headers }, 5_000);
         if (finalSessionRes.ok) latestSessionData = await finalSessionRes.json();
       } catch {}
+
+      if (latestSessionData?.usage && typeof latestSessionData.usage === "object") {
+        telemetry.sessionUsageTotal = Number(latestSessionData.usage.total_tokens ?? 0);
+      }
+
       const sessionTelemetry = await fetchAgentSessionUsageTelemetry(
         activeSessionId,
         typeof latestSessionData?.agent?.model === "string" ? latestSessionData.agent.model : null,
         latestSessionData?.usage ?? null,
         headers,
         usageDeadlineMs,
+        turnId,
       );
       telemetry.agentUsageSessions.push(sessionTelemetry);
       sessionUsageCollected = true;
 
-      if (telemetry.inputTokens === 0 && telemetry.outputTokens === 0) {
-        if (turnId) {
-          const matchingTurn = sessionTelemetry.turns.find((turn) => turn.id === turnId);
-          if (matchingTurn && matchingTurn.usage && typeof matchingTurn.usage === "object") {
-            const usage = matchingTurn.usage as Record<string, any>;
-            telemetry.inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
-            telemetry.outputTokens = usage.output_tokens ?? usage.completion_tokens ?? 0;
-            telemetry.totalTokens = usage.total_tokens ?? (telemetry.inputTokens + telemetry.outputTokens);
-          }
-        }
-        if (telemetry.inputTokens === 0 && telemetry.outputTokens === 0) {
-          const turnUsage = sessionTelemetry.turns.filter((turn) => turn.usage && typeof turn.usage === "object");
-          for (const turn of turnUsage) {
-            if (turn.id && !telemetry.turnId) telemetry.turnId = turn.id;
-            const usage = turn.usage as Record<string, any>;
-            telemetry.inputTokens += usage.input_tokens ?? usage.prompt_tokens ?? 0;
-            telemetry.outputTokens += usage.output_tokens ?? usage.completion_tokens ?? 0;
-            telemetry.totalTokens += usage.total_tokens ?? 0;
-          }
+      // ── AUTORIDADE DO TURN ATUAL ──
+      // Nunca soma turnos passados nem usa o session.usage total da sessão para o ciclo!
+      if (turnId) {
+        const matchingTurn = sessionTelemetry.turns.find((turn) => turn.id === turnId);
+        if (matchingTurn && matchingTurn.usage && typeof matchingTurn.usage === "object") {
+          const u = normalizeOpenAiUsage(matchingTurn.usage);
+          telemetry.inputTokens = u.inputTokens;
+          telemetry.outputTokens = u.outputTokens;
+          telemetry.totalTokens = u.totalTokens;
+          telemetry.turnInputTokens = u.inputTokens;
+          telemetry.turnCachedInputTokens = u.cachedInputTokens;
+          telemetry.turnUncachedInputTokens = u.uncachedInputTokens;
+          telemetry.turnOutputTokens = u.outputTokens;
+          telemetry.turnReasoningTokens = u.reasoningTokens;
+          telemetry.turnTotalTokens = u.totalTokens;
+          telemetry.turnCacheWriteTokens = u.cacheWriteTokens;
+          telemetry.tokenMeasurement = "turn";
         }
       }
-      if (telemetry.inputTokens === 0 && telemetry.outputTokens === 0 && sessionTelemetry.sessionUsage && typeof sessionTelemetry.sessionUsage === "object") {
-        const usage = sessionTelemetry.sessionUsage as Record<string, any>;
-        telemetry.inputTokens = usage.input_tokens ?? 0;
-        telemetry.outputTokens = usage.output_tokens ?? 0;
-        telemetry.totalTokens = usage.total_tokens ?? 0;
+
+      if (telemetry.turnTotalTokens === null && telemetry.totalTokens === 0) {
+        telemetry.tokenMeasurement = "unavailable";
       }
     };
 
@@ -1881,73 +2223,146 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     let sessionData: any = null;
     let sessionReused = false;
 
-    // 1. Se sessionId foi fornecido, tenta reutilizar a sessão existente via POST /events
+    // 1. Se sessionId foi fornecido, verifica sessão, sincroniza config idempotente e tenta reutilizar via POST /events
     if (sessionId) {
       console.log(`[OpenAI Agent] session_reuse_attempt: sessionId=${sessionId}`);
-      const eventPayload = {
-        events: [
-          {
-            type: "agent.session.input.message",
-            input: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "input_text",
-                    text: contextMessage,
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      };
 
+      // Inspeciona sessão existente para validar status e sincronizar modelo/reasoning
       try {
-        const eventRes = await fetchOpenAiBounded(
-          `https://api.openai.com/v1/agents/sessions/${sessionId}/events`,
-          {
-            method: "POST",
-            headers,
-            body: JSON.stringify(eventPayload),
-          },
-          15_000,
+        const currentSessionRes = await fetchOpenAiBounded(
+          `https://api.openai.com/v1/agents/sessions/${sessionId}`,
+          { headers },
+          5_000,
         );
 
-        if (eventRes.ok || eventRes.status === 202) {
-          activeSessionId = sessionId;
-          sessionReused = true;
-          telemetry.sessionId = sessionId;
-          telemetry.agentSessionReused = true;
-          telemetry.agentSessionCreated = false;
-          telemetry.sessionFallbackTriggered = false;
-          telemetry.agentSessionRecoveryTriggered = false;
-          telemetry.agentSessionBootstrapInjected = false;
-          telemetry.agentSessionBootstrapMessageCount = 0;
-          console.log(`[OpenAI Agent] session_reused_success: sessionId=${sessionId}`);
+        if (currentSessionRes.ok) {
+          sessionData = await currentSessionRes.json();
+          latestSessionData = sessionData;
 
-          // Busca dados atuais da sessão para inicializar sessionStatus
-          const currentSessionRes = await fetchOpenAiBounded(
-            `https://api.openai.com/v1/agents/sessions/${sessionId}`,
-            { headers },
-            5_000,
-          );
-          if (currentSessionRes.ok) {
-            sessionData = await currentSessionRes.json();
-            latestSessionData = sessionData;
+          const actualModel = typeof sessionData?.agent?.model === "string" ? sessionData.agent.model : null;
+          const actualReasoning = typeof sessionData?.agent?.reasoning?.effort === "string" ? sessionData.agent.reasoning.effort : null;
+          const requestedModel = params.model || null;
+          const requestedReasoning = params.reasoningEffort || null;
+
+          telemetry.agentSessionConfigChecked = true;
+          telemetry.agentSessionModelRequested = requestedModel;
+          telemetry.agentSessionModelActual = actualModel;
+          telemetry.agentSessionReasoningRequested = requestedReasoning;
+          telemetry.agentSessionReasoningActual = actualReasoning;
+
+          const modelMismatch = Boolean(requestedModel && actualModel && actualModel !== requestedModel);
+          const reasoningMismatch = Boolean(requestedReasoning && actualReasoning && actualReasoning !== requestedReasoning);
+
+          if (modelMismatch || reasoningMismatch) {
+            console.log(`[OpenAI Agent] session_config_divergence_detected: sessionId=${sessionId} actualModel=${actualModel} requestedModel=${requestedModel} actualReasoning=${actualReasoning} requestedReasoning=${requestedReasoning}. Sincronizando...`);
+
+            const updatePayload: Record<string, any> = {
+              agent: {
+                ...(requestedModel ? { model: requestedModel } : {}),
+                ...(requestedReasoning ? { reasoning: { effort: requestedReasoning } } : {}),
+              },
+            };
+
+            const updateRes = await fetchOpenAiBounded(
+              `https://api.openai.com/v1/agents/sessions/${sessionId}`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify(updatePayload),
+              },
+              10_000,
+            );
+
+            if (updateRes.ok) {
+              const updatedData = await updateRes.json().catch(() => null);
+              if (updatedData) latestSessionData = updatedData;
+              telemetry.agentSessionConfigUpdated = true;
+              telemetry.agentSessionModelActual = requestedModel;
+              telemetry.agentSessionReasoningActual = requestedReasoning;
+              console.log(`[OpenAI Agent] session_config_updated_success: sessionId=${sessionId} model=${requestedModel} reasoningEffort=${requestedReasoning}`);
+            } else {
+              const errText = await updateRes.text().catch(() => "");
+              console.warn(`[OpenAI Agent] session_config_update_failed (HTTP ${updateRes.status}): ${errText}`);
+            }
           }
-        } else {
-          const errText = await eventRes.text().catch(() => "");
-          console.warn(`[OpenAI Agent] session_reuse_rejected (HTTP ${eventRes.status}): ${errText}. Recriando sessão (fallback)...`);
+        } else if (currentSessionRes.status === 404 || currentSessionRes.status === 410) {
+          console.warn(`[OpenAI Agent] session_reuse_session_not_found (HTTP ${currentSessionRes.status}): sessionId=${sessionId}. Recriando sessão (recovery)...`);
           sessionId = null;
           telemetry.sessionFallbackTriggered = true;
           telemetry.agentSessionRecoveryTriggered = true;
         }
-      } catch (reuseErr) {
-        console.warn(`[OpenAI Agent] session_reuse_network_error: ${reuseErr}. Recriando sessão (fallback)...`);
-        sessionId = null;
-        telemetry.sessionFallbackTriggered = true;
-        telemetry.agentSessionRecoveryTriggered = true;
+      } catch (checkErr) {
+        console.warn(`[OpenAI Agent] session_reuse_check_error: ${checkErr}`);
+      }
+
+      // Se a sessão continua válida após a inspeção, envia o novo evento conversacional
+      if (sessionId) {
+        const eventPayload = {
+          events: [
+            {
+              type: "agent.session.input.message",
+              input: [
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "input_text",
+                      text: contextMessage,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+
+        try {
+          const eventRes = await fetchOpenAiBounded(
+            `https://api.openai.com/v1/agents/sessions/${sessionId}/events`,
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify(eventPayload),
+            },
+            15_000,
+          );
+
+          if (eventRes.ok || eventRes.status === 202) {
+            activeSessionId = sessionId;
+            sessionReused = true;
+            telemetry.sessionId = sessionId;
+            telemetry.agentSessionReused = true;
+            telemetry.agentSessionCreated = false;
+            telemetry.sessionFallbackTriggered = false;
+            telemetry.agentSessionRecoveryTriggered = false;
+            telemetry.agentSessionBootstrapInjected = false;
+            telemetry.agentSessionBootstrapMessageCount = 0;
+            console.log(`[OpenAI Agent] session_reused_success: sessionId=${sessionId}`);
+
+            if (!sessionData) {
+              const currentSessionRes = await fetchOpenAiBounded(
+                `https://api.openai.com/v1/agents/sessions/${sessionId}`,
+                { headers },
+                5_000,
+              );
+              if (currentSessionRes.ok) {
+                sessionData = await currentSessionRes.json();
+                latestSessionData = sessionData;
+              }
+            }
+          } else {
+            const errText = await eventRes.text().catch(() => "");
+            console.warn(`[OpenAI Agent] session_reuse_rejected (HTTP ${eventRes.status}): ${errText}. Recriando sessão (fallback)...`);
+            sessionId = null;
+            telemetry.sessionFallbackTriggered = true;
+            telemetry.agentSessionRecoveryTriggered = true;
+          }
+        } catch (reuseErr) {
+          console.warn(`[OpenAI Agent] session_reuse_network_error: ${reuseErr}. Recriando sessão (fallback)...`);
+          sessionId = null;
+          telemetry.sessionFallbackTriggered = true;
+          telemetry.agentSessionRecoveryTriggered = true;
+        }
       }
     }
 
@@ -1963,6 +2378,11 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           params.conversationId,
           currentInboundIds
         );
+        telemetry.agentSessionBootstrapQueryFailed = Boolean(bootstrapRes.queryFailed);
+        telemetry.agentSessionBootstrapError = bootstrapRes.errorMessage || null;
+        if (bootstrapRes.queryFailed) {
+          console.warn(`[OpenAI Agent] agent_session_bootstrap_query_failed=true error=${bootstrapRes.errorMessage}`);
+        }
         if (bootstrapRes.messageCount > 0) {
           initialInputText = `${bootstrapRes.text}\n\n---\n\n${contextMessage}`;
           telemetry.agentSessionBootstrapInjected = true;
@@ -2001,6 +2421,14 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         ],
       };
 
+      if (params.model || params.reasoningEffort) {
+        sessionPayload.agent = {
+          ...(sessionPayload.agent || {}),
+          ...(params.model ? { model: params.model } : {}),
+          ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+        };
+      }
+
       if (!persistentMode) {
         if (sessionVaultIds && sessionVaultIds.length > 0) {
           sessionPayload.vault_ids = sessionVaultIds;
@@ -2012,6 +2440,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             if (!agentConfigRes.ok) throw new Error(`HTTP ${agentConfigRes.status}`);
             const agentConfig = await agentConfigRes.json();
             sessionPayload.agent = {
+              ...(sessionPayload.agent || {}),
               tools: buildSessionAgentToolsWithMemoryScope(agentConfig?.tools, params.memoryScopeId),
             };
           } catch {
@@ -2020,23 +2449,13 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           }
         }
       } else {
-        // No modo persistente: filtra as ferramentas da sessão para remover MCP de memória, preservando cofre_audio_search
-        try {
-          const agentConfigRes = await fetchOpenAiBounded(`https://api.openai.com/v1/agents/${agentId}`, { headers });
-          if (agentConfigRes.ok) {
-            const agentConfig = await agentConfigRes.json();
-            if (Array.isArray(agentConfig?.tools)) {
-              const nonMemoryTools = agentConfig.tools.filter((t: any) =>
-                t?.name === "cofre_audio_search" || (t?.type === "function" && !t?.name?.includes("memory"))
-              );
-              sessionPayload.agent = {
-                tools: nonMemoryTools,
-              };
-            }
-          }
-        } catch (filterErr) {
-          console.warn("[OpenAI Agent] falha ao buscar config para filtrar tools na sessão persistente:", filterErr);
-        }
+        // No modo persistente: utiliza as instruções enxutas persistentes (sem memory tools/gates)
+        // e define estritamente [COFRE_AUDIO_SEARCH_TOOL_DEFINITION] como tool
+        sessionPayload.agent = {
+          ...(sessionPayload.agent || {}),
+          instructions: buildCanonicalAgentInstructions({ persistentMode: true }),
+          tools: [COFRE_AUDIO_SEARCH_TOOL_DEFINITION],
+        };
       }
 
       const sessionRes = await fetchOpenAiBounded("https://api.openai.com/v1/agents/sessions", {
@@ -2057,6 +2476,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       telemetry.sessionId = sessionId;
       telemetry.agentSessionCreated = true;
       telemetry.agentSessionReused = false;
+      telemetry.agentSessionConfigChecked = true;
+      telemetry.agentSessionModelRequested = params.model || null;
+      telemetry.agentSessionModelActual = sessionData?.agent?.model || params.model || null;
+      telemetry.agentSessionReasoningRequested = params.reasoningEffort || null;
+      telemetry.agentSessionReasoningActual = sessionData?.agent?.reasoning?.effort || params.reasoningEffort || null;
+      telemetry.agentSessionConfigUpdated = false;
       if (telemetry.agentSessionRecoveryTriggered === undefined) {
         telemetry.agentSessionRecoveryTriggered = false;
       }
@@ -2069,8 +2494,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     const pollIntervalMs = 2000;
     const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
 
-    let turnId: string | null = null;
-    let turnData: any = null;
+    turnId = null;
+    turnData = null;
     let identifyAttempt = 0;
     let lastLoggedPendingBucket = -1;
     let appToolRound = 0;
@@ -2279,6 +2704,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
               conversationId: params.conversationId,
               searchCofreAudios: params.searchCofreAudios,
               telemetry,
+              callId,
+              seenToolCallIds,
             });
 
             if (toolRes.unsupportedTool) {
@@ -2429,10 +2856,18 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     // 4. Coleta de tokens direto do Turn se presente
     if (turnData?.usage && typeof turnData.usage === "object") {
-      const u = turnData.usage;
-      telemetry.inputTokens = Number(u.input_tokens ?? u.prompt_tokens ?? 0);
-      telemetry.outputTokens = Number(u.output_tokens ?? u.completion_tokens ?? 0);
-      telemetry.totalTokens = Number(u.total_tokens ?? (telemetry.inputTokens + telemetry.outputTokens));
+      const u = normalizeOpenAiUsage(turnData.usage);
+      telemetry.inputTokens = u.inputTokens;
+      telemetry.outputTokens = u.outputTokens;
+      telemetry.totalTokens = u.totalTokens;
+      telemetry.turnInputTokens = u.inputTokens;
+      telemetry.turnCachedInputTokens = u.cachedInputTokens;
+      telemetry.turnUncachedInputTokens = u.uncachedInputTokens;
+      telemetry.turnOutputTokens = u.outputTokens;
+      telemetry.turnReasoningTokens = u.reasoningTokens;
+      telemetry.turnTotalTokens = u.totalTokens;
+      telemetry.turnCacheWriteTokens = u.cacheWriteTokens;
+      telemetry.tokenMeasurement = "turn";
     }
 
     // Coleta usage da sessão e traces (sem dupla contagem de tokens)
@@ -2527,6 +2962,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       const rawName = String(item.name || "");
       if (isToolCall || rawName.includes("memory_search") || rawName === "cofre_audio_search") {
         const toolName = rawName || "tool_call";
+        const itemCallId = String(item.call_id || item.id || "");
+        if (itemCallId && seenToolCallIds.has(itemCallId)) {
+          // Já registrado e processado na execução — deduplica para evitar duplicação em log/UI
+          continue;
+        }
+        if (itemCallId) seenToolCallIds.add(itemCallId);
         console.log(`[Tool] tool_called ${toolName}`);
         telemetry.toolsRequested.push(toolName);
         telemetry.toolExecutionsCount++;
@@ -2625,6 +3066,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         console.log(`[OpenAI Agent] plan_validated`);
       }
     }
+    telemetry.agentToolCallCount = telemetry.toolsRequested.length;
+    telemetry.modelGenerationCount = 1 + appToolRound;
+    telemetry.toolNamesUsed = [...telemetry.toolsRequested];
     telemetry.durationMs = Date.now() - startTime;
 
     return {

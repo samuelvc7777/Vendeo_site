@@ -16,6 +16,7 @@ export interface AgentSessionUsageTelemetry {
   sessionUsage?: unknown;
   turns: Array<{ id: string; usage: unknown }>;
   generationIds: string[] | null;
+  currentTurnId?: string | null;
 }
 
 export interface OpenAiCycleUsageSnapshot extends NormalizedOpenAiUsage {
@@ -65,8 +66,8 @@ export function normalizeOpenAiUsage(rawUsage: unknown): NormalizedOpenAiUsage |
   const raw = asRecord(rawUsage);
   if (!raw) return null;
 
-  const inputDetails = asRecord(raw.input_tokens_details) || asRecord(raw.prompt_tokens_details);
-  const outputDetails = asRecord(raw.output_tokens_details) || asRecord(raw.completion_tokens_details);
+  const inputDetails = asRecord(raw.input_tokens_details) || asRecord(raw.input_token_details) || asRecord(raw.prompt_tokens_details) || asRecord(raw.prompt_token_details);
+  const outputDetails = asRecord(raw.output_tokens_details) || asRecord(raw.output_token_details) || asRecord(raw.completion_tokens_details) || asRecord(raw.completion_token_details);
   const inputTokens = tokenCount(raw.input_tokens ?? raw.prompt_tokens);
   const cachedInputTokensRaw = tokenCount(inputDetails?.cached_tokens);
   const cachedInputTokens = inputTokens === null || cachedInputTokensRaw === null
@@ -149,7 +150,7 @@ export class OpenAiCycleUsageAccumulator {
     this.seenAgentSessions.add(session.sessionId);
 
     if (session.model) this.modelSet.add(session.model);
-    if (session.generationIds === null) {
+    if (!Array.isArray(session.generationIds)) {
       this.traceAvailability.set(session.sessionId, false);
     } else {
       this.traceAvailability.set(session.sessionId, true);
@@ -158,37 +159,29 @@ export class OpenAiCycleUsageAccumulator {
       }
     }
 
-    const sessionUsage = normalizeOpenAiUsage(session.sessionUsage);
-    const hasSessionUsage = sessionUsage && Object.values(sessionUsage).some((value) => value !== null);
-    if (hasSessionUsage) {
-      this.addUsageRecord({
-        id: `agents-session:${session.sessionId}`,
-        source: "agents_session",
-        model: session.model,
-        usage: session.sessionUsage,
-      });
-      return;
-    }
+    // Regra mandatória: a fonte autoritativa de usage e custo do ciclo é EXCLUSIVAMENTE o Turn atual
+    const targetTurn = session.currentTurnId
+      ? session.turns.find((turn) => turn.id === session.currentTurnId)
+      : (session.turns.length === 1 ? session.turns[0] : null);
 
-    const turnRecords = session.turns.filter((turn) => Boolean(turn.id));
-    if (turnRecords.length === 0) {
+    if (targetTurn && targetTurn.usage) {
       this.addUsageRecord({
-        id: `agents-session:${session.sessionId}`,
-        source: "agents_session",
-        model: session.model,
-        usage: null,
-      });
-      return;
-    }
-
-    for (const turn of turnRecords) {
-      this.addUsageRecord({
-        id: `agents-turn:${session.sessionId}:${turn.id}`,
+        id: `agents-turn:${session.sessionId}:${targetTurn.id}`,
         source: "agents_turn",
         model: session.model,
-        usage: turn.usage,
+        usage: targetTurn.usage,
       });
+      return;
     }
+
+    // Se o Turn atual não tiver usage disponível, registra como unavailable (null)
+    // NUNCA faz fallback para sessionUsage acumulado de toda a sessão nem soma múltiplos turns
+    this.addUsageRecord({
+      id: `agents-turn:${session.sessionId}:${session.currentTurnId || "unavailable"}`,
+      source: "agents_turn",
+      model: session.model,
+      usage: null,
+    });
   }
 
   private addUsageRecord(record: OpenAiUsageRecord): void {

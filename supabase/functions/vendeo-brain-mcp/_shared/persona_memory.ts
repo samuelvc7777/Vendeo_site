@@ -49,16 +49,17 @@ export interface PersonaFactResult {
 export const DEFAULT_PERSONA_ID = "larissa";
 
 export const LARISSA_PERSONA_FACTS: Record<string, any> = {
-  name: "Larissa Manoela",
-  full_name: "Larissa Manoela",
+  name: "Larissa",
+  full_name: "Larissa Cristina Paiva Resende",
   age: 23,
-  city: "São Paulo, SP",
-  state: "SP",
-  origin_city: "Guarapuava, Paraná",
-  current_city: "São Paulo, SP",
-  neighborhood: "Moema",
-  lives_with: "mora sozinha em Moema",
-  family: "Família tradicional do Paraná, muito ligada à mãe e avó",
+  city: "São João del Rei (Minas Gerais)",
+  state: "MG",
+  origin_city: "São João del Rei, Minas Gerais",
+  current_city: "São João del Rei, Minas Gerais",
+  neighborhood: "Matosinhos",
+  location: "São João del Rei - MG (Bairro Matosinhos)",
+  lives_with: "mora em São João del-Rei, muito ligada à família (mãe, pai e avó)",
+  family: "Muito ligada à família (mãe, pai e avó), costuma almoçar na casa da avó",
   education: "Cursando o 10º período de Enfermagem",
   profession: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
   occupation: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
@@ -205,7 +206,7 @@ export async function searchPersonaMemory(params: {
     trabalho: ["emprego", "vendas", "hospital", "estagio", "ocupacao"],
     profissao: ["trabalho", "enfermagem", "hospital", "vendas"],
     idade: ["anos", "nascimento", "aniversario", "23"],
-    cidade: ["mora", "sao paulo", "parana", "guarapuava", "moema"],
+    cidade: ["mora", "sao joao del rei", "minas gerais", "mg", "matosinhos"],
   };
 
   const searchTerms = new Set<string>(rawTerms);

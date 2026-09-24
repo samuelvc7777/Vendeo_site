@@ -7625,8 +7625,12 @@ export async function runBrainOrchestration(
               label: "Brain • Decisão formulada",
               detail: "Plano estruturado validado pelo Agent e recebido pelo orquestrador.",
               metadata: {
-                model: configuredAgentModel,
-                reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+                model: openAiBrainTurn.telemetry.agentSessionModelActual || configuredAgentModel,
+                configuredModel: configuredAgentModel,
+                executedModel: openAiBrainTurn.telemetry.agentSessionModelActual || configuredAgentModel,
+                reasoningEffort: openAiBrainTurn.telemetry.agentSessionReasoningActual || agentSettings.get("openai_brain_reasoning_effort") || null,
+                configuredReasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+                executedReasoningEffort: openAiBrainTurn.telemetry.agentSessionReasoningActual || agentSettings.get("openai_brain_reasoning_effort") || null,
                 verbosity: agentSettings.get("openai_brain_verbosity") || null,
                 action: brainPlan.action,
                 stageId: currentStageId,
@@ -7697,17 +7701,70 @@ export async function runBrainOrchestration(
             currentCycle.trace.push(`audio_search_results_count=${openAiBrainTurn.telemetry.audioSearchResults.length}`);
           }
 
-          currentCycle.brainModel = configuredAgentModel;
-          currentCycle.trace.push(`brain_model: ${configuredAgentModel}`);
-          currentCycle.trace.push(`brain_reasoning_effort=${agentSettings.get("openai_brain_reasoning_effort") || "remote_configured"}`);
+          const executedBrainModel = openAiBrainTurn.telemetry.agentSessionModelActual || configuredAgentModel;
+          const executedReasoningEffort = openAiBrainTurn.telemetry.agentSessionReasoningActual || agentSettings.get("openai_brain_reasoning_effort") || "remote_configured";
+          currentCycle.brainModel = executedBrainModel;
+          currentCycle.trace.push(`brain_model: ${executedBrainModel}`);
+          if (openAiBrainTurn.telemetry.agentSessionModelActual && openAiBrainTurn.telemetry.agentSessionModelActual !== configuredAgentModel) {
+            currentCycle.trace.push(`brain_model_configured: ${configuredAgentModel}`);
+            currentCycle.trace.push(`brain_model_executed: ${openAiBrainTurn.telemetry.agentSessionModelActual}`);
+          }
+          currentCycle.trace.push(`brain_reasoning_effort=${executedReasoningEffort}`);
+          if (openAiBrainTurn.telemetry.agentSessionReasoningActual && agentSettings.get("openai_brain_reasoning_effort") && openAiBrainTurn.telemetry.agentSessionReasoningActual !== agentSettings.get("openai_brain_reasoning_effort")) {
+            currentCycle.trace.push(`brain_reasoning_effort_configured=${agentSettings.get("openai_brain_reasoning_effort")}`);
+            currentCycle.trace.push(`brain_reasoning_effort_executed=${openAiBrainTurn.telemetry.agentSessionReasoningActual}`);
+          }
           currentCycle.trace.push(`brain_verbosity=${agentSettings.get("openai_brain_verbosity") || "remote_configured"}`);
           currentCycle.trace.push(`interaction_dna_version: ${LARISSA_INTERACTION_DNA_VERSION}`);
           currentCycle.trace.push(`interaction_dna_hash: ${LARISSA_INTERACTION_DNA_HASH}`);
           currentCycle.trace.push(`recent_style_state_applied: ${Boolean(recentStyleSnippet)}`);
+
+          if (openAiBrainTurn.telemetry.agentSessionConfigChecked) {
+            currentCycle.trace.push("agent_session_config_checked=true");
+            if (openAiBrainTurn.telemetry.agentSessionModelRequested) {
+              currentCycle.trace.push(`agent_session_model_requested=${openAiBrainTurn.telemetry.agentSessionModelRequested}`);
+            }
+            if (openAiBrainTurn.telemetry.agentSessionModelActual) {
+              currentCycle.trace.push(`agent_session_model_actual=${openAiBrainTurn.telemetry.agentSessionModelActual}`);
+            }
+            if (openAiBrainTurn.telemetry.agentSessionReasoningRequested) {
+              currentCycle.trace.push(`agent_session_reasoning_requested=${openAiBrainTurn.telemetry.agentSessionReasoningRequested}`);
+            }
+            if (openAiBrainTurn.telemetry.agentSessionReasoningActual) {
+              currentCycle.trace.push(`agent_session_reasoning_actual=${openAiBrainTurn.telemetry.agentSessionReasoningActual}`);
+            }
+            currentCycle.trace.push(`agent_session_config_updated=${Boolean(openAiBrainTurn.telemetry.agentSessionConfigUpdated)}`);
+          }
+
           brainInputTokens += openAiBrainTurn.telemetry.inputTokens;
           brainOutputTokens += openAiBrainTurn.telemetry.outputTokens;
           totalTokens += openAiBrainTurn.telemetry.totalTokens;
-          tokenMeasurements.add("provider");
+          if (openAiBrainTurn.telemetry.tokenMeasurement === "unavailable") {
+            currentCycle.trace.push("token_measurement=unavailable");
+            tokenMeasurements.add("unavailable");
+          } else {
+            tokenMeasurements.add("provider");
+          }
+          if (openAiBrainTurn.telemetry.turnTotalTokens !== null) {
+            currentCycle.trace.push(`turn_total_tokens=${openAiBrainTurn.telemetry.turnTotalTokens}`);
+            currentCycle.trace.push(`turn_input_tokens=${openAiBrainTurn.telemetry.turnInputTokens ?? openAiBrainTurn.telemetry.inputTokens}`);
+            if (openAiBrainTurn.telemetry.turnCachedInputTokens !== null) {
+              currentCycle.trace.push(`turn_cached_input_tokens=${openAiBrainTurn.telemetry.turnCachedInputTokens}`);
+            }
+            if (openAiBrainTurn.telemetry.turnUncachedInputTokens !== null) {
+              currentCycle.trace.push(`turn_uncached_input_tokens=${openAiBrainTurn.telemetry.turnUncachedInputTokens}`);
+            }
+            currentCycle.trace.push(`turn_output_tokens=${openAiBrainTurn.telemetry.turnOutputTokens ?? openAiBrainTurn.telemetry.outputTokens}`);
+            if (openAiBrainTurn.telemetry.turnReasoningTokens !== null) {
+              currentCycle.trace.push(`turn_reasoning_tokens=${openAiBrainTurn.telemetry.turnReasoningTokens}`);
+            }
+            if (openAiBrainTurn.telemetry.turnCacheWriteTokens !== null) {
+              currentCycle.trace.push(`turn_cache_write_tokens=${openAiBrainTurn.telemetry.turnCacheWriteTokens}`);
+            }
+          }
+          if (openAiBrainTurn.telemetry.sessionUsageTotal !== null) {
+            currentCycle.trace.push(`session_usage_total=${openAiBrainTurn.telemetry.sessionUsageTotal}`);
+          }
           for (const s of openAiBrainTurn.telemetry.sourcesUsed) {
             brainMemorySourcesUsed.add(s);
           }
@@ -7729,6 +7786,12 @@ export async function runBrainOrchestration(
           currentCycle.trace.push(`agent_session_recovery_triggered=${Boolean(openAiBrainTurn.telemetry.agentSessionRecoveryTriggered)}`);
           currentCycle.trace.push(`agent_session_bootstrap_injected=${Boolean(openAiBrainTurn.telemetry.agentSessionBootstrapInjected)}`);
           currentCycle.trace.push(`agent_session_bootstrap_message_count=${openAiBrainTurn.telemetry.agentSessionBootstrapMessageCount || 0}`);
+          if (openAiBrainTurn.telemetry.agentSessionBootstrapQueryFailed) {
+            currentCycle.trace.push("agent_session_bootstrap_query_failed=true");
+            if (openAiBrainTurn.telemetry.agentSessionBootstrapError) {
+              currentCycle.trace.push(`agent_session_bootstrap_error=${openAiBrainTurn.telemetry.agentSessionBootstrapError}`);
+            }
+          }
           currentCycle.trace.push(`manual_recent_history_injected=${openAiBrainTurn.telemetry.manualRecentHistoryInjected}`);
           currentCycle.trace.push(`contact_memory_injected=${openAiBrainTurn.telemetry.contactMemoryInjected}`);
           currentCycle.trace.push(`episodic_memory_injected=${openAiBrainTurn.telemetry.episodicMemoryInjected}`);
@@ -7736,6 +7799,32 @@ export async function runBrainOrchestration(
           currentCycle.trace.push(`contact_memory_tool_enabled=${openAiBrainTurn.telemetry.contactMemoryToolEnabled}`);
           currentCycle.trace.push(`conversation_memory_tool_enabled=${openAiBrainTurn.telemetry.conversationMemoryToolEnabled}`);
           currentCycle.trace.push(`audio_search_tool_enabled=${openAiBrainTurn.telemetry.audioSearchToolEnabled}`);
+          if (openAiBrainTurn.telemetry.agentInstructionChars !== undefined) {
+            currentCycle.trace.push(`agent_instruction_chars=${openAiBrainTurn.telemetry.agentInstructionChars}`);
+          }
+          if (openAiBrainTurn.telemetry.agentInstructionEstimatedTokens !== undefined) {
+            currentCycle.trace.push(`agent_instruction_estimated_tokens=${openAiBrainTurn.telemetry.agentInstructionEstimatedTokens}`);
+          }
+          if (openAiBrainTurn.telemetry.turnContextChars !== undefined) {
+            currentCycle.trace.push(`turn_context_chars=${openAiBrainTurn.telemetry.turnContextChars}`);
+          }
+          if (openAiBrainTurn.telemetry.turnContextEstimatedTokens !== undefined) {
+            currentCycle.trace.push(`turn_context_estimated_tokens=${openAiBrainTurn.telemetry.turnContextEstimatedTokens}`);
+          }
+          if (openAiBrainTurn.telemetry.toolSchemaEstimatedTokens !== undefined) {
+            currentCycle.trace.push(`tool_schema_estimated_tokens=${openAiBrainTurn.telemetry.toolSchemaEstimatedTokens}`);
+          }
+          if (openAiBrainTurn.telemetry.modelGenerationCount !== undefined) {
+            currentCycle.trace.push(`model_generation_count=${openAiBrainTurn.telemetry.modelGenerationCount}`);
+          }
+          if (openAiBrainTurn.telemetry.agentToolCallCount !== undefined) {
+            currentCycle.trace.push(`agent_tool_call_count=${openAiBrainTurn.telemetry.agentToolCallCount}`);
+          }
+          if (openAiBrainTurn.telemetry.toolNamesUsed && openAiBrainTurn.telemetry.toolNamesUsed.length > 0) {
+            currentCycle.trace.push(`tool_names_used=${openAiBrainTurn.telemetry.toolNamesUsed.join(",")}`);
+          } else {
+            currentCycle.trace.push("tool_names_used=none");
+          }
           for (const tool of openAiBrainTurn.telemetry.toolsRequested) {
             currentCycle.trace.push(`openai_agent_mcp_used=${tool}`);
           }

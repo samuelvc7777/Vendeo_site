@@ -188,23 +188,45 @@ export function PersonaAudioVaultModal({
 
     setIsUploading(true);
     try {
-      const objectUrl = URL.createObjectURL(file);
-      setFormAudioUrl(objectUrl);
-      if (!formTitle) {
-        const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-        setFormTitle(cleanName);
-      }
-
-      const tempAudio = new Audio(objectUrl);
+      // 1. Duração e preview temporário local
+      const localPreviewUrl = URL.createObjectURL(file);
+      const tempAudio = new Audio(localPreviewUrl);
       tempAudio.onloadedmetadata = () => {
         if (tempAudio.duration > 0) {
           setFormDuration(Math.round(tempAudio.duration));
         }
       };
 
-      toast.success("Arquivo de áudio carregado!");
+      if (!formTitle) {
+        const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
+        setFormTitle(cleanName);
+      }
+
+      // 2. Upload REAL para o bucket do Supabase Storage via rota interna
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("type", "audio");
+
+      const upRes = await fetch("/api/instagram/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!upRes.ok) {
+        throw new Error("Falha no upload do áudio para o servidor");
+      }
+
+      const upData = await upRes.json();
+      if (!upData?.url) {
+        throw new Error(upData?.error || "Servidor não retornou URL pública do áudio");
+      }
+
+      setFormAudioUrl(upData.url);
+      toast.success("Arquivo de áudio enviado e hospedado com sucesso!");
     } catch (err: any) {
-      toast.error("Erro ao carregar áudio.");
+      console.error("[PersonaAudioVaultModal] Erro no upload:", err);
+      toast.error("Erro ao hospedar áudio no servidor: " + (err?.message || "Tente novamente"));
+      setFormAudioUrl("");
     } finally {
       setIsUploading(false);
     }
@@ -214,6 +236,11 @@ export function PersonaAudioVaultModal({
     e.preventDefault();
     if (!formTitle.trim() || !formAudioUrl.trim()) {
       toast.error("Título e arquivo de áudio são obrigatórios.");
+      return;
+    }
+
+    if (formAudioUrl.startsWith("blob:") || formAudioUrl.startsWith("data:")) {
+      toast.error("O áudio ainda não foi hospedado no servidor. Por favor, selecione o arquivo novamente.");
       return;
     }
 
