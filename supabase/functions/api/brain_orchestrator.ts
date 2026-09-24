@@ -9912,7 +9912,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         outboxBatch.push(entry);
         outboxMap[actionKey] = entry;
 
-        const stepDelay = isAudio ? Math.max(8, Number(resolvedAudio?.duration) || 10) : 8;
+        const stepDelay = isAudio ? Math.max(10, Number(resolvedAudio?.duration) || 10) : 10;
         accumulatedDelaySeconds += stepDelay;
       }
 
