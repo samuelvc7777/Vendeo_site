@@ -5194,7 +5194,7 @@ export async function searchPersonaAudios(params: {
       .eq("conversation_id", conversationId);
 
     if (histRows && Array.isArray(histRows)) {
-      histRows.forEach((h: any) => sentAudioIds.add(h.audio_id));
+      histRows.forEach((h: any) => sentAudioIds.add(String(h.audio_id)));
     }
   } catch {}
 
@@ -5207,12 +5207,47 @@ export async function searchPersonaAudios(params: {
 
     const convHist = convRow?.stage_completed_rules?.audio_delivery_history || [];
     if (Array.isArray(convHist)) {
-      convHist.forEach((h: any) => sentAudioIds.add(h.audioId || h.id));
+      convHist.forEach((h: any) => sentAudioIds.add(String(h.audioId || h.id)));
     }
 
     const deliveredAudios = convRow?.stage_completed_rules?.orchestration?.deliveredAudios || [];
     if (Array.isArray(deliveredAudios)) {
-      deliveredAudios.forEach((id: any) => sentAudioIds.add(typeof id === "string" ? id : id?.id));
+      deliveredAudios.forEach((id: any) => sentAudioIds.add(typeof id === "string" ? id : String(id?.id)));
+    }
+  } catch {}
+
+  // Enriquecimento com mensagens de áudio anteriores
+  try {
+    const { data: msgRows } = await supabase
+      .from("instagram_messages")
+      .select("metadata")
+      .eq("conversation_id", conversationId)
+      .limit(100);
+
+    if (msgRows && Array.isArray(msgRows)) {
+      for (const m of msgRows) {
+        const meta = m.metadata;
+        if (meta && typeof meta === "object") {
+          const aId = meta.audio_id || meta.audioId || meta.vault_audio_id;
+          if (aId) sentAudioIds.add(String(aId));
+        }
+      }
+    }
+  } catch {}
+
+  // Enriquecimento com jobs do outbox da conversa
+  try {
+    const { data: jobRows } = await supabase
+      .from("outbox_jobs")
+      .select("payload, action")
+      .eq("conversation_id", conversationId)
+      .limit(50);
+
+    if (jobRows && Array.isArray(jobRows)) {
+      for (const j of jobRows) {
+        const pAudio = j.payload?.audioId || j.payload?.audio_id || j.action?.audioId || j.action?.audio_id;
+        if (pAudio) sentAudioIds.add(String(pAudio));
+      }
     }
   } catch {}
 
@@ -5220,7 +5255,7 @@ export async function searchPersonaAudios(params: {
     const mockHist: any[] = (supabase as any).__mockAudioHistory;
     mockHist
       .filter((h) => (h.conversationId === conversationId || h.conversation_id === conversationId))
-      .forEach((h) => sentAudioIds.add(h.audioId || h.audio_id));
+      .forEach((h) => sentAudioIds.add(String(h.audioId || h.audio_id)));
   }
 
   const AUDIO_STOPWORDS = new Set([
@@ -5241,8 +5276,8 @@ export async function searchPersonaAudios(params: {
 
   const queryTerms = rawTerms.filter((t) => t.length >= 3 && !AUDIO_STOPWORDS.has(t));
 
-  const isExplicitReplay = /\b(?:manda\s+(?:de\s+novo|novamente|aquele)|toca\s+(?:de\s+novo|novamente)|re[-]?(?:envia|manda)|ouve\s+de\s+novo|manda\s+o\s+audio\s+de\s+novo)\b/i.test(`${intent || ""} ${query || ""}`);
-
+  // DEDUP ABSOLUTO DE ÁUDIOS:
+  // Se o áudio já foi enviado para esta conversa em qualquer momento, ele NUNCA é retornado
   const matched = audios
     .filter((a) => a.enabled !== false)
     .filter((a) => a.transcript && a.transcript.trim().length > 0) // Excluir da seleção automática qualquer áudio sem transcrição
@@ -5252,6 +5287,7 @@ export async function searchPersonaAudios(params: {
       }
       return true;
     })
+    .filter((a) => !sentAudioIds.has(String(a.id)))
     .map((a) => {
       const searchHaystack = `${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`.toLowerCase();
       const combinedInput = `${intent || ""} ${query || ""}`.toLowerCase();
@@ -5277,32 +5313,15 @@ export async function searchPersonaAudios(params: {
         }
       }
 
-      // Em pedido de replay explícito ("manda de novo o áudio"):
-      // O áudio previamente enviado é o candidato primário a ser reenviado
-      if (isExplicitReplay) {
-        if (sentAudioIds.has(a.id)) {
-          matchScore += 10;
-        } else if (queryTerms.every((t) => ["manda", "novo", "audio", "favor", "novamente", "toca", "reenvia", "re"].includes(t))) {
-          matchScore += 1;
-        }
-      }
-
-      // AUTOPILOTO: exclusão estrita de áudio já enviado na conversa (sem bypass por frase de replay)
-      const alreadySent = sentAudioIds.has(a.id);
       return {
         ...a,
         matchScore,
-        alreadySentInConversation: alreadySent,
-        already_sent: alreadySent,
+        alreadySentInConversation: false,
+        already_sent: false,
       };
     })
     .filter((a) => queryTerms.length === 0 || a.matchScore > 0)
-    .sort((a, b) => {
-      if (a.alreadySentInConversation !== b.alreadySentInConversation) {
-        return a.alreadySentInConversation ? 1 : -1;
-      }
-      return b.matchScore - a.matchScore;
-    })
+    .sort((a, b) => b.matchScore - a.matchScore)
     .map(({ matchScore, ...cleanAudio }) => cleanAudio);
 
   return matched;
@@ -5428,6 +5447,19 @@ export async function claimAudioDeliveryReservation(params: {
     }
 
     // 3. Fallback direto no banco via tabela audio_delivery_history
+    try {
+      const { data: existingHist } = await supabase
+        .from("audio_delivery_history")
+        .select("id, status")
+        .eq("conversation_id", conversationId)
+        .eq("audio_id", audioId)
+        .in("status", ["sent", "dispatching", "reserved", "dispatch_uncertain"]);
+
+      if (existingHist && Array.isArray(existingHist) && existingHist.length > 0) {
+        return { claimed: false, reason: "already_delivered", status: "sent" };
+      }
+    } catch {}
+
     const nowIso = new Date().toISOString();
     const newId = `adh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const { error: insErr } = await supabase.from("audio_delivery_history").insert({
@@ -9160,7 +9192,11 @@ export async function runBrainOrchestration(
                 allowedOutboundActions.push({ type: "text", text: textVal });
               }
             } else if (act.type === "audio") {
-              allowedOutboundActions.push(act);
+              if (audioSelection.selectedAudioId && act.audioId === audioSelection.selectedAudioId) {
+                allowedOutboundActions.push(act);
+              } else {
+                currentCycle.trace.push(`unauthorized_audio_action_pruned: ${act.audioId}`);
+              }
             }
           }
 

@@ -357,6 +357,41 @@ export async function executeCofreAudioSearch(params: {
     }
   } catch {}
 
+  // Enriquecimento com mensagens de áudio anteriores
+  try {
+    const { data: msgRows } = await supabase
+      .from("instagram_messages")
+      .select("metadata")
+      .eq("conversation_id", conversationId)
+      .limit(100);
+
+    if (msgRows && Array.isArray(msgRows)) {
+      for (const m of msgRows) {
+        const meta = m.metadata;
+        if (meta && typeof meta === "object") {
+          const aId = meta.audio_id || meta.audioId || meta.vault_audio_id;
+          if (aId) sentAudioIds.add(String(aId));
+        }
+      }
+    }
+  } catch {}
+
+  // Enriquecimento com jobs do outbox da conversa
+  try {
+    const { data: jobRows } = await supabase
+      .from("outbox_jobs")
+      .select("payload, action")
+      .eq("conversation_id", conversationId)
+      .limit(50);
+
+    if (jobRows && Array.isArray(jobRows)) {
+      for (const j of jobRows) {
+        const pAudio = j.payload?.audioId || j.payload?.audio_id || j.action?.audioId || j.action?.audio_id;
+        if (pAudio) sentAudioIds.add(String(pAudio));
+      }
+    }
+  } catch {}
+
   if ((supabase as any)?.__mockAudioHistory) {
     const mockHist: any[] = (supabase as any).__mockAudioHistory;
     mockHist

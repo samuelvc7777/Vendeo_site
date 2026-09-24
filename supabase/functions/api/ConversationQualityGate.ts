@@ -45,7 +45,9 @@ export type ConversationQualityIssueCode =
   | "MISSING_REQUIRED_FACT"
   | "TOO_MANY_BALLOONS_FOR_SIMPLE_TURN"
   | "GENERIC_ASSISTANT_RESPONSE"
-  | "MISSING_WELLBEING_QUESTION";
+  | "MISSING_WELLBEING_QUESTION"
+  | "ACCEPTED_OUTING_INVITE"
+  | "PHONE_NUMBER_LEAK";
 
 export interface ConversationQualityIssue {
   code: ConversationQualityIssueCode;
@@ -175,6 +177,33 @@ function isWellbeingQuestion(text: string): boolean {
   return /\b(?:tudo bem|ta bem|como (?:vc|voce|c|ce) ta|tudo certo|ta tudo bem)\b/.test(norm)
     || /\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/.test(norm)
     || /\be\s+(?:vc|voce)\s+(?:como\s+ta|ta\s+bem)\b/.test(norm);
+}
+
+export function isOutingInvite(text: string): boolean {
+  const norm = rawNormalize(text);
+  return /\b(?:vamos|bora|quer|topa|afim de|animar|anima)\s+(?:sair|tomar|beber|comer|dar uma volta|se ver|ir no cinema|jantar|almocar|marcar|encontrar)\b/i.test(norm)
+    || /\b(?:quando|que dia)\s+(?:a gente|vamos)\s+(?:se ver|sair|encontrar)\b/i.test(norm)
+    || /\b(?:vamos nos ver|bora se ver|quer sair comigo|vamos sair comigo)\b/i.test(norm);
+}
+
+export function detectAcceptedOutingInvite(outbound: string): boolean {
+  const norm = rawNormalize(outbound);
+  const hasAccept = /\b(?:vamos sim|bora sim|topo sim|vamos marcar sim|onde a gente vai|que horas a gente|posso ir sim|fechado entao|combinado entao|passa aqui|vem aqui)\b/i.test(norm);
+  const hasPoliteRefusal = /\b(?:hoje nao consigo|nao dou conta|plantao|estagio|hospital|faculdade|correria|cansad|moida|acabada|outro dia a gente|outra hora|deixar pra outra)\b/i.test(norm);
+  return hasAccept && !hasPoliteRefusal;
+}
+
+export function isPhoneRequest(text: string): boolean {
+  const norm = rawNormalize(text);
+  return /\b(?:passa|manda|tem|qual)\s+(?:o|seu)?\s*(?:whats|whatsapp|zap|numero|telefone|contato)\b/i.test(norm)
+    || /\b(?:me passa seu|me manda seu|me da seu)\s+(?:whats|whatsapp|zap|numero|telefone)\b/i.test(norm);
+}
+
+export function detectPhoneNumberLeak(outbound: string): boolean {
+  const norm = rawNormalize(outbound);
+  const hasPhonePhrase = /\b(?:meu (?:whats|whatsapp|zap|numero|celular|telefone) e|anota ai|chama la no zap|me chama no zap)\b/i.test(norm);
+  const hasPhoneNumberPattern = /\b(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9\d{4}[-\s]?\d{4}\b/.test(outbound);
+  return hasPhonePhrase || hasPhoneNumberPattern;
 }
 
 function extractQuestions(text: string): string[] {
@@ -416,6 +445,12 @@ export function runConversationQualityGate(params: {
   if (isGreetingOrWellbeing(inbound) && questionCount === 0) {
     add("MISSING_WELLBEING_QUESTION", "Toda saudação exige perguntar se o pretendente está bem ou devolver a pergunta reciprocamente.");
   }
+  if (isOutingInvite(inbound) && detectAcceptedOutingInvite(outbound)) {
+    add("ACCEPTED_OUTING_INVITE", "Larissa nunca aceita convites para sair; deve desviar com gentileza usando sua rotina.");
+  }
+  if (detectPhoneNumberLeak(outbound)) {
+    add("PHONE_NUMBER_LEAK", "Larissa nunca fornece número de telefone ou WhatsApp; deve manter a conversa no Direct.");
+  }
   if (wellbeing && /\b(?:como ta seu dia|fez o que hoje|vai fazer o que|ta fazendo o que)\b/i.test(normalize(outbound))) {
     add("UNRELATED_FOLLOWUP", "Saudação simples recebeu uma pergunta genérica não relacionada.");
   }
@@ -439,6 +474,18 @@ export function runConversationQualityGate(params: {
 
 export function safeHighConfidenceFallback(inboundMessages: string[], turnContract: TurnContract): string[] | null {
   const inbound = inboundMessages.join(" ");
+  if (isOutingInvite(inbound)) {
+    return [
+      "ah hoje não consigo sair, o plantão do hospital me deixou moída kkk",
+      "mas quem sabe outra hora com calma"
+    ];
+  }
+  if (isPhoneRequest(inbound)) {
+    return [
+      "vamos continuar conversando por aqui no direct primeiro kkk",
+      "pra gente ir se conhecendo melhor, o que vc acha?"
+    ];
+  }
   if (isGreetingOrWellbeing(inbound)) {
     if (turnContract.mustAnswerFirst || isWellbeingQuestion(inbound)) {
       if (/\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/i.test(rawNormalize(inbound))) {
