@@ -2605,6 +2605,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     // 1. Identificação inicial do Turn correspondente a esta execução
+    const executionStartTimeMs = startTime;
     const pollIntervalMs = 2000;
     const maxPollAttempts = Math.ceil(AGENT_LOCAL_WAIT_MS / pollIntervalMs);
     const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
