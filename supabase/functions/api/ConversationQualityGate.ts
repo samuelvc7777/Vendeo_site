@@ -270,7 +270,7 @@ export function isTextRedundantWithAudioTranscript(text: string, transcript: str
 export function detectMetaBotRoboticLeak(outbound: string): boolean {
   if (!outbound) return false;
   const norm = rawNormalize(outbound);
-  return /\b(?:inventar uma resposta|nao quero inventar|inventar resposta|inventar nada|essa parte eu ainda nao te contei|essa parte nao te contei|essa parte ainda nao contei|nao posso inventar|como uma inteligencia artificial|como inteligencia artificial|como uma ia|sou uma ia|sou um robo|minhas instrucoes|meu programador|minha programacao|dados biograficos|nao sei te dizer isso sobre mim|meus dados|meu sistema|modelo de linguagem|nao fui programada|nao fui treinado|nao fui treinada)\b/i.test(norm);
+  return /\b(?:inventar uma resposta|nao quero inventar|inventar resposta|inventar nada|chutar uma resposta|chutar resposta|prefiro nao chutar|nao vou chutar|nao quero chutar|chutar uma|vou chutar|quero ser sincera com vc tambem|essa parte eu ainda nao te contei|essa parte nao te contei|essa parte ainda nao contei|nao posso inventar|como uma inteligencia artificial|como inteligencia artificial|como uma ia|sou uma ia|sou um robo|minhas instrucoes|meu programador|minha programacao|dados biograficos|nao sei te dizer isso sobre mim|meus dados|meu sistema|modelo de linguagem|nao fui programada|nao fui treinado|nao fui treinada)\b/i.test(norm);
 }
 
 /**

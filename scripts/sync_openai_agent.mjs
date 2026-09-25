@@ -222,7 +222,7 @@ export async function syncCanonicalOpenAiAgent(options = {}) {
 
   console.log('\n--- PAYLOAD VALIDADO COM SUCESSO ---');
   console.log(`Model preservado: ${postPayload.model}`);
-  console.log(`Reasoning preservado: ${postPayload.reasoning}`);
+  console.log(`Reasoning preservado: ${JSON.stringify(postPayload.reasoning)}`);
   console.log(`Verbosity preservado: ${postPayload.verbosity || 'não definido'}`);
   console.log(`Quantidade total de tools: ${postPayload.tools.length}`);
 
