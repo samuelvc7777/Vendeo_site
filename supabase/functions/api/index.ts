@@ -3959,6 +3959,49 @@ serve(async (req: Request) => {
           });
         }
 
+        // 0. Auto-recuperação de stale locks e claims presas (P0)
+        // Se uma conversa ficou com active_cycle_at > 180s sem concluir, o ciclo caiu.
+        // Reverte mensagens 'claimed' para 'pending' e limpa o token de ciclo.
+        try {
+          const staleThresholdIso = new Date(Date.now() - 180_000).toISOString();
+          const { data: staleConvs } = await supabase
+            .from("instagram_conversations")
+            .select("id, stage_completed_rules")
+            .not("stage_completed_rules->active_cycle_token", "is", null)
+            .lt("stage_completed_rules->>active_cycle_at", staleThresholdIso)
+            .limit(10);
+
+          if (staleConvs && staleConvs.length > 0) {
+            for (const sc of staleConvs) {
+              const rules = sc.stage_completed_rules || {};
+              const orch = rules.orchestration || {};
+              const ledger = { ...(orch.messageLedger || {}) };
+              for (const [mid, st] of Object.entries(ledger)) {
+                if (st === "claimed") ledger[mid] = "pending";
+              }
+              const cleanOrch = {
+                ...orch,
+                messageLedger: ledger,
+                activeClaimedMessageIds: [],
+                processingCycleToken: null,
+              };
+              const cleanRules = {
+                ...rules,
+                orchestration: cleanOrch,
+                active_cycle_token: null,
+                active_cycle_at: null,
+              };
+              await supabase
+                .from("instagram_conversations")
+                .update({ stage_completed_rules: cleanRules })
+                .eq("id", sc.id);
+              console.log(`[Cloud AutoPilot] Stale cycle recuperado com sucesso para conv=${sc.id}`);
+            }
+          }
+        } catch (staleErr) {
+          console.warn("[Cloud AutoPilot] Erro ao recuperar stale cycles:", staleErr);
+        }
+
         // 1. Busca conversas prontas para serem respondidas cujo tempo de espera já venceu
         const { data: readyConvs, error: queryErr } = await supabase.rpc(
           "list_autopilot_due_conversations",
@@ -4055,6 +4098,11 @@ serve(async (req: Request) => {
                 activity: null,
                 scheduledResponseAt: null,
               });
+              // Limpar ai_debounce_until para evitar varredura em loop infinito
+              await supabase
+                .from("instagram_conversations")
+                .update({ ai_debounce_until: null })
+                .eq("id", conv.id);
             }
           }
         }

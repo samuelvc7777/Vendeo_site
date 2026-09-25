@@ -546,6 +546,12 @@ function getCopy(state: AutoPilotChatState) {
       detail: "Esta conversa será processada em seguida.",
     };
   }
+  if (scheduledMs > 0 && Date.now() >= scheduledMs) {
+    return {
+      title: "IA na fila de resposta",
+      detail: "Tempo programado concluído. Processando resposta.",
+    };
+  }
   if (state.lastThoughts?.atriaThought || state.lastThoughts?.solThought) {
     return {
       title: "Última resposta enviada",

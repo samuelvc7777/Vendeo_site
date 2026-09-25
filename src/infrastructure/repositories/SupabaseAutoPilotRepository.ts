@@ -423,4 +423,20 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     await this.persistStatesToCloud(all);
     return updated;
   }
+
+  async triggerCronTick(): Promise<{ success: boolean; processedCount?: number }> {
+    try {
+      const client = this.getClient();
+      const { data, error } = await client.functions.invoke("api/autopilot/cron-tick", {
+        method: "POST",
+        body: {},
+      });
+      if (error) throw error;
+      return data || { success: true, processedCount: 0 };
+    } catch (e) {
+      // Falha silenciosa de telemetria / heartbeat
+      return { success: false, processedCount: 0 };
+    }
+  }
 }
+

@@ -64,6 +64,18 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     return () => window.clearInterval(timer);
   }, [mergeStatesMonotonic]);
 
+  // Heartbeat proativo do AutoPilot: a cada 35s, se a aba estiver visível e o piloto estiver ativo,
+  // aciona o cron-tick na nuvem como contingência para contornar eventuais timeouts do pg_cron do Supabase.
+  useEffect(() => {
+    const heartbeatTimer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      if (config && !config.isEnabledGlobally) return;
+      void autoPilotRepo.triggerCronTick().catch(() => {});
+    }, 35000);
+    return () => window.clearInterval(heartbeatTimer);
+  }, [config]);
+
+
 
   const applyRemoteStateUpdate = useCallback((payload: Partial<AutoPilotChatState> & { conversationId: string; timestamp?: string }) => {
     setChatStates((previous) => {
