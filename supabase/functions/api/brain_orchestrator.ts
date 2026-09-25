@@ -75,6 +75,9 @@ import {
   isActionableInboundMessage,
   isPureEmojiMessage,
   isTextRedundantWithAudioTranscript,
+  detectMetaBotRoboticLeak,
+  detectInappropriateIntimacyLeak,
+  sanitizeInappropriateIntimacy,
   type TurnContract,
 } from "./ConversationQualityGate.ts";
 export {
@@ -9197,11 +9200,22 @@ export async function runBrainOrchestration(
             }
           }
 
-          // Reconstruir lista de outboundActions autorizadas respeitando o guard de texto e anti-duplicação de áudio
+          // Reconstruir lista de outboundActions autorizadas respeitando o guard de texto, metalinguagem robótica e anti-duplicação de áudio
           const allowedOutboundActions: OutboundAction[] = [];
           for (const act of rawActions) {
             if (act.type === "text") {
-              const textVal = String(act.text || "").trim();
+              let textVal = String(act.text || "").trim();
+              if (!textVal) continue;
+
+              // PODA DETERMINÍSTICA DE METALINGUAGEM ROBÓTICA: Se o balão contiver vazamento de IA/robô, CORTA!
+              if (detectMetaBotRoboticLeak(textVal)) {
+                currentCycle.trace.push(`robotic_meta_leak_pruned: ${textVal.slice(0, 60)}`);
+                console.warn(`[Orchestrator] PODADO: Balão de texto com metalinguagem robótica inaceitável: "${textVal}"`);
+                continue;
+              }
+
+              // SANITIZAÇÃO DE INTIMIDADE PRECOCE: Remove apelidos indevidos ("amor", "meu bem", "vida")
+              textVal = sanitizeInappropriateIntimacy(textVal);
               if (!textVal) continue;
 
               // PODA DETERMINÍSTICA: Se há áudio selecionado e o balão repete o conteúdo do áudio, CORTA O TEXTO!
@@ -9211,7 +9225,7 @@ export async function runBrainOrchestration(
                 continue;
               }
 
-              if (intentGuard.allowedBalloons.includes(textVal)) {
+              if (intentGuard.allowedBalloons.includes(textVal) || intentGuard.allowedBalloons.some((b) => sanitizeInappropriateIntimacy(b) === textVal)) {
                 allowedOutboundActions.push({ type: "text", text: textVal });
               }
             } else if (act.type === "audio") {
@@ -9220,6 +9234,18 @@ export async function runBrainOrchestration(
               } else {
                 currentCycle.trace.push(`unauthorized_audio_action_pruned: ${act.audioId}`);
               }
+            }
+          }
+
+          // Se todos os balões de texto foram podados por vazamento robótico mas era necessário responder:
+          if (!allowedOutboundActions.some((a) => a.type === "text")) {
+            const inboundTexts = canonicalClaimed.map((m) => m.text).filter(Boolean);
+            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
+            if (fallback && fallback.length > 0) {
+              for (const fbText of fallback) {
+                allowedOutboundActions.push({ type: "text", text: fbText });
+              }
+              currentCycle.trace.push("robotic_leak_fallback_injected");
             }
           }
 
@@ -9679,6 +9705,52 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
           currentCycle.trace.push(`final_quality_passed=${finalQualityResult.passed}`);
           currentCycle.trace.push(`final_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
+
+          // ------------------------------------------------------------------
+          // GUARDA MANDATÓRIA DE CONDUTA DA PERSONA (UNIVERSAL - INCLUI OPENAI AGENT)
+          // ------------------------------------------------------------------
+          const criticalPersonaIssues = finalQualityResult.issues.filter(
+            (i) =>
+              i.code === "ROBOTIC_META_LEAK" ||
+              i.code === "ACCEPTED_OUTING_INVITE" ||
+              i.code === "PHONE_NUMBER_LEAK"
+          );
+
+          if (criticalPersonaIssues.length > 0) {
+            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
+            if (fallback && fallback.length > 0) {
+              authoritativeBalloons = fallback;
+              qualityFallbackUsed = true;
+              currentCycle.trace.push(
+                `critical_persona_issue_replaced_with_fallback: ${criticalPersonaIssues.map((i) => i.code).join(",")}`
+              );
+              finalQualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: authoritativeBalloons,
+                turnContract,
+              });
+            } else {
+              authoritativeBalloons = authoritativeBalloons.filter((b) => !detectMetaBotRoboticLeak(b));
+              currentCycle.trace.push("critical_robotic_leak_pruned_without_fallback");
+            }
+          }
+
+          if (finalQualityResult.issues.some((i) => i.code === "UNAUTHORIZED_INTIMACY_LEAK")) {
+            authoritativeBalloons = authoritativeBalloons.map(sanitizeInappropriateIntimacy).filter(Boolean);
+            currentCycle.trace.push("unauthorized_intimacy_leak_sanitized");
+          }
+
+          if (isOpenAiAgentBrain) {
+            finalSubDecision.responses = authoritativeBalloons;
+            finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+            if (finalSubDecision.outboundActions) {
+              const audioAction = finalSubDecision.outboundActions.find((a) => a.type === "audio");
+              finalSubDecision.outboundActions = [
+                ...(audioAction ? [audioAction] : []),
+                ...authoritativeBalloons.map((t) => ({ type: "text" as const, text: t })),
+              ];
+            }
+          }
 
           if (!finalQualityResult.passed && !isOpenAiAgentBrain) {
             finalSubDecision.action = "wait";

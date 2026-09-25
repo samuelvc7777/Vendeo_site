@@ -48,7 +48,9 @@ export type ConversationQualityIssueCode =
   | "MISSING_WELLBEING_QUESTION"
   | "ACCEPTED_OUTING_INVITE"
   | "PHONE_NUMBER_LEAK"
-  | "TEXT_DUPLICATES_AUDIO_TRANSCRIPT";
+  | "TEXT_DUPLICATES_AUDIO_TRANSCRIPT"
+  | "ROBOTIC_META_LEAK"
+  | "UNAUTHORIZED_INTIMACY_LEAK";
 
 export interface ConversationQualityIssue {
   code: ConversationQualityIssueCode;
@@ -258,6 +260,56 @@ export function isTextRedundantWithAudioTranscript(text: string, transcript: str
   }
 
   return false;
+}
+
+/**
+ * Detecta vazamento de metalinguagem de IA ou respostas absurdas de robô.
+ * Ex: "não quero inventar uma resposta pra vc", "essa parte eu ainda não te contei",
+ * "como inteligência artificial", "não posso inventar", etc.
+ */
+export function detectMetaBotRoboticLeak(outbound: string): boolean {
+  if (!outbound) return false;
+  const norm = rawNormalize(outbound);
+  return /\b(?:inventar uma resposta|nao quero inventar|inventar resposta|inventar nada|essa parte eu ainda nao te contei|essa parte nao te contei|essa parte ainda nao contei|nao posso inventar|como uma inteligencia artificial|como inteligencia artificial|como uma ia|sou uma ia|sou um robo|minhas instrucoes|meu programador|minha programacao|dados biograficos|nao sei te dizer isso sobre mim|meus dados|meu sistema|modelo de linguagem|nao fui programada|nao fui treinado|nao fui treinada)\b/i.test(norm);
+}
+
+/**
+ * Detecta apelidos íntimos precoces usados pela Larissa para pretendentes no Direct.
+ * Larissa é moça de família e NUNCA chama pretendente desconhecido de amor, vida, meu bem, bb, etc.
+ */
+export function detectInappropriateIntimacyLeak(outbound: string): boolean {
+  if (!outbound) return false;
+  const norm = rawNormalize(outbound);
+  return /\b(?:amor|meu amor|vida|minha vida|meu bem|bb|bebe|mozao|meu docinho|minha paixao)\b/i.test(norm);
+}
+
+/**
+ * Sanitiza apelidos íntimos precoces que possam ter escapado do modelo.
+ * Ex: "essa resposta, amor kkk" -> "essa resposta kkk"
+ */
+export function sanitizeInappropriateIntimacy(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/,\s*(?:amor|meu amor|vida|minha vida|meu bem|bb|bebê|bebe|mozão|mozao)\b/gi, "")
+    .replace(/\b(?:amor|meu amor|vida|minha vida|meu bem|bb|bebê|bebe|mozão|mozao)\s*,?\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Detecta se a mensagem inbound é uma pergunta sobre namoro / se a Larissa namora ou é solteira.
+ */
+export function isDatingQuestion(text: string): boolean {
+  const norm = rawNormalize(text);
+  return /\b(?:namora|namorando|tem namorado|voce namora|vc namora|ta namorando|e o namorado|ta solteira|e solteira|tem alguem)\b/i.test(norm);
+}
+
+/**
+ * Detecta se a mensagem inbound é uma pergunta sobre ter filhos ou se já foi casada.
+ */
+export function isChildrenOrMarriageQuestion(text: string): boolean {
+  const norm = rawNormalize(text);
+  return /\b(?:tem filhos|tem filho|ja casou|ja foi casada|e casada|quer ter filhos|filho pequeno)\b/i.test(norm);
 }
 
 function extractQuestions(text: string): string[] {
@@ -505,6 +557,12 @@ export function runConversationQualityGate(params: {
   if (detectPhoneNumberLeak(outbound)) {
     add("PHONE_NUMBER_LEAK", "Larissa nunca fornece número de telefone ou WhatsApp; deve manter a conversa no Direct.");
   }
+  if (detectMetaBotRoboticLeak(outbound)) {
+    add("ROBOTIC_META_LEAK", "A resposta contém metalinguagem robótica inaceitável para uma pessoa humana real.");
+  }
+  if (detectInappropriateIntimacyLeak(outbound)) {
+    add("UNAUTHORIZED_INTIMACY_LEAK", "Larissa nunca usa apelidos íntimos precoces (amor, meu bem, vida) com pretendentes no Direct.");
+  }
   if (wellbeing && /\b(?:como ta seu dia|fez o que hoje|vai fazer o que|ta fazendo o que)\b/i.test(normalize(outbound))) {
     add("UNRELATED_FOLLOWUP", "Saudação simples recebeu uma pergunta genérica não relacionada.");
   }
@@ -528,6 +586,18 @@ export function runConversationQualityGate(params: {
 
 export function safeHighConfidenceFallback(inboundMessages: string[], turnContract: TurnContract): string[] | null {
   const inbound = inboundMessages.join(" ");
+  if (isDatingQuestion(inbound)) {
+    return [
+      "namoro não kkk, tô solteira",
+      turnContract.newQuestionBudget === 0 ? "tô solteira simm" : "e vc?"
+    ];
+  }
+  if (isChildrenOrMarriageQuestion(inbound)) {
+    return [
+      "nossa nunca kkkkk, não tenho filhos e nunca casei",
+      "só namorei uma vez na vida e a experiência nem foi boa kkk"
+    ];
+  }
   if (isOutingInvite(inbound)) {
     return [
       "ah hoje não consigo sair, o plantão do hospital me deixou moída kkk",

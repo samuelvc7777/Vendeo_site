@@ -14,6 +14,11 @@ import {
   isPhoneRequest,
   detectPhoneNumberLeak,
   isTextRedundantWithAudioTranscript,
+  detectMetaBotRoboticLeak,
+  detectInappropriateIntimacyLeak,
+  sanitizeInappropriateIntimacy,
+  isDatingQuestion,
+  isChildrenOrMarriageQuestion,
 } from "../supabase/functions/api/ConversationQualityGate.ts";
 
 test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por searchPersonaAudios nem por searchCofreAudios", async () => {
@@ -242,4 +247,104 @@ test("ANTI-DUPLICAÇÃO DE ÁUDIO & TEXTO: isTextRedundantWithAudioTranscript po
   assert.equal(prunedActions[0].text, pretendenteReactionBalloon, "O texto que sobrou deve ser o acolhimento ao rapaz");
   assert.equal(prunedActions[1].type, "audio", "O áudio deve ser preservado intacto");
 });
+
+test("PROIBIÇÃO DE METALINGUAGEM ROBÓTICA: detectMetaBotRoboticLeak detecta e flagga frases de IA", () => {
+  const leaks = [
+    "essa parte eu ainda não te contei, amor kkk",
+    "meu bem, não quero inventar uma resposta pra vc",
+    "não quero inventar nada pra você",
+    "não sei te dizer isso sobre mim",
+    "meus dados não têm essa informação",
+    "como uma ia não posso responder isso",
+  ];
+
+  for (const leak of leaks) {
+    assert.equal(
+      detectMetaBotRoboticLeak(leak),
+      true,
+      `Deveria detectar vazamento robótico em: "${leak}"`
+    );
+  }
+
+  const validHuman = [
+    "namoro não kkk, tô solteira",
+    "sou de São João del-Rei",
+    "estudo enfermagem e tô no estágio",
+    "nossa nunca kkkkk, não tenho filhos e nunca casei",
+  ];
+
+  for (const valid of validHuman) {
+    assert.equal(
+      detectMetaBotRoboticLeak(valid),
+      false,
+      `NÃO deveria acusar vazamento robótico em fala humana normal: "${valid}"`
+    );
+  }
+});
+
+test("PROIBIÇÃO DE APELIDOS ÍNTIMOS PRECOCES: detectInappropriateIntimacyLeak e sanitizeInappropriateIntimacy limpam apelidos indevidos", () => {
+  const withIntimacy = "essa parte eu ainda não te contei, amor kkk";
+  assert.equal(detectInappropriateIntimacyLeak(withIntimacy), true, "Deve detectar 'amor' precoce");
+
+  const sanitized = sanitizeInappropriateIntimacy("essa parte eu ainda não te contei, amor kkk");
+  assert.equal(sanitized.includes("amor"), false, "Sanitização deve remover o apelido 'amor'");
+
+  const withMeuBem = "meu bem, tô bem sim e vc?";
+  assert.equal(detectInappropriateIntimacyLeak(withMeuBem), true, "Deve detectar 'meu bem' precoce");
+  const sanitizedMeuBem = sanitizeInappropriateIntimacy(withMeuBem);
+  assert.equal(sanitizedMeuBem.includes("meu bem"), false, "Sanitização deve remover 'meu bem'");
+});
+
+test("PERGUNTAS DE NAMORO, FILHOS E CASAMENTO: isDatingQuestion, isChildrenOrMarriageQuestion e safeHighConfidenceFallback", () => {
+  assert.equal(isDatingQuestion("Namora bb?"), true, "Deve reconhecer 'Namora bb?' como pergunta de namoro");
+  assert.equal(isDatingQuestion("vc tá solteira?"), true, "Deve reconhecer pergunta se tá solteira");
+  assert.equal(isChildrenOrMarriageQuestion("vc tem filhos?"), true, "Deve reconhecer pergunta de filhos");
+  assert.equal(isChildrenOrMarriageQuestion("já casou alguma vez?"), true, "Deve reconhecer pergunta de casamento");
+
+  const defaultContract = {
+    directQuestions: [],
+    mustAnswerFirst: true,
+    newQuestionBudget: 1,
+    responseShape: "free_conversation",
+    avoidEchoPhrases: [],
+    maxBalloons: 3,
+    preferNoEmoji: false,
+  };
+
+  // Resposta canônica a pergunta de namoro
+  const datingFallback = safeHighConfidenceFallback(["Namora bb?"], defaultContract);
+  assert.ok(datingFallback && datingFallback.length > 0, "Deve gerar fallback para pergunta de namoro");
+  assert.equal(datingFallback[0], "namoro não kkk, tô solteira", "Primeiro balão deve ser 'namoro não kkk, tô solteira'");
+
+  // Resposta canônica a pergunta de filhos / casamento
+  const childrenFallback = safeHighConfidenceFallback(["vc tem filhos ou já casou?"], defaultContract);
+  assert.ok(childrenFallback && childrenFallback.length > 0, "Deve gerar fallback para filhos/casamento");
+  assert.equal(childrenFallback[0], "nossa nunca kkkkk, não tenho filhos e nunca casei");
+  assert.equal(childrenFallback[1], "só namorei uma vez na vida e a experiência nem foi boa kkk");
+});
+
+test("QUALITY GATE: ROBOTIC_META_LEAK e UNAUTHORIZED_INTIMACY_LEAK bloqueiam no Quality Gate", () => {
+  const defaultContract = {
+    directQuestions: [],
+    mustAnswerFirst: false,
+    newQuestionBudget: 1,
+    responseShape: "free_conversation",
+    avoidEchoPhrases: [],
+    maxBalloons: 3,
+    preferNoEmoji: false,
+  };
+
+  // Simulação exata da resposta infeliz do pretendente "2G."
+  const result = runConversationQualityGate({
+    inboundMessages: ["Namora bb?"],
+    candidateBalloons: ["essa parte eu ainda não te contei, amor kkk"],
+    turnContract: defaultContract,
+  });
+
+  assert.equal(result.passed, false, "Resposta com leak robótico e intimidade deve falhar no gate");
+  const issueCodes = result.issues.map((i) => i.code);
+  assert.ok(issueCodes.includes("ROBOTIC_META_LEAK"), "Deve conter issue ROBOTIC_META_LEAK");
+  assert.ok(issueCodes.includes("UNAUTHORIZED_INTIMACY_LEAK"), "Deve conter issue UNAUTHORIZED_INTIMACY_LEAK");
+});
+
 
