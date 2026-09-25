@@ -4020,10 +4020,13 @@ serve(async (req: Request) => {
         const validConvs = (readyConvs || []).filter((c: any) => typeof c.id === "string" && !c.id.startsWith("__"));
         console.log(`[TRACE-AUTOPILOT] cron:tick found ${validConvs.length} valid conversations ready.`);
 
+        // Limite de concorrência por tick: processa até 3 conversas por ciclo para
+        // evitar pico simultâneo de tokens (rate_limit_exceeded) na OpenAI Agents API.
+        const batchConvs = validConvs.slice(0, 3);
         const processed: string[] = [];
 
-        if (validConvs.length > 0) {
-          for (const conv of validConvs) {
+        if (batchConvs.length > 0) {
+          for (const conv of batchConvs) {
             // O claim_experimental_cycle é o CAS real. Não limpar debounce antes
             // dele: uma falha do worker deixaria a conversa sem agenda.
 

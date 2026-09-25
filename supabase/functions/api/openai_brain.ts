@@ -2336,6 +2336,14 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           sessionData = await currentSessionRes.json();
           latestSessionData = sessionData;
 
+          const sessionStatus = typeof sessionData?.status === "string" ? sessionData.status : null;
+          if (sessionStatus && sessionStatus !== "idle") {
+            console.warn(`[OpenAI Agent] session_reuse_unhealthy_status (status=${sessionStatus}): sessionId=${sessionId}. A sessão não está idle. Evicting e recriando sessão limpa (recovery)...`);
+            sessionId = null;
+            telemetry.sessionFallbackTriggered = true;
+            telemetry.agentSessionRecoveryTriggered = true;
+          }
+
           const actualModel = typeof sessionData?.agent?.model === "string" ? sessionData.agent.model : null;
           const actualReasoning = typeof sessionData?.agent?.reasoning?.effort === "string" ? sessionData.agent.reasoning.effort : null;
           const requestedModel = params.model || null;
@@ -2347,8 +2355,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           telemetry.agentSessionReasoningRequested = requestedReasoning;
           telemetry.agentSessionReasoningActual = actualReasoning;
 
-          const modelMismatch = Boolean(requestedModel && actualModel !== requestedModel);
-          const reasoningMismatch = Boolean(requestedReasoning && actualReasoning !== requestedReasoning);
+          const modelMismatch = Boolean(sessionId && requestedModel && actualModel !== requestedModel);
+          const reasoningMismatch = Boolean(sessionId && requestedReasoning && actualReasoning !== requestedReasoning);
 
           if (modelMismatch || reasoningMismatch) {
             console.log(`[OpenAI Agent] session_config_divergence_detected: sessionId=${sessionId} actualModel=${actualModel} requestedModel=${requestedModel} actualReasoning=${actualReasoning} requestedReasoning=${requestedReasoning}. Sincronizando...`);
@@ -2597,9 +2605,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     // 1. Identificação inicial do Turn correspondente a esta execução
-    const executionStartTimeMs = startTime;
-    const maxPollAttempts = 45;
     const pollIntervalMs = 2000;
+    const maxPollAttempts = Math.ceil(AGENT_LOCAL_WAIT_MS / pollIntervalMs);
     const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
 
     turnId = null;

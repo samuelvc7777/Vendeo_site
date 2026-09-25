@@ -10830,6 +10830,30 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       };
     }
 
+    // Se a falha foi do agente OpenAI (timeout, sessão in_progress, requires_action unhandled, etc.),
+    // limpa imediatamente o openai_session_id para que a próxima tentativa nunca reutilize a sessão morta.
+    if (err?.message?.includes("OPENAI_AGENT_FAILED") || err?.message?.includes("timeout") || err?.message?.includes("session")) {
+      try {
+        const { data: currentConv } = await supabase
+          .from("instagram_conversations")
+          .select("stage_completed_rules")
+          .eq("id", conversationId)
+          .maybeSingle();
+
+        if (currentConv?.stage_completed_rules?.orchestration?.openai_session_id) {
+          const rules = currentConv.stage_completed_rules;
+          rules.orchestration.openai_session_id = null;
+          await supabase
+            .from("instagram_conversations")
+            .update({ stage_completed_rules: rules })
+            .eq("id", conversationId);
+          console.log(`[Brain] openai_session_id resetado com sucesso para conv=${conversationId} após falha do agente.`);
+        }
+      } catch (sessionResetErr) {
+        console.warn(`[Brain] Falha ao resetar openai_session_id:`, sessionResetErr);
+      }
+    }
+
     if (releaseRes.retryExhausted || params.isManualRetry) {
       await publishAutoPilotState(supabase, conversationId, {
         cycleId: correlationId,
