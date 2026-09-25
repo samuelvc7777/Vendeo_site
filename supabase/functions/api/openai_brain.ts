@@ -981,6 +981,7 @@ export interface RunOpenAiBrainParams {
     mandatoryMessageIds?: string[];
     replyTargetIds?: string[];
   };
+  sessionEvictionRetried?: boolean;
 }
 
 export interface OpenAiContextWindowTelemetry {
@@ -3127,6 +3128,18 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {
+        if (sessionReused && !params.sessionEvictionRetried) {
+          console.warn(`[OpenAI Agent Strict Mode] Sessão persistente ${sessionId} retornou plano inválido (${validation.error}). Executando Session Eviction e recriando sessão limpa...`);
+          telemetry.sessionFallbackTriggered = true;
+          telemetry.agentSessionRecoveryTriggered = true;
+          const retryResult = await runOpenAiBrainTurn({
+            ...params,
+            sessionId: null,
+            sessionEvictionRetried: true,
+          });
+          retryResult.telemetry.agentUsageSessions = [...telemetry.agentUsageSessions, ...retryResult.telemetry.agentUsageSessions];
+          return retryResult;
+        }
         if (!params.schemaRetryCount) {
           const retryResult = await runOpenAiBrainTurn({ ...params, schemaRetryCount: 1, schemaFeedback: validation.error || "JSON estruturado não encontrado" });
           retryResult.telemetry.agentUsageSessions = [...telemetry.agentUsageSessions, ...retryResult.telemetry.agentUsageSessions];
@@ -3157,6 +3170,18 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         console.warn(`[OpenAI Agent] Recuperação defensiva ativada (openai_agent_plan_recovery_used): ${validation.error}`);
         parsedPlan = recoverSafeBrainPlan(parsedPlan);
         if (!parsedPlan) {
+          if (sessionReused && !params.sessionEvictionRetried) {
+            console.warn(`[OpenAI Agent] Sessão persistente ${sessionId} dessincronizada ou sem respostas seguras (${validation.error}). Executando Session Eviction e recriando sessão limpa a partir do banco...`);
+            telemetry.sessionFallbackTriggered = true;
+            telemetry.agentSessionRecoveryTriggered = true;
+            const retryResult = await runOpenAiBrainTurn({
+              ...params,
+              sessionId: null,
+              sessionEvictionRetried: true,
+            });
+            retryResult.telemetry.agentUsageSessions = [...telemetry.agentUsageSessions, ...retryResult.telemetry.agentUsageSessions];
+            return retryResult;
+          }
           telemetry.finalPlanParsed = false;
           telemetry.status = "failed";
           return {

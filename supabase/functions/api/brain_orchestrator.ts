@@ -9631,21 +9631,13 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         if (isOpenAiAgentBrain) currentCycle.trace.push("conversation_quality_observe_only=true");
 
         if (isOpenAiAgentBrain && qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
-          finalSubDecision.action = "wait";
-          finalSubDecision.responses = [];
-          finalSubDecision.suggestedResponse = "";
-          finalSubDecision.requiredTools = [];
-          currentCycle.trace.push("QUESTION_BUDGET_HARD_BLOCK");
+          currentCycle.trace.push("question_budget_exceeded_observed");
         }
 
-        // Limite físico de payload: é o único aspecto de balões que pode
-        // bloquear o caminho OpenAI, sem reescrever a conversa.
+        // Limite físico de payload: se exceder maxBalloons, apara os balões excedentes em vez de calar a conversa
         if (isOpenAiAgentBrain && (finalSubDecision.responses || []).length > turnContract.maxBalloons) {
-          finalSubDecision.action = "wait";
-          finalSubDecision.responses = [];
-          finalSubDecision.suggestedResponse = "";
-          finalSubDecision.requiredTools = [];
-          currentCycle.trace.push("technical_balloon_limit_blocked_dispatch");
+          currentCycle.trace.push("technical_balloon_limit_trimmed");
+          finalSubDecision.responses = (finalSubDecision.responses || []).slice(0, turnContract.maxBalloons);
         }
 
         // ------------------------------------------------------------------
