@@ -5331,36 +5331,36 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
                     </div>
                     <div className="flex items-center text-xs text-[#a8a8a8] mt-0.5 min-w-0">
-                      {isAutoPilotWorking(autoPilot.chatStates[conv.id]) ? (
-                        <AutoPilotActivityIndicator state={autoPilot.chatStates[conv.id]} variant="inbox" />
-                      ) : (() => {
+                      {(() => {
                         const isLastMessageSeen =
                           conv.lastSender === "me" &&
                           conv.lastStatus === "seen" &&
                           Boolean(conv.seenAt) &&
                           new Date(conv.seenAt!).getTime() >= new Date(conv.lastMessageAt || conv.lastActive || 0).getTime();
+                        const timestamp = isLastMessageSeen
+                          ? conv.seenAt
+                          : conv.lastMessageAt || conv.lastActive;
 
-                        return isLastMessageSeen ? (
+                        return (
                           <>
-                            <span className="text-[#8e8e8e] font-normal truncate">
-                              Visto
+                            <span className="flex min-w-0 flex-1 items-center">
+                              {isAutoPilotWorking(autoPilot.chatStates[conv.id]) ? (
+                                <AutoPilotActivityIndicator state={autoPilot.chatStates[conv.id]} variant="inbox" />
+                              ) : isLastMessageSeen ? (
+                                <span className="text-[#8e8e8e] font-normal truncate">Visto</span>
+                              ) : (
+                                <span
+                                  className={`truncate ${
+                                    isConversationUnread(conv) ? "text-white font-semibold" : "text-[#a8a8a8]"
+                                  }`}
+                                >
+                                  {conv.lastMessage}
+                                </span>
+                              )}
                             </span>
-                            <span className="text-[#737373] shrink-0 text-xs ml-1 font-normal">
-                              • {formatMessageTime(conv.seenAt)}
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <span
-                              className={`truncate ${
-                                isConversationUnread(conv) ? "text-white font-semibold" : "text-[#a8a8a8]"
-                              }`}
-                            >
-                              {conv.lastMessage}
-                            </span>
-                            {(conv.lastMessageAt || conv.lastActive) && (
+                            {timestamp && (
                               <span className="text-[#737373] shrink-0 text-xs ml-1 font-normal">
-                                • {formatMessageTime(conv.lastMessageAt || conv.lastActive)}
+                                • {formatMessageTime(timestamp)}
                               </span>
                             )}
                           </>
