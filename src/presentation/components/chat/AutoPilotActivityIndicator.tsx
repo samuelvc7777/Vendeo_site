@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { authenticatedApiFetch } from "@/infrastructure/http/authenticatedApiFetch";
 import {
   AlertTriangle,
   BrainCircuit,
@@ -784,13 +785,13 @@ export function AutoPilotActivityIndicator({
     if (!targetId || isCancelling) return;
     setIsCancelling(true);
     try {
-      const res = await fetch(getApiUrl("/api/autopilot/pause"), {
+      const res = await authenticatedApiFetch("/api/autopilot/pause", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.result === "cancelled") {
+      if (res.ok && data.success === true && data.isEnabled === false) {
         toast.success("Ação cancelada. IA desativada.");
       } else {
         toast.error(data.detail || "Erro ao cancelar ação.");

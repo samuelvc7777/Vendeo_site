@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { authenticatedApiFetch } from "@/infrastructure/http/authenticatedApiFetch";
 import { toast } from "sonner";
 import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/SupabaseAutoPilotRepository";
 import { AutoPilotChatState, AutoPilotConfig, AutoPilotPendingAction } from "@/domain/entities/AutoPilot";
@@ -117,52 +118,31 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
 
   const toggleAutoPilotForChat = useCallback(async (conversationId: string, forceState?: boolean) => {
     const isEnabled = forceState ?? !chatStatesRef.current[conversationId]?.isEnabled;
-    const nowIso = new Date().toISOString();
-    const updated = await autoPilotRepo.saveChatState(conversationId, {
-      isEnabled,
-      enabledAt: isEnabled ? nowIso : undefined,
-      status: isEnabled ? "idle" : "disabled",
-      pauseReason: isEnabled ? undefined : "paused_manual",
-      pausedAt: isEnabled ? undefined : nowIso,
-    });
-    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-    toast.success(isEnabled ? "Piloto Automático ativado neste chat." : "Piloto Automático desativado neste chat.");
-
-    // Sincroniza via endpoint oficial do backend para armar o piloto e registrar o watermark
-    void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId, isEnabled }),
-    }).catch((err) => console.warn("Aviso ao notificar toggle-chat:", err));
-
-    if (!isEnabled) {
-      void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/pause", {
+    try {
+      const response = await authenticatedApiFetch("/api/autopilot/toggle-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId }),
-      }).catch((err) => console.warn("Aviso ao pausar no backend:", err));
+        body: JSON.stringify({ conversationId, isEnabled }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success !== true || result.isEnabled !== isEnabled) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+      await refreshState();
+      toast.success(isEnabled ? "Piloto Automático ativado neste chat." : "Piloto Automático desativado neste chat.");
+    } catch (error) {
+      console.error("Falha ao alterar o estado do Piloto Automático:", error);
+      toast.error("Não foi possível confirmar a alteração do Piloto Automático.");
     }
-
-    return updated;
-  }, []);
+  }, [refreshState]);
 
   const activateAutoPilotWithChoice = useCallback(async (
     conversationId: string,
     mode: "immediate" | "wait_next"
   ) => {
     const isImmediate = mode === "immediate";
-    const nowIso = new Date().toISOString();
-    const updated = await autoPilotRepo.saveChatState(conversationId, {
-      isEnabled: true,
-      enabledAt: nowIso,
-      status: isImmediate ? "processing" : "idle",
-      pauseReason: undefined,
-      pausedAt: undefined,
-    });
-    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-
     try {
-      const res = await fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
+      const res = await authenticatedApiFetch("/api/autopilot/toggle-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -173,6 +153,10 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
       });
 
       const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success !== true || data.isEnabled !== true) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      await refreshState();
 
       if (isImmediate) {
         if (data.immediateTriggered || data.result === "started") {
@@ -190,8 +174,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
       toast.error("Erro ao sincronizar ativação com o backend.");
     }
 
-    return updated;
-  }, []);
+  }, [refreshState]);
 
   const registerClientMessage = useCallback(async (conversationId: string, timestamp?: string) => {
     if (!chatStatesRef.current[conversationId]?.isEnabled) return;
@@ -200,18 +183,23 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
   }, []);
 
   const resumeChatFromPause = useCallback(async (conversationId: string) => {
-    const updated = await autoPilotRepo.saveChatState(conversationId, { isEnabled: true, status: "idle", pauseReason: undefined, pausedAt: undefined });
-    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-    toast.success("Piloto Automático retomado no backend.");
-
-    void fetch("https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/autopilot/toggle-chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId, isEnabled: true }),
-    }).catch((err) => console.warn("Aviso ao sincronizar retomada:", err));
-
-    return updated;
-  }, []);
+    try {
+      const response = await authenticatedApiFetch("/api/autopilot/toggle-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, isEnabled: true }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success !== true || result.isEnabled !== true) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+      await refreshState();
+      toast.success("Piloto Automático retomado no backend.");
+    } catch (error) {
+      console.error("Falha ao retomar o Piloto Automático:", error);
+      toast.error("Não foi possível confirmar a retomada do Piloto Automático.");
+    }
+  }, [refreshState]);
 
   const approvePendingAction = useCallback(async (conversationId: string, customResponses?: string[]) => {
     const pending = chatStatesRef.current[conversationId]?.pendingAction;

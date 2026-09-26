@@ -352,43 +352,6 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
 
     all[conversationId] = updated;
     await this.persistStatesToCloud(all);
-
-    // Sincroniza atomicamente a linha individual da conversa para o webhook do backend honrar
-    const client = this.getClient();
-    if (client && typeof state.isEnabled === "boolean") {
-      try {
-        const isPaused = state.isEnabled === false;
-        const { data: rpcResult, error: rpcError } = await client.rpc(
-          "patch_autopilot_pause_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_paused: isPaused,
-            p_reason: isPaused ? "paused_manual" : null,
-          }
-        );
-
-        if (!rpcError && rpcResult?.success) {
-          // Sucesso via RPC atômica blindada no PostgreSQL
-        } else {
-          // FAIL-CLOSED: NUNCA fazer read-modify-write de stage_completed_rules em JS.
-          // Se a RPC falhar ou estiver indisponível, atualiza somente a coluna física isolada ai_auto_respond.
-          console.warn(
-            `[AutoPilotRepo] RPC patch_autopilot_pause_atomic indisponível ou falhou para conv=${conversationId}. ` +
-            `Atualizando somente coluna física ai_auto_respond sem tocar em stage_completed_rules.`
-          );
-          await client
-            .from("instagram_conversations")
-            .update({
-              ai_auto_respond: !isPaused,
-              ...(isPaused ? { ai_debounce_until: null } : {}),
-            })
-            .eq("id", conversationId);
-        }
-      } catch (syncErr) {
-        console.warn("[AutoPilotRepo] Aviso ao sincronizar linha individual da conversa:", syncErr);
-      }
-    }
-
     return updated;
   }
 

@@ -30,6 +30,32 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
 };
 
+async function verifyAutoPilotOperator(req: Request, supabase: any): Promise<Response | null> {
+  const authorization = req.headers.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token) {
+    return new Response(JSON.stringify({ success: false, error: "Sessão autenticada obrigatória." }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user) {
+    return new Response(JSON.stringify({ success: false, error: "Sessão inválida." }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  if ((data.user.email || "").toLowerCase() !== "lariresende0679@gmail.com") {
+    return new Response(JSON.stringify({ success: false, error: "Operador não autorizado." }), {
+      status: 403,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
 const API_VERSION = "v21.0";
 const API_BASE = `https://graph.instagram.com/${API_VERSION}`;
 
@@ -4313,6 +4339,8 @@ serve(async (req: Request) => {
     // Cancelamento operacional: desativa a IA e invalida o ciclo atual.
     if ((path === "/autopilot/pause" || path === "/api/autopilot/pause") && req.method === "POST") {
       try {
+        const authError = await verifyAutoPilotOperator(req, supabase);
+        if (authError) return authError;
         const body = await req.json().catch(() => ({}));
         const conversationId = body?.conversationId;
         if (!conversationId) {
@@ -4333,14 +4361,11 @@ serve(async (req: Request) => {
         );
 
         if (pauseRpcErr || !pauseRpcResult?.success) {
-          // FAIL-CLOSED: se a RPC falhar, atualiza somente colunas físicas isoladas, sem tocar em stage_completed_rules
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              ai_debounce_until: null,
-              ai_auto_respond: false,
-            })
-            .eq("id", conversationId);
+          console.error("[AutoPilot] RPC de pausa falhou; mantendo a alteração sem confirmação.", pauseRpcErr || pauseRpcResult);
+          return new Response(JSON.stringify({ success: false, error: "pause_failed" }), {
+            status: 503,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
         }
 
         // 2. Atualiza estado visual no __autopilot_states__
@@ -4387,7 +4412,7 @@ serve(async (req: Request) => {
           pendingAction: null,
         });
 
-        return new Response(JSON.stringify({ success: true, result: "cancelled", status: "disabled", detail: "Ação cancelada. IA desativada." }), {
+        return new Response(JSON.stringify({ success: true, result: "cancelled", isEnabled: false, status: "disabled", detail: "Ação cancelada. IA desativada." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (err: unknown) {
@@ -4401,6 +4426,8 @@ serve(async (req: Request) => {
     // Rota atômica para ATIVAR OU DESATIVAR o Piloto Automático em um chat específico
     if ((path === "/autopilot/toggle-chat" || path === "/api/autopilot/toggle-chat") && req.method === "POST") {
       try {
+        const authError = await verifyAutoPilotOperator(req, supabase);
+        if (authError) return authError;
         const body = await req.json().catch(() => ({}));
         const conversationId = body?.conversationId;
         const isEnabled = Boolean(body?.isEnabled);
@@ -4422,11 +4449,11 @@ serve(async (req: Request) => {
           );
 
           if (armErr || !armResult?.success) {
-            console.warn(`[Autopilot] arm_autopilot_with_watermark_atomic falhou para conv=${conversationId}, aplicando fallback seguro...`, armErr?.message || armErr);
-            await supabase.from("instagram_conversations").update({
-              ai_auto_respond: true,
-              ai_debounce_until: null,
-            }).eq("id", conversationId);
+            console.error(`[Autopilot] arm_autopilot_with_watermark_atomic falhou para conv=${conversationId}.`, armErr?.message || armErr);
+            return new Response(JSON.stringify({ success: false, isEnabled: false, error: "activation_failed" }), {
+              status: 503,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
           } else {
             console.log(`[Autopilot] autopilot_armed_atomic conv=${conversationId} watermark_rev=${armResult?.inbound_revision ?? armResult?.watermark?.inboundRevision}`);
           }
@@ -4504,14 +4531,11 @@ serve(async (req: Request) => {
           );
 
           if (pauseRpcErr || !pauseRpcResult?.success) {
-            console.warn(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}. Atualizando somente coluna física ai_auto_respond.`);
-            await supabase
-              .from("instagram_conversations")
-              .update({
-                ai_auto_respond: false,
-                ai_debounce_until: null,
-              })
-              .eq("id", conversationId);
+            console.error(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}.`, pauseRpcErr || pauseRpcResult);
+            return new Response(JSON.stringify({ success: false, isEnabled: true, error: "deactivation_failed" }), {
+              status: 503,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
           }
         }
 
