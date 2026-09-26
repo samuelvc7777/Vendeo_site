@@ -1023,12 +1023,14 @@ serve(async (req: Request) => {
                 const isExplicitlyDisabled =
                   chatStateInCloud?.isEnabled === false ||
                   chatStateInCloud?.status === "disabled" ||
-                  chatStateInCloud?.status === "paused_manual";
+                  chatStateInCloud?.status === "paused_manual" ||
+                  chatStateInCloud?.status === "waiting_human";
 
                 const convRules = convRow?.stage_completed_rules || {};
                 const isPaused =
                   convRow?.ai_auto_respond === false ||
                   convRow?.is_restricted === true ||
+                  chatStateInCloud?.status === "waiting_human" ||
                   convRules.status === "paused_handoff" ||
                   convRules.status === "paused_guardrail" ||
                   (convRow?.ai_auto_respond !== true && (

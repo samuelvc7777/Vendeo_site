@@ -116,7 +116,7 @@ function loadTsModule(filePath) {
 }
 
 const { LARISSA_CANONICAL_PROMPT: canonicalPrompt } = await import('../supabase/functions/api/larissa_canonical_prompt.generated.ts');
-const canonicalMarkdown = fs.readFileSync('supabase/functions/api/larissa_canonical_prompt.md', 'utf8').trim();
+const canonicalMarkdown = fs.readFileSync('supabase/functions/api/larissa_canonical_prompt.md', 'utf8').replace(/\r\n/g, '\n').trim();
 assert.equal(canonicalPrompt, canonicalMarkdown, 'Markdown é a fonte única do prompt fixo');
 
 const domainBuilderMod = loadTsModule('src/domain/services/LarissaPromptBuilder.ts');

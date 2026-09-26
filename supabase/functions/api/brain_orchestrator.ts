@@ -71,6 +71,7 @@ import {
   buildTurnContract,
   normalizeBrainTurnContract,
   runConversationQualityGate,
+  isUnsupportedPersonalExperienceQuestion,
   safeHighConfidenceFallback,
   isActionableInboundMessage,
   isPureEmojiMessage,
@@ -92,7 +93,7 @@ export {
   type StyleLintResult,
   type EmojiBudgetResult,
 };
-export { buildTurnContract, normalizeBrainTurnContract, runConversationQualityGate, safeHighConfidenceFallback };
+export { buildTurnContract, normalizeBrainTurnContract, runConversationQualityGate, safeHighConfidenceFallback, isUnsupportedPersonalExperienceQuestion };
 export type { TurnContract };
 
 import {
@@ -9512,6 +9513,18 @@ Responda ESTRITAMENTE em JSON puro:
         // CONVERSATION QUALITY GATE & RETRY SEMÂNTICO (Máximo 1)
         // ------------------------------------------------------------------
         const inboundTexts = canonicalClaimed.map((message) => message.text).filter(Boolean);
+        const relevantPersonaFacts = brainPlan?.missionPackage?.relevantPersonaFacts || brainPlan?.relevantPersonaFacts || [];
+        if (
+          finalSubDecision.action !== "wait" &&
+          isUnsupportedPersonalExperienceQuestion(inboundTexts, relevantPersonaFacts)
+        ) {
+          finalSubDecision.action = "wait";
+          finalSubDecision.responses = [];
+          finalSubDecision.suggestedResponse = "";
+          finalSubDecision.requiredTools = [];
+          finalSubDecision.reasoning = "A pergunta exige confirmar uma experiência pessoal e não há fato correspondente disponível para sustentá-la.";
+          currentCycle.trace.push("unsupported_personal_experience_escalated_to_human");
+        }
         let qualityResult = runConversationQualityGate({
           inboundMessages: inboundTexts,
           candidateBalloons: finalSubDecision.responses || [],
@@ -10541,7 +10554,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           cycleId: correlationId,
           ...(needsHumanReview
             ? {
-                ...(humanPauseConfirmed ? { isEnabled: false } : {}),
+                isEnabled: false,
                 status: "waiting_human",
                 pauseReason,
                 pausedAt: new Date().toISOString(),

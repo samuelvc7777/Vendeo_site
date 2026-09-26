@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const markdownPath = path.join(root, "supabase/functions/api/larissa_canonical_prompt.md");
 const generatedPath = path.join(root, "supabase/functions/api/larissa_canonical_prompt.generated.ts");
-const prompt = fs.readFileSync(markdownPath, "utf8").trim();
+const prompt = fs.readFileSync(markdownPath, "utf8").replace(/\r\n/g, "\n").trim();
 const version = prompt.match(/^VENDEO_AGENT_INSTRUCTIONS_VERSION: (\S+)$/m)?.[1];
-const questionContract = prompt.match(/\[\n  \{\n    "responseIndex": 1,[\s\S]*?\n  \}\n\]/)?.[0];
+const questionContract = prompt.match(/\[\r?\n  \{\r?\n    "responseIndex": 1,[\s\S]*?\r?\n  \}\r?\n\]/)?.[0];
 if (!questionContract) throw new Error("Contrato questionIntents não encontrado no Markdown.");
 if (!version) throw new Error("O Markdown precisa declarar VENDEO_AGENT_INSTRUCTIONS_VERSION.");
 const generated = [

@@ -7,6 +7,9 @@ import {
 import {
   buildCanonicalAgentInstructions,
 } from "../supabase/functions/api/openai_agent_instructions.ts";
+import {
+  isUnsupportedPersonalExperienceQuestion,
+} from "../supabase/functions/api/ConversationQualityGate.ts";
 
 const inboundText = "Vc ja foi em juiz de fora?";
 
@@ -34,5 +37,25 @@ test("pergunta pessoal sem fato conhecido pode entrar em revisão humana sem env
   assert.deepEqual(
     validateConversationBrainPlan({ action: "wait", reasoning: "Experiência não confirmada" }),
     { valid: true },
+  );
+
+  assert.equal(
+    isUnsupportedPersonalExperienceQuestion([inboundText], []),
+    true,
+    "Resposta sem evidência para a cidade deve ser escalada para revisão humana",
+  );
+  assert.equal(
+    isUnsupportedPersonalExperienceQuestion([inboundText], [
+      { fact: "Larissa visitou Juiz de Fora em uma viagem de família." },
+    ]),
+    false,
+    "Um fato de experiência ligado à cidade autoriza resposta do Brain",
+  );
+  assert.equal(
+    isUnsupportedPersonalExperienceQuestion([inboundText], [
+      { fact: "Larissa visitou Tiradentes durante as férias." },
+    ]),
+    true,
+    "Uma experiência em outra cidade não é evidência para esta pergunta",
   );
 });

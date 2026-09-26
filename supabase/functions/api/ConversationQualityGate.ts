@@ -509,6 +509,49 @@ function hasOnlyQuestions(text: string): boolean {
   return countQuestions(text) > 0 && contentTokens(declarative).length === 0;
 }
 
+/**
+ * Fail closed for autobiographical experience questions when the Brain did not
+ * provide a fact tied to the specific place/activity being asked about.
+ * A syntactically valid yes/no answer is not evidence that the answer is true.
+ */
+export function isUnsupportedPersonalExperienceQuestion(
+  inboundMessages: string[],
+  relevantPersonaFacts: unknown,
+): boolean {
+  const stopWords = new Set(["a", "as", "o", "os", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "para", "pra", "pro", "por", "que", "vc", "voce", "larissa"]);
+  const evidence = (Array.isArray(relevantPersonaFacts) ? relevantPersonaFacts : [])
+    .map((fact) => {
+      if (typeof fact === "string") return fact;
+      if (!fact || typeof fact !== "object") return "";
+      const item = fact as Record<string, unknown>;
+      return [item.fact, item.key, item.value, item.summary, item.reason]
+        .filter((value) => value !== undefined && value !== null)
+        .map((value) => typeof value === "string" ? value : JSON.stringify(value))
+        .join(" ");
+    })
+    .map(normalize);
+
+  for (const rawMessage of inboundMessages) {
+    const message = normalize(rawMessage);
+    const match = message.match(/\b(?:ja foi|ja visitou|ja esteve|ja viajou|ja conhece|conhece)\s+(?:(?:a|ao|em|na|no|para|pra|pro|por)\s+)?(.+?)(?:\?|$)/);
+    if (!match) continue;
+
+    const targetTerms = match[1]
+      .replace(/\b(?:alguma vez|algum dia|voce|vc|larissa)\b/g, " ")
+      .split(/\s+/)
+      .filter((term) => term.length > 1 && !stopWords.has(term));
+    if (targetTerms.length === 0) continue;
+
+    const hasGroundedExperience = evidence.some((fact) =>
+      targetTerms.every((term) => fact.includes(term)) &&
+      /\b(?:fui|foi|visit\w*|conhec\w*|viaj\w*|estiv\w*|mor\w*|experienc\w*)\b/.test(fact)
+    );
+    if (!hasGroundedExperience) return true;
+  }
+
+  return false;
+}
+
 export function runConversationQualityGate(params: {
   inboundMessages: string[];
   candidateBalloons: string[];

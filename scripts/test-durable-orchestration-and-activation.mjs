@@ -1126,7 +1126,7 @@ test('31. arm_autopilot_with_watermark_atomic reseta status de pausa residual pa
   );
 });
 
-test('32. isPaused no Webhook não bloqueia conversa quando ai_auto_respond é true', () => {
+test('32. o handoff humano bloqueia novos ciclos mesmo se ai_auto_respond ainda estiver ativo', () => {
   const apiSource = fs.readFileSync(
     new URL('../supabase/functions/api/index.ts', import.meta.url),
     'utf8'
@@ -1134,7 +1134,12 @@ test('32. isPaused no Webhook não bloqueia conversa quando ai_auto_respond é t
   assert.match(
     apiSource,
     /convRow\?\.ai_auto_respond !== true && \(\s*convRules\.status === "paused_manual"/,
-    'paused_manual só deve pausar se ai_auto_respond não for true'
+    'pausa manual legada só deve pausar se ai_auto_respond não for true'
+  );
+  assert.match(
+    apiSource,
+    /chatStateInCloud\?\.status === "waiting_human"/,
+    'waiting_human deve bloquear novo processamento independentemente de ai_auto_respond'
   );
 });
 
@@ -1159,6 +1164,7 @@ test('33. Ativação imediata envia a última inbound ao Brain e wait exige inte
   const waitEnd = orchestratorSource.indexOf('usageTerminalEventPublished = Boolean(completedUsage.usage);', waitStart);
   const waitBlock = orchestratorSource.slice(waitStart, waitEnd);
   assert.match(waitBlock, /patch_autopilot_pause_atomic/, 'wait sem resposta deve pausar o Piloto no banco');
+  assert.match(waitBlock, /isEnabled: false/, 'wait deve desarmar o Piloto mesmo se a RPC de pausa falhar');
   assert.match(waitBlock, /status: "waiting_human"/, 'wait sem resposta deve gerar estado visível para o operador');
   assert.match(waitBlock, /human_review_required/, 'wait sem resposta deve registrar evento de revisão');
 
