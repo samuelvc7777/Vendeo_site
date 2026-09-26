@@ -1253,7 +1253,7 @@ export async function searchRawConversationHistory(params: {
     for (let offset = 0; ; offset += pageSize) {
       let queryBuilder = supabase
         .from("instagram_messages")
-        .select("id, conversation_id, sender_id, is_mine, is_from_me, text, message, audio_transcript, created_at, timestamp, direction")
+        .select("id, conversation_id, sender_id, is_mine, text, audio_transcript, created_at, timestamp, direction")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true });
       const pageResult = typeof queryBuilder.range === "function"

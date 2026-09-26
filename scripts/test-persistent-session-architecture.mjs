@@ -88,7 +88,7 @@ function createMockSupabase(initialState = {}) {
       },
       openai_session_id: initialState.stage_completed_rules?.openai_session_id ?? null,
       openai_session_kind: initialState.stage_completed_rules?.openai_session_kind ?? (initialState.stage_completed_rules?.openai_session_id ? 'persistent' : null),
-      persistent_session_version: initialState.stage_completed_rules?.persistent_session_version ?? (initialState.stage_completed_rules?.openai_session_id ? 1 : null),
+      persistent_session_version: initialState.stage_completed_rules?.persistent_session_version ?? (initialState.stage_completed_rules?.openai_session_id ? 2 : null),
       orchestration: {
         currentStageId: 'stage_1_conexao',
         currentPhase: 'conexao_inicial',
@@ -99,7 +99,7 @@ function createMockSupabase(initialState = {}) {
         },
         openai_session_id: initialState.stage_completed_rules?.orchestration?.openai_session_id ?? initialState.stage_completed_rules?.openai_session_id ?? null,
         openai_session_kind: initialState.stage_completed_rules?.orchestration?.openai_session_kind ?? (initialState.stage_completed_rules?.openai_session_id ? 'persistent' : null),
-        persistent_session_version: initialState.stage_completed_rules?.orchestration?.persistent_session_version ?? (initialState.stage_completed_rules?.openai_session_id ? 1 : null),
+        persistent_session_version: initialState.stage_completed_rules?.orchestration?.persistent_session_version ?? (initialState.stage_completed_rules?.openai_session_id ? 2 : null),
         ...(initialState.stage_completed_rules?.orchestration || {}),
       },
       ...initialState.stage_completed_rules,
@@ -976,7 +976,7 @@ test('16. Padrão Global Persistent & Suporte a Rollback Técnico para Legacy', 
       orchestration: {
         openai_session_id: 'sess_a_persisted_111',
         openai_session_kind: 'persistent',
-        persistent_session_version: 1,
+        persistent_session_version: 2,
       },
     },
   });

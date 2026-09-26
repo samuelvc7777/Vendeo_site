@@ -572,11 +572,11 @@ test('PARTE 10.4 — Cenário Session Longa: Vários turnos, sessão reutilizada
     stage_completed_rules: {
       openai_session_id: 'sess_existing_long_thread',
       openai_session_kind: 'persistent',
-      persistent_session_version: 1,
+      persistent_session_version: 2,
       orchestration: {
         openai_session_id: 'sess_existing_long_thread',
         openai_session_kind: 'persistent',
-        persistent_session_version: 1,
+        persistent_session_version: 2,
       },
     },
   });

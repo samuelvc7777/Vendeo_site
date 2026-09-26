@@ -138,14 +138,14 @@ export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "cofre_audio_search",
     description:
-      "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente sobre profissão, ocupação, trabalho, faculdade, curso, rotina, hobbies, gostos, tempo livre e preferências. Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
+      "Quando você decidir consultar o Cofre de Áudios, retorna o catálogo COMPLETO de áudios habilitados, ainda não enviados nesta conversa, com título, transcrição integral, instrução de uso e duração. O backend não filtra nem escolhe por assunto: compare o catálogo com a conversa e decida se algum áudio deve ser enviado e qual. A query serve apenas para registrar o motivo da consulta.",
     parameters: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description:
-            "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'profissão e trabalho com vendas online', 'rotina da faculdade', 'hobbies e tempo livre', 'comida preferida').",
+            "Motivo da consulta ao catálogo completo (ex: pergunta sobre profissão, rotina da faculdade ou hobbies). Não é filtro; o backend devolve todos os áudios elegíveis.",
         },
       },
       required: ["query"],
@@ -170,14 +170,14 @@ export const COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION: OpenAiAgentFunctionToolDe
   type: "function",
   name: "cofre_audio_search",
   description:
-    "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente sobre profissão, ocupação, trabalho, faculdade, curso, rotina, hobbies, gostos, tempo livre e preferências. Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
+    "Quando você decidir consultar o Cofre de Áudios, retorna o catálogo COMPLETO de áudios habilitados, ainda não enviados nesta conversa, com título, transcrição integral, instrução de uso e duração. O backend não filtra nem escolhe por assunto: compare o catálogo com a conversa e decida se algum áudio deve ser enviado e qual. A query serve apenas para registrar o motivo da consulta.",
   parameters: {
     type: "object",
     properties: {
       query: {
         type: "string",
         description:
-          "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'profissão e trabalho com vendas online', 'rotina da faculdade', 'hobbies e tempo livre', 'comida preferida').",
+          "Motivo da consulta ao catálogo completo (ex: pergunta sobre profissão, rotina da faculdade ou hobbies). Não é filtro; o backend devolve todos os áudios elegíveis.",
       },
     },
     required: ["query"],
@@ -312,7 +312,7 @@ export async function executeCofreAudioSearch(params: {
   whenToUse: string;
   duration?: number;
 }>> {
-  const { supabase, conversationId, query, limit = 3 } = params;
+  const { supabase, conversationId } = params;
   if (!supabase) return [];
 
   let audios: any[] = [];
@@ -402,46 +402,20 @@ export async function executeCofreAudioSearch(params: {
       .forEach((h) => sentAudioIds.add(String(h.audioId)));
   }
 
-  const audioSearchStopwords = new Set([
-    "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das",
-    "em", "no", "na", "e", "ou", "que", "com", "por", "pra", "para",
-    "meu", "minha", "seu", "sua", "voce", "vc", "como", "qual", "sobre",
-    "mais", "sim", "fala", "me", "isso", "aqui", "bem",
-  ]);
-  const normalizeAudioSearchText = (value: string) =>
-    value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const queryTerms = normalizeAudioSearchText(String(query || ""))
-    .replace(/[.,;!?]/g, " ")
-    .split(/\s+/)
-    .filter((term) => term.length >= 3 && !audioSearchStopwords.has(term))
-    .map((term) => term.startsWith("trabalh") ? "trabalh" : term);
-
-  // Filtra áudios habilitados, com transcrição, e NUNCA enviados
+  // Retorna todo o catálogo elegível; a query não ranqueia nem filtra por assunto.
   const available = audios
     .filter((a) => a.enabled !== false)
     .filter((a) => Boolean(a.transcript && String(a.transcript).trim().length > 0))
     .filter((a) => !sentAudioIds.has(String(a.id)));
-
-  const scored = available.map((a) => {
-    const haystack = normalizeAudioSearchText(`${a.title || ""} ${a.transcript || ""} ${a.usage_instruction || a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`);
-    let score = 0;
-    for (const term of queryTerms) {
-      if (haystack.includes(term)) score += 1;
-    }
-    return {
+  return available
+    .map((a) => ({
       audioId: String(a.id),
       title: String(a.title || ""),
       transcript: String(a.transcript || ""),
       whenToUse: String(a.usage_instruction || a.usageInstruction || a.when_to_use || a.title || ""),
       duration: a.duration != null ? Number(a.duration) : undefined,
-      score,
-    };
-  });
-
-  const filtered = queryTerms.length === 0 ? scored : scored.filter((s) => s.score > 0);
-  filtered.sort((a, b) => b.score - a.score);
-
-  return filtered.slice(0, Math.min(limit, 3)).map(({ score, ...c }) => c);
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
 }
 
 export const MAX_APP_TOOL_ROUNDS = 4;
@@ -516,21 +490,19 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
         supabase,
         conversationId,
         query,
-        limit: 3,
       });
     } else {
       candidates = await executeCofreAudioSearch({
         supabase,
         conversationId,
         query,
-        limit: 3,
       });
     }
   } catch (err: any) {
     console.warn("[Brain] Erro na busca de áudio do cofre:", err);
   }
 
-  const sanitizedCandidates = (Array.isArray(candidates) ? candidates : []).slice(0, 3).map((c: any) => ({
+  const sanitizedCandidates = (Array.isArray(candidates) ? candidates : []).map((c: any) => ({
     audioId: String(c.audioId || c.audio_id || c.id),
     title: String(c.title || ""),
     transcript: String(c.transcript || c.full_transcript || ""),

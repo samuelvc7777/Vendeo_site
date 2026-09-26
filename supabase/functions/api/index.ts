@@ -899,7 +899,13 @@ serve(async (req: Request) => {
                     `[Webhook] record_inbound_message_atomic falhou (fail-closed): conv=${conversationId} msg=${messageId}`,
                     inboundRpcErr || data
                   );
-                  continue; // FAIL-CLOSED ESTRITO: NUNCA cai para gravação não-serializada
+                  // Não confirme para a Meta um evento que ainda não foi persistido.
+                  // A RPC é idempotente por message id, então a redelivery pode
+                  // repetir com segurança as mensagens anteriores do mesmo lote.
+                  return new Response(JSON.stringify({ error: "inbound_persistence_unavailable", retryable: true }), {
+                    status: 503,
+                    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+                  });
                 }
                 inboundRpcData = data;
               } catch (rErr) {
@@ -907,7 +913,10 @@ serve(async (req: Request) => {
                   `[Webhook] record_inbound_message_atomic exception (fail-closed): conv=${conversationId} msg=${messageId}`,
                   rErr
                 );
-                continue; // FAIL-CLOSED ESTRITO: NUNCA cai para gravação não-serializada
+                return new Response(JSON.stringify({ error: "inbound_persistence_unavailable", retryable: true }), {
+                  status: 503,
+                  headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+                });
               }
             } else {
               // Echos de mensagens enviadas por nós no app oficial (outbound)
@@ -1588,7 +1597,7 @@ serve(async (req: Request) => {
 
       let query = supabase
         .from("instagram_messages")
-        .select("id, conversation_id, sender_id, is_from_me, message, text, audio_url, media_type, media_url, audio_transcript, created_at")
+        .select("id, conversation_id, sender_id, is_mine, text, media_type, media_url, audio_transcript, created_at")
         .eq("conversation_id", conversationId);
 
       if (before) {
@@ -1611,14 +1620,14 @@ serve(async (req: Request) => {
       const nextBefore = sliced.length > 0 ? sliced[sliced.length - 1].created_at : null;
 
       const formatted = sliced.map((m: any) => {
-        const isFromMe = Boolean(m.is_from_me || m.sender_id === "me" || m.sender_id === "larissa");
+        const isFromMe = Boolean(m.is_mine || m.sender_id === "me" || m.sender_id === "larissa");
         return {
           id: String(m.id || ""),
           conversationId: String(m.conversation_id || conversationId),
           sender: isFromMe ? "larissa" : "pretendente",
           isFromMe,
-          text: String(m.text || m.message || "").trim(),
-          audioUrl: m.audio_url || (m.media_type === "audio" ? m.media_url : null) || null,
+          text: String(m.text || "").trim(),
+          audioUrl: (m.media_type === "audio" ? m.media_url : null) || null,
           audioTranscript: m.audio_transcript || null,
           createdAt: m.created_at || new Date().toISOString(),
         };

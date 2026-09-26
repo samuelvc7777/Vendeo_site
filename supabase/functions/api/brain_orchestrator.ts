@@ -298,9 +298,9 @@ export async function loadMandatoryBrainContextCandidates(params: {
   try {
     const { data: lastOutboundRows } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+      .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
       .eq("conversation_id", conversationId)
-      .or("is_mine.eq.true,is_from_me.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
+      .or("is_mine.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
       .order("created_at", { ascending: false })
       .limit(1);
     if (Array.isArray(lastOutboundRows) && lastOutboundRows[0]) {
@@ -315,7 +315,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
     try {
       const { data: replyTargetRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
         .eq("conversation_id", conversationId)
         .in("id", replyTargetIds);
       if (Array.isArray(replyTargetRows)) {
@@ -3975,7 +3975,7 @@ Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mens
 - conversation_history_search: busca no histórico bruto desta conversa por mensagens passadas ou detalhes esquecidos. Parâmetro: {"query": "..."}.
 - persona_memory_search: busca na PersonaMemory fatos biográficos, gostos ou perrengues da Larissa. Parâmetro: {"query": "..."}.
 - episodic_memory_search: busca na memória episódica atos e revelações passadas. Parâmetro: {"query": "...", "memoryClass": "landmark" | "speech_act" | "all"}.
-- cofre_audio_search: busca áudios gravados no Cofre da Larissa com checagem de aderência semântica real à fala do pretendente. Parâmetro: {"query": "...", "objective_context": "..."}.
+- cofre_audio_search: quando você decidir consultar o Cofre, retorna o catálogo completo de áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra nem ranqueia. Você decide se algum áudio combina e qual selecionar. Parâmetro: {"query": "motivo da consulta"}.
 
 ### REGRAS INVIOLÁVEIS DO BRAIN:
 1. Para objectiveDecision: "already_satisfied", somente o objetivo atual (${currentObjective?.id || "nenhum"}) pode ser indicado, acompanhado de evidenceMessageId obrigatório da mensagem inbound atual. Objetivos futuros NUNCA podem ser marcados.
@@ -4187,7 +4187,7 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido. Use ferramentas somente se for estritamente necessário:
-- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
+- cofre_search: quando você decidir consultar o Cofre, retorna todos os áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra resultados. Você decide se envia áudio e qual selecionar. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "conexao_inicial"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
@@ -5169,17 +5169,31 @@ export async function processDeterministicStageProgression(params: {
 
 // Persona Memory da Larissa desacoplada em ./persona_memory.ts (importada e reexportada no topo)
 
+// Incrementar quando uma sessão persistente precisa ser recriada para adotar
+// instruções incompatíveis com as que já estão gravadas na sessão do Agent.
+export const PERSISTENT_AGENT_SESSION_VERSION = 2;
+
+export function isPersistentAgentSessionCompatible(params: {
+  sessionId: string | null | undefined;
+  kind: string | null | undefined;
+  version: number | null | undefined;
+}): boolean {
+  return Boolean(
+    params.sessionId &&
+    params.kind === "persistent" &&
+    params.version === PERSISTENT_AGENT_SESSION_VERSION
+  );
+}
+
 // ----------------------------------------------------------------------------
-// Busca Semântica na Biblioteca de Áudios da Larissa
+// Catálogo elegível do Cofre de Áudios da Larissa
 // ----------------------------------------------------------------------------
-export async function searchPersonaAudios(params: {
+export async function listEligiblePersonaAudios(params: {
   supabase: any;
   conversationId: string;
-  intent: string;
-  query?: string;
   stageId?: string;
 }): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean; already_sent?: boolean }>> {
-  const { supabase, conversationId, intent, query, stageId } = params;
+  const { supabase, conversationId, stageId } = params;
   let audios: PersonaAudioAsset[] = [];
 
   try {
@@ -5281,30 +5295,9 @@ export async function searchPersonaAudios(params: {
       .forEach((h) => sentAudioIds.add(String(h.audioId || h.audio_id)));
   }
 
-  const AUDIO_STOPWORDS = new Set([
-    "o", "a", "os", "as", "um", "uma", "uns", "umas",
-    "de", "do", "da", "dos", "das",
-    "em", "no", "na", "nos", "nas",
-    "e", "ou", "que", "com", "por", "pra", "para",
-    "se", "seu", "sua", "seus", "suas", "meu", "minha", "meus", "minhas",
-    "voce", "vc", "como", "qual", "acha", "sobre",
-    "isso", "aqui", "tudo", "bem", "mais", "sim", "fala", "me"
-  ]);
-
-  const normalizeAudioSearchText = (value: string) =>
-    value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const rawTerms = normalizeAudioSearchText(`${intent || ""} ${query || ""}`)
-    .replace(/[.,;!?]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-
-  const queryTerms = rawTerms
-    .filter((term) => term.length >= 3 && !AUDIO_STOPWORDS.has(term))
-    .map((term) => term.startsWith("trabalh") ? "trabalh" : term);
-
-  // DEDUP ABSOLUTO DE ÁUDIOS:
-  // Se o áudio já foi enviado para esta conversa em qualquer momento, ele NUNCA é retornado
-  const matched = audios
+  // A seleção de conteúdo pertence ao Brain. Esta função só apresenta o catálogo
+  // operacionalmente elegível; não compara transcrições com mensagens ou consultas.
+  return audios
     .filter((a) => a.enabled !== false)
     .filter((a) => a.transcript && a.transcript.trim().length > 0) // Excluir da seleção automática qualquer áudio sem transcrição
     .filter((a) => {
@@ -5314,43 +5307,23 @@ export async function searchPersonaAudios(params: {
       return true;
     })
     .filter((a) => !sentAudioIds.has(String(a.id)))
-    .map((a) => {
-      const searchHaystack = normalizeAudioSearchText(`${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`);
-      const combinedInput = normalizeAudioSearchText(`${intent || ""} ${query || ""}`);
-      let matchScore = 0;
+    .map((audio) => ({
+      ...audio,
+      alreadySentInConversation: false,
+      already_sent: false,
+    }))
+    .sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), "pt-BR"));
+}
 
-      // Aderência semântica: se a palavra que casaria for sobre tema pessoal (ex: "praia"),
-      // mas o usuário usou de forma puramente incidental ("meu escritório fica perto da praia")
-      // e NÃO perguntou se ela gosta de praia ou sobre ela, descarta o falso positivo.
-      const isIncidentalBeach =
-        (/\b(?:perto|ao lado|pr[oó]ximo|frente|longe|escrit[oó]rio|trabalho|loja|empresa)\b.*?\b(?:praia|mar)\b/i.test(combinedInput) ||
-         /\b(?:praia|mar)\b.*?\b(?:escrit[oó]rio|trabalho|loja|empresa)\b/i.test(combinedInput)) &&
-        !/\b(?:voc[eê]|vc|c[eê])\s+(?:gosta|vai|curte|já foi|ja foi|costuma|ama)\b/i.test(combinedInput) &&
-        !/\b(?:e\s+voc[eê]|e\s+vc)\b/i.test(combinedInput) &&
-        !/\b(?:gosta\s+de\s+praia|curte\s+praia)\b/i.test(combinedInput);
-
-      for (const term of queryTerms) {
-        if ((term === "praia" || term === "mar") && isIncidentalBeach && (a.id.toLowerCase().includes("praia") || searchHaystack.includes("praia"))) {
-          continue;
-        }
-
-        if (searchHaystack.includes(term)) {
-          matchScore += 1;
-        }
-      }
-
-      return {
-        ...a,
-        matchScore,
-        alreadySentInConversation: false,
-        already_sent: false,
-      };
-    })
-    .filter((a) => queryTerms.length === 0 || a.matchScore > 0)
-    .sort((a, b) => b.matchScore - a.matchScore)
-    .map(({ matchScore, ...cleanAudio }) => cleanAudio);
-
-  return matched;
+/** Compatibilidade para chamadores antigos: intent/query não filtram o catálogo. */
+export async function searchPersonaAudios(params: {
+  supabase: any;
+  conversationId: string;
+  intent?: string;
+  query?: string;
+  stageId?: string;
+}): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean; already_sent?: boolean }>> {
+  return listEligiblePersonaAudios(params);
 }
 
 export type AudioDeliveryStatus = "reserved" | "dispatching" | "sent" | "dispatch_uncertain" | "failed_safe";
@@ -5732,28 +5705,22 @@ export interface CofreAudioCandidate {
 }
 
 /**
- * Busca pontual e seletiva no Cofre de Áudios da Larissa.
- * Retorna NO MÁXIMO 3 candidatos mais relevantes com objeto completo e transcrição integral.
+ * Retorna todo o catálogo elegível do Cofre, sem ranquear por consulta.
+ * O Brain escolhe semanticamente se algum áudio combina com o turno.
  */
 export async function searchCofreAudios(params: {
   supabase: any;
   conversationId: string;
-  query: string;
+  query?: string;
   objective_context?: string;
   limit?: number;
 }): Promise<CofreAudioCandidate[]> {
-  const { supabase, conversationId, query, objective_context, limit = 3 } = params;
-  const combinedIntent = `${query || ""} ${objective_context || ""}`.trim();
-  const rawMatches = await searchPersonaAudios({
+  const { supabase, conversationId } = params;
+  const catalog = await listEligiblePersonaAudios({
     supabase,
     conversationId,
-    intent: combinedIntent,
   });
-
-  // AUTOPILOTO: NUNCA permite replay automático de áudio já enviado nesta conversa
-  const available = rawMatches.filter((a) => !a.alreadySentInConversation && !a.already_sent);
-
-  return available.slice(0, Math.min(limit, 3)).map((a) => {
+  return catalog.map((a) => {
     const fullTranscript = a.transcript || a.title || "";
     return {
       audio_id: a.id,
@@ -6063,7 +6030,7 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro com o contexto recebido. Chame ferramentas apenas quando necessário:
-- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
+- cofre_search: quando você decidir consultar o Cofre, retorna todos os áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra resultados. Você decide se envia áudio e qual selecionar. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
 - checklist_get_stage_state: consulta o checklist e estado dos objetivos da fase (alias). Ex: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
@@ -6162,7 +6129,7 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre rotina", "objective_context": "rotina"}}
+- cofre_search: quando você decidir consultar o Cofre, retorna todos os áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra resultados. Você decide se envia áudio e qual selecionar. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre rotina"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "${input.currentPhase}"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
@@ -8155,23 +8122,24 @@ export async function runBrainOrchestration(
         ? stageRules.persistent_session_version
         : null;
 
-    // PONTO 1: MIGRAÇÃO DE SESSIONS ANTIGAS SEM MARCAÇÃO (ex: caso Denis)
-    // Regra obrigatória: se existe openai_session_id e openai_session_kind != "persistent"
-    // OU persistent_session_version estiver ausente/incompatível (< 1),
-    // tratar a Session como pré-Persistent/Legacy e criar uma nova Session Persistent limpa.
-    const isPersistentSessionValid = Boolean(
-      rawSessionId &&
-      rawSessionKind === "persistent" &&
-      rawSessionVersion !== null &&
-      rawSessionVersion >= 1
-    );
+    // Migra sessões legadas e versões anteriores para que adotem as instruções
+    // atuais. A recuperação reconstrói o contexto a partir do histórico no Supabase.
+    const isPersistentSessionValid = isPersistentAgentSessionCompatible({
+      sessionId: rawSessionId,
+      kind: rawSessionKind,
+      version: rawSessionVersion,
+    });
 
     const persistentSessionId = persistentAgentSessionEnabled
       ? (isPersistentSessionValid ? rawSessionId : null)
       : rawSessionId;
 
     if (rawSessionId && !isPersistentSessionValid && persistentAgentSessionEnabled) {
-      currentCycle.trace.push("unmarked_or_legacy_session_migrated_to_persistent=true");
+      currentCycle.trace.push(
+        rawSessionKind === "persistent" && rawSessionVersion !== null
+          ? "persistent_session_version_outdated_recreated=true"
+          : "unmarked_or_legacy_session_migrated_to_persistent=true"
+      );
     }
 
     let currentSessionId: string | null = persistentSessionId;
@@ -8190,7 +8158,7 @@ export async function runBrainOrchestration(
     try {
       const { data: recentDbRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
         .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);
@@ -8318,15 +8286,15 @@ export async function runBrainOrchestration(
     try {
       const { data: recentMsgs } = await supabase
         .from("instagram_messages")
-        .select("message, text, is_from_me, sender_id, created_at")
+        .select("text, is_mine, sender_id, created_at")
         .eq("conversation_id", conversationId)
-        .or("is_from_me.eq.true,sender_id.eq.me,sender_id.eq.larissa")
+        .or("is_mine.eq.true,sender_id.eq.me,sender_id.eq.larissa")
         .order("created_at", { ascending: false })
         .limit(5);
 
       if (recentMsgs && recentMsgs.length > 0) {
         for (const m of recentMsgs) {
-          const txt = m.text || m.message || "";
+          const txt = m.text || "";
           if (txt && typeof txt === "string" && txt.trim()) {
             recentLarissaOutbounds.push(txt.trim());
           }
@@ -8391,14 +8359,14 @@ export async function runBrainOrchestration(
             try {
               const { data: replyRow } = await supabase
                 .from("instagram_messages")
-                .select("id, is_from_me, text, message")
+                .select("id, is_mine, text")
                 .eq("id", replyId)
                 .maybeSingle();
               if (replyRow) {
                 replyTargets[replyId] = {
                   id: String(replyRow.id),
-                  sender: replyRow.is_from_me ? "larissa" : "pretendente",
-                  text: String(replyRow.text || replyRow.message || ""),
+                  sender: replyRow.is_mine ? "larissa" : "pretendente",
+                  text: String(replyRow.text || ""),
                 };
               }
             } catch {}
@@ -8503,7 +8471,6 @@ export async function runBrainOrchestration(
             supabase,
             conversationId: p.conversationId,
             query: p.query,
-            limit: 3,
           }),
           nextObjectives: (stageChecklistForRouter.goals || [])
             .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
@@ -8966,11 +8933,10 @@ export async function runBrainOrchestration(
               supabase,
               conversationId,
               query: q,
-              limit: 3,
             });
             brainAudioCandidates = cofreMatches;
             const formatted = cofreMatches.map((c) => `• audio_id: "${c.audio_id}" | título: "${c.title}" | instrução: "${c.when_to_use}" | transcrição: "${c.full_transcript}"`).join("\n");
-            toolResultsHistory.push(`[TOOL: cofre_audio_search | query: "${q}"]\n${formatted || "Nenhum áudio com aderência semântica encontrado."}`);
+            toolResultsHistory.push(`[TOOL: cofre_audio_search | motivo: "${q}" | catálogo completo: ${cofreMatches.length}]\n${formatted || "Nenhum áudio habilitado, com transcrição e ainda não enviado está disponível no Cofre."}`);
           } else {
             toolResultsHistory.push(`[TOOL: cofre_audio_search] Limite de busca de áudio atingido.`);
           }
@@ -9976,7 +9942,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     const audioAction = canonicalOutboundActions.find((a) => a.type === "audio") as { type: "audio"; audioId: string } | undefined;
     if (audioAction && audioAction.audioId) {
       // 1. Resolução do asset do áudio
-      const allAudios = await searchPersonaAudios({ supabase, conversationId, intent: "", stageId: undefined });
+      const allAudios = await listEligiblePersonaAudios({ supabase, conversationId });
       resolvedAudio = allAudios.find((a) => a.id === audioAction.audioId);
 
       // 2. Trava de autorização: deve existir, estar habilitado e possuir URL HTTP pública válida (não blob / não data)
@@ -10468,7 +10434,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
           openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || orchState.openai_session_id) : null),
           openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
-          persistent_session_version: persistentAgentSessionEnabled ? 1 : null,
+          persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
           technicalRetryCount: 0,
           technicalRetryExhaustedAt: null,
           manualRetryAttempt: null,
@@ -10511,7 +10477,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           preempt_requested: false,
           openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || freshRules.openai_session_id) : null),
           openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
-          persistent_session_version: persistentAgentSessionEnabled ? 1 : null,
+          persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
           orchestration: updatedState,
         };
 

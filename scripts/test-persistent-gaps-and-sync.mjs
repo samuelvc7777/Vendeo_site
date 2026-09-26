@@ -17,6 +17,8 @@ import {
 } from "../supabase/functions/api/openai_brain.ts";
 
 import {
+  PERSISTENT_AGENT_SESSION_VERSION,
+  isPersistentAgentSessionCompatible,
   runDurableOutboxDispatcher,
   scheduleNextOutboxDispatch,
   persistDurableOutboxBatchAtomic,
@@ -134,14 +136,14 @@ test("GAP 2.2: Após migração para Persistent, segundo turno reutiliza a Sessi
   const stageRules = {
     openai_session_id: "sess_persistent_clean_456",
     openai_session_kind: "persistent",
-    persistent_session_version: 1,
+    persistent_session_version: PERSISTENT_AGENT_SESSION_VERSION,
     config: {
       persistent_agent_session_enabled: true,
     },
     orchestration: {
       openai_session_id: "sess_persistent_clean_456",
       openai_session_kind: "persistent",
-      persistent_session_version: 1,
+      persistent_session_version: PERSISTENT_AGENT_SESSION_VERSION,
     },
   };
 
@@ -156,6 +158,32 @@ test("GAP 2.2: Após migração para Persistent, segundo turno reutiliza a Sessi
 
   // No segundo turno, DEVE reutilizar a sessão persistente
   assert.equal(persistentSessionId, "sess_persistent_clean_456", "Sessão persistente já versionada DEVE ser reutilizada");
+});
+
+test("GAP 2.3: Sessões persistentes com prompt antigo são invalidadas e as atuais são reutilizadas", () => {
+  assert.equal(
+    isPersistentAgentSessionCompatible({
+      sessionId: "sess_old_prompt",
+      kind: "persistent",
+      version: PERSISTENT_AGENT_SESSION_VERSION - 1,
+    }),
+    false,
+    "Uma sessão com instruções antigas não pode ser reutilizada"
+  );
+  assert.equal(
+    isPersistentAgentSessionCompatible({
+      sessionId: "sess_current_prompt",
+      kind: "persistent",
+      version: PERSISTENT_AGENT_SESSION_VERSION,
+    }),
+    true,
+    "Uma sessão com a versão atual deve continuar sendo reutilizada"
+  );
+  assert.equal(
+    isPersistentAgentSessionCompatible({ sessionId: "sess_unmarked", kind: "persistent", version: null }),
+    false,
+    "Sessões sem versão registrada devem ser reconstruídas"
+  );
 });
 
 // ============================================================================
@@ -431,13 +459,12 @@ test("PONTO FINAL 1: Caso Denis — Sessão existente sem marcação (sem kind e
 
   // Regra obrigatória:
   // Se existe openai_session_id e openai_session_kind != "persistent"
-  // OU persistent_session_version estiver ausente/incompatível (< 1),
+  // OU persistent_session_version for diferente da versão atual,
   // tratar a Session como pré-Persistent/Legacy e criar uma nova Session Persistent limpa.
   const isPersistentSessionValid = Boolean(
     rawSessionId &&
     rawSessionKind === "persistent" &&
-    rawSessionVersion !== null &&
-    rawSessionVersion >= 1
+    rawSessionVersion === PERSISTENT_AGENT_SESSION_VERSION
   );
 
   const persistentAgentSessionEnabled = true;
@@ -445,7 +472,12 @@ test("PONTO FINAL 1: Caso Denis — Sessão existente sem marcação (sem kind e
     ? (isPersistentSessionValid ? rawSessionId : null)
     : rawSessionId;
 
-  assert.equal(isPersistentSessionValid, false, "Sessão sem kind='persistent' e sem version>=1 DEVE ser invalidada");
+  assert.equal(isPersistentSessionValid, false, "Sessão sem kind='persistent' e versão atual DEVE ser invalidada");
+  assert.equal(
+    rawSessionVersion === PERSISTENT_AGENT_SESSION_VERSION,
+    false,
+    "Sessão persistent de versão anterior deve ser recriada para receber o prompt atualizado"
+  );
   assert.equal(persistentSessionId, null, "Sessão do caso Denis DEVE ser descartada (null) para criar uma nova Session Persistent limpa com bootstrap compacto");
 });
 
@@ -574,4 +606,3 @@ test("PONTO FINAL 3: Watermark / Webhook Race — Inbound simultânea ao toggle 
   assert.ok(currentInboundRev > watermarkRev, "inboundRevision da conversa prova com autoridade monotônica que a mensagem foi admitida após o toggle");
   assert.notEqual(newConcurrentMsg.id, activationWatermark.lastMessageId, "ID da nova mensagem difere da mensagem antiga");
 });
-

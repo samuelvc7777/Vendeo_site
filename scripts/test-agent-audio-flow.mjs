@@ -37,6 +37,7 @@ import test from "node:test";
 import {
   COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
   COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION,
+  executeOpenAiAppTool,
   executeCofreAudioSearch,
   validateConversationBrainPlan,
   validateResponseGenerationInvariant,
@@ -367,17 +368,19 @@ function createMockSupabase(history = [], audios = mockAudiosDatabase) {
 test("1. Caminho oficial do OpenAI Agent possui cofre_audio_search", () => {
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.name, "cofre_audio_search");
   assert.ok(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description.includes("Cofre de Áudios"));
-  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /profissão.*ocupação.*trabalho/i);
-  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.description, /profissão e trabalho/i);
-  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /faculdade/);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /catálogo COMPLETO/i);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /não filtra nem escolhe por assunto/i);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.description, /não é filtro/i);
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.type, "string");
   assert.deepEqual(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.required, ["query"]);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /profissão.*ocupação.*trabalho/i);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.parameters.properties.query.description, /profissão e trabalho/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /catálogo COMPLETO/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /não filtra nem escolhe por assunto/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.parameters.properties.query.description, /não é filtro/i);
   // Verifica que instructions oficiais locais incluem a seção canônica
   const instructions = buildCanonicalAgentInstructions({ strictOpenAiPilot: true });
   assert.ok(instructions.includes("=== COFRE DE ÁUDIOS"));
   assert.ok(instructions.includes("cofre_audio_search"));
+  assert.ok(instructions.includes("A escolha semântica de usar áudio e de qual áudio enviar é exclusivamente sua"));
 });
 
 test("2. Ferramenta retorna audioId, title, transcript, whenToUse (sem expor audioUrl)", async () => {
@@ -447,6 +450,42 @@ test("4.1 Pergunta direta 'trabalha com oq' encontra áudio de profissão", asyn
     agentToolResults.some((audio) => audio.audioId === "aud_profissao_trabalho"),
     "A ferramenta do Agent também deve reconhecer a variação 'trabalha' para 'trabalho'"
   );
+});
+
+test("4.2 Brain recebe o catálogo completo quando consulta o cofre, sem filtro semântico do backend", async () => {
+  const supabase = createMockSupabase();
+  const directCatalog = await executeCofreAudioSearch({
+    supabase,
+    conversationId: "conv_test_complete_audio_catalog_fallback",
+    query: "trabalho com vendas",
+    limit: 1,
+  });
+  assert.deepEqual(
+    directCatalog.map((audio) => audio.audioId).sort(),
+    ["aud_hobbies", "aud_profissao_trabalho", "aud_rotina_enfermagem"],
+    "O executor direto também devolve o catálogo completo, independentemente da query e do limite legado"
+  );
+
+  const telemetry = { toolsRequested: [], toolExecutionsCount: 0, sourcesUsed: [], authorizedCandidateAudios: [] };
+  const toolResult = await executeOpenAiAppTool({
+    toolName: "cofre_audio_search",
+    toolArgs: { query: "trabalho com vendas" },
+    callId: "call_complete_catalog",
+    supabase,
+    conversationId: "conv_test_complete_audio_catalog",
+    searchCofreAudios: (params) => searchCofreAudios(params),
+    telemetry,
+  });
+  const results = toolResult.output.candidates;
+
+  assert.deepEqual(
+    results.map((audio) => audio.audioId).sort(),
+    ["aud_hobbies", "aud_profissao_trabalho", "aud_rotina_enfermagem"],
+    "A query e o limite não podem fazer o backend escolher ou esconder áudios do Brain"
+  );
+  assert.ok(results.every((audio) => audio.transcript), "Cada áudio elegível deve incluir a transcrição completa");
+  assert.ok(results.every((audio) => audio.audioUrl === undefined), "O catálogo não deve expor URLs de mídia ao Brain");
+  assert.equal(telemetry.authorizedCandidateAudios.length, 3, "Todos os áudios devolvidos ficam disponíveis para seleção pelo Brain");
 });
 
 test("5. Áudio já enviado não aparece na busca", async () => {
@@ -1009,7 +1048,7 @@ test("15. Áudio disabled é rejeitado", async () => {
   assert.equal(found, false, "Áudio com enabled=false não pode ser retornado como candidato");
 });
 
-test("16. Nenhum candidato -> texto continua funcionando normalmente", async () => {
+test("16. Catálogo sem correspondência automática continua permitindo decisão de texto pelo Brain", async () => {
   const supabase = createMockSupabase();
   const candidates = await searchCofreAudios({
     supabase,
@@ -1017,7 +1056,7 @@ test("16. Nenhum candidato -> texto continua funcionando normalmente", async () 
     query: "física nuclear quântica aplicada",
   });
 
-  assert.equal(candidates.length, 0);
+  assert.equal(candidates.length, 3, "O backend ainda entrega o catálogo completo, sem decidir aderência por query");
 
   // Agent prossegue com texto comum
   const plan = createValidTestPlan({
@@ -1025,7 +1064,7 @@ test("16. Nenhum candidato -> texto continua funcionando normalmente", async () 
     outboundActions: [
       { type: "text", text: "nossa, física nuclear eu não entendo nadinha kkkk" },
     ],
-    reasoning: "Cofre não possui áudio sobre o tema; responde normalmente em texto.",
+    reasoning: "O Brain avalia o catálogo completo, decide que nenhum áudio se encaixa e responde normalmente em texto.",
   });
 
   const validation = validateConversationBrainPlan(plan);
@@ -1193,9 +1232,9 @@ test("23. Inbound 'trabalho com mineração' + 'gosto de moto' + 'e vc?' preserv
   assert.equal(plan.outboundActions[2].type, "audio");
 });
 
-test("24. Mensagem incidental sobre praia não dispara áudio", async () => {
+test("24. Consulta do cofre não filtra por semântica; a seleção fica com o Brain", async () => {
   const supabase = createMockSupabase();
-  // Pretendente apenas menciona que trabalha perto da praia incidentalmente
+  // Mesmo uma consulta sem aderência não pode esconder itens: o Brain recebe o catálogo e decide.
   const candidates = await searchCofreAudios({
     supabase,
     conversationId: "conv_incidental",
@@ -1204,7 +1243,7 @@ test("24. Mensagem incidental sobre praia não dispara áudio", async () => {
   });
 
   const hasBeachAudio = candidates.some((c) => c.audio_id === "aud_hobbies" && c.transcript.includes("praia"));
-  assert.equal(hasBeachAudio, false, "Menção puramente incidental de local próximo à praia não casa com áudio pessoal de gostar de praia");
+  assert.equal(hasBeachAudio, true, "O backend entrega o catálogo completo; só o Brain decide se o áudio combina com a mensagem");
 });
 
 // ============================================================================

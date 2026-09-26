@@ -117,7 +117,7 @@ function createMockSupabaseWithHistory(options = {}) {
       },
       openai_session_id: options.initialSessionId !== undefined ? options.initialSessionId : null,
       openai_session_kind: options.initialSessionId ? 'persistent' : null,
-      persistent_session_version: options.initialSessionId ? 1 : null,
+      persistent_session_version: options.initialSessionId ? 2 : null,
       orchestration: {
         currentStageId: 'stage_1_conexao',
         currentPhase: 'conexao_inicial',
@@ -128,7 +128,7 @@ function createMockSupabaseWithHistory(options = {}) {
         },
         openai_session_id: options.initialSessionId !== undefined ? options.initialSessionId : null,
         openai_session_kind: options.initialSessionId ? 'persistent' : null,
-        persistent_session_version: options.initialSessionId ? 1 : null,
+      persistent_session_version: options.initialSessionId ? 2 : null,
         messageLedger: defaultLedger,
         lastProcessedMessageId: options.messages?.length ? options.messages[options.messages.length - 1].id : null,
       },

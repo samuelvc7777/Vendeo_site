@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  PERSISTENT_AGENT_SESSION_VERSION,
   runBrainOrchestration,
   runDurableOutboxDispatcher,
   scheduleNextOutboxDispatch,
@@ -117,7 +118,16 @@ test("1. CASO DENIS: Session antiga sem marcação de kind/version é descartada
         in: () => queryBuilder,
         order: () => queryBuilder,
         limit: () => queryBuilder,
-        upsert: () => Promise.resolve({ data: null, error: null }),
+        update: (payload) => {
+          updatePayload = payload;
+          return queryBuilder;
+        },
+        upsert: (payload) => {
+          if (table === "instagram_conversations" && payload?.id === conversationId) {
+            Object.assign(store.conversations[conversationId], payload);
+          }
+          return Promise.resolve({ data: null, error: null });
+        },
         single: async () => {
           if (table === "instagram_conversations") {
             return { data: store.conversations[conversationId] || null, error: null };
@@ -234,8 +244,8 @@ test("1. CASO DENIS: Session antiga sem marcação de kind/version é descartada
   );
   assert.equal(
     updatedConv.stage_completed_rules.orchestration.persistent_session_version,
-    1,
-    "Deve registrar persistent_session_version=1"
+    PERSISTENT_AGENT_SESSION_VERSION,
+    "Deve registrar a versão persistente atual"
   );
 
   // Turno 2 do Denis: agora reutiliza a nova sessão persistente limpa!
@@ -609,9 +619,42 @@ test("3D. Teste estático/estrutural: ausência total de < 5s, janela temporal, 
   assert.match(webhookBlock, /isEligibleByWatermark/i, "Webhook deve validar elegibilidade do watermark");
   assert.doesNotMatch(webhookBlock, /record_inbound_message_atomic fallback/i, "Proibido fallback não-serializado no webhook");
   assert.doesNotMatch(webhookBlock, /if \(!inboundSaveSuccess\)/i, "Proibido if (!inboundSaveSuccess) com upsert direto de inbound");
+  assert.match(webhookBlock, /inbound_persistence_unavailable[\s\S]*status:\s*503/, "Webhook deve pedir redelivery quando falha a persistência atômica");
+  assert.doesNotMatch(webhookBlock, /continue;\s*\/\/ FAIL-CLOSED ESTRITO/, "Webhook não pode confirmar silenciosamente um inbound que não persistiu");
 
   // 3. Validação do trigger e tick em index.ts: zero armedAt e zero clock skew
   assert.doesNotMatch(apiSource, /watermark\.armedAt\s*&&/i, "Proibido watermark.armedAt");
   assert.doesNotMatch(apiSource, /activationWatermark\?\.armedAt/i, "Proibido activationWatermark?.armedAt");
   assert.doesNotMatch(apiSource, /clock skew/i, "Proibido menção ou heurística de clock skew");
+});
+
+test("3E. Consultas de instagram_messages usam apenas colunas existentes no schema de produção", () => {
+  const sourceFiles = [
+    "../supabase/functions/api/index.ts",
+    "../supabase/functions/api/brain_orchestrator.ts",
+    "../supabase/functions/api/conversation_episodic_memory.ts",
+  ];
+  const unsupportedColumns = new Set(["is_from_me", "message", "audio_url"]);
+
+  for (const relativePath of sourceFiles) {
+    const source = readFileSync(new URL(relativePath, import.meta.url), "utf8");
+    const messageQueries = source.matchAll(/\.from\(\s*["']instagram_messages["']\s*\)([\s\S]*?)(?=\n\s*\.from\(|;|$)/g);
+    for (const queryMatch of messageQueries) {
+      const querySource = queryMatch[1];
+      const selectMatch = querySource.match(/\.select\(\s*["']([^"']+)["']/);
+      if (selectMatch) {
+        const selectedColumns = selectMatch[1].split(",").map((column) => column.trim().split(":").at(-1));
+        for (const column of selectedColumns) {
+          assert.equal(
+            unsupportedColumns.has(column),
+            false,
+            `${relativePath} seleciona a coluna inexistente ${column}`,
+          );
+        }
+      }
+      for (const match of querySource.matchAll(/\.or\(\s*["']([^"']+)["']\s*\)/g)) {
+        assert.doesNotMatch(match[1], /(?:^|[,.(])is_from_me\./, `${relativePath} filtra pela coluna inexistente is_from_me`);
+      }
+    }
+  }
 });

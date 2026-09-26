@@ -85,7 +85,7 @@ function createMockSupabase(initialState = {}) {
         },
         openai_session_id: initialState.initialSessionId !== undefined ? initialState.initialSessionId : null,
         openai_session_kind: initialState.initialSessionId ? 'persistent' : null,
-        persistent_session_version: initialState.initialSessionId ? 1 : null,
+        persistent_session_version: initialState.initialSessionId ? 2 : null,
       },
       active_cycle_token: correlationId,
     },
