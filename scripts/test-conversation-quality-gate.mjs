@@ -129,7 +129,7 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
 
   const fallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], quailContract);
   assert(Array.isArray(fallback) && fallback.length === 1, 'safeHighConfidenceFallback gera fallback para "Bem e vc ?"');
-  assert(fallback[0].startsWith('Oii, tô bem sim, e vc?') || fallback[0].startsWith('Tô bem sim, e vc?'), 'Fallback responde com formato canônico de bem-estar');
+  assert(fallback[0].startsWith('Oii, tô bem sim, e vc?') || fallback[0].startsWith('Tô bem sim, e vc?') || fallback[0].startsWith('Tô bem simm, e vc como tá?'), 'Fallback responde com formato canônico de bem-estar');
 
   const gateResult = quality.runConversationQualityGate({
     inboundMessages: ['Bem e vc ?', '?'],
@@ -140,7 +140,8 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
 
   const zeroBudgetContract = quality.buildTurnContract(['Bem e vc ?', '?'], { newQuestionBudget: 0, responseShape: 'answer_only' });
   const zeroFallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], zeroBudgetContract);
-  assert(zeroFallback[0] === 'Tô bem também!', 'Fallback com budget zero responde sem nova pergunta');
+  assert(zeroBudgetContract.newQuestionBudget === 1, 'Pergunta direta de bem-estar mantém orçamento mínimo para reciprocidade');
+  assert(zeroFallback[0] === 'Tô bem simm, e vc como tá?', 'Fallback de bem-estar mantém reciprocidade obrigatória');
   const zeroResult = quality.runConversationQualityGate({
     inboundMessages: ['Bem e vc ?', '?'],
     candidateBalloons: zeroFallback,
@@ -152,7 +153,7 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
 const orchestratorSource = fs.readFileSync('supabase/functions/api/brain_orchestrator.ts', 'utf8');
 const compactPromptSource = fs.readFileSync('supabase/functions/api/LarissaChatStyle.ts', 'utf8');
 assert(orchestratorSource.indexOf('runStyleLint(candidateBalloons') < orchestratorSource.indexOf('runConversationQualityGate({', orchestratorSource.indexOf('runStyleLint(candidateBalloons')), 'Caminho real executa Style Lint antes do Quality Gate');
-assert((orchestratorSource.match(/QUALITY RETRY ÚNICO/g) || []).length === 1, 'Quality retry está limitado a uma implementação');
+assert(orchestratorSource.includes('conversation_quality_retry=${qualityRetried}') && orchestratorSource.includes('conversation_quality_observe_only=true'), 'Quality Gate não regenera respostas e registra o resultado de forma observável');
 assert(!/kieKey\s*=\s*["'][a-f0-9]{24,}["']/i.test(orchestratorSource), 'Não existe secret Kie literal');
 assert(/brain_audio_rejected/.test(orchestratorSource) && /enforceAuthorizedAudioDecision/.test(orchestratorSource), 'Caminho real bloqueia troca de selectedAudioId');
 assert(!/FERRAMENTAS SOB DEMANDA/.test(compactPromptSource.match(/LARISSA_COMPACT_BRAIN_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não instrui Brain a usar tools');

@@ -440,7 +440,7 @@ test("CENÁRIO B — áudio escolhido NÃO está autorizado (∉ candidatos do m
   assert.equal(result.sentToMeta, false, "NENHUM envio para a Meta quando áudio não autorizado");
 
   // Prova 1: executor_audio_rejected: executor_audio_id_not_authorized registrado no trace
-  assert.ok(result.trace?.includes("executor_audio_rejected: executor_audio_id_not_authorized"), "Deve rejeitar áudio não autorizado");
+  assert.ok(result.trace?.includes("brain_audio_rejected: brain_audio_id_not_authorized"), "Deve rejeitar áudio não autorizado");
 
   // Prova 2: ZERO reservation
   const claimAudioCalls = rpcCalls.filter((c) => c.fnName === "claim_audio_delivery_reservation");
@@ -602,7 +602,7 @@ test("CENÁRIO D — Rejeição de integridade limpa outboundActions e não deix
   });
 
   assert.equal(result.sentToMeta, false);
-  assert.ok(result.trace?.includes("executor_audio_rejected: executor_audio_id_not_authorized"));
+  assert.ok(result.trace?.includes("brain_audio_rejected: brain_audio_id_not_authorized"));
 
   // Nenhuma reserva deve ter sido feita
   const claimCalls = rpcCalls.filter((c) => c.fnName === "claim_audio_delivery_reservation");

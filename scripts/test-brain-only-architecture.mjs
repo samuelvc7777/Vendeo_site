@@ -106,8 +106,9 @@ assert(
 
 const orchestrator = readFileSync(resolve("supabase/functions/api/brain_orchestrator.ts"), "utf8");
 const api = readFileSync(resolve("supabase/functions/api/index.ts"), "utf8");
-assert(!/if\s*\(\s*!isOpenAiAgentBrain\s*\)/.test(orchestrator), "não existe ramificação para executor alternativo");
+assert(!/\bisOpenAiAgentBrain\b/.test(orchestrator), "não existe seletor nominal para executor alternativo");
 assert(!/\b(callModelOr|buildSubagentExecutorPrompt|runKie|runAtria)\b/.test(orchestrator), "não existe chamada de provedor conversacional legado");
 assert(!/\/ai\/(generate|kie-status|prompt)/.test(api), "não existem endpoints manuais de geração, prompt ou Kie");
+assert(/export const runExperimentalOrchestration = runBrainOrchestration/.test(orchestrator), "alias histórico aponta diretamente para o Brain atual");
 
 console.log("\nArquitetura Brain único validada com sucesso.");

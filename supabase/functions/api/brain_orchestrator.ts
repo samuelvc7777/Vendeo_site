@@ -623,10 +623,10 @@ export function authorizeMissionAudioSelection(
 }
 
 export function enforceAuthorizedAudioDecision(
-  decision: Pick<BrainDecision, "action" | "audioId">,
+  decision: Pick<BrainDecision, "action" | "audioId" | "outboundActions">,
   mission: Pick<MissionPackage, "selectedAudioId" | "candidateAudios">
 ): { allowed: boolean; audioId?: string; reason?: string } {
-  const requestedAudioId = decision.audioId || null;
+  const requestedAudioId = decision.audioId || decision.outboundActions?.find((action) => action.type === "audio")?.audioId || null;
   const authorizedId = mission.selectedAudioId || null;
   const existsInAuthorizedCandidates = Boolean(
     authorizedId && mission.candidateAudios?.some((candidate) => candidate.audioId === authorizedId)
@@ -3290,11 +3290,14 @@ export async function dispatchOutboxEntry(
   }
   outboxEntry.attempts = (outboxEntry.attempts || 0) + (isClaimedByMe ? 0 : 1);
   if (outboxEntry.messageType === "text") {
-    const payloadCheck = validateFinalTextDispatchPayload(outboxEntry.content);
-    if (!payloadCheck.valid) {
+    const dispatchPayloadCheck = checkOutboundActionDispatchPayload(
+      { type: outboxEntry.messageType },
+      outboxEntry.content,
+    );
+    if (!dispatchPayloadCheck.valid) {
       outboxEntry.status = "failed";
-      outboxEntry.lastError = payloadCheck.error;
-      return { success: false, error: payloadCheck.error };
+      outboxEntry.lastError = dispatchPayloadCheck.error;
+      return { success: false, error: dispatchPayloadCheck.error };
     }
   }
 
@@ -3608,6 +3611,8 @@ export async function runDurableOutboxDispatcher(
   }
 
   const cycleScopeKey = (entry: OutboxEntry): string =>
+    // Mantém a chave histórica para reconciliar outbox criado antes do cycleId.
+    // "legacy" aqui é compatibilidade de dados, não um executor conversacional.
     entry.cycleId || `legacy:${entry.idempotencyKey || entry.id}`;
 
   // 2. Ordem estrita existe apenas dentro do mesmo ciclo/lote. Entre ciclos,
@@ -3903,6 +3908,8 @@ export function scheduleNextOutboxDispatch(params: {
   if (!params.supabase) return;
   const entries = Object.values(params.outboxMap || {});
   const cycleScopeKey = (entry: OutboxEntry): string =>
+    // Mantém a chave histórica para reconciliar outbox criado antes do cycleId.
+    // "legacy" aqui é compatibilidade de dados, não um executor conversacional.
     entry.cycleId || `legacy:${entry.idempotencyKey || entry.id}`;
   const nextPending = entries
     .filter((e) => {
@@ -7269,8 +7276,6 @@ export async function runBrainOrchestration(
     ];
     const candidateObjectiveEvidence = buildObjectiveCandidateEvidence(spontaneousMatches)
       .map((e) => ({ ...e, evidenceMessageId: e.evidenceMessageId || newMessage.id }));
-    const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
-    const shadowWouldCompleteObjectives: string[] = [];
     if (candidateObjectiveEvidence.length) {
       currentCycle.trace.push(`objective_candidate_evidence: ${candidateObjectiveEvidence.map((e) => e.objectiveId).join(",")}`);
     }
@@ -7438,9 +7443,6 @@ export async function runBrainOrchestration(
       speechActsSummary = speechActHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
     } catch {}
 
-    // Determinação do Brain: OpenAI Agent único oficial
-    const isOpenAiAgentBrain = true;
-
     // NÍVEL 5: projeção compacta da fonte autoritativa PersonaMemory.
     // Se o provedor for openai_agent, NÃO injeta o resumo genérico de 8 tópicos,
     // pois o novo Brain utiliza a ferramenta real persona_memory_search sob demanda.
@@ -7496,8 +7498,7 @@ export async function runBrainOrchestration(
     let brainPlan: ConversationBrainPlan | null = null;
     let needsHumanReview = false;
     let pendingManualResponse: ReturnType<typeof createPendingManualResponse> | null = null;
-    if (isOpenAiAgentBrain) {
-      configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
+    configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
       const { data: agentSettingRows } = await supabase
         .from("instagram_config")
         .select("id, app_secret")
@@ -7991,8 +7992,6 @@ export async function runBrainOrchestration(
         currentCycle.trace.push("OPENAI_AGENT_FAILED");
         throw new Error(`OPENAI_AGENT_FAILED: ${err?.message || String(err)}`);
       }
-    }
-
     brainToolResultTokens = estimateTextTokens(toolResultsHistory.join("\n"));
 
     if (!brainPlan) throw new Error("OPENAI_AGENT_FAILED: plano oficial ausente");
@@ -8185,8 +8184,7 @@ export async function runBrainOrchestration(
             preferAudio: true,
           }
         : authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
-      if (isOpenAiAgentBrain) {
-        let agentSelectedAudioId: string | null = null;
+      let agentSelectedAudioId: string | null = null;
         if (Array.isArray(brainPlan.outboundActions)) {
           const audioAct = brainPlan.outboundActions.find((a: any) => a && a.type === "audio");
           if (audioAct && typeof audioAct.audioId === "string" && audioAct.audioId.trim()) {
@@ -8222,16 +8220,7 @@ export async function runBrainOrchestration(
             };
           }
         }
-      }
-      const turnContract = isOpenAiAgentBrain
-        ? normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4)
-        : buildTurnContract(
-          canonicalClaimed.map((message) => message.text),
-          {
-            ...brainPlan.missionPackage?.turnContract,
-            objectiveDirective: normalizedDirective,
-          } as any
-        );
+      const turnContract = normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4);
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
         objectiveDirective: normalizedDirective,
@@ -8253,10 +8242,10 @@ export async function runBrainOrchestration(
         `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
       ).join("\n") || "";
 
-      const hasAgentOutboundActions = isOpenAiAgentBrain && Array.isArray(brainPlan.outboundActions) && brainPlan.outboundActions.length > 0;
-      const hasAgentResponses = isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0;
+      const hasAgentOutboundActions = Array.isArray(brainPlan.outboundActions) && brainPlan.outboundActions.length > 0;
+      const hasAgentResponses = Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0;
 
-      if (isOpenAiAgentBrain && (hasAgentOutboundActions || hasAgentResponses || brainPlan.action === "send_audio")) {
+      if (hasAgentOutboundActions || hasAgentResponses || brainPlan.action === "send_audio") {
         // Execução em turno único: o Agent Brain produz o plano com ações canônicas ordenadas
         let rawActions: OutboundAction[] = [];
         if (hasAgentOutboundActions) {
@@ -8351,6 +8340,7 @@ export async function runBrainOrchestration(
               if (audioSelection.selectedAudioId && act.audioId === audioSelection.selectedAudioId) {
                 allowedOutboundActions.push(act);
               } else {
+                currentCycle.trace.push("brain_audio_rejected: brain_audio_id_not_authorized");
                 currentCycle.trace.push(`unauthorized_audio_action_pruned: ${act.audioId}`);
               }
             }
@@ -8426,19 +8416,15 @@ export async function runBrainOrchestration(
       currentCycle.trace.push("brain_plan_recovery_mode=none");
       // Se o Brain gerou balões, aplica sanitização determinística mandatória
       if (finalSubDecision.action === "reply" && (!finalSubDecision.responses || finalSubDecision.responses.length === 0)) {
-        if (isOpenAiAgentBrain) {
-          const hasAudioOnly = finalSubDecision.outboundActions?.some((a: any) => a.type === "audio");
-          if (hasAudioOnly) {
-            // Válido: turno composto apenas por áudio
-            currentCycle.trace.push("brain_plan_audio_only_valid");
-          } else {
-            finalSubDecision.action = "wait";
-            finalSubDecision.suggestedResponse = "";
-            finalSubDecision.requiredTools = [];
-            currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
-          }
+        const hasAudioOnly = finalSubDecision.outboundActions?.some((a: any) => a.type === "audio");
+        if (hasAudioOnly) {
+          // Válido: turno composto apenas por áudio
+          currentCycle.trace.push("brain_plan_audio_only_valid");
         } else {
-          finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
+          finalSubDecision.action = "wait";
+          finalSubDecision.suggestedResponse = "";
+          finalSubDecision.requiredTools = [];
+          currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
         }
       }
 
@@ -8522,14 +8508,14 @@ export async function runBrainOrchestration(
         currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`question_budget_final_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
-        if (isOpenAiAgentBrain) currentCycle.trace.push("conversation_quality_observe_only=true");
+        currentCycle.trace.push("conversation_quality_observe_only=true");
 
-        if (isOpenAiAgentBrain && qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
+        if (qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
           currentCycle.trace.push("question_budget_exceeded_observed");
         }
 
         // Limite físico de payload: se exceder maxBalloons, apara os balões excedentes em vez de calar a conversa
-        if (isOpenAiAgentBrain && (finalSubDecision.responses || []).length > turnContract.maxBalloons) {
+        if ((finalSubDecision.responses || []).length > turnContract.maxBalloons) {
           currentCycle.trace.push("technical_balloon_limit_trimmed");
           finalSubDecision.responses = (finalSubDecision.responses || []).slice(0, turnContract.maxBalloons);
         }
@@ -8550,11 +8536,7 @@ export async function runBrainOrchestration(
               `anti_repeat_gate_blocked: pruned=${antiRepeatResult.blockedBalloons.length}, remaining=${finalAfterAntiRepeat.length}`
             );
           }
-          const normalizedAfterAntiRepeat = isOpenAiAgentBrain
-            ? finalAfterAntiRepeat.filter(Boolean)
-            : finalAfterAntiRepeat
-              .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
-              .filter(Boolean);
+          const normalizedAfterAntiRepeat = finalAfterAntiRepeat.filter(Boolean);
           let finalQualityResult = runConversationQualityGate({
             inboundMessages: inboundTexts,
             candidateBalloons: normalizedAfterAntiRepeat,
@@ -8600,16 +8582,14 @@ export async function runBrainOrchestration(
             currentCycle.trace.push("unauthorized_intimacy_leak_sanitized");
           }
 
-          if (isOpenAiAgentBrain) {
-            finalSubDecision.responses = authoritativeBalloons;
-            finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
-            if (finalSubDecision.outboundActions) {
-              const audioAction = finalSubDecision.outboundActions.find((a) => a.type === "audio");
-              finalSubDecision.outboundActions = [
-                ...(audioAction ? [audioAction] : []),
-                ...authoritativeBalloons.map((t) => ({ type: "text" as const, text: t })),
-              ];
-            }
+          finalSubDecision.responses = authoritativeBalloons;
+          finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+          if (finalSubDecision.outboundActions) {
+            const audioAction = finalSubDecision.outboundActions.find((a) => a.type === "audio");
+            finalSubDecision.outboundActions = [
+              ...(audioAction ? [audioAction] : []),
+              ...authoritativeBalloons.map((t) => ({ type: "text" as const, text: t })),
+            ];
           }
 
           }
@@ -9858,4 +9838,6 @@ export async function runBrainOrchestration(
   }
 }
 
+// Alias de compatibilidade para suítes/scripts que ainda carregam o nome
+// histórico. A produção chama exclusivamente runBrainOrchestration.
 export const runExperimentalOrchestration = runBrainOrchestration;
