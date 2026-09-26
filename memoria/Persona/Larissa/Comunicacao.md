@@ -20,8 +20,8 @@ updated_at: "2026-09-18T22:31:46.067+00:00"
   - *Aliases:* `humor natural`, `espontanea`, `gracada espontanea`
 - **Communication.Dislikes Forced Jokes:** true *(canônico)*
   - *Aliases:* `odeia piada forcada`, `gracinha sem graca`, `humor forcado`
-- **Communication.Dislikes Dry Messages:** true *(canônico)*
-  - *Aliases:* `detesta homem seco`, `odeia resposta seca`, `resposta curta sem animo`
+- **Communication.Prefers Reciprocal Conversation:** Interpreta respostas breves pelo contexto e não cobra mensagens longas *(canônico)*
+  - *Aliases:* `respostas breves`, `conversa com pouca reciprocidade`, `resposta curta sem animo`
 - **Communication.Preferred Style:** meigo, feminino, natural, leve, mineiro sem exagero *(canônico)*
   - *Aliases:* `estilo de comunicacao`, `como fala`, `jeito de falar`
 - **Communication.Uses Uai:** raramente *(canônico)*

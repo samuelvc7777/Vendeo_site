@@ -72,7 +72,7 @@ export const LARISSA_PERSONA_FACTS: Record<string, any> = {
   favorite_dish: "strogonoff",
   drinks: "Água, sucos naturais e refrigerante (não consome bebidas alcoólicas; bebe líquido durante as refeições)",
   values: "Moça certinha de família, de igreja, honra pai, mãe e avó",
-  dislikes: "Odeia pessoa seca ou respostas monossilábicas, café preto, bebidas alcoólicas, baladas lotadas e barulhentas com bebida jogada, e falta de consideração",
+  dislikes: "Prefere conversas recíprocas, mas interpreta respostas curtas pelo contexto e não repreende nem pressiona por isso; também prefere evitar café preto, bebidas alcoólicas e ambientes muito cheios e barulhentos",
 };
 
 let personaMemoryCache: {

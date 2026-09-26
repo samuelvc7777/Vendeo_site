@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "prompt:build": "node scripts/build-larissa-canonical-prompt.mjs",
+    "prompt:check": "node scripts/build-larissa-canonical-prompt.mjs --check"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

@@ -5087,7 +5087,6 @@ serve(async (req: Request) => {
         // DNA da persona (identidade + regras + few-shot). Viaja como mensagem
         // de "system" para o motor: sem ele a IA alucina uma vida genérica
         // (ex: "nutrição", "social media") em vez da Larissa real (Enfermagem).
-        let systemPromptText = "";
         let formattedHistory: any[] = [];
         let targetMessagesToRespond: any[] | undefined = undefined;
         let usedEmojisFromHistory: string[] = [];
@@ -5148,8 +5147,6 @@ serve(async (req: Request) => {
             mode: "direct_api",
           });
           promptText = igRes.prompt;
-          systemPromptText = igRes.systemPrompt || "";
-          systemPromptText = igRes.systemPrompt || "";
           usedEmojisFromHistory = igRes.usedEmojis || [];
         } else {
           // Instagram
@@ -5222,8 +5219,6 @@ serve(async (req: Request) => {
             stageContext: body?.stageContext,
           });
           promptText = igRes.prompt;
-          systemPromptText = igRes.systemPrompt || "";
-          systemPromptText = igRes.systemPrompt || "";
           usedEmojisFromHistory = igRes.usedEmojis || [];
         }
 

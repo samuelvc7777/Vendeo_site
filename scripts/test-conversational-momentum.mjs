@@ -88,6 +88,8 @@ assert("Resposta com reação/comentário afetuoso é classificada como DEAD_END
 // -----------------------------------------------------------------------------
 console.log("\n--- 2. INTEGRIDADE DAS REGRAS NO PROMPT E DNA ---");
 const instructions = buildCanonicalAgentInstructions();
+const persistentInstructions = buildCanonicalAgentInstructions({ persistentMode: true });
+assert("Todos os modos recebem a mesma instrução fixa", instructions === persistentInstructions);
 
 assert("DNA contém regra expressa de FIM DO DEAD-END FÁTICO", LARISSA_INTERACTION_DNA.includes("FIM DO DEAD-END FÁTICO"));
 assert("DNA contém FÓRMULA NATURAL DE TURNO", LARISSA_INTERACTION_DNA.includes("RESPONDER → REAGIR → ACRESCENTAR → ABRIR CONTINUIDADE"));
@@ -98,7 +100,10 @@ assert("Instruções contêm HIERARQUIA DE DECISÃO de 7 níveis", instructions.
 assert("Instruções garantem que pergunta direta é respondida primeiro (mustAnswerFirst)", instructions.includes("mustAnswerFirst"));
 assert("Instruções definem que SAME-CYCLE already_satisfied não impede continuidade", instructions.includes("SAME-CYCLE ALREADY_SATISFIED & PRÓXIMO OBJETIVO"));
 assert("Instruções removem a proibição destrutiva de memória vazia", !instructions.includes("resultado vazio → NÃO PERGUNTE"));
-assert("Instruções declaram que resultado vazio na memória indica tópico inédito", instructions.includes("O tópico é INÉDITO no histórico. A pergunta É PERMITIDA."));
+assert("DNA trata respostas breves com contexto e sem repreensão", LARISSA_INTERACTION_DNA.includes("Respostas curtas") && LARISSA_INTERACTION_DNA.includes("Não repreenda, cobre, acuse ou pressione"));
+assert("Instruções canônicas não descrevem respostas breves como algo que ela odeia", !/odeia pessoa seca|odeia homem seco|odeia resposta seca/i.test(instructions));
+assert("Instruções do modo persistente não descrevem respostas breves como algo que ela odeia", !/odeia pessoa seca|odeia homem seco|odeia resposta seca/i.test(persistentInstructions));
+assert("Instruções persistentes proíbem cobrança ou provocação por respostas curtas", persistentInstructions.includes("nunca repreenda, cobre ou provoque alguém apenas por responder pouco"));
 
 // -----------------------------------------------------------------------------
 // 3. CENÁRIOS COMPORTAMENTAIS (PARTE T)
@@ -124,9 +129,9 @@ const c4 = ["sou de São João del-Rei", "nossaa deve ser bom ter a família per
 assert("C4: Prioriza família antes de forçar checklist mecânico", !isDeadEndResponse(c4));
 assert("C4: Não fez pergunta desconectada sobre trabalho", c4.filter(b => b.includes("?")).length === 0);
 
-// Cenário 5: Mensagem seca ("blz")
-const c5 = ["nossa que animação kkkkk"];
-assert("C5: Cutuca mensagem seca com deboche meigo", !isDeadEndResponse(c5));
+// Cenário 5: Resposta breve não deve ser tratada como ofensa ou desinteresse
+const c5 = ["Tudo bem por aí?"];
+assert("C5: Mantém cordialidade sem rotular uma resposta breve", !isDeadEndResponse(c5) && !/desânimo|seco/i.test(c5.join(" ")));
 
 // Cenário 6: Flerte leve ("vc é muito fofa kkk")
 const c6 = ["sou um amorzinho rapaz kkk", "não se acostuma não"];

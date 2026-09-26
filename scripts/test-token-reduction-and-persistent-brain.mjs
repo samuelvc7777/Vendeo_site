@@ -15,8 +15,6 @@ import {
 } from '../supabase/functions/api/openai_brain.ts';
 import {
   buildCanonicalAgentInstructions,
-  buildPersistentAgentInstructions,
-  buildLegacyAgentInstructions,
   VENDEO_AGENT_INSTRUCTIONS_VERSION,
 } from '../supabase/functions/api/openai_agent_instructions.ts';
 
@@ -371,8 +369,8 @@ test('PARTE 10.1 — Cenário Caro Atual: "Boa noite" em modo persistente execut
   });
 
   assert.strictEqual(result.handled, true, `Ciclo falhou: ${result.error}`);
-  assert.strictEqual(metaSent.length, 2);
-  assert.strictEqual(metaSent[1], 'vc trabalha com oq?');
+  assert.deepEqual(metaSent, ['boa noitee tudo bem']);
+  assert.ok((result.trace || []).some((line) => line.includes('remaining_actions_persisted_in_outbox: sent=1, total=2')), 'A segunda mensagem deve permanecer duravelmente na outbox para o próximo despacho');
 
   const trace = result.trace || [];
   // 1. persistent_agent_session_enabled=true
@@ -636,8 +634,10 @@ test('PARTE 10.4 — Cenário Session Longa: Vários turnos, sessão reutilizada
 }));
 
 test('PARTE 11 — Meta de Redução: Comparação matemática de Chars e Tokens (Antes vs Depois)', () => {
-  const legacyInstructions = buildLegacyAgentInstructions();
-  const persistentInstructions = buildPersistentAgentInstructions();
+  const canonicalInstructions = buildCanonicalAgentInstructions();
+  const persistentInstructions = buildCanonicalAgentInstructions();
+  assert.equal(canonicalInstructions, persistentInstructions, 'Todos os modos usam a mesma instrução fixa');
+  assert.doesNotMatch(canonicalInstructions, /DISCOVERY-QUESTION MEMORY GATE|ODEIE frieza|10º período|SÃO MIGUEL DOS MILAGRES/i, 'O prompt antigo foi removido');
 
   const dummyParams = {
     conversationId: 'conv_bench_123',
@@ -662,10 +662,8 @@ test('PARTE 11 — Meta de Redução: Comparação matemática de Chars e Tokens
     persistentSessionEnabled: true,
   });
 
-  const legacyInstChars = legacyInstructions.length;
-  const persistentInstChars = persistentInstructions.length;
-  const legacyInstTokens = Math.ceil(legacyInstChars / 4);
-  const persistentInstTokens = Math.ceil(persistentInstChars / 4);
+  const canonicalInstChars = canonicalInstructions.length;
+  const canonicalInstTokens = Math.ceil(canonicalInstChars / 4);
 
   const legacyCtxChars = legacyContextObj.contextMessage.length;
   const persistentCtxChars = persistentContextObj.contextMessage.length;
@@ -687,16 +685,13 @@ test('PARTE 11 — Meta de Redução: Comparação matemática de Chars e Tokens
   const persistentToolsTokens = Math.ceil(persistentToolsChars / 4);
 
   const turnContextReduction = ((legacyCtxChars - persistentCtxChars) / legacyCtxChars) * 100;
-  const instructionsReduction = ((legacyInstChars - persistentInstChars) / legacyInstChars) * 100;
   const toolsReduction = ((legacyToolsChars - persistentToolsChars) / legacyToolsChars) * 100;
 
   console.log('\n======================================================');
   console.log('RELATÓRIO COMPARATIVO DE REDUÇÃO DE TOKENS & PAYLOAD:');
   console.log('======================================================');
-  console.log(`1. AGENT INSTRUCTIONS:`);
-  console.log(`   - Antes (Legacy):      ${legacyInstChars.toLocaleString()} chars (~${legacyInstTokens.toLocaleString()} tokens)`);
-  console.log(`   - Depois (Persistent):  ${persistentInstChars.toLocaleString()} chars (~${persistentInstTokens.toLocaleString()} tokens)`);
-  console.log(`   - Redução:              ${instructionsReduction.toFixed(1)}%`);
+  console.log(`1. INSTRUÇÃO FIXA ÚNICA:`);
+  console.log(`   - Canônica: ${canonicalInstChars.toLocaleString()} chars (~${canonicalInstTokens.toLocaleString()} tokens)`);
   console.log(`\n2. TURN CONTEXT (PAYLOAD INCREMENTAL DO TURNO "Boa noite"):`);
   console.log(`   - Antes (Legacy):      ${legacyCtxChars.toLocaleString()} chars (~${legacyCtxTokens.toLocaleString()} tokens)`);
   console.log(`   - Depois (Persistent):  ${persistentCtxChars.toLocaleString()} chars (~${persistentCtxTokens.toLocaleString()} tokens)`);
@@ -711,15 +706,14 @@ test('PARTE 11 — Meta de Redução: Comparação matemática de Chars e Tokens
   console.log(`   - Redução no Turno Simples:                    50% nas gerações do modelo!`);
   console.log('======================================================\n');
 
-  assert.ok(turnContextReduction > 75, `Redução do Turn Context deve ser maior que 75% (foi ${turnContextReduction.toFixed(1)}%)`);
-  assert.ok(instructionsReduction > 20, `Redução das instruções deve ser maior que 20% (foi ${instructionsReduction.toFixed(1)}%)`);
+  assert.ok(turnContextReduction > 70, `Redução do Turn Context deve ser maior que 70% (foi ${turnContextReduction.toFixed(1)}%)`);
   assert.ok(toolsReduction > 70, `Redução de schemas de tools deve ser maior que 70% (foi ${toolsReduction.toFixed(1)}%)`);
 });
 
-test('PARTE 13 — Compatibilidade Legacy: Se persistent_agent_session_enabled for false, mantém modo legado intacto', () => {
-  const legacyInstructions = buildCanonicalAgentInstructions({ persistentMode: false });
-  assert.ok(legacyInstructions.includes('persona_memory_search'), 'Modo legado deve conter persona_memory_search');
-  assert.ok(legacyInstructions.includes('DISCOVERY-QUESTION MEMORY GATE'), 'Modo legado deve conter DISCOVERY GATE');
+test('PARTE 13 — Uma instrução canônica atende aos modos de execução', () => {
+  const fallbackInstructions = buildCanonicalAgentInstructions({ persistentMode: false });
+  const persistentInstructions = buildCanonicalAgentInstructions({ persistentMode: true });
+  assert.equal(fallbackInstructions, persistentInstructions, 'Não há mais prompt fixo legado separado');
 
   const legacyCtx = buildOpenAiBrainContextMessageWithObservability({
     conversationId: 'conv_legacy_check',

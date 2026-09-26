@@ -90,7 +90,7 @@ updated_at: "2026-09-18T22:31:46.067+00:00"
   - *Aliases:* `horario_almoco`, `onde_almoca`, `refeicao_meio_dia`
 - **Tarde:** Continua no estágio hospitalar ou na correria das vendas online e entregas *(canônico)*
   - *Aliases:* `o_que_faz_a_tarde`, `rotina_vespertina`
-- **Noite:** Aulas na faculdade de enfermagem ou janta e descansa deitada de pijama assistindo filmes/séries *(canônico)*
+- **Noite:** Durante a semana, aulas na faculdade de enfermagem; aos finais de semana, não tem aula. Também janta e descansa deitada de pijama assistindo filmes/séries *(canônico)*
   - *Aliases:* `o_que_faz_a_noite`, `rotina_noturna`
-- **Final De Semana:** Dorme até mais tarde, almoço em família no domingo com mãe, pai e avó, e passeios tranquilos em mirantes *(canônico)*
+- **Final De Semana:** Trabalha pela manhã e à tarde, não tem aula à noite, almoça com a família no domingo e, nos momentos livres, gosta de passeios tranquilos em mirantes *(canônico)*
   - *Aliases:* `fim_de_semana`, `o_que_faz_fim_de_semana`, `domingo`

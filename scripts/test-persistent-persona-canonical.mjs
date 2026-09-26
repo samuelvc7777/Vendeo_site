@@ -12,8 +12,6 @@ import {
 } from '../supabase/functions/api/openai_brain.ts';
 import {
   buildCanonicalAgentInstructions,
-  buildPersistentAgentInstructions,
-  buildLegacyAgentInstructions,
 } from '../supabase/functions/api/openai_agent_instructions.ts';
 import { LARISSA_INTERACTION_DNA } from '../supabase/functions/api/larissa_interaction_dna.ts';
 
@@ -304,7 +302,7 @@ const defaultTurnContract = {
 // ============================================================================
 
 test('PARTE 7 — TESTE A — PERSONA: "vc tem quantos anos?" grounded em 23 anos', withAcceleratedTimers(async () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   assert.ok(instructions.includes('23 anos'), 'Instructions persistentes devem conter a idade canônica de 23 anos');
 
   let toolsAvailableToAgent = [];
@@ -369,7 +367,7 @@ test('PARTE 7 — TESTE A — PERSONA: "vc tem quantos anos?" grounded em 23 ano
 }));
 
 test('PARTE 7 — TESTE B — CIDADE: "vc mora onde?" sabe São João del-Rei sem memory tool', withAcceleratedTimers(async () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   assert.ok(instructions.includes('São João del-Rei'), 'Instructions persistentes devem conter São João del-Rei');
 
   let toolsCalled = [];
@@ -433,7 +431,7 @@ test('PARTE 7 — TESTE B — CIDADE: "vc mora onde?" sabe São João del-Rei se
 }));
 
 test('PARTE 7 — TESTE C — PROFISSÃO: "e vc trabalha com oq?" conhece Enfermagem + vendas online sem persona_memory_search', withAcceleratedTimers(async () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   assert.ok(instructions.includes('Enfermagem'), 'Deve conter Enfermagem');
   assert.ok(instructions.includes('vendas online'), 'Deve conter vendas online');
 
@@ -500,7 +498,7 @@ test('PARTE 7 — TESTE C — PROFISSÃO: "e vc trabalha com oq?" conhece Enferm
 }));
 
 test('PARTE 7 — TESTE D — GOSTO/PRAIA: "vc gosta de praia?" sabe que sim sem busca remota', withAcceleratedTimers(async () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   assert.ok(instructions.includes('Ama praia'), 'Instructions devem conter amor por praia');
 
   const metaSent = [];
@@ -562,7 +560,7 @@ test('PARTE 7 — TESTE D — GOSTO/PRAIA: "vc gosta de praia?" sabe que sim sem
 }));
 
 test('PARTE 7 — TESTE E — BIQUÍNI: "vc gosta de usar biquíni?" responde natural de acordo com a persona sem inventar loja/marca', withAcceleratedTimers(async () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   assert.ok(instructions.includes('biquíni na praia'), 'Instructions devem orientar resposta natural sobre biquíni na praia');
 
   const metaSent = [];
@@ -626,7 +624,7 @@ test('PARTE 7 — TESTE E — BIQUÍNI: "vc gosta de usar biquíni?" responde na
 }));
 
 test('PARTE 7 — TESTE F — ESTILO: Respostas persistentes não adotam "cê", "mano", "trampo", "haha"', () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   const dna = LARISSA_INTERACTION_DNA;
 
   // Verificações estritas nas regras de instrução estável
@@ -659,7 +657,7 @@ test('PARTE 7 — TESTE F — ESTILO: Respostas persistentes não adotam "cê", 
 });
 
 test('PARTE 7 — TESTE G — ZERO PAPAGAIO: "eu trabalho de soldador industrial" não deve começar papagaiando', withAcceleratedTimers(async () => {
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
   assert.ok(instructions.includes('ZERO PAPAGAIO'), 'Instructions devem conter regra ZERO PAPAGAIO');
 
   const metaSent = [];

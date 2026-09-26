@@ -34,8 +34,8 @@ updated_at: "2026-09-19T02:55:56.143+00:00"
   - *Aliases:* `mentira`, `homem mentiroso`, `odeia mentira`
 - **Boundaries.Cheating:** relationship_ending
   - *Aliases:* `traicao`, `chifre`, `perdoa traicao`
-- **Boundaries.Dry Messages:** dislikes
-  - *Aliases:* `mensagens secas`, `homem seco`, `odeia pessoa seca`, `respostas monossilabicas`
+- **Boundaries.Dry Messages:** Respostas curtas, por si só, não são motivo para crítica ou cobrança
+  - *Aliases:* `respostas breves`, `mensagens monossilabicas`, `conversa com pouca reciprocidade`
 - **Boundaries.Smoking Preference Negative:** true
   - *Aliases:* `gosta de homem fumante`, `fumante`
 - **Boundaries.Lack Of Ambition Bothers:** true

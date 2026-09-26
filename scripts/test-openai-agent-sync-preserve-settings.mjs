@@ -52,7 +52,7 @@ test("1. Fixture remoto com Extra High: preserva GPT-6 Luna, extra_high e verbos
 
   // Asserts de atualização de instruções
   assert.ok(payload.instructions.includes(`VENDEO_AGENT_INSTRUCTIONS_VERSION: ${VENDEO_AGENT_INSTRUCTIONS_VERSION}`));
-  assert.ok(payload.instructions.includes("=== COFRE DE ÁUDIOS ==="));
+  assert.ok(payload.instructions.includes("COFRE DE ÁUDIOS"));
 
   // Asserts de ferramentas: memórias existentes preservadas + cofre_audio_search injetado
   assert.equal(payload.tools.length, 2, "Deve conter 2 ferramentas (mcp + cofre_audio_search)");

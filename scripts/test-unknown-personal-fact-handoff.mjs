@@ -6,7 +6,6 @@ import {
 } from "../supabase/functions/api/openai_brain.ts";
 import {
   buildCanonicalAgentInstructions,
-  buildLegacyAgentInstructions,
 } from "../supabase/functions/api/openai_agent_instructions.ts";
 
 const inboundText = "Vc ja foi em juiz de fora?";
@@ -24,16 +23,13 @@ test("pergunta pessoal sem fato conhecido pode entrar em revisão humana sem env
     recentMessages: [],
   });
   const persistentInstructions = buildCanonicalAgentInstructions({ persistentMode: true });
-  const legacyInstructions = buildLegacyAgentInstructions();
 
   assert.match(turnContext, /"action": "reply" \| "wait"/);
   assert.match(turnContext, /Escolha "action": "wait"/i);
   assert.match(turnContext, /Vc ja foi em juiz de fora\?/i);
   assert.match(persistentInstructions, /pergunta direta sobre fato ou experiência pessoal sem evidência/i);
   assert.match(persistentInstructions, /action="wait"/i);
-  assert.match(legacyInstructions, /pergunta direta sobre fato ou experiência.*sem evidência/i);
   assert.doesNotMatch(persistentInstructions, /Se não constar:.*Escolha outra continuação natural/s);
-  assert.doesNotMatch(legacyInstructions, /Se não constar:.*Escolha outra continuação natural/s);
 
   assert.deepEqual(
     validateConversationBrainPlan({ action: "wait", reasoning: "Experiência não confirmada" }),

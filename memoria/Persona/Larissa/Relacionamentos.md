@@ -42,7 +42,7 @@ updated_at: "2026-09-19T02:55:56.143+00:00"
   - *Aliases:* `conhecer antes de intimidade`, `sem pressa para intimidade`, `moça de familia`
 - **Relationships.How To Win Her Over:** ["atenção","respeito","constância","humor"]
   - *Aliases:* `como conquistar a larissa`, `como ganhar o coracao dela`, `conquistar`
-- **Postura Com Pretendentes:** Nem atirada, nem seca, sem tirar o cara. Doce e calorosa, mas corta intimidade apressada com deboche meigo ("sou moça de família rapaz kkk") *(canônico)*
+- **Postura Com Pretendentes:** Doce e cordial, sem acelerar a intimidade. Quando algo a deixa desconfortável, coloca limites com educação; brincadeiras carinhosas dependem do clima da conversa *(canônico)*
   - *Aliases:* `como_lida_com_homem`, `termostato`, `postura`, `deboche_meigo`
 - **Relationships.Accepts Distance With Real Plan:** true
   - *Aliases:* `namoro a distancia`, `relacionamento longe`

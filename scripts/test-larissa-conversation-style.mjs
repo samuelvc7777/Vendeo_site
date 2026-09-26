@@ -28,7 +28,6 @@ const requiredRules = [
   'APROFUNDAMENTO NATURAL',
   'ANTI-MASTIGAÇÃO',
   'TRANSIÇÃO NATURAL',
-  'MENSAGEM SECA',
   'ASSUNTO SÉRIO',
   'FLERTE',
   'PROPORCIONALIDADE',
@@ -91,6 +90,17 @@ function loadTsModule(filePath) {
   const mod = { exports: {} };
   const fn = new Function('module', 'exports', 'require', jsCode);
   fn(mod, mod.exports, (dep) => {
+    if (dep.includes('larissa_canonical_prompt')) {
+      const canonicalBasePath = path.resolve(path.dirname(filePath), dep);
+      const canonicalPath = fs.existsSync(canonicalBasePath) ? canonicalBasePath : `${canonicalBasePath}.ts`;
+      const canonicalTs = fs.readFileSync(canonicalPath, 'utf8');
+      const canonicalJs = ts.transpileModule(canonicalTs, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+      }).outputText;
+      const cMod = { exports: {} };
+      new Function('module', 'exports', canonicalJs)(cMod, cMod.exports);
+      return cMod.exports;
+    }
     if (dep.includes('LarissaConversationStyle')) {
       const styleTs = fs.readFileSync(path.resolve(path.dirname(filePath), dep.endsWith('.ts') ? dep : dep + '.ts'), 'utf8');
       const styleJs = ts.transpileModule(styleTs, {
@@ -105,6 +115,10 @@ function loadTsModule(filePath) {
   return mod.exports;
 }
 
+const { LARISSA_CANONICAL_PROMPT: canonicalPrompt } = await import('../supabase/functions/api/larissa_canonical_prompt.generated.ts');
+const canonicalMarkdown = fs.readFileSync('supabase/functions/api/larissa_canonical_prompt.md', 'utf8').trim();
+assert.equal(canonicalPrompt, canonicalMarkdown, 'Markdown é a fonte única do prompt fixo');
+
 const domainBuilderMod = loadTsModule('src/domain/services/LarissaPromptBuilder.ts');
 assert.ok(domainBuilderMod.LARISSA_CONVERSATION_STYLE, 'LarissaPromptBuilder deve reexportar LARISSA_CONVERSATION_STYLE');
 
@@ -113,17 +127,16 @@ const domainResultDirect = new domainBuilderMod.GenerateAiPromptUseCase().execut
   messagesToRespond: [{ id: 'm1', sender: 'them', text: 'Oi Larissa' }],
   mode: 'direct_api',
 });
-assert.ok(domainResultDirect.systemPrompt.includes('LARISSA_CONVERSATION_STYLE'), 'systemPrompt deve conter LARISSA_CONVERSATION_STYLE');
-assert.ok(domainResultDirect.systemPrompt.includes('REAÇÃO > PERGUNTA'), 'systemPrompt deve conter regra REAÇÃO > PERGUNTA');
-assert.ok(domainResultDirect.systemPrompt.includes('ZERO PAPAGAIO'), 'systemPrompt deve conter regra ZERO PAPAGAIO');
+assert.equal(domainResultDirect.systemPrompt, canonicalPrompt, 'gerador do domínio deve usar a instrução canônica compartilhada');
+assert.ok(!domainResultDirect.systemPrompt.includes('ODEIE frieza'), 'instrução antiga não pode voltar no fallback');
 
 const domainResultMarkdown = new domainBuilderMod.GenerateAiPromptUseCase().execute({
   pretendente: { id: 'test_1', name: 'Douglas', platform: 'instagram' },
   messagesToRespond: [{ id: 'm1', sender: 'them', text: 'Oi Larissa' }],
   mode: 'markdown',
 });
-assert.ok(domainResultMarkdown.prompt.includes('LARISSA_CONVERSATION_STYLE'), 'prompt markdown deve conter LARISSA_CONVERSATION_STYLE');
-console.log('✔ 4. GenerateAiPromptUseCase do domínio injeta o estilo em modo direct_api e markdown.');
+assert.ok(domainResultMarkdown.prompt.includes(canonicalPrompt), 'prompt markdown deve incluir a instrução canônica completa');
+console.log('✔ 4. O gerador do domínio usa a instrução canônica em modo direct_api e markdown.');
 
 // 6. Validação da integração no LarissaPromptBuilder do Supabase
 const supaBuilderMod = loadTsModule('supabase/functions/api/LarissaPromptBuilder.ts');
@@ -134,67 +147,22 @@ const supaResultDirect = new supaBuilderMod.GenerateAiPromptUseCase().execute({
   messagesToRespond: [{ id: 'm2', sender: 'them', text: 'Tudo bem?' }],
   mode: 'direct_api',
 });
-assert.ok(supaResultDirect.systemPrompt.includes('LARISSA_CONVERSATION_STYLE'), 'supabase systemPrompt deve conter LARISSA_CONVERSATION_STYLE');
-assert.ok(supaResultDirect.systemPrompt.includes('ANTI-INTERROGATÓRIO'), 'supabase systemPrompt deve conter regra ANTI-INTERROGATÓRIO');
-assert.ok(supaResultDirect.systemPrompt.includes('ANTI-VÁCUO'), 'supabase systemPrompt deve conter regra ANTI-VÁCUO');
-console.log('✔ 5. GenerateAiPromptUseCase do Supabase injeta o estilo com paridade idêntica.');
+assert.equal(supaResultDirect.systemPrompt, canonicalPrompt, 'gerador Supabase deve usar a mesma instrução fixa canônica');
+console.log('✔ 5. O gerador Supabase usa a mesma instrução canônica.');
 
-// 7. Validação da integração nos subagentes do experimental_orchestrator
-function loadOrchestratorPrompts() {
-  const tsCode = fs.readFileSync('supabase/functions/api/experimental_orchestrator.ts', 'utf8');
-  const jsCode = ts.transpileModule(tsCode, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-  }).outputText;
-  const mod = { exports: {} };
-  const fn = new Function('module', 'exports', 'require', jsCode);
-  fn(mod, mod.exports, (dep) => {
-    if (dep.includes('LarissaConversationStyle')) {
-      return { LARISSA_CONVERSATION_STYLE: styleText };
-    }
-    return {
-      publishAutoPilotState: () => {},
-      activity: () => {},
-    };
-  });
-  return mod.exports;
-}
+// 7. Validação de fonte única entre Brain e geradores manuais
+const { buildCanonicalAgentInstructions } = await import('../supabase/functions/api/openai_agent_instructions.ts');
+assert.equal(buildCanonicalAgentInstructions(), canonicalPrompt, 'Agent e geradores manuais devem compartilhar a mesma fonte');
+assert.doesNotMatch(canonicalPrompt, /ODEIE frieza|10º período|SÃO MIGUEL DOS MILAGRES/i, 'regras biográficas do prompt antigo não podem reaparecer');
+const { buildTinderAiPromptForBackend } = await import('../supabase/functions/api/tinder_ai.ts');
+const tinderPrompt = buildTinderAiPromptForBackend(
+  { match_id: 'match_1', name: 'Rafael' },
+  [{ id: 'message_1', match_id: 'match_1', sender_id: 'person_1', message: 'Oi Larissa', sent_date: '2026-09-26T10:00:00-03:00' }],
+  { user_id: 'larissa_1' },
+);
+assert.ok(tinderPrompt.startsWith(canonicalPrompt), 'prompt do Tinder deve começar com a mesma instrução canônica');
+assert.ok(tinderPrompt.includes('Oi Larissa'), 'contexto variável do Tinder deve incluir a mensagem');
+assert.doesNotMatch(tinderPrompt, /SÃO MIGUEL DOS MILAGRES|10º período|REGRA SUPREMA DE CUMPRIMENTO/i, 'prompt antigo do Tinder deve ser removido');
+console.log('✔ 6. Brain, backend, Instagram, Tinder e fallback usam uma única instrução; o prompt legado foi removido.');
 
-const orchMod = loadOrchestratorPrompts();
-
-const pConexao = orchMod.buildConexaoInicialPrompt({
-  conversationId: 'c1',
-  currentPhase: 'conexao_inicial',
-  newMessage: { id: 'm1', text: 'Oi', timestamp: 'Agora', sender: 'them' },
-});
-assert.ok(pConexao.includes('LARISSA_CONVERSATION_STYLE'), 'buildConexaoInicialPrompt deve conter LARISSA_CONVERSATION_STYLE');
-assert.ok(pConexao.includes('REAÇÃO > PERGUNTA'), 'buildConexaoInicialPrompt deve conter regra REAÇÃO > PERGUNTA');
-
-const pDescoberta = orchMod.buildDescobertaPrompt({
-  conversationId: 'c2',
-  currentPhase: 'descoberta',
-  newMessage: { id: 'm2', text: 'Trabalho com mineração', timestamp: 'Agora', sender: 'them' },
-});
-assert.ok(pDescoberta.includes('LARISSA_CONVERSATION_STYLE'), 'buildDescobertaPrompt deve conter LARISSA_CONVERSATION_STYLE');
-assert.ok(pDescoberta.includes('ZERO PAPAGAIO'), 'buildDescobertaPrompt deve conter regra ZERO PAPAGAIO');
-assert.ok(pDescoberta.includes('ANTI-MASTIGAÇÃO'), 'buildDescobertaPrompt deve conter regra ANTI-MASTIGAÇÃO');
-
-const pRouter = orchMod.buildConversationAgentPrompt({
-  conversationId: 'c_router',
-  currentPhase: 'conexao_inicial',
-  newMessage: { id: 'm1', text: 'Oi', timestamp: 'Agora', sender: 'them' },
-});
-assert.ok(!pRouter.includes('LARISSA_CONVERSATION_STYLE'), 'buildConversationAgentPrompt (Router) NÃO deve conter LARISSA_CONVERSATION_STYLE para economizar tokens');
-
-const pOrch = orchMod.buildOrchestratorPrompt({
-  conversationId: 'c3',
-  currentPhase: 'conexao_inicial',
-  newMessage: { text: 'Boa tarde', sender: 'them', timestamp: 'Agora' },
-  conversationSummary: 'Resumo',
-  relevantMemories: [],
-  allowedTools: ['send_text'],
-  phaseRules: ['Regra 1'],
-});
-assert.ok(!pOrch.includes('LARISSA_CONVERSATION_STYLE'), 'buildOrchestratorPrompt (Router/Orquestrador) NÃO deve conter LARISSA_CONVERSATION_STYLE');
-console.log('✔ 6. Subagentes contêm LARISSA_CONVERSATION_STYLE e Router NÃO recebe o bloco (economia estrita de tokens).');
-
-console.log('\n🎉 TODOS OS 6 TESTES DE LARISSA_CONVERSATION_STYLE PASSARAM COM 100% DE SUCESSO!\n');
+console.log('\n🎉 VALIDAÇÃO DA FONTE CANÔNICA APROVADA!\n');

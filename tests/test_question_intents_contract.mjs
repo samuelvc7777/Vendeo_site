@@ -5,7 +5,7 @@ import {
   validateQuestionIntentsInvariant,
 } from "../supabase/functions/api/openai_brain.ts";
 import {
-  buildPersistentAgentInstructions,
+  buildCanonicalAgentInstructions,
   QUESTION_INTENTS_CONTRACT_EXAMPLE,
 } from "../supabase/functions/api/openai_agent_instructions.ts";
 
@@ -75,7 +75,7 @@ test("contexto persistente e instruções usam exatamente o exemplo canônico em
   const context = buildPersistentTurnContext({
     currentInboundMessages: ["oi"],
   });
-  const instructions = buildPersistentAgentInstructions();
+  const instructions = buildCanonicalAgentInstructions();
 
   assert.ok(context.includes('"questionIntents": []'));
   assert.ok(context.includes(QUESTION_INTENTS_CONTRACT_EXAMPLE));
