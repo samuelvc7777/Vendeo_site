@@ -47,7 +47,7 @@ function getApiUrl(path: string): string {
 
 export function isAutoPilotWorking(state?: AutoPilotChatState | null): boolean {
   if (!state) return false;
-  if (state.status === "paused_guardrail" || state.status === "paused_handoff") return true;
+  if (state.status === "paused_guardrail" || state.status === "paused_handoff" || state.status === "waiting_human") return true;
 
   // Proteção contra atividades que ficaram congeladas no visual se a rede ou worker oscilar
   if (state.activity) {
@@ -92,7 +92,7 @@ export function isAutoPilotWorking(state?: AutoPilotChatState | null): boolean {
 
 export function isAutoPilotActivelyWorking(state?: AutoPilotChatState | null): boolean {
   if (!isAutoPilotWorking(state)) return false;
-  if (state?.status === "paused_guardrail" || state?.status === "paused_handoff") return false;
+  if (state?.status === "paused_guardrail" || state?.status === "paused_handoff" || state?.status === "waiting_human") return false;
   return (
     !["waiting", "completed", undefined].includes(state?.activity?.phase) &&
     state?.status !== "activation_wait" &&
@@ -501,6 +501,12 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
 }
 
 function getCopy(state: AutoPilotChatState) {
+  if (state.status === "waiting_human") {
+    return {
+      title: "Aguardando sua resposta",
+      detail: state.pauseReason || "A IA não respondeu com segurança. Responda manualmente e retome o Piloto quando quiser.",
+    };
+  }
   if (state.status === "paused_guardrail") {
     return {
       title: "IA pausada por erro",
@@ -567,7 +573,7 @@ function getCopy(state: AutoPilotChatState) {
 
 function ActivityIcon({ state, className }: { state: AutoPilotChatState; className: string }) {
   if (!state.isEnabled && state.status === "disabled") return <Bot className={className} />;
-  if (state.status === "paused_guardrail" || state.status === "paused_handoff") {
+  if (state.status === "paused_guardrail" || state.status === "paused_handoff" || state.status === "waiting_human") {
     return <AlertTriangle className={className} />;
   }
   const phase = state.activity?.phase;

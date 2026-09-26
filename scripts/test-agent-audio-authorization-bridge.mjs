@@ -25,12 +25,16 @@ function createMockSupabase(params = {}) {
   const { conversationRecord, personaAudios = [], deliveryHistory = [], newerMessages = [] } = params;
   const rpcCalls = [];
   const audioHistory = [...deliveryHistory];
+  const broadcasts = [];
 
   const mock = {
     __mockPersonaAudios: personaAudios,
     __mockAudioHistory: audioHistory,
     channel: () => ({
-      send: async () => ({}),
+      send: async (event) => {
+        broadcasts.push(event);
+        return {};
+      },
       subscribe: () => ({}),
     }),
     from: (table) => {
@@ -117,6 +121,9 @@ function createMockSupabase(params = {}) {
       rpcCalls.push({ fnName, args });
       if (fnName === "ack_cycle_preemption_atomic" || fnName === "ack_experimental_cycle_preemption") {
         return { data: { acknowledged: true }, error: null };
+      }
+      if (fnName === "patch_autopilot_pause_atomic") {
+        return { data: { success: true, paused: true, reason: args?.p_reason }, error: null };
       }
       if (fnName === "claim_experimental_cycle_messages_atomic" || fnName === "claim_experimental_cycle_messages") {
         return {
@@ -206,7 +213,7 @@ function createMockSupabase(params = {}) {
     },
   };
 
-  return { mock, rpcCalls, audioHistory };
+  return { mock, rpcCalls, audioHistory, broadcasts };
 }
 
 function withAcceleratedTimers(fn) {
@@ -451,7 +458,7 @@ test("CENÁRIO B — áudio escolhido NÃO está autorizado (∉ candidatos do m
   assert.equal(metaDispatches.length, 0, "ZERO dispatch para Meta");
 }));
 
-test("CENÁRIO C — wait com outboundActions residual", withAcceleratedTimers(async () => {
+test("CENÁRIO C — wait não envia saída e pausa para revisão humana", withAcceleratedTimers(async () => {
   const conversationId = "conv_audio_wait_c";
   const correlationId = "corr_audio_wait_c";
 
@@ -474,7 +481,7 @@ test("CENÁRIO C — wait com outboundActions residual", withAcceleratedTimers(a
     },
   };
 
-  const { mock: mockSupabase, rpcCalls, audioHistory } = createMockSupabase({
+  const { mock: mockSupabase, rpcCalls, audioHistory, broadcasts } = createMockSupabase({
     conversationRecord,
     personaAudios: mockPersonaAudios,
   });
@@ -527,6 +534,13 @@ test("CENÁRIO C — wait com outboundActions residual", withAcceleratedTimers(a
   assert.equal(audioHistory.length, 0, "ZERO registro de histórico");
   assert.equal(metaDispatches.length, 0, "ZERO despacho para Meta");
   assert.ok(result.trace?.includes("cycle_completed_wait"), "Ciclo deve completar em wait");
+  assert.ok(result.trace?.includes("cycle_waiting_human_review"), "Ciclo deve registrar revisão humana necessária");
+  const pauseCall = rpcCalls.find((call) => call.fnName === "patch_autopilot_pause_atomic");
+  assert.equal(pauseCall?.args?.p_paused, true, "Piloto deve ser pausado no banco após wait sem resposta");
+  assert.equal(pauseCall?.args?.p_reason, "brain_wait_no_response");
+  const stateUpdate = broadcasts.findLast((event) => event.event === "autopilot_state_update");
+  assert.equal(stateUpdate?.payload?.status, "waiting_human", "UI deve receber alerta de revisão humana");
+  assert.equal(stateUpdate?.payload?.isEnabled, false, "UI deve refletir a pausa do Piloto");
 }));
 
 test("CENÁRIO D — Rejeição de integridade limpa outboundActions e não deixa reserva presa", withAcceleratedTimers(async () => {

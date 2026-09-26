@@ -74,6 +74,7 @@ import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { StageChecklistItem } from "@/domain/entities/ChatStage";
 import { useAutoPilot } from "@/presentation/hooks/useAutoPilot";
 import { AutoPilotApprovalCard } from "./AutoPilotApprovalCard";
+import { ManualResponseReviewDialog } from "./ManualResponseReviewDialog";
 import {
   AutoPilotActivityIndicator,
   isAutoPilotActivelyWorking,
@@ -619,6 +620,9 @@ function getStoredRestrictedChatIds(): Set<string> {
 export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [conversations, setConversations] = useState<DirectConversation[]>([]);
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
+  const [manualReviewClosedChatId, setManualReviewClosedChatId] = useState<string | null>(null);
+  const [manualResponseText, setManualResponseText] = useState("");
+  const [isSendingManualResponse, setIsSendingManualResponse] = useState(false);
   const [messages, setMessages] = useState<Record<string, DirectMessage[]>>({});
   const messagesRef = useRef<Record<string, DirectMessage[]>>({});
   useEffect(() => {
@@ -2696,8 +2700,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   };
 
   // Envio central de mensagem com rastreamento de status e suporte completo a mídias
-  const sendMessageWithText = async (textToSend: string) => {
-    if (!textToSend.trim() || !activeChat) return;
+  const sendMessageWithText = async (textToSend: string): Promise<boolean> => {
+    if (!textToSend.trim() || !activeChat) return false;
 
     const messageText = textToSend.trim();
     if (activeChat.type === "instagram") {
@@ -2940,6 +2944,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         replyTo: currentReply,
         replyToMessageId: currentReply?.id,
       });
+      return true;
     } catch (err: any) {
       console.error("Erro ao enviar mensagem:", err);
       const is24h =
@@ -2962,6 +2967,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             : m
         ),
       }));
+      return false;
     }
   };
 
@@ -3675,6 +3681,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return msg;
     });
   }, [activeChat, activeChatMessagesRaw]);
+  const activeAutoPilotState = activeChat ? autoPilot.chatStates[activeChat.id] : null;
+  const isManualReviewOpen = Boolean(
+    activeChat &&
+    activeAutoPilotState?.status === "waiting_human" &&
+    manualReviewClosedChatId !== activeChat.id
+  );
+  useEffect(() => {
+    if (activeChat && activeAutoPilotState?.status === "waiting_human") {
+      setManualReviewClosedChatId((current) => current === activeChat.id ? current : null);
+    }
+  }, [activeChat?.id, activeAutoPilotState?.status, activeAutoPilotState?.stateUpdatedAt]);
   const isTinderChat = activeChat?.type === "tinder";
 
   const renderChatThread = () => {
@@ -3682,7 +3699,43 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     return (
       <div className="absolute inset-0 z-30 flex flex-col h-full w-full bg-black text-white overflow-hidden animate-in fade-in duration-150">
-        {/* Header do Chat */}
+          {isManualReviewOpen && activeChat && activeAutoPilotState && (
+            <ManualResponseReviewDialog
+              contactName={activeChat.fullName || activeChat.username || "Contato"}
+              contactUsername={activeChat.username}
+              messages={chatMessages.slice(-12).map((message) => ({
+                id: message.id,
+                text: message.text,
+                isMine: message.isMine,
+                createdAt: message.createdAt,
+                sentDate: message.sentDate,
+                timestamp: message.timestamp,
+                status: message.status,
+                mediaType: message.mediaType,
+              }))}
+              reason={activeAutoPilotState.pauseReason || "A IA não encontrou uma resposta segura."}
+              value={manualResponseText}
+              isSending={isSendingManualResponse}
+              onChange={setManualResponseText}
+              onClose={() => setManualReviewClosedChatId(activeChat.id)}
+              onSend={async () => {
+                const responseText = manualResponseText.trim();
+                if (!responseText || isSendingManualResponse) return;
+                setIsSendingManualResponse(true);
+                try {
+                  const sent = await sendMessageWithText(responseText);
+                  if (!sent) return;
+                  await autoPilot.completeManualReview(activeChat.id);
+                  setManualResponseText("");
+                  setManualReviewClosedChatId(activeChat.id);
+                } finally {
+                  setIsSendingManualResponse(false);
+                }
+              }}
+            />
+          )}
+
+          {/* Header do Chat */}
         <div className="h-14 px-3.5 border-b border-[#262626] flex items-center justify-between bg-black shrink-0 z-10">
           <div className="flex items-center gap-3">
             <button
@@ -3867,6 +3920,34 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           {(() => {
             const currentChatState = autoPilot.chatStates[activeChat.id];
             if (!currentChatState) return null;
+
+            if (currentChatState.status === "waiting_human") {
+              return (
+                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-amber-500/15 border-amber-500/40 text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex items-start gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+                      <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    </div>
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-200">A IA precisa da sua resposta</h5>
+                      <p className="text-[11px] text-zinc-300 mt-0.5 leading-snug">
+                        {currentChatState.pauseReason || "A IA não respondeu com segurança. Responda manualmente; o Piloto ficará pausado até você retomá-lo."}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualResponseText("");
+                      setManualReviewClosedChatId(null);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs shrink-0 cursor-pointer active:scale-95 transition-all shadow-sm self-end sm:self-auto"
+                  >
+                    Responder agora
+                  </button>
+                </div>
+              );
+            }
 
             // 1. Banner de Hand-off da Rifa atingida (Alerta de Assunção de Venda)
             if (currentChatState.status === "paused_handoff") {
@@ -4285,7 +4366,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             currentChatState.status === "processing" ||
             currentChatState.status === "in_queue" ||
             currentChatState.status === "paused_guardrail" ||
-            currentChatState.status === "paused_handoff"
+            currentChatState.status === "paused_handoff" ||
+            currentChatState.status === "waiting_human"
           );
           if (!currentChatState.isEnabled && !isActivelyWorking) {
             return null;
@@ -5180,6 +5262,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       {(() => {
                         const apState = autoPilot.chatStates[conv.id];
                         if (!apState) return null;
+
+                        if (apState.status === "waiting_human") {
+                          return (
+                            <span
+                              title={apState.pauseReason || "A IA precisa de uma resposta manual."}
+                              className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1 animate-pulse"
+                            >
+                              <AlertTriangle className="w-2.5 h-2.5 text-amber-300" />
+                              Responder
+                            </span>
+                          );
+                        }
 
                         if (apState.status === "paused_guardrail") {
                           return (

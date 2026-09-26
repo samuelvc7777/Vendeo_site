@@ -20,6 +20,7 @@ export type AutoPilotChatStatus =
   | "processing" // Sendo respondido agora pela IA (simulando digitação)
   | "paused_guardrail" // Pausado por foto recebida ou conteúdo estranho
   | "paused_handoff" // Pausado por chegar no momento da rifa (chamar dono)
+  | "waiting_human" // Brain não autorizou uma resposta; operador precisa assumir
   | "disabled" // Desativado pelo operador
   | "failed"; // Falha no ciclo do piloto automático
 

@@ -6,6 +6,7 @@ export type ProcessingStatus =
   | "idle"
   | "analyzing"
   | "decided"
+  | "needs_human"
   | "sent"
   | "failed";
 

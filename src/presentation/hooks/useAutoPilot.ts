@@ -17,12 +17,28 @@ interface UseAutoPilotOptions {
 }
 
 /** Console do AutoPilot: processamento autônomo exclusivamente no backend. */
-export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }: UseAutoPilotOptions) {
+export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRealtimeHealthy }: UseAutoPilotOptions) {
   const [config, setConfig] = useState<AutoPilotConfig | null>(null);
   const [chatStates, setChatStates] = useState<Record<string, AutoPilotChatState>>({});
   const [currentProcessingId, setCurrentProcessingId] = useState<string | null>(null);
   const chatStatesRef = useRef(chatStates);
+  const notifiedHumanReviewRef = useRef<Record<string, string>>({});
   useEffect(() => { chatStatesRef.current = chatStates; }, [chatStates]);
+
+  useEffect(() => {
+    for (const [conversationId, state] of Object.entries(chatStates)) {
+      if (state.status !== "waiting_human") continue;
+      const reviewKey = state.cycleId || state.pausedAt || state.stateUpdatedAt || "waiting_human";
+      if (notifiedHumanReviewRef.current[conversationId] === reviewKey) continue;
+      notifiedHumanReviewRef.current[conversationId] = reviewKey;
+      const conversation = conversations.find((item) => item.id === conversationId);
+      const contactName = conversation?.fullName || conversation?.username || conversationId;
+      toast("A IA precisa de você", {
+        description: `${contactName} aguarda uma resposta manual. O Piloto foi pausado.`,
+        duration: 10000,
+      });
+    }
+  }, [chatStates, conversations]);
 
   const mergeStatesMonotonic = useCallback((incoming: Record<string, AutoPilotChatState>) => {
     setChatStates((previous) => {
@@ -273,5 +289,19 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
+  const completeManualReview = useCallback(async (conversationId: string) => {
+    const completedAt = new Date().toISOString();
+    const updated = await autoPilotRepo.saveChatState(conversationId, {
+      isEnabled: false,
+      status: "disabled",
+      pauseReason: "paused_manual",
+      pausedAt: completedAt,
+      activity: null,
+      lastResponseSentAt: completedAt,
+    });
+    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
+    toast.success("Resposta enviada. O Piloto continua pausado nesta conversa.");
+  }, []);
+
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, completeManualReview, refreshState, applyRemoteStateUpdate };
 }

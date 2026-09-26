@@ -568,6 +568,7 @@ export type ProcessingStatus =
   | "idle"
   | "analyzing"
   | "decided"
+  | "needs_human"
   | "sent"
   | "failed";
 
@@ -10207,7 +10208,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         });
       }
     } else {
-        // Ação 'wait' ou sem resposta: marca mensagens como processadas para não reavaliar no vácuo
+        // Ação 'wait': não há envio, mas o inbound precisa de revisão humana.
         if (reservedAudioId && !sentSuccessfully) {
           try {
             await releaseAudioDeliveryReservation({
@@ -10226,6 +10227,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         }
         currentCycle.status = "completed";
         currentCycle.trace.push("cycle_completed_wait");
+        currentCycle.trace.push("cycle_waiting_human_review");
       }
 
       const durationMs = Date.now() - startTime;
@@ -10410,7 +10412,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           checkpoint: decision.checkpoint,
           lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
           lastProcessedAt: new Date().toISOString(),
-          lastProcessingStatus: sentSuccessfully || decision.action === "wait" ? "sent" : "decided",
+          lastProcessingStatus: sentSuccessfully
+            ? "sent"
+            : decision.action === "wait"
+            ? "needs_human"
+            : "decided",
           lastCorrelationId: correlationId,
           lastDecision: decision,
           lastError: null,
@@ -10498,40 +10504,91 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
 
         const completedUsage = cycleUsageMetadata();
+        const needsHumanReview = decision.action === "wait" && claimedMessageIds.length > 0;
+        let humanPauseConfirmed = false;
+        if (needsHumanReview) {
+          for (let attempt = 1; attempt <= 2 && !humanPauseConfirmed; attempt += 1) {
+            try {
+              const { data: pauseResult, error: pauseError } = await supabase.rpc(
+                "patch_autopilot_pause_atomic",
+                {
+                  p_conversation_id: conversationId,
+                  p_paused: true,
+                  p_reason: "brain_wait_no_response",
+                },
+              );
+              humanPauseConfirmed = !pauseError && pauseResult?.success === true;
+              if (!humanPauseConfirmed) {
+                console.error(
+                  `[Orchestrator] Pausa para revisão humana não confirmada (tentativa=${attempt}) conv=${conversationId}:`,
+                  pauseError?.message || pauseResult,
+                );
+              }
+            } catch (pauseError: any) {
+              console.error(
+                `[Orchestrator] Erro ao pausar para revisão humana (tentativa=${attempt}) conv=${conversationId}:`,
+                pauseError?.message || pauseError,
+              );
+            }
+          }
+        }
+        const pauseReason = humanPauseConfirmed
+          ? "A IA não encontrou uma resposta segura. Responda manualmente e retome o Piloto quando quiser."
+          : "A IA não encontrou uma resposta segura e não foi possível confirmar a pausa automática. Desative o Piloto e responda manualmente.";
         await publishAutoPilotState(supabase, conversationId, {
           cycleId: correlationId,
-          status: "idle",
+          ...(needsHumanReview
+            ? {
+                ...(humanPauseConfirmed ? { isEnabled: false } : {}),
+                status: "waiting_human",
+                pauseReason,
+                pausedAt: new Date().toISOString(),
+                scheduledResponseAt: null,
+              }
+            : { status: "idle" }),
           lastThoughts: {
             atriaThought: decision.reasoning,
-            solThought: decision.suggestedResponse,
-            previewResponses: [decision.suggestedResponse],
+            solThought: needsHumanReview ? "" : decision.suggestedResponse,
+            previewResponses: needsHumanReview ? [] : [decision.suggestedResponse],
           },
           activity: activity(
             "completed",
-            sentSuccessfully ? "Atria respondeu" : "Atria avaliou",
-            decision.suggestedResponse || "Turno concluído.",
-            {
-              atriaThought: decision.reasoning,
-              solThought: decision.suggestedResponse,
-              currentResponsePreview: decision.suggestedResponse,
-              previewResponses: [decision.suggestedResponse],
-              decision,
-            }
+            needsHumanReview
+              ? "Aguardando sua resposta"
+              : sentSuccessfully
+              ? "Atria respondeu"
+              : "Atria avaliou",
+            needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
+            needsHumanReview
+              ? { atriaThought: decision.reasoning, decision }
+              : {
+                  atriaThought: decision.reasoning,
+                  solThought: decision.suggestedResponse,
+                  currentResponsePreview: decision.suggestedResponse,
+                  previewResponses: [decision.suggestedResponse],
+                  decision,
+                },
           ),
           cycleEvent: {
             phase: "completed",
-            event: "cycle_completed",
-            label: "Ciclo concluído",
-            detail: sentBalloonsCount > 0
+            event: needsHumanReview ? "human_review_required" : "cycle_completed",
+            label: needsHumanReview ? "Resposta manual necessária" : "Ciclo concluído",
+            detail: needsHumanReview
+              ? pauseReason
+              : sentBalloonsCount > 0
               ? "Todos os envios deste ciclo foram confirmados."
               : "Ciclo concluído sem envio de resposta.",
             metadata: {
               action: decision.action,
               sentBalloonsCount,
-              totalBalloons: balloons.length,
+              ...(needsHumanReview ? {} : { totalBalloons: balloons.length }),
               model: cycleOpenAiUsage.snapshot()?.models[0] || configuredAgentModel || null,
-              reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
-              verbosity: agentSettings.get("openai_brain_verbosity") || null,
+              ...(needsHumanReview
+                ? {}
+                : {
+                    reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
+                    verbosity: agentSettings.get("openai_brain_verbosity") || null,
+                  }),
               ...completedUsage,
             },
           },
@@ -10724,11 +10781,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           console.log(`[Orchestrator] Mensagens novas detectadas durante o ciclo em ${conversationId}. Agendando próximo ciclo imediatamente.`);
           await supabase
             .from("instagram_conversations")
-            .update({
-              ai_auto_respond: true,
-              ai_debounce_until: new Date().toISOString(),
-            })
-            .eq("id", conversationId);
+            .update({ ai_debounce_until: new Date().toISOString() })
+            .eq("id", conversationId)
+            .eq("ai_auto_respond", true);
         }
       } catch (_npErr) {}
 

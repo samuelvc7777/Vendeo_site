@@ -1138,3 +1138,34 @@ test('32. isPaused no Webhook não bloqueia conversa quando ai_auto_respond é t
   );
 });
 
+test('33. Ativação imediata envia a última inbound ao Brain e wait exige intervenção humana', () => {
+  const apiSource = fs.readFileSync(
+    new URL('../supabase/functions/api/index.ts', import.meta.url),
+    'utf8'
+  );
+  const immediateStart = apiSource.indexOf('// Se o operador solicitou resposta imediata à última mensagem pendente:');
+  const immediateEnd = apiSource.indexOf('} else {\n          // Desativação atômica', immediateStart);
+  const immediateBlock = apiSource.slice(immediateStart, immediateEnd);
+
+  assert.match(immediateBlock, /if \(triggerImmediate\)/, 'modo imediato deve ser explícito');
+  assert.match(immediateBlock, /authorize_send_now_atomic/, 'ciclo imediato deve adquirir autorização atômica');
+  assert.match(immediateBlock, /id: lastMsg\.id/, 'a inbound pendente deve ser enviada ao Brain');
+
+  const orchestratorSource = fs.readFileSync(
+    new URL('../supabase/functions/api/brain_orchestrator.ts', import.meta.url),
+    'utf8'
+  );
+  const waitStart = orchestratorSource.indexOf('const needsHumanReview = decision.action === "wait"');
+  const waitEnd = orchestratorSource.indexOf('usageTerminalEventPublished = Boolean(completedUsage.usage);', waitStart);
+  const waitBlock = orchestratorSource.slice(waitStart, waitEnd);
+  assert.match(waitBlock, /patch_autopilot_pause_atomic/, 'wait sem resposta deve pausar o Piloto no banco');
+  assert.match(waitBlock, /status: "waiting_human"/, 'wait sem resposta deve gerar estado visível para o operador');
+  assert.match(waitBlock, /human_review_required/, 'wait sem resposta deve registrar evento de revisão');
+
+  const followUpStart = orchestratorSource.indexOf('// Verificação pós-ciclo: se chegaram mensagens novas do pretendente durante este ciclo');
+  const followUpEnd = orchestratorSource.indexOf('return {\n        handled: true,', followUpStart);
+  const followUpBlock = orchestratorSource.slice(followUpStart, followUpEnd);
+  assert.doesNotMatch(followUpBlock, /ai_auto_respond:\s*true/, 'mensagem concorrente nunca deve reativar conversa pausada');
+  assert.match(followUpBlock, /\.eq\("ai_auto_respond", true\)/, 'debounce só deve ser atualizado se o Piloto ainda estiver ativo');
+});
+
