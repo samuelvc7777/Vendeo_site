@@ -3,6 +3,15 @@
 export const ACTIVE_CYCLE_TTL_SECONDS = 300;
 export const AGENT_LOCAL_WAIT_MS = 120_000;
 
+export function getStaleCycleThresholdIso(nowMs = Date.now()): string {
+  return new Date(nowMs - ACTIVE_CYCLE_TTL_SECONDS * 1000).toISOString();
+}
+
+export function isCycleStaleAt(activeCycleAt: string | null | undefined, nowMs = Date.now()): boolean {
+  const activeAtMs = activeCycleAt ? Date.parse(activeCycleAt) : Number.NaN;
+  return Number.isFinite(activeAtMs) && activeAtMs <= nowMs - ACTIVE_CYCLE_TTL_SECONDS * 1000;
+}
+
 export function resolveMissionMemoryContext(value: unknown, fallbackSegments: string[]): string {
   if (value === undefined || value === null) {
     return fallbackSegments.filter(Boolean).join("\n\n");

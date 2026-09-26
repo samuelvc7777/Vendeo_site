@@ -22,6 +22,7 @@ import {
   isActionableInboundMessage,
   isPureEmojiMessage,
 } from "./ConversationQualityGate.ts";
+import { getStaleCycleThresholdIso } from "./autopilot_cycle_safety.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -3960,15 +3961,16 @@ serve(async (req: Request) => {
         }
 
         // 0. Auto-recuperação de stale locks e claims presas (P0)
-        // Se uma conversa ficou com active_cycle_at > 180s sem concluir, o ciclo caiu.
+        // O ciclo só pode ser recuperado depois do TTL oficial compartilhado
+        // com claim_experimental_cycle e com a espera local do Agent.
         // Reverte mensagens 'claimed' para 'pending' e limpa o token de ciclo.
         try {
-          const staleThresholdIso = new Date(Date.now() - 180_000).toISOString();
+          const staleThresholdIso = getStaleCycleThresholdIso();
           const { data: staleConvs } = await supabase
             .from("instagram_conversations")
             .select("id, stage_completed_rules")
             .not("stage_completed_rules->active_cycle_token", "is", null)
-            .lt("stage_completed_rules->>active_cycle_at", staleThresholdIso)
+            .lte("stage_completed_rules->>active_cycle_at", staleThresholdIso)
             .limit(10);
 
           if (staleConvs && staleConvs.length > 0) {

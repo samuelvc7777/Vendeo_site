@@ -1,4 +1,4 @@
--- PROPOSTA LOCAL — NÃO APLICADA.
+-- MIGRATION DO REPOSITÓRIO — NÃO APLICADA NESTA TAREFA.
 -- Compatibilidade do banco com o código pré-refatoração (4cbf582d).
 -- Não executar diretamente em produção.
 -- Não faz rollback de dados, não remove migrations e não altera a Edge Function.
@@ -68,4 +68,5 @@ $$;
 -- A Edge Function usa service_role. Não reabrir anon/authenticated sem decisão
 -- explícita de segurança para a chamada direta feita pelo browser.
 REVOKE ALL ON FUNCTION public.patch_autopilot_pause_atomic(text, boolean, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.patch_autopilot_pause_atomic(text, boolean, text) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.patch_autopilot_pause_atomic(text, boolean, text) TO service_role;

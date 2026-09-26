@@ -101,6 +101,8 @@ As políticas atuais vendeo_anon_app_access permitem ALL a anon/authenticated pa
 
 Não há evidência de falha de Realtime como causa do descarte do Agent. Nos ciclos analisados, o resultado morre no check de autoridade antes da outbox. A falha da pausa pode causar estado visual/operacional divergente por causa da assinatura e dos grants.
 
+O fluxo browser não depende somente da RPC direta. Depois de saveChatState(), useAutoPilot.ts chama o endpoint oficial toggle-chat; ao desativar, também chama autopilot/pause. A chamada é fire-and-forget, mas existe no caminho atual e não há bug concreto de ausência desse endpoint após a falha da RPC browser. Por isso esta correção mantém o fail-closed do repositório e não abre a função privilegiada para anon.
+
 verify_autopilot_cron_token(text) existe, lê autopilot_cron_token do Vault e é service_role-only. A Edge Function 348 não chama essa função; o cron envia o segredo no header, mas o endpoint antigo não mostra a validação da função.
 
 ## Mapa das migrations posteriores
@@ -118,11 +120,11 @@ verify_autopilot_cron_token(text) existe, lê autopilot_cron_token do Vault e é
 
 Essas migrations podem permanecer aplicadas; não há justificativa para rollback remoto de dados. A compatibilidade explícita necessária é a assinatura de pausa. Os grants do browser exigem decisão de segurança separada e não devem ser reabertos automaticamente.
 
-## Correção proposta
+## Correção preparada
 
-Foi criado docs/architecture/sql/restore_pre_refactor_db_compatibility.sql apenas como proposta local. Ela adiciona a sobrecarga de três argumentos, preserva a função de dois argumentos e mantém a mutação atômica. Não é migration aplicada, não faz rollback de dados e não foi enviada ao Supabase.
+Foi criada a migration supabase/migrations/20260926100734_restore_pre_refactor_pause_rpc_compatibility.sql. Ela adiciona a sobrecarga de três argumentos, preserva a função de dois argumentos e mantém a mutação atômica. A migration existe no repositório, mas não foi aplicada, não faz rollback de dados e não foi enviada ao Supabase.
 
-A proposta libera a nova assinatura somente para service_role, corrigindo as chamadas da Edge Function sem reabrir uma RPC privilegiada para cliente anônimo. O frontend continuará usando o fallback até haver decisão explícita sobre como autorizar a chamada browser.
+A migration libera a nova assinatura somente para service_role, corrigindo as chamadas da Edge Function sem reabrir uma RPC privilegiada para cliente anônimo. O frontend continuará usando o fallback até haver decisão explícita sobre como autorizar a chamada browser.
 
 O problema late_agent_result_discarded requer correção da Edge Function: usar no mínimo o mesmo TTL efetivo de 300 s e evidência de outbox, ou chamar a recuperação atômica. Não é seguro mascará-lo com uma migration.
 
@@ -146,3 +148,16 @@ O problema late_agent_result_discarded requer correção da Edge Function: usar 
 - Testes executados: tests/test_strict_openai_pilot_propagation.mjs, tests/test_brain_objective_evidence.mjs, tests/test_conversational_progression.mjs e src/__tests__/resilience-and-queries.test.mjs.
 - Resultado: 27 aprovados e 4 falhas preexistentes no estado antigo. As falhas são o contrato de DNA esperado 1.1.0 contra o valor atual 1.5.7 e casos legados que esperam delegate_mission/seleção de subagente; nenhum arquivo da auditoria altera esses contratos.
 - Não existem no repositório suítes específicas separadas para durable outbox ou entrega de áudio; os contratos remotos dessas RPCs foram verificados por consulta de leitura.
+
+## Correção implementada nesta branch
+
+- supabase/functions/api/index.ts deixou de usar 180_000 e passou a usar getStaleCycleThresholdIso(), derivado de ACTIVE_CYCLE_TTL_SECONDS = 300; a consulta usa lte para permitir recuperação a partir de 300 s.
+- supabase/functions/api/autopilot_cycle_safety.ts concentra o cálculo do threshold e expõe isCycleStaleAt() para teste determinístico.
+- A migration supabase/migrations/20260926100734_restore_pre_refactor_pause_rpc_compatibility.sql adiciona a assinatura de três argumentos sem remover a assinatura antiga de dois.
+- A nova assinatura usa FOR UPDATE, atualiza ai_auto_respond, limpa ai_debounce_until ao pausar, registra e remove os marcadores de pausa, e concede EXECUTE somente a service_role. PUBLIC, anon e authenticated não recebem EXECUTE.
+- O fluxo browser continua chamando o endpoint oficial toggle-chat/pause depois de saveChatState(); não foi aberta RPC privilegiada para anon nem foi feita refatoração de frontend.
+- tests/test_pre_refactor_runtime_compatibility.mjs cobre os limiares de 180/299/300 s, authority, superseded, outbox com e sem ownership, assinatura/grants SQL e autoridade do endpoint.
+
+Validação final desta correção: npx tsc --noEmit aprovado; npm run build aprovado; teste novo 11/11 aprovado; suíte relevante combinada 38/42 aprovada, com 4 falhas antigas de contrato de DNA/subagente; git diff --check aprovado. Nenhuma migration foi aplicada e o Supabase remoto não foi alterado.
+
+A consulta remota de verificação após as alterações locais ainda retornou somente patch_autopilot_pause_atomic(text, boolean), com anon=false, authenticated=false e service_role=true. Isso confirma que a migration não foi aplicada no projeto remoto.
