@@ -5171,7 +5171,7 @@ export async function processDeterministicStageProgression(params: {
 
 // Incrementar quando uma sessão persistente precisa ser recriada para adotar
 // instruções incompatíveis com as que já estão gravadas na sessão do Agent.
-export const PERSISTENT_AGENT_SESSION_VERSION = 3;
+export const PERSISTENT_AGENT_SESSION_VERSION = 2;
 
 export function isPersistentAgentSessionCompatible(params: {
   sessionId: string | null | undefined;

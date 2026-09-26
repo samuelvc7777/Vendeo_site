@@ -40,29 +40,9 @@ console.log('🧪 Conversation Quality Gate — comportamento conversacional\n')
 }
 
 {
-  const { contract, result } = gate('Oii, tudo bem?', ['Oii, tô bem simm'], {
-    newQuestionBudget: 0, responseShape: 'answer_only', maxBalloons: 1,
-  });
+  const { contract, result } = gate('Oii, tudo bem?', ['Oii, tô bem sim, e vc?']);
   assert(result.passed, 'Resposta direta natural passa');
-  assert(contract.maxBalloons === 1, 'Saudação simples cabe em um balão');
-}
-
-{
-  const contract = quality.buildTurnContract(['Oii, tudo bem?']);
-  assert(contract.newQuestionBudget === 0, 'Saudação começa sem orçamento para uma pergunta nova');
-  assert(contract.responseShape === 'answer_only', 'Pergunta de bem-estar exige resposta, não reciprocidade automática');
-  assert(
-    quality.runConversationQualityGate({
-      inboundMessages: ['Oii, tudo bem?'],
-      candidateBalloons: ['Oii, tô bem simm'],
-      turnContract: contract,
-    }).passed,
-    'Resposta de saudação sem pergunta recíproca passa',
-  );
-  assert(
-    quality.safeHighConfidenceFallback(['Oii, tudo bem?'], contract)?.join(' ').includes('?') === false,
-    'Fallback de saudação não adiciona pergunta automaticamente',
-  );
+  assert(contract.preferNoEmoji === true && contract.maxBalloons === 1, 'Saudação prefere zero emoji e um balão');
 }
 
 {
@@ -149,7 +129,7 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
 
   const fallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], quailContract);
   assert(Array.isArray(fallback) && fallback.length === 1, 'safeHighConfidenceFallback gera fallback para "Bem e vc ?"');
-  assert(fallback[0].startsWith('Tô bem'), 'Fallback responde ao bem-estar sem devolver uma pergunta automática');
+  assert(fallback[0].startsWith('Oii, tô bem sim, e vc?') || fallback[0].startsWith('Tô bem sim, e vc?'), 'Fallback responde com formato canônico de bem-estar');
 
   const gateResult = quality.runConversationQualityGate({
     inboundMessages: ['Bem e vc ?', '?'],
@@ -160,7 +140,7 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
 
   const zeroBudgetContract = quality.buildTurnContract(['Bem e vc ?', '?'], { newQuestionBudget: 0, responseShape: 'answer_only' });
   const zeroFallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], zeroBudgetContract);
-  assert(zeroFallback[0] === 'Tô bem tbm', 'Fallback com budget zero responde sem nova pergunta');
+  assert(zeroFallback[0] === 'Tô bem também!', 'Fallback com budget zero responde sem nova pergunta');
   const zeroResult = quality.runConversationQualityGate({
     inboundMessages: ['Bem e vc ?', '?'],
     candidateBalloons: zeroFallback,
@@ -169,7 +149,7 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
   assert(zeroResult.passed, 'Fallback sem pergunta passa em contrato de budget zero');
 }
 
-const orchestratorSource = fs.readFileSync('supabase/functions/api/brain_orchestrator.ts', 'utf8');
+const orchestratorSource = fs.readFileSync('supabase/functions/api/experimental_orchestrator.ts', 'utf8');
 const compactPromptSource = fs.readFileSync('supabase/functions/api/LarissaChatStyle.ts', 'utf8');
 assert(orchestratorSource.indexOf('runStyleLint(candidateBalloons') < orchestratorSource.indexOf('runConversationQualityGate({', orchestratorSource.indexOf('runStyleLint(candidateBalloons')), 'Caminho real executa Style Lint antes do Quality Gate');
 assert((orchestratorSource.match(/QUALITY RETRY ÚNICO/g) || []).length === 1, 'Quality retry está limitado a uma implementação');

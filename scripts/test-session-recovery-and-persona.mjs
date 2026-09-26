@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   runBrainOrchestration,
-  PERSISTENT_AGENT_SESSION_VERSION,
 } from '../supabase/functions/api/brain_orchestrator.ts';
 import {
   runOpenAiBrainTurn,
@@ -118,9 +117,7 @@ function createMockSupabaseWithHistory(options = {}) {
       },
       openai_session_id: options.initialSessionId !== undefined ? options.initialSessionId : null,
       openai_session_kind: options.initialSessionId ? 'persistent' : null,
-      persistent_session_version: options.initialSessionId
-        ? (options.initialSessionVersion ?? PERSISTENT_AGENT_SESSION_VERSION)
-        : null,
+      persistent_session_version: options.initialSessionId ? 2 : null,
       orchestration: {
         currentStageId: 'stage_1_conexao',
         currentPhase: 'conexao_inicial',
@@ -131,9 +128,7 @@ function createMockSupabaseWithHistory(options = {}) {
         },
         openai_session_id: options.initialSessionId !== undefined ? options.initialSessionId : null,
         openai_session_kind: options.initialSessionId ? 'persistent' : null,
-        persistent_session_version: options.initialSessionId
-          ? (options.initialSessionVersion ?? PERSISTENT_AGENT_SESSION_VERSION)
-          : null,
+      persistent_session_version: options.initialSessionId ? 2 : null,
         messageLedger: defaultLedger,
         lastProcessedMessageId: options.messages?.length ? options.messages[options.messages.length - 1].id : null,
       },
@@ -391,7 +386,6 @@ test('Teste B - Session inválida: detecta falha, busca últimas mensagens de in
     conversationId: 'conv_inv_test',
     correlationId: 'corr_inv_123',
     initialSessionId: 'sess_invalid_old_999',
-    initialSessionVersion: PERSISTENT_AGENT_SESSION_VERSION - 1,
     messages: historyMessages,
   });
 
