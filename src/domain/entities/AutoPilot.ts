@@ -83,6 +83,18 @@ export interface AutoPilotLastThoughts {
   sentAt?: string;
 }
 
+export interface AutoPilotPendingOutboundMessage {
+  id: string;
+  cycleId: string;
+  actionIndex: number;
+  content: string;
+  messageType: "text" | "audio";
+  mediaUrl?: string | null;
+  deliverAt: string;
+  createdAt: string;
+  audioDurationSeconds?: number | null;
+}
+
 export interface AutoPilotPendingAction {
   conversationId: string;
   conversationName: string;
@@ -113,6 +125,7 @@ export interface AutoPilotChatState {
   activeCycleToken?: string | null;
   cycleId?: string | null;
   cycleEvents?: AutoPilotCycleEvent[];
+  pendingOutboundMessages?: AutoPilotPendingOutboundMessage[];
   lastError?: string;
   stateUpdatedAt?: string;
 }

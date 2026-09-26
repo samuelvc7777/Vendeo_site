@@ -3781,6 +3781,24 @@ export async function runDurableOutboxDispatcher(
 
   result.success = result.errors.length === 0 && result.uncertainCount === 0;
 
+  // Mantém no estado visual as mensagens que ainda aguardam o pacing humano.
+  // O chat usa esta lista para mostrar cada balão e sua contagem regressiva.
+  const pendingOutboundMessages = allEntries
+    .filter((entry) => entry.status === "pending" || entry.status === "sending")
+    .map((entry) => ({
+      id: entry.id,
+      cycleId: entry.cycleId || "",
+      actionIndex: entry.actionIndex || 0,
+      content: entry.content || entry.mediaUrl || "",
+      messageType: entry.messageType === "audio" ? "audio" : "text",
+      mediaUrl: entry.mediaUrl || null,
+      deliverAt: entry.notBefore || entry.createdAt || new Date().toISOString(),
+      createdAt: entry.createdAt || new Date().toISOString(),
+      audioDurationSeconds: entry.audioDurationSeconds ?? null,
+    }))
+    .filter((entry) => Boolean(entry.content));
+  await publishAutoPilotState(supabase, conversationId, { pendingOutboundMessages });
+
   // GAP 5: Se restam ações pendentes com notBefore agendado, agenda o disparo durável preciso em background
   if (result.pendingCount > 0) {
     scheduleNextOutboxDispatch({
@@ -5269,17 +5287,20 @@ export async function searchPersonaAudios(params: {
     "em", "no", "na", "nos", "nas",
     "e", "ou", "que", "com", "por", "pra", "para",
     "se", "seu", "sua", "seus", "suas", "meu", "minha", "meus", "minhas",
-    "você", "vc", "como", "qual", "acha", "sobre",
-    "isso", "aqui", "tudo", "bem", "mais"
+    "voce", "vc", "como", "qual", "acha", "sobre",
+    "isso", "aqui", "tudo", "bem", "mais", "sim", "fala", "me"
   ]);
 
-  const rawTerms = `${intent || ""} ${query || ""}`
-    .toLowerCase()
+  const normalizeAudioSearchText = (value: string) =>
+    value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const rawTerms = normalizeAudioSearchText(`${intent || ""} ${query || ""}`)
     .replace(/[.,;!?]/g, " ")
     .split(/\s+/)
     .filter(Boolean);
 
-  const queryTerms = rawTerms.filter((t) => t.length >= 3 && !AUDIO_STOPWORDS.has(t));
+  const queryTerms = rawTerms
+    .filter((term) => term.length >= 3 && !AUDIO_STOPWORDS.has(term))
+    .map((term) => term.startsWith("trabalh") ? "trabalh" : term);
 
   // DEDUP ABSOLUTO DE ÁUDIOS:
   // Se o áudio já foi enviado para esta conversa em qualquer momento, ele NUNCA é retornado
@@ -5294,8 +5315,8 @@ export async function searchPersonaAudios(params: {
     })
     .filter((a) => !sentAudioIds.has(String(a.id)))
     .map((a) => {
-      const searchHaystack = `${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`.toLowerCase();
-      const combinedInput = `${intent || ""} ${query || ""}`.toLowerCase();
+      const searchHaystack = normalizeAudioSearchText(`${a.title || ""} ${a.transcript || ""} ${a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`);
+      const combinedInput = normalizeAudioSearchText(`${intent || ""} ${query || ""}`);
       let matchScore = 0;
 
       // Aderência semântica: se a palavra que casaria for sobre tema pessoal (ex: "praia"),
@@ -10058,6 +10079,8 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         const content = balloons[i];
         const actionKey = canonicalOutboundActions.length === 1 ? idempotencyKey : `${idempotencyKey}_a${i}`;
         const outboxId = `out_${nowMs}_${Math.random().toString(36).slice(2, 7)}_a${i}`;
+        const stepDelay = isAudio ? Math.max(10, Number(resolvedAudio?.duration) || 10) : 10;
+        accumulatedDelaySeconds += stepDelay;
         const notBeforeIso = new Date(nowMs + accumulatedDelaySeconds * 1000).toISOString();
 
         const entry: OutboxEntry = {
@@ -10081,8 +10104,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         outboxBatch.push(entry);
         outboxMap[actionKey] = entry;
 
-        const stepDelay = isAudio ? Math.max(10, Number(resolvedAudio?.duration) || 10) : 10;
-        accumulatedDelaySeconds += stepDelay;
       }
 
       currentCycle.outboxEntryId = outboxBatch[0]?.id;
@@ -10131,6 +10152,21 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
       currentCycle.trace.push("outbound_batch_persisted");
       currentCycle.trace.push(`outbound_batch_size=${outboxBatch.length}`);
+
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        pendingOutboundMessages: outboxBatch.map((entry) => ({
+          id: entry.id,
+          cycleId: entry.cycleId,
+          actionIndex: entry.actionIndex || 0,
+          content: entry.content,
+          messageType: entry.messageType === "audio" ? "audio" : "text",
+          mediaUrl: entry.mediaUrl || null,
+          deliverAt: entry.notBefore || entry.createdAt,
+          createdAt: entry.createdAt,
+          audioDurationSeconds: entry.audioDurationSeconds ?? null,
+        })),
+      });
 
       await publishAutoPilotState(supabase, conversationId, {
         cycleId: correlationId,

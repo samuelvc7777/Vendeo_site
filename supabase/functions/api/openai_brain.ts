@@ -138,14 +138,14 @@ export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "cofre_audio_search",
     description:
-      "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente (hobbies, rotina, gostos, faculdade, tempo livre, preferências). Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
+      "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente sobre profissão, ocupação, trabalho, faculdade, curso, rotina, hobbies, gostos, tempo livre e preferências. Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
     parameters: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description:
-            "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'hobbies e tempo livre', 'rotina da faculdade', 'comida preferida').",
+            "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'profissão e trabalho com vendas online', 'rotina da faculdade', 'hobbies e tempo livre', 'comida preferida').",
         },
       },
       required: ["query"],
@@ -170,14 +170,14 @@ export const COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION: OpenAiAgentFunctionToolDe
   type: "function",
   name: "cofre_audio_search",
   description:
-    "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente (hobbies, rotina, gostos, faculdade, tempo livre, preferências). Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
+    "Pesquisa no Cofre de Áudios da Larissa por áudios gravados que possam responder naturalmente a perguntas pessoais do pretendente sobre profissão, ocupação, trabalho, faculdade, curso, rotina, hobbies, gostos, tempo livre e preferências. Retorna transcrição, quando usar e título dos áudios candidatos (máx 3). Áudios já enviados nesta conversa são automaticamente excluídos.",
   parameters: {
     type: "object",
     properties: {
       query: {
         type: "string",
         description:
-          "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'hobbies e tempo livre', 'rotina da faculdade', 'comida preferida').",
+          "Termos de busca sobre o tema pessoal da Larissa a ser respondido em áudio (ex: 'profissão e trabalho com vendas online', 'rotina da faculdade', 'hobbies e tempo livre', 'comida preferida').",
       },
     },
     required: ["query"],
@@ -402,11 +402,19 @@ export async function executeCofreAudioSearch(params: {
       .forEach((h) => sentAudioIds.add(String(h.audioId)));
   }
 
-  const queryTerms = String(query || "")
-    .toLowerCase()
+  const audioSearchStopwords = new Set([
+    "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das",
+    "em", "no", "na", "e", "ou", "que", "com", "por", "pra", "para",
+    "meu", "minha", "seu", "sua", "voce", "vc", "como", "qual", "sobre",
+    "mais", "sim", "fala", "me", "isso", "aqui", "bem",
+  ]);
+  const normalizeAudioSearchText = (value: string) =>
+    value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const queryTerms = normalizeAudioSearchText(String(query || ""))
     .replace(/[.,;!?]/g, " ")
     .split(/\s+/)
-    .filter((t) => t.length >= 3);
+    .filter((term) => term.length >= 3 && !audioSearchStopwords.has(term))
+    .map((term) => term.startsWith("trabalh") ? "trabalh" : term);
 
   // Filtra áudios habilitados, com transcrição, e NUNCA enviados
   const available = audios
@@ -415,7 +423,7 @@ export async function executeCofreAudioSearch(params: {
     .filter((a) => !sentAudioIds.has(String(a.id)));
 
   const scored = available.map((a) => {
-    const haystack = `${a.title || ""} ${a.transcript || ""} ${a.usage_instruction || a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`.toLowerCase();
+    const haystack = normalizeAudioSearchText(`${a.title || ""} ${a.transcript || ""} ${a.usage_instruction || a.usageInstruction || ""} ${(a.keywords || []).join(" ")}`);
     let score = 0;
     for (const term of queryTerms) {
       if (haystack.includes(term)) score += 1;

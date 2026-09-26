@@ -36,6 +36,7 @@ import fs from "node:fs";
 import test from "node:test";
 import {
   COFRE_AUDIO_SEARCH_TOOL_DEFINITION,
+  COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION,
   executeCofreAudioSearch,
   validateConversationBrainPlan,
   validateResponseGenerationInvariant,
@@ -85,6 +86,16 @@ const mockAudiosDatabase = [
     keywords: ["rotina", "enfermagem", "hospital", "estágio", "dia a dia"],
     enabled: true,
     duration: 14,
+  },
+  {
+    id: "aud_profissao_trabalho",
+    title: "Faculdade e trabalho",
+    audioUrl: "https://storage.vendeo.com/audios/faculdade_trabalho.mp3",
+    transcript: "Eu faço faculdade de enfermagem, estágio no hospital e trabalho com vendas online.",
+    usageInstruction: "Usar quando ele perguntar o que ela faz da vida, profissão, trabalho ou faculdade.",
+    keywords: ["profissão", "ocupação", "trabalho", "vendas", "enfermagem"],
+    enabled: true,
+    duration: 26,
   },
   {
     id: "aud_hobbies",
@@ -356,11 +367,16 @@ function createMockSupabase(history = [], audios = mockAudiosDatabase) {
 test("1. Caminho oficial do OpenAI Agent possui cofre_audio_search", () => {
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.name, "cofre_audio_search");
   assert.ok(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description.includes("Cofre de Áudios"));
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /profissão.*ocupação.*trabalho/i);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.description, /profissão e trabalho/i);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /faculdade/);
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.type, "string");
   assert.deepEqual(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.required, ["query"]);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /profissão.*ocupação.*trabalho/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.parameters.properties.query.description, /profissão e trabalho/i);
   // Verifica que instructions oficiais locais incluem a seção canônica
   const instructions = buildCanonicalAgentInstructions({ strictOpenAiPilot: true });
-  assert.ok(instructions.includes("=== COFRE DE ÁUDIOS ==="));
+  assert.ok(instructions.includes("=== COFRE DE ÁUDIOS"));
   assert.ok(instructions.includes("cofre_audio_search"));
 });
 
@@ -408,6 +424,29 @@ test("4. Agent consegue conhecer whenToUse", async () => {
   const audio = results.find((a) => a.audioId === "aud_hobbies");
   assert.ok(audio);
   assert.ok(audio.whenToUse.includes("tempo livre") || audio.whenToUse.includes("finais de semana"));
+});
+
+test("4.1 Pergunta direta 'trabalha com oq' encontra áudio de profissão", async () => {
+  const supabase = createMockSupabase();
+  const results = await searchCofreAudios({
+    supabase,
+    conversationId: "conv_test_profession_query",
+    query: "Ja sim, me fala mais sobre vc, trabalha com oq ?",
+  });
+
+  assert.ok(
+    results.some((audio) => audio.audio_id === "aud_profissao_trabalho"),
+    "A busca deve reconhecer a pergunta coloquial sobre trabalho e retornar o áudio de profissão elegível"
+  );
+  const agentToolResults = await executeCofreAudioSearch({
+    supabase,
+    conversationId: "conv_test_profession_query_agent",
+    query: "Ja sim, me fala mais sobre vc, trabalha com oq ?",
+  });
+  assert.ok(
+    agentToolResults.some((audio) => audio.audioId === "aud_profissao_trabalho"),
+    "A ferramenta do Agent também deve reconhecer a variação 'trabalha' para 'trabalho'"
+  );
 });
 
 test("5. Áudio já enviado não aparece na busca", async () => {
@@ -1257,7 +1296,7 @@ test("27. CENÁRIO C — TEXT + AUDIO: isolamento lexical por iteração com hel
   assert.equal(results[2].isAudio, false, "Iteração 2 (text) deve ter isAudio=false (sem vazamento do áudio anterior)");
   assert.equal(results[2].valid, true);
 
-  // Verificação estática direta no arquivo brain_orchestrator.ts: zero ocorrências de 'isAudioAction'
+  // O dispatcher durável escolhe o envio e a validação pelo messageType persistido na outbox.
   const code = fs.readFileSync("supabase/functions/api/brain_orchestrator.ts", "utf8");
   assert.equal(
     code.includes("isAudioAction"),
@@ -1265,8 +1304,13 @@ test("27. CENÁRIO C — TEXT + AUDIO: isolamento lexical por iteração com hel
     "supabase/functions/api/brain_orchestrator.ts NÃO deve conter nenhuma referência a 'isAudioAction'"
   );
   assert.equal(
-    code.includes("const dispatchPayloadCheck = checkOutboundActionDispatchPayload("),
+    code.includes('if (outboxEntry.messageType === "text") {'),
     true,
-    "supabase/functions/api/brain_orchestrator.ts DEVE chamar checkOutboundActionDispatchPayload no loop real"
+    "A validação de texto deve rodar apenas para entradas text da outbox"
+  );
+  assert.equal(
+    code.includes('if (outboxEntry.messageType === "audio") {'),
+    true,
+    "A entrada audio deve seguir o envio de mídia, sem passar pelo validador de texto"
   );
 });

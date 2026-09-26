@@ -3641,9 +3641,28 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // 1. RENDERIZADOR DA TELA DE CONVERSA ABERTA (CHAT THREAD EM CAMADA SOBREPOSTA)
   const activeChatMessagesRaw = activeChat ? messages[activeChat.id] : undefined;
+  const activeAutoPilotState = activeChat ? autoPilot.chatStates[activeChat.id] : null;
   const chatMessages = useMemo(() => {
-    if (!activeChat || !activeChatMessagesRaw || activeChatMessagesRaw.length === 0) return [];
-    const rawChatMessages = deduplicateMessages(activeChatMessagesRaw);
+    if (!activeChat) return [];
+    const pendingPreviews: DirectMessage[] = (activeAutoPilotState?.pendingOutboundMessages || []).map((preview) => {
+      const audioMatch = preview.content.match(/^\[audio:(https?:\/\/[^\]]+)\]$/);
+      const audioUrl = preview.mediaUrl || audioMatch?.[1];
+      return {
+        id: `autopilot-preview:${preview.id}`,
+        senderId: "me",
+        text: audioUrl ? "🎙️ Mensagem de voz" : preview.content,
+        mediaUrl: audioUrl,
+        mediaType: audioUrl ? "audio" : undefined,
+        audioTranscript: audioUrl ? "🎙️ Mensagem de voz" : undefined,
+        createdAt: formatMessageTime(preview.createdAt),
+        timestamp: Date.parse(preview.createdAt) || 0,
+        sentDate: preview.createdAt,
+        isMine: true,
+        status: "sending",
+        deliverAt: Date.parse(preview.deliverAt) || 0,
+      };
+    });
+    const rawChatMessages = deduplicateMessages([...(activeChatMessagesRaw || []), ...pendingPreviews]);
     const msgMap = new Map<string, DirectMessage>();
     for (const m of rawChatMessages) {
       msgMap.set(m.id, m);
@@ -3680,8 +3699,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       }
       return msg;
     });
-  }, [activeChat, activeChatMessagesRaw]);
-  const activeAutoPilotState = activeChat ? autoPilot.chatStates[activeChat.id] : null;
+  }, [activeChat, activeChatMessagesRaw, activeAutoPilotState?.pendingOutboundMessages]);
   const isManualReviewOpen = Boolean(
     activeChat &&
     activeAutoPilotState?.status === "waiting_human" &&
