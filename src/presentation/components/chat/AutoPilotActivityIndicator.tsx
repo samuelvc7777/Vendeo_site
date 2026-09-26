@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 import {
   AlertTriangle,
   BrainCircuit,
@@ -25,7 +24,6 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
-import { getAutoPilotStatusCopy, hasConfirmedLatestResponse, isAutoPilotScheduledStateStale } from "@/domain/entities/AutoPilotStatusCopy";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
 
@@ -48,9 +46,7 @@ function getApiUrl(path: string): string {
 
 export function isAutoPilotWorking(state?: AutoPilotChatState | null): boolean {
   if (!state) return false;
-  if (state.status === "needs_manual_response") return false;
   if (state.status === "paused_guardrail" || state.status === "paused_handoff") return true;
-  if (isAutoPilotScheduledStateStale(state)) return Boolean(state.isEnabled);
 
   // Proteção contra atividades que ficaram congeladas no visual se a rede ou worker oscilar
   if (state.activity) {
@@ -124,6 +120,9 @@ function formatConsoleModel(model: string | null): string | null {
   const labels: Record<string, string> = {
     "gpt-6-luna": "GPT-6 Luna",
     "gpt-6-sol": "GPT-6 Sol",
+    "gpt-5.6-luna": "GPT-5.6 Luna (legado)",
+    "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
+    "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
   };
   return labels[model] || model;
 }
@@ -500,6 +499,71 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
   );
 }
 
+function getCopy(state: AutoPilotChatState) {
+  if (state.status === "paused_guardrail") {
+    return {
+      title: "IA pausada por erro",
+      detail: state.pauseReason || "O provedor de IA não respondeu. Revise e retome o piloto.",
+    };
+  }
+  if (state.status === "paused_handoff") {
+    return {
+      title: "IA pausada para intervenção",
+      detail: state.pauseReason || "A conversa precisa de uma ação manual.",
+    };
+  }
+  const actUpdatedAt = state.activity?.updatedAt || state.stateUpdatedAt;
+  const updatedAtMs = actUpdatedAt ? Date.parse(actUpdatedAt) : 0;
+  const isWaiting = state.activity?.phase === "waiting" || state.status === "waiting_delay";
+  const scheduledMs = state.scheduledResponseAt ? Date.parse(state.scheduledResponseAt) : 0;
+  const isCompleted = state.activity?.phase === "completed";
+  const isStale = isCompleted
+    ? false
+    : isWaiting
+    ? (scheduledMs > 0 && Date.now() - scheduledMs > 120_000)
+    : (updatedAtMs > 0 && Date.now() - updatedAtMs > 90_000);
+  if (state.activity && !isStale) {
+    return {
+      title: state.activity.label,
+      detail: state.activity.detail || "A IA está trabalhando nesta conversa.",
+    };
+  }
+  if (state.status === "activation_wait") {
+    return {
+      title: "IA preparando o atendimento",
+      detail: "Aguardando o período de segurança após a ativação.",
+    };
+  }
+  if (state.status === "waiting_delay") {
+    return {
+      title: "IA aguardando tempo pra agir",
+      detail: "Esperando o tempo configurado antes de analisar e responder.",
+    };
+  }
+  if (state.status === "in_queue") {
+    return {
+      title: "IA na fila",
+      detail: "Esta conversa será processada em seguida.",
+    };
+  }
+  if (scheduledMs > 0 && Date.now() >= scheduledMs) {
+    return {
+      title: "IA na fila de resposta",
+      detail: "Tempo programado concluído. Processando resposta.",
+    };
+  }
+  if (state.lastThoughts?.atriaThought || state.lastThoughts?.solThought) {
+    return {
+      title: "Última resposta enviada",
+      detail: "Aguardando nova mensagem do cliente para iniciar novo raciocínio.",
+    };
+  }
+  return {
+    title: "Piloto Automático ativo",
+    detail: "Aguardando nova mensagem do cliente para iniciar raciocínio.",
+  };
+}
+
 function ActivityIcon({ state, className }: { state: AutoPilotChatState; className: string }) {
   if (!state.isEnabled && state.status === "disabled") return <Bot className={className} />;
   if (state.status === "paused_guardrail" || state.status === "paused_handoff") {
@@ -533,7 +597,7 @@ function getValidThought(raw?: string | null): string | null {
   if (trimmed.length < 2) return null;
   if (/^[\s.·…\-–—_~*#]+$/.test(trimmed)) return null;
 
-  // Se o pensamento contiver JSON cru ou chaves técnicas da persona
+  // Se o pensamento contiver JSON cru ou chaves técnicas da persona/Atria
   if (trimmed.startsWith("{") || trimmed.includes('"analise_do_pretendente"') || trimmed.includes('"responses"')) {
     try {
       const parsed = JSON.parse(trimmed);
@@ -574,7 +638,7 @@ export function AutoPilotActivityIndicator({
   conversationId?: string;
 }) {
   const shouldRender = variant === "floating" ? state.isEnabled : isAutoPilotWorking(state);
-  const copy = getAutoPilotStatusCopy(state);
+  const copy = getCopy(state);
   const activity = state.activity;
   const targetId = conversationId || state.conversationId;
 
@@ -598,7 +662,6 @@ export function AutoPilotActivityIndicator({
   // Fases e Stepper Cognitivo
   const phase = activity?.phase;
   const isFailed = phase === "failed" || state.status === "failed";
-  const isStaleScheduledState = isAutoPilotScheduledStateStale(state);
   const isRetryExhausted =
     isFailed &&
     (state.lastError === "technical_retry_exhausted" ||
@@ -618,7 +681,7 @@ export function AutoPilotActivityIndicator({
       : undefined);
   const validBrainThought = getValidThought(rawBrainThought);
   const hasThoughts = Boolean(validBrainThought);
-  const isCompleted = !isFailed && (phase === "completed" || (!isAutoPilotActivelyWorking(state) && hasThoughts));
+  const isCompleted = phase === "completed" || (!isAutoPilotActivelyWorking(state) && hasThoughts);
 
   const isBrainActive =
     phase === "brain" ||
@@ -630,7 +693,7 @@ export function AutoPilotActivityIndicator({
     (phase as string) === "reanalyzing";
 
   const isTypingOrSending = phase === "typing" || phase === "sending";
-  const isSendingDone = !isFailed && hasConfirmedLatestResponse(state);
+  const isSendingDone = isCompleted;
   const isBrainDone = isCompleted || (!isBrainActive && (Boolean(validBrainThought) || isTypingOrSending));
 
   const isWorking = isAutoPilotWorking(state);
@@ -1202,11 +1265,6 @@ export function AutoPilotActivityIndicator({
                     </>
                   )}
                 </button>
-              </div>
-            )}
-            {isStaleScheduledState && (
-              <div className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-200">
-                <span className="font-semibold">Ciclo sem execução ativa.</span> O horário programado venceu sem atualização do Brain; não há resposta sendo enviada. Use “Enviar agora” para iniciar uma nova tentativa.
               </div>
             )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-[11px]">

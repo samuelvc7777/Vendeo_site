@@ -1060,21 +1060,24 @@ test('27. Replay inbound: migration possui retorno idempotente duplicate=true an
 
 test('28. Mensagem sem messageInboundRevision não é elegível automaticamente após watermark', () => {
   const apiSource = fs.readFileSync(
-    new URL('../supabase/functions/api/brain_orchestrator.ts', import.meta.url),
+    new URL('../supabase/functions/api/index.ts', import.meta.url),
     'utf8'
   );
 
-  const eligibilityStart = apiSource.indexOf('const isInboundEligibleForCycle');
-  const eligibilityEnd = apiSource.indexOf('let reservedAudioId', eligibilityStart);
-  const cronBlock = apiSource.slice(eligibilityStart, eligibilityEnd);
+  const cronStart = apiSource.indexOf('// Regra P0: Autoridade estrita por inboundRevision monotônica');
+  const cronEnd = apiSource.indexOf('return true;', cronStart);
+  const cronBlock = apiSource.slice(cronStart, cronEnd);
   assert.match(
     cronBlock,
-    /return typeof msgRev === "number" && msgRev > activationWatermarkRev/,
-    'o ciclo só aceita mensagem com revisão individual posterior ao watermark'
+    /typeof msgRev !== "number"\) return false/,
+    'cron deve rejeitar mensagem sem revisão individual quando watermark possui inboundRevision'
   );
 
-  assert.match(cronBlock, /messageInboundRevisions/, 'o ciclo deve consultar revisão individual da mensagem');
-  assert.match(cronBlock, /typeof msgRev === "number" && msgRev > activationWatermarkRev/, 'o ciclo deve exigir prova positiva de revisão pós-watermark');
+  const triggerStart = apiSource.indexOf('// 3. Validação determinística contra o Watermark de Ativação');
+  const triggerEnd = apiSource.indexOf('// Limpa agendamento e travas manuais antigas', triggerStart);
+  const triggerBlock = apiSource.slice(triggerStart, triggerEnd);
+  assert.match(triggerBlock, /messageInboundRevisions/, '/autopilot/trigger deve consultar revisão individual da mensagem');
+  assert.match(triggerBlock, /typeof msgRev === "number" && msgRev > watermarkRev/, '/autopilot/trigger deve exigir prova positiva de revisão pós-watermark');
 });
 
 test('29. Pacing: ciclo principal não aguarda waitForHumanSendDelay entre balões', () => {
@@ -1134,3 +1137,4 @@ test('32. isPaused no Webhook não bloqueia conversa quando ai_auto_respond é t
     'paused_manual só deve pausar se ai_auto_respond não for true'
   );
 });
+

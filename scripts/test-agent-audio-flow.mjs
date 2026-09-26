@@ -359,8 +359,8 @@ test("1. Caminho oficial do OpenAI Agent possui cofre_audio_search", () => {
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.type, "string");
   assert.deepEqual(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.required, ["query"]);
   // Verifica que instructions oficiais locais incluem a seção canônica
-  const instructions = buildCanonicalAgentInstructions({ persistentMode: true });
-  assert.ok(instructions.includes("=== COFRE DE ÁUDIOS"));
+  const instructions = buildCanonicalAgentInstructions({ strictOpenAiPilot: true });
+  assert.ok(instructions.includes("=== COFRE DE ÁUDIOS ==="));
   assert.ok(instructions.includes("cofre_audio_search"));
 });
 

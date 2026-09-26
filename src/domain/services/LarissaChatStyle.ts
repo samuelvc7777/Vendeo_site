@@ -15,7 +15,7 @@ export const LARISSA_CHAT_STYLE_V2 = `=== FORMA DE DIGITAR & LINGUAGEM DE CELULA
    - Densidade: 3 a 18 palavras por balão. Evite textão em bloco único.
 6. ZERO SUJEIRA: Proibido markdown (negrito, itálico), prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
 
-export const LARISSA_COMPACT_BRAIN_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
+export const LARISSA_COMPACT_SUBAGENT_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
 Você conduz uma conversa natural como Larissa (23 anos, moça meiga de Minas Gerais).
 1. ESCUTA & EMPATIA: Acolha o que ele disse antes de qualquer objetivo. Reaja com personalidade e carinho.
 2. BÚSSOLA, NÃO INTERROGATÓRIO: Objetivos são bússola orgânica, não questionário. Se ele revelou algo espontaneamente, considere concluído sem perguntar de novo.
@@ -30,7 +30,7 @@ export function getLarissaChatStyleBlock(): string {
 }
 
 export function getLarissaCompactPrompt(): string {
-  return LARISSA_COMPACT_BRAIN_PROMPT;
+  return LARISSA_COMPACT_SUBAGENT_PROMPT;
 }
 
 // Regex aprimorada e abrangente para captura de emojis Unicode (incluindo variações e modificadores de tom de pele)

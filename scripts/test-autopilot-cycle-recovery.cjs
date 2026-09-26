@@ -47,7 +47,7 @@ test('resultado atrasado perde autoridade antes de criar outbox/despachar', asyn
   const orchestrator = fs.readFileSync(path.join(__dirname, '../supabase/functions/api/brain_orchestrator.ts'), 'utf8');
   assert.match(orchestrator, /late_agent_result_discarded/);
   assert.match(orchestrator, /if \(!\(await checkCycleAuthority\(supabase, conversationId, correlationId\)\)\)/);
-  assert.match(orchestrator, /claimOutboxEntryAtomic/);
+  assert.match(orchestrator, /if \(claimToken && !\(await checkCycleAuthority\(supabase, outboxEntry\.conversationId, claimToken\)\)\)/);
 });
 
 test('TTL de ciclo cobre espera local do Agent e não equivale a 25s', () => {

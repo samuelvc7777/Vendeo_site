@@ -12,9 +12,9 @@ import {
 } from "../supabase/functions/api/openai_brain.ts";
 
 test("LARISSA_INTERACTION_DNA possui versão estável e hash válido", () => {
-  assert.match(LARISSA_INTERACTION_DNA_VERSION, /^1\.\d+\.\d+$/);
-  assert.ok(LARISSA_INTERACTION_DNA_HASH.startsWith(`dna_v${LARISSA_INTERACTION_DNA_VERSION.replaceAll(".", "_")}_`));
-  assert.ok(LARISSA_INTERACTION_DNA.includes(`=== LARISSA_INTERACTION_DNA (v${LARISSA_INTERACTION_DNA_VERSION}) ===`));
+  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.1.0");
+  assert.ok(LARISSA_INTERACTION_DNA_HASH.startsWith("dna_v1_1_0_"));
+  assert.ok(LARISSA_INTERACTION_DNA.includes("=== LARISSA_INTERACTION_DNA (v1.1.0) ==="));
   assert.ok(LARISSA_INTERACTION_DNA.includes("ZERO PAPAGAIO"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("FEW-SHOTS COMPORTAMENTAIS"));
 });
@@ -34,7 +34,7 @@ test("formatRecentStyleStateForPrompt formata restrições dinâmicas de anti-re
     { recent_reactions: [], recent_emojis: [] },
     { budget: 1, allowEmoji: true, blockedEmojis: [], recentEmojis: [] }
   );
-  assert.ok(snippetAllow.includes("Máximo 1 se combinar naturalmente com a emoção/contexto"));
+  assert.ok(snippetAllow.includes("máximo 1 emoji se for estritamente natural"));
 });
 
 test("CASO 1: Saudação direta deve gerar resposta curta, natural, sem ponto final e sem emoji por padrão", async () => {

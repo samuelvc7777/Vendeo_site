@@ -4,7 +4,6 @@ import {
   TinderMessageItem,
 } from "@/domain/repositories/ITinderRepository";
 import { TinderSession } from "@/domain/entities/Tinder";
-import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 
 export class ApiTinderRepository implements ITinderRepository {
   async connect(token: string): Promise<TinderSession> {

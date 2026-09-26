@@ -10,8 +10,6 @@
  */
 
 import { IChatStageRepository } from "@/domain/repositories/IChatStageRepository";
-import { apiFetch } from "@/infrastructure/http/apiFetch";
-import { getApiUrl } from "@/infrastructure/http/network";
 import {
   ChatStage,
   ChatProgress,
@@ -576,16 +574,27 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         updatedAt: progress.updatedAt || now,
       };
 
-      // A RPC privilegiada roda somente no backend; o cliente autenticado não recebe EXECUTE.
-      const response = await apiFetch(getApiUrl("/api/chat-stage/progress"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: convId, progressPatch: patchPayload }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || result?.success !== true) {
-        throw new Error(result?.error || `HTTP ${response.status}`);
+      // 1. Tenta a RPC atômica blindada no PostgreSQL (FOR UPDATE sem clobber de outbox)
+      const { data: rpcResult, error: rpcError } = await client.rpc(
+        "patch_chat_progress_atomic",
+        {
+          p_conversation_id: convId,
+          p_progress_patch: patchPayload,
+        }
+      );
+
+      if (!rpcError && rpcResult?.success) {
+        return;
       }
+
+      // 2. FAIL-CLOSED ABSOLUTO: Se a RPC falhar ou estiver indisponível, NUNCA recorrer
+      // a read-modify-write em JS (SELECT -> merge -> UPDATE stage_completed_rules),
+      // pois qualquer escrita de coluna inteira por JS causa lost update e clobber da outbox/lock.
+      const errorMsg = rpcError?.message || rpcResult?.error || "RPC não retornou sucesso";
+      console.error(
+        `[SupabaseChatStageRepository] FAIL-CLOSED: Erro ao executar patch_chat_progress_atomic para conv=${convId}: ${errorMsg}. Escrita direta em stage_completed_rules terminantemente proibida.`
+      );
+      throw new Error(`Falha ao salvar progresso atômico: ${errorMsg}`);
     } catch (err) {
       console.error("[SupabaseChatStageRepository] Erro ao salvar progresso da conversa:", err);
       throw err;

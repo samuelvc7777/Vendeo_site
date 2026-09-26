@@ -151,21 +151,6 @@ export function useMobileNotifications() {
     [permission]
   );
 
-  const notifyObjectivesCompleted = useCallback(
-    async (contactName: string, conversationId: string) => {
-      if (permission !== "granted") return false;
-
-      return await sendNativeMobileNotification({
-        title: `🏁 Objetivos concluídos: ${contactName}`,
-        body: "A IA terminou os objetivos do funil. Abra a conversa para finalizar.",
-        tag: `objectives_completed_${conversationId}`,
-        data: { conversationId, url: window.location.href },
-        requireInteraction: true,
-      });
-    },
-    [permission]
-  );
-
   // Teste manual de disparo de notificação
   const sendTestNotification = useCallback(async () => {
     if (permission !== "granted") {
@@ -190,7 +175,6 @@ export function useMobileNotifications() {
     notifyProposalReady,
     notifyClientMessage,
     notifyHandoffRaffle,
-    notifyObjectivesCompleted,
     sendTestNotification,
   };
 }

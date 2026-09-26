@@ -121,17 +121,6 @@ function createMockSupabase(initialState = {}) {
         enabled: true,
       },
     ],
-    persona_memory: [
-      {
-        persona_id: 'larissa',
-        category: 'identity',
-        key: 'relationship_state',
-        value: 'solteira',
-        source_type: 'canonical',
-        confidence: 1,
-        aliases: ['estado civil'],
-      },
-    ],
     chat_stages: defaultStages,
     instagram_config: [
       { id: 'openai_api_key', app_secret: 'sk-mock-key' },
@@ -252,10 +241,6 @@ function createMockSupabase(initialState = {}) {
 
           if (table === 'persona_audios') {
             return resolve({ data: store.persona_audios, error: null });
-          }
-
-          if (table === 'persona_memory') {
-            return resolve({ data: store.persona_memory, error: null });
           }
 
           if (table === 'conversation_stages') {
@@ -691,7 +676,7 @@ test('BUG 3 — Princípio do Cofre: Cenário real onde pretendente pergunta pro
 
 test('BUG 3 — Instruções do Agent contêm o Princípio do Cofre e proibições expressas de rejeição por tamanho ou divulgação', () => {
   const instructions = buildCanonicalAgentInstructions('agent_larissa_main');
-  assert.match(VENDEO_AGENT_INSTRUCTIONS_VERSION, /^\d+\.\d+\.\d+$/, 'Versão das instructions DEVE seguir semver');
+  assert.ok(['2.11.0', '2.12.0', '2.13.0'].includes(VENDEO_AGENT_INSTRUCTIONS_VERSION), 'Versão das instructions DEVE ser 2.11.0, 2.12.0 ou 2.13.0');
 
   // Verifica as diretrizes inseridas
   assert.equal(instructions.includes('PRINCÍPIO FUNDAMENTAL DO COFRE'), true);

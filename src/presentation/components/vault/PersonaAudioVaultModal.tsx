@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 import {
   X,
   Plus,

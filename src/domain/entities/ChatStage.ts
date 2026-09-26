@@ -120,7 +120,7 @@ export interface ChatStageWithStats extends ChatStage {
  * MATRIZ OFICIAL DE ETAPAS E OBJETIVOS CANÔNICOS (Etapa = Subagente Responsável, Objetivos = Checkpoints Obrigatórios Sequenciais).
  * 
  * Regras Estritas de Negócio:
- * - Cada etapa possui regras de progressão para o Brain único.
+ * - Cada etapa possui um subagente responsável primário (1:1 no fluxo principal).
  * - Todos os objetivos ativos (enabled: true) são checkpoints obrigatórios sequenciais resolvidos por order ASC.
  * - A etapa só avança quando TODOS os objetivos ativos forem concluídos.
  * - O sistema sempre sabe qual é o currentObjective (primeiro objetivo ativo pendente da etapa).

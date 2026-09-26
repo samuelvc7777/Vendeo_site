@@ -14,7 +14,6 @@ import { manageRaffleUseCase } from "@/infrastructure/di/container";
 import { InstagramConversation } from "@/domain/entities/Instagram";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
-import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 
 export function useRaffles() {
   const [raffles, setRaffles] = useState<Raffle[]>([]);

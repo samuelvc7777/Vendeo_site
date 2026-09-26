@@ -208,7 +208,7 @@ export async function ensureCompatibleAudioUrl(
     formData.append("file", wavBlob, fileName);
     formData.append("type", "audio");
 
-    const upRes = await apiFetch(uploadEndpoint, {
+    const upRes = await fetch(uploadEndpoint, {
       method: "POST",
       body: formData,
     });
@@ -225,4 +225,3 @@ export async function ensureCompatibleAudioUrl(
 
   return audioUrl;
 }
-import { apiFetch } from "@/infrastructure/http/apiFetch";

@@ -143,20 +143,6 @@ function createMockSupabaseWithHistory(options = {}) {
     messages: [...(options.messages || [])],
     audio_delivery_history: [],
     persona_audios: [],
-    persona_memory: [
-      {
-        id: 'persona_larissa_test',
-        persona_id: 'larissa',
-        category: 'perfil',
-        key: 'nome',
-        value: 'Larissa',
-        source_type: 'canonical',
-        confidence: 1,
-        aliases: [],
-        valid_from: null,
-        valid_until: null,
-      },
-    ],
     chat_stages: defaultStages,
     instagram_config: [
       { id: 'openai_api_key', app_secret: 'sk-mock-key' },
@@ -252,9 +238,6 @@ function createMockSupabaseWithHistory(options = {}) {
           }
           if (table === 'instagram_config') {
             return Promise.resolve({ data: store.instagram_config, error: null }).then(resolve);
-          }
-          if (table === 'persona_memory') {
-            return Promise.resolve({ data: store.persona_memory, error: null }).then(resolve);
           }
           if (table === 'instagram_messages') {
             let res = [...store.messages];

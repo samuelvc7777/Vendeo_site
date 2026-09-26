@@ -10,13 +10,13 @@ import {
   runOpenAiBrainTurn,
 } from "../supabase/functions/api/openai_brain.ts";
 
-test("CONTRATO 0: Metadados do DNA e princípios de Progressão Oportunística", () => {
-  assert.match(LARISSA_INTERACTION_DNA_VERSION, /^1\.\d+\.\d+$/);
-  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_5_8_1ff730ca");
+test("CONTRATO 0: Metadados do DNA v1.1.0 e princípios de Progressão Oportunística", () => {
+  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.1.0");
+  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_1_0_d7b9167b");
   assert.ok(LARISSA_INTERACTION_DNA.includes("Progressão Oportunística"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("CONVERSATIONAL MOMENTUM"));
-  assert.ok(LARISSA_INTERACTION_DNA.includes("acknowledgements vazios"));
-  assert.ok(LARISSA_INTERACTION_DNA.includes("REGRA UNIVERSAL DE BEM-ESTAR EM TODA SAUDAÇÃO"));
+  assert.ok(LARISSA_INTERACTION_DNA.includes("Continuidade Social / Quebra de Acknowledgement Loop"));
+  assert.ok(LARISSA_INTERACTION_DNA.includes("Saudação Completa com Pergunta de Cortesia + Avanço de Objetivo"));
 });
 
 test("CONTRATO 1: Saudação + objetivo cidade pendente -> pode pursue de forma fluida", async () => {

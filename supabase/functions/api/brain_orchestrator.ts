@@ -4,7 +4,6 @@
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
-import { createPendingManualResponse, detectUnsupportedUncertainty } from "./manual_response_review.ts";
 import {
   ACTIVE_CYCLE_TTL_SECONDS,
   checkCycleAuthority,
@@ -57,6 +56,7 @@ import { LARISSA_CONVERSATION_STYLE } from "./LarissaConversationStyle.ts";
 export { LARISSA_CONVERSATION_STYLE };
 import {
   LARISSA_CHAT_STYLE_V2,
+  LARISSA_COMPACT_SUBAGENT_PROMPT,
   LARISSA_CONVERSATION_EXAMPLES_V1,
   computeDynamicEmojiBudget,
   extractRecentStyleState,
@@ -80,118 +80,6 @@ import {
   sanitizeInappropriateIntimacy,
   type TurnContract,
 } from "./ConversationQualityGate.ts";
-
-export const STALE_INBOUND_CUTOFF_MS = 48 * 60 * 60 * 1000;
-export const LARISSA_TIMEZONE = "America/Sao_Paulo";
-
-function messageTimestampMs(message: any): number {
-  const raw = message?.timestamp || message?.createdAt || message?.created_at;
-  const parsed = typeof raw === "number" ? raw : Date.parse(String(raw || ""));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function daypartForHour(hour: number): "morning" | "afternoon" | "night" {
-  if (hour >= 5 && hour < 12) return "morning";
-  if (hour >= 12 && hour < 18) return "afternoon";
-  return "night";
-}
-
-function safeOperationalConsoleText(value: unknown, maxLength = 500): string | undefined {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  return value.trim()
-    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/gi, "[credencial redigida]")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [credencial redigida]")
-    .replace(/\b(OPENAI_API_KEY|META_ACCESS_TOKEN|ACCESS_TOKEN|API[_-]?KEY)\s*[:=]\s*[^\s,;]+/gi, "$1=[credencial redigida]")
-    .slice(0, maxLength);
-}
-
-function safeOperationalStringList(values: unknown, maxItems = 8): string[] {
-  if (!Array.isArray(values)) return [];
-  return values
-    .slice(0, maxItems)
-    .map((value) => safeOperationalConsoleText(value, 500))
-    .filter((value): value is string => Boolean(value));
-}
-
-function safeContextWindowConsoleMetadata(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const source = value as Record<string, unknown>;
-  const safeMessages = (items: unknown, withPreview: boolean) => Array.isArray(items)
-    ? items.slice(withPreview ? -8 : 0, withPreview ? undefined : 25).map((rawItem: unknown) => {
-        const item = rawItem && typeof rawItem === "object" && !Array.isArray(rawItem)
-          ? rawItem as Record<string, unknown>
-          : {};
-        return {
-          id: safeOperationalConsoleText(item.id, 120) || null,
-          sender: item.sender === "Larissa" ? "Larissa" : "Pretendente",
-          timestamp: safeOperationalConsoleText(item.timestamp, 80) || null,
-          ...(withPreview ? { text: safeOperationalConsoleText(item.text, 180) || "" } : {}),
-        };
-      })
-    : [];
-  const cuts = source.cuts && typeof source.cuts === "object" && !Array.isArray(source.cuts)
-    ? source.cuts as Record<string, unknown>
-    : {};
-  const safeNumber = (raw: unknown) => Number.isInteger(raw) && Number(raw) >= 0 ? Number(raw) : 0;
-  const safeIds = Array.isArray(source.finalMandatoryMessageIds)
-    ? source.finalMandatoryMessageIds.slice(0, 30).map((id) => safeOperationalConsoleText(id, 120)).filter((id): id is string => Boolean(id))
-    : [];
-  return {
-    candidateCount: safeNumber(source.candidateCount),
-    deduplicatedCount: safeNumber(source.deduplicatedCount),
-    budgetedCount: safeNumber(source.budgetedCount),
-    includedCount: safeNumber(source.includedCount),
-    includedMessages: safeMessages(source.includedMessages, false),
-    previews: safeMessages(source.previews, true),
-    lastLarissaOutboundId: safeOperationalConsoleText(source.lastLarissaOutboundId, 120) || null,
-    finalMandatoryMessageIds: safeIds,
-    mandatoryCount: safeNumber(source.mandatoryCount),
-    lastLarissaOutboundRequired: source.lastLarissaOutboundRequired === true,
-    lastLarissaOutboundIncluded: typeof source.lastLarissaOutboundIncluded === "boolean" ? source.lastLarissaOutboundIncluded : null,
-    replyTargetRequiredCount: safeNumber(source.replyTargetRequiredCount),
-    replyTargetsIncludedCount: safeNumber(source.replyTargetsIncludedCount),
-    currentInboundDuplicateCount: safeNumber(source.currentInboundDuplicateCount),
-    droppedNonMandatoryCount: safeNumber(source.droppedNonMandatoryCount),
-    mandatoryContextOverflow: source.mandatoryContextOverflow === true,
-    cutByMessageLimit: source.cutByMessageLimit === true,
-    cutByCharLimit: source.cutByCharLimit === true,
-    windowCharacterCount: safeNumber(source.windowCharacterCount),
-    cuts: {
-      messageLimit: cuts.messageLimit === true,
-      tokenBudget: cuts.tokenBudget === true,
-      finalCharacters: cuts.finalCharacters === true,
-      messageTextLimit: cuts.messageTextLimit === true,
-      mandatoryTokenOverflow: cuts.mandatoryTokenOverflow === true,
-    },
-  };
-}
-
-const META_TEXT_LIMIT = 2000;
-
-export function validateFinalTextDispatchPayload(text: unknown): { valid: boolean; error?: string } {
-  if (typeof text !== "string" || !text.trim()) return { valid: false, error: "EMPTY_TEXT_BALLOON" };
-  const value = text.trim();
-  if (value.length > META_TEXT_LIMIT) return { valid: false, error: "TEXT_BALLOON_TOO_LONG" };
-  if (value.startsWith("{") && ["\"action\"", "\"reasoning\"", "\"memoryWrites\"", "\"questionIntents\"", "\"turnContract\"", "\"responses\""].filter((key) => value.includes(key)).length >= 2) {
-    return { valid: false, error: "INTERNAL_BRAIN_PAYLOAD_LEAK_BLOCKED" };
-  }
-  return { valid: true };
-}
-
-export function checkOutboundActionDispatchPayload(
-  currentAction: { type?: string; [key: string]: unknown } | undefined,
-  balloonText: unknown,
-): { isAudio: boolean; valid: boolean; error?: string } {
-  const isCurrentActionAudio = currentAction?.type === "audio" || (typeof balloonText === "string" && balloonText.startsWith("[audio:"));
-  if (isCurrentActionAudio) return { isAudio: true, valid: true };
-  const check = validateFinalTextDispatchPayload(balloonText);
-  return { isAudio: false, valid: check.valid, error: check.error };
-}
-
-import {
-  inferReciprocalPersonaAudioIntent,
-  isPersonaAudioInstructionMatch,
-} from "./persona_audio_policy.ts";
 export {
   LARISSA_CHAT_STYLE_V2,
   LARISSA_CONVERSATION_EXAMPLES_V1,
@@ -259,7 +147,6 @@ import {
   LARISSA_INTERACTION_DNA_HASH,
   formatRecentStyleStateForPrompt,
 } from "./larissa_interaction_dna.ts";
-import { PERSISTENT_AGENT_SESSION_VERSION } from "./openai_agent_instructions.ts";
 export {
   runOpenAiBrainTurn,
   executePersonaMemoryTool,
@@ -288,24 +175,30 @@ export const BRAIN_ORCHESTRATION_BUDGETS = {
 } as const;
 
 /**
- * Modelo padrão do Brain no runtime de produção.
+ * Modelo padrão do Brain e Executores no runtime de produção.
  * O modelo efetivo é selecionado no Agent OpenAI oficial.
  */
 export const OPENAI_BRAIN_DEFAULT_MODEL = "gpt-6-luna";
+export const OPENAI_EXECUTOR_DEFAULT_MODEL = "gpt-6-luna";
 export const ALLOWED_OPENAI_BRAIN_MODELS = [
   "gpt-6-luna",
   "gpt-6-sol",
 ] as const;
+
+// Valores salvos antes da migração são lidos apenas para preservar o modelo remoto
+// até que alguém selecione explicitamente um modelo GPT-6 no painel.
+const LEGACY_OPENAI_BRAIN_MODELS = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as const;
 
 export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel?: string): Promise<string> {
   if (requestedModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(requestedModel)) return requestedModel;
   try {
     const { data } = await supabase.from("instagram_config").select("app_secret").eq("id", "openai_brain_model").maybeSingle();
     if (data?.app_secret && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
+    if (data?.app_secret && (LEGACY_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
   } catch {}
   const envModel = typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL;
   if (envModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel)) return envModel;
-  return OPENAI_BRAIN_DEFAULT_MODEL;
+  return envModel && (LEGACY_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel) ? envModel : OPENAI_BRAIN_DEFAULT_MODEL;
 }
 
 export function estimateTextTokens(text: string): number {
@@ -405,9 +298,9 @@ export async function loadMandatoryBrainContextCandidates(params: {
   try {
     const { data: lastOutboundRows } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+      .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
       .eq("conversation_id", conversationId)
-      .or("is_mine.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
+      .or("is_mine.eq.true,is_from_me.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
       .order("created_at", { ascending: false })
       .limit(1);
     if (Array.isArray(lastOutboundRows) && lastOutboundRows[0]) {
@@ -422,7 +315,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
     try {
       const { data: replyTargetRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
         .eq("conversation_id", conversationId)
         .in("id", replyTargetIds);
       if (Array.isArray(replyTargetRows)) {
@@ -537,6 +430,8 @@ export function serializeLiveStateForPrompt(liveState: ConversationLiveState): s
 }
 
 export interface MissionPackage {
+  subagentId?: string;
+  subagentName?: string;
   objectiveDirective: "pursue" | "defer" | "already_satisfied" | "none";
   targetObjective?: {
     id: string;
@@ -623,17 +518,17 @@ export function authorizeMissionAudioSelection(
 }
 
 export function enforceAuthorizedAudioDecision(
-  decision: Pick<BrainDecision, "action" | "audioId" | "outboundActions">,
+  decision: Pick<BrainDecision, "action" | "audioId">,
   mission: Pick<MissionPackage, "selectedAudioId" | "candidateAudios">
 ): { allowed: boolean; audioId?: string; reason?: string } {
-  const requestedAudioId = decision.audioId || decision.outboundActions?.find((action) => action.type === "audio")?.audioId || null;
+  const requestedAudioId = decision.audioId || null;
   const authorizedId = mission.selectedAudioId || null;
   const existsInAuthorizedCandidates = Boolean(
     authorizedId && mission.candidateAudios?.some((candidate) => candidate.audioId === authorizedId)
   );
   if (decision.action !== "send_audio" && !requestedAudioId) return { allowed: true };
   if (!requestedAudioId || !authorizedId || requestedAudioId !== authorizedId || !existsInAuthorizedCandidates) {
-    return { allowed: false, reason: "brain_audio_id_not_authorized" };
+    return { allowed: false, reason: "executor_audio_id_not_authorized" };
   }
   return { allowed: true, audioId: authorizedId };
 }
@@ -665,12 +560,6 @@ export interface ConversationBrainPlan {
   relevantPersonaFacts?: Array<{ fact: string; memoryId?: string; origin?: string; reason?: string }>;
   questionIntents?: QuestionIntentAnnotation[];
   resolvedQuestionIntentIds?: string[];
-  needsHumanReview?: boolean;
-  humanReviewReason?: string;
-  outboundActions?: Array<{ type: "text"; text: string } | { type: "audio"; audioId: string }>;
-  suggestedResponse?: string;
-  audioId?: string;
-  selectedAudioId?: string;
 }
 
 export type OrchestrationPhase = "conexao_inicial" | "descoberta" | "compatibilidade" | (string & {});
@@ -892,7 +781,6 @@ export interface ConversationOrchestrationState {
   openai_session_id?: string | null;
   openai_session_kind?: "persistent" | "legacy" | null;
   persistent_session_version?: number | null;
-  persona_memory_profile_version?: number | null;
 }
 
 export interface RecentQuestionIntentEntry {
@@ -1007,6 +895,43 @@ export interface ConversationAgentInput {
   };
   recentHistory?: string;
   openGoalsSummary?: string;
+}
+
+export interface SubagentInput {
+  conversationId: string;
+  currentPhase: OrchestrationPhase;
+  checkpoint?: string;
+  contextText?: string;
+  newMessage?: {
+    id: string;
+    text: string;
+    timestamp: string;
+    sender: string;
+  };
+  recentHistory?: string;
+  emojiBudgetSnippet?: string;
+  mission?: string;
+  goalsSnippet?: string;
+  styleStateSnippet?: string;
+  softFocusSnippet?: string;
+  audioCandidatesSnippet?: string;
+}
+
+// Mantido para compatibilidade retroativa
+export interface OrchestratorInput {
+  conversationId: string;
+  newMessage: {
+    id: string;
+    text: string;
+    timestamp: string;
+    sender: string;
+  };
+  currentPhase: OrchestrationPhase;
+  conversationSummary: string;
+  relevantMemories: string[];
+  pendingTasks: string[];
+  allowedTools: string[];
+  phaseRules: string[];
 }
 
 // ----------------------------------------------------------------------------
@@ -3290,14 +3215,11 @@ export async function dispatchOutboxEntry(
   }
   outboxEntry.attempts = (outboxEntry.attempts || 0) + (isClaimedByMe ? 0 : 1);
   if (outboxEntry.messageType === "text") {
-    const dispatchPayloadCheck = checkOutboundActionDispatchPayload(
-      { type: outboxEntry.messageType },
-      outboxEntry.content,
-    );
-    if (!dispatchPayloadCheck.valid) {
+    const payloadCheck = validateFinalTextDispatchPayload(outboxEntry.content);
+    if (!payloadCheck.valid) {
       outboxEntry.status = "failed";
-      outboxEntry.lastError = dispatchPayloadCheck.error;
-      return { success: false, error: dispatchPayloadCheck.error };
+      outboxEntry.lastError = payloadCheck.error;
+      return { success: false, error: payloadCheck.error };
     }
   }
 
@@ -3611,8 +3533,6 @@ export async function runDurableOutboxDispatcher(
   }
 
   const cycleScopeKey = (entry: OutboxEntry): string =>
-    // Mantém a chave histórica para reconciliar outbox criado antes do cycleId.
-    // "legacy" aqui é compatibilidade de dados, não um executor conversacional.
     entry.cycleId || `legacy:${entry.idempotencyKey || entry.id}`;
 
   // 2. Ordem estrita existe apenas dentro do mesmo ciclo/lote. Entre ciclos,
@@ -3798,9 +3718,8 @@ export async function runDurableOutboxDispatcher(
 
         // Grava em instagram_messages para histórico e espelho
         const nowIso = new Date().toISOString();
-        let messagePersisted = false;
         try {
-          const saveResult = await supabase.from("instagram_messages").upsert({
+          await supabase.from("instagram_messages").upsert({
             id: providerId,
             conversation_id: conversationId,
             sender_id: "me",
@@ -3810,29 +3729,20 @@ export async function runDurableOutboxDispatcher(
             created_at: nowIso,
             timestamp: nowIso,
           });
-          if (saveResult?.error) throw saveResult.error;
-          messagePersisted = true;
-        } catch (saveErr) {
-          console.error(`[Dispatcher] Mensagem confirmada pela Meta, mas falhou ao salvar histórico da conversa ${conversationId}:`, saveErr);
-        }
+        } catch (_upsertErr) {}
 
-        if (messagePersisted) {
-          try {
-            const previewResult = await supabase
-              .from("instagram_conversations")
-              .update({
-                last_message: claimedEntry.content,
-                last_message_preview: claimedEntry.content,
-                last_message_at: nowIso,
-                last_direction: "out",
-                last_status: "sent",
-              })
-              .eq("id", conversationId);
-            if (previewResult?.error) throw previewResult.error;
-          } catch (updateErr) {
-            console.error(`[Dispatcher] Falha ao atualizar prévia da conversa ${conversationId}:`, updateErr);
-          }
-        }
+        try {
+          await supabase
+            .from("instagram_conversations")
+            .update({
+              last_message: claimedEntry.content,
+              last_message_preview: claimedEntry.content,
+              last_message_at: nowIso,
+              last_direction: "out",
+              last_status: "sent",
+            })
+            .eq("id", conversationId);
+        } catch (_updateErr) {}
 
         result.dispatchedCount++;
       } else if (dispatchRes.isUncertain || claimedEntry.isUncertain) {
@@ -3908,8 +3818,6 @@ export function scheduleNextOutboxDispatch(params: {
   if (!params.supabase) return;
   const entries = Object.values(params.outboxMap || {});
   const cycleScopeKey = (entry: OutboxEntry): string =>
-    // Mantém a chave histórica para reconciliar outbox criado antes do cycleId.
-    // "legacy" aqui é compatibilidade de dados, não um executor conversacional.
     entry.cycleId || `legacy:${entry.idempotencyKey || entry.id}`;
   const nextPending = entries
     .filter((e) => {
@@ -3958,8 +3866,351 @@ export function scheduleNextOutboxDispatch(params: {
 
 
 /**
- * Contratos determinísticos usados pelo CONVERSATION BRAIN.
+ * Constrói o prompt do CONVERSATION BRAIN (Mente da Conversa e Planejador da Larissa).
+ * Apresenta a Escada de Memória em 6 Níveis e catálogo condensado de subagentes.
  */
+export function buildConversationBrainPrompt(params: {
+  conversationId: string;
+  currentStage: string;
+  liveState: ConversationLiveState;
+  recentMessages: CanonicalMessage[];
+  contactMemorySummary: string;
+  landmarksSummary: string;
+  speechActsSummary: string;
+  personaMemorySummary: string;
+  stageObjectives: StageObjective[];
+  currentObjective?: StageObjective | null;
+  toolResultsHistory?: string[];
+}): string {
+  const {
+    conversationId,
+    currentStage,
+    liveState,
+    recentMessages,
+    contactMemorySummary,
+    landmarksSummary,
+    speechActsSummary,
+    personaMemorySummary,
+    stageObjectives,
+    currentObjective,
+    toolResultsHistory = [],
+  } = params;
+
+  const liveStateBlock = serializeLiveStateForPrompt(liveState);
+
+  const formattedRecentMsgs = recentMessages
+    .map((m) => {
+      const senderLabel = m.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
+      return `${senderLabel} | ${m.id} | ${m.createdAt || ""}\n${m.text}`;
+    })
+    .join("\n\n");
+
+  const objBlock = stageObjectives
+    .map((o) => {
+      const isCurrent = currentObjective?.id === o.id;
+      const marker = isCurrent ? "➡️ [ATUAL]" : "[PENDENTE]";
+      return `${marker} id: "${o.id}" | label: "${o.label || o.title}"${o.description ? ` (${o.description})` : ""}`;
+    })
+    .join("\n");
+
+  const toolsHistoryBlock = toolResultsHistory.length > 0
+    ? `### HISTÓRICO DE CONSULTAS FEITAS NESTE CICLO (NÍVEL 6)\n${toolResultsHistory.join("\n\n")}\n`
+    : "";
+
+  return `Você é o Agente da Conversa e CONVERSATION BRAIN (Mente Analítica da Conversa e Planejador da Larissa).
+Seu papel é puramente ANALÍTICO E ESTRATÉGICO:
+1. Analisar o momento exato da conversa e o tom emocional do pretendente.
+2. Decidir sobre o objetivo atual da etapa:
+   - "pursue": O pretendente deu gancho natural para avançar no objetivo atual ("${currentObjective?.label || "conhecer mais"}").
+   - "defer": O pretendente desabafou, fez outra pergunta ou mudou de assunto; devemos acolher e responder primeiro, adiando o objetivo.
+   - "already_satisfied": O pretendente revelou espontaneamente nesta mensagem inbound a informação do objetivo atual.
+   - "none": Não há objetivo pendente imediato ou apenas conversa livre.
+3. Se precisar de fatos esquecidos ou não presentes na escada de memória, chame ferramentas sob demanda (máximo 2 de memória/histórico + máximo 1 de cofre).
+4. Ao concluir, delegar a execução ao subagente responsável pela etapa (${currentStage}) com o MissionPackage mastigado. Você NÃO formula o balão final da Larissa; quem escreve é o subagente executor.
+
+### ESCADA DE MEMÓRIA HIERÁRQUICA
+
+${liveStateBlock}
+
+### NÍVEL 1: MENSAGENS RECENTES (Orçamento estrito)
+${formattedRecentMsgs || "Nenhuma mensagem recente."}
+
+### NÍVEL 2: CONTACT MEMORY (Fatos conhecidos sobre o pretendente)
+${contactMemorySummary || "Nenhum fato registrado ainda."}
+
+### NÍVEL 3: LANDMARKS (Marcos narrativos, histórias e perrengues)
+${landmarksSummary || "Nenhum marco narrativo relevante registrado."}
+
+### NÍVEL 4: SPEECH ACTS (Perguntas e atos de fala recentes)
+${speechActsSummary || "Nenhum ato de fala recente."}
+
+### NÍVEL 5: PERSONA MEMORY (Fatos essenciais da Larissa)
+${personaMemorySummary || "Nenhum fato encontrado na PersonaMemory."}
+
+${toolsHistoryBlock}
+### OBJETIVOS DA ETAPA ATUAL ("${currentStage}")
+${objBlock || "Nenhum objetivo cadastrado."}
+
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA (MÁXIMO 2 DE MEMÓRIA + 1 DE COFRE)
+Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mensagens triviais, NÃO use ferramentas.
+- conversation_history_search: busca no histórico bruto desta conversa por mensagens passadas ou detalhes esquecidos. Parâmetro: {"query": "..."}.
+- persona_memory_search: busca na PersonaMemory fatos biográficos, gostos ou perrengues da Larissa. Parâmetro: {"query": "..."}.
+- episodic_memory_search: busca na memória episódica atos e revelações passadas. Parâmetro: {"query": "...", "memoryClass": "landmark" | "speech_act" | "all"}.
+- cofre_audio_search: busca áudios gravados no Cofre da Larissa com checagem de aderência semântica real à fala do pretendente. Parâmetro: {"query": "...", "objective_context": "..."}.
+
+### REGRAS INVIOLÁVEIS DO BRAIN:
+1. Para objectiveDecision: "already_satisfied", somente o objetivo atual (${currentObjective?.id || "nenhum"}) pode ser indicado, acompanhado de evidenceMessageId obrigatório da mensagem inbound atual. Objetivos futuros NUNCA podem ser marcados.
+2. Não invente fatos e não misture conversas de outros usuários. Escopo estrito desta conversa: ${conversationId}.
+3. O subagente executor NÃO fará pesquisas amplas. Todo contexto necessário deve ser resumido em missionPackage.relevantMemoryContext.
+4. REGRA ABSOLUTA: perguntas diretas do pretendente têm prioridade sobre checkpoint. Identifique-as no turnContract e determine mustAnswerFirst antes de considerar objetivo.
+5. Se responder uma pergunta direta e, quando natural, apenas devolvê-la já completa o turno, NÃO invente follow-up genérico. Objetivos podem esperar.
+6. Brain define intenção semântica, nunca a frase final. Use answerIntent, requiredFacts e responseShape; não forneça exactText.
+
+Responda ESTRITAMENTE em JSON puro:
+
+Se precisar chamar uma ferramenta:
+{
+  "action": "call_tool",
+  "tool": "conversation_history_search" | "persona_memory_search" | "episodic_memory_search" | "cofre_audio_search",
+  "parameters": { "query": "..." }
+}
+
+Quando estiver pronto para formular a resposta:
+{
+  "action": "reply",
+  "currentStage": "${currentStage}",
+  "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
+  "satisfiedObjectiveId": "id_do_objetivo_se_already_satisfied",
+  "evidenceMessageId": "id_da_msg_inbound_se_already_satisfied",
+  "reasoning": "análise rápida do momento em 1 frase",
+  "liveStatePatch": {
+    "lastUserEmotionalTone": "tom detectado",
+    "currentTopic": "tópico do momento",
+    "unresolvedQuestion": "pergunta que ele fez ou null",
+    "pendingUserTopic": "assunto que ele abriu ou null",
+    "openLoops": ["loop1"],
+    "avoidRepeating": ["o que não repetir"]
+  },
+  "missionPackage": {
+    "subagentId": "id_do_subagente",
+    "subagentName": "nome do subagente",
+    "objectiveDirective": "pursue" | "defer" | "already_satisfied" | "none",
+    "targetObjective": { "id": "...", "label": "..." },
+    "relevantMemoryContext": "fatos essenciais que o subagente precisa saber para este turno",
+    "liveStateContext": "resumo do tom e do momento da conversa",
+    "preferAudio": false,
+    "selectedAudioId": "id retornado por cofre_audio_search ou null",
+    "turnContract": {
+      "directQuestions": [{ "id": "q1", "text": "pergunta literal", "mustAnswer": true, "answerKind": "wellbeing" | "current_activity" | "persona_fact" | "yes_no" | "preference" | "location" | "age" | "freeform", "answerIntent": "intenção sem frase pronta", "requiredFacts": ["fato recuperado, se necessário"] }],
+      "mustAnswerFirst": true,
+      "reactionTarget": "conteúdo ao qual reagir ou null",
+      "newQuestionBudget": 0,
+      "responseShape": "answer_only" | "answer_and_reciprocate" | "react_only" | "react_and_question" | "free_conversation",
+      "avoidEchoPhrases": ["frase que não deve ser papagaiada"],
+      "avoidTopics": ["checkpoint adiado"],
+      "maxBalloons": 1,
+      "preferNoEmoji": true
+    }
+  }
+}`;
+}
+
+/**
+ * Constrói o prompt do SUBAGENTE EXECUTOR (Materializador da voz da Larissa).
+ * Recebe o MissionPackage mastigado e NÃO possui ferramentas amplas de busca.
+ */
+export function buildSubagentExecutorPrompt(params: {
+  subagentId: string;
+  subagentName: string;
+  mission: string;
+  missionPackage: MissionPackage;
+  recentMessages: CanonicalMessage[];
+  emojiBudgetSnippet?: string;
+  styleStateSnippet?: string;
+  candidateAudiosSnippet?: string;
+}): string {
+  const {
+    subagentId,
+    subagentName,
+    mission,
+    missionPackage,
+    recentMessages,
+    emojiBudgetSnippet,
+    styleStateSnippet,
+    candidateAudiosSnippet,
+  } = params;
+
+  const formattedRecentMsgs = recentMessages
+    .map((m) => {
+      const senderLabel = m.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
+      return `${senderLabel}: ${m.text}`;
+    })
+    .join("\n\n");
+
+  const objectiveDirectiveText =
+    missionPackage.objectiveDirective === "pursue"
+      ? `BUSCAR OBJETIVO COM DELICADEZA: O pretendente deu abertura para: "${missionPackage.targetObjective?.label || "conhecer mais"}". Pergunte ou aprofunde de forma meiga e sutil sem parecer interrogatório.`
+      : missionPackage.objectiveDirective === "defer"
+      ? `ADIAR OBJETIVO: O pretendente desabafou ou mudou de assunto. ACOLHA, COMENTE E RESPONDA AO QUE ELE FALOU PRIMEIRO. Não force o objetivo da etapa agora.`
+      : missionPackage.objectiveDirective === "already_satisfied"
+      ? `OBJETIVO JÁ SATISFEITO: O pretendente já informou o que precisávamos. Apenas reaja com carinho e naturalidade, sem perguntar isso de novo.`
+      : `CONVERSA LIVRE E LEVE: Apenas converse com carinho, mantendo a conversa humana e espontânea.`;
+
+  return `Você materializa a voz da Larissa no papel conversacional ${subagentName.toUpperCase()}.
+SUA MISSÃO NESTA ETAPA: ${mission}
+
+### PRECEDÊNCIA OBRIGATÓRIA
+1. Invariantes de segurança e backend.
+2. TurnContract.
+3. MissionPackage do Conversation Brain.
+4. DNA global da Larissa.
+5. Missão configurável do subagente.
+A missão específica do subagente serve apenas para especialização e nunca sobrepõe TurnContract, MissionPackage ou regras globais. Ela não pode obrigar perguntas, ignorar pergunta direta, ampliar newQuestionBudget, liberar ferramentas, alterar checkpoint ou trocar stage.
+
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
+
+${LARISSA_CONVERSATION_EXAMPLES_V1}
+
+${LARISSA_CHAT_STYLE_V2}
+${emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${emojiBudgetSnippet}\n` : ""}
+${styleStateSnippet ? `\n### ESTILO RECENTE\n${styleStateSnippet}\n` : ""}
+
+### DIRETRIZ ESTRATÉGICA DO TURNO (RECEBIDA DO BRAIN)
+${objectiveDirectiveText}
+
+### INTENÇÃO E FATOS MÍNIMOS DO BRAIN
+${JSON.stringify({
+  conversationIntent: missionPackage.conversationIntent,
+  emotionalTone: missionPackage.emotionalTone,
+  currentTopic: missionPackage.currentTopic,
+  bestHook: missionPackage.bestHook,
+  curiosityOpportunity: missionPackage.curiosityOpportunity,
+  questionRecommendation: missionPackage.questionRecommendation,
+  relevantPersonaFacts: missionPackage.relevantPersonaFacts || [],
+}, null, 2)}
+
+### CONTEXTO MASTIGADO E FATOS RELEVANTES
+${missionPackage.relevantMemoryContext || "Nenhum fato extra necessário."}
+
+### ESTADO DA CONVERSA
+${missionPackage.liveStateContext || "Interação em andamento."}
+
+### CONTRATO SEMÂNTICO DO TURNO
+${JSON.stringify(missionPackage.turnContract || {}, null, 2)}
+
+${candidateAudiosSnippet ? `\n### ÁUDIO DO COFRE SUGERIDO (SE ADERENTE)\n${candidateAudiosSnippet}\n` : ""}
+
+### MENSAGENS RECENTES
+${formattedRecentMsgs}
+
+### REGRAS MANDATÁRIAS DE EXECUÇÃO:
+1. PONTUAÇÃO DE CELULAR: SOMENTE VÍRGULA (,) E PONTO DE INTERROGAÇÃO (?).
+   - É expressamente proibido terminar balão com ponto final (.)
+   - É expressamente proibido usar ponto de exclamação (!)
+   - É expressamente proibido usar reticências (...), dois pontos (:), ponto e vírgula (;) ou travessão (—).
+2. Não pergunte nada que já esteja nos fatos conhecidos.
+3. Respeite maxBalloons e newQuestionBudget do contrato. Pergunta nova não é obrigatória.
+4. Se o pretendente fez uma pergunta, RESPONDA antes de qualquer coisa.
+5. Se houver áudio autorizado e for natural enviar, use SOMENTE missionPackage.selectedAudioId. Nunca escolha outro ID.
+6. Reação pessoal vem antes de checkpoint. Não ecoe a fala dele como pergunta.
+7. Emoji budget é teto, não meta. Se preferNoEmoji=true, responda sem emoji.
+
+Responda ESTRITAMENTE em JSON puro:
+{
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
+  "responses": [
+    "balão 1 curto de celular",
+    "balão 2 meigo (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "evidenceMessageId": "id_da_mensagem_dele"
+    }
+  ]
+}`;
+}
+
+export function buildConexaoInicialPrompt(input: SubagentInput): string {
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_saudacao_feita"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da conversa");
+
+  const missionText = input.mission || "Criar conforto, reciprocidade e um começo natural de conversa, sem transformar o contato em entrevista nem antecipar assuntos profundos.";
+
+  return `Você é a subagente especialista em CONEXÃO INICIAL da Larissa (23 anos, moça meiga de Minas Gerais).
+SUA MISSÃO: ${missionText}
+
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
+
+${LARISSA_CHAT_STYLE_V2}
+${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
+${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
+${input.audioCandidatesSnippet ? `\n### ÁUDIOS DO COFRE PRÉ-SELECIONADOS\n${input.audioCandidatesSnippet}\n` : ""}
+- Jamais chame o pretendente de Larissa.
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, É TERMINANTEMENTE PROIBIDO chamar ferramentas. Responda DIRETO em texto com action: "reply".
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente gostos para agradar o pretendente. Se a memória indicar 'false' ou desinteresse, assuma o fato com sinceridade e bom humor.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
+- DETECÇÃO DE MEMÓRIAS RICAS (memoryCandidates): Se o pretendente revelar fatos duráveis ou detalhes marcantes (ex: cidade, profissão, gostos específicos, veículos, histórias de família), proponha em "memoryCandidates" com evidenceMessageId obrigatório da mensagem dele.
+
+### CONTEXTO DA CONVERSA
+${contextBlock}
+
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
+Trabalhe primeiro apenas com o contexto recebido. Use ferramentas somente se for estritamente necessário:
+- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
+- stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "conexao_inicial"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
+- memory_get_fact: consulta fato sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
+- memory_search: busca aberta sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta se determinado tema, pergunta ou revelação já ocorreu entre os dois (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
+
+Regras de Áudio e Texto:
+- Se houver áudio adequado retornado pelo Cofre, prefira responder com action: "send_audio" e "audioId": "id_do_audio", SEM texto espelho redundante.
+- Se não houver áudio adequado ou for irrelevante, responda em texto com action: "reply".
+- Nem toda resposta precisa terminar em pergunta. Deixe espaço para o outro conduzir.
+
+### CHECKPOINTS DESTA FASE
+- 'chk_saudacao_feita': Se ainda for troca de cumprimento ou reciprocidade inicial. Próxima fase: 'conexao_inicial'.
+- 'chk_rapport_estabelecido': Se o pretendente demonstrou engajamento recíproco e a conexão inicial foi firmada, autorizando avançar para 'descoberta'.
+
+Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
+{
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
+  "checkpoint": "chk_saudacao_feita" | "chk_rapport_estabelecido",
+  "summary": "resumo de 3 palavras",
+  "responses": [
+    "balão 1 curto de celular",
+    "balão 2 leve (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
+  "nextPhase": "conexao_inicial" | "descoberta",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "kind": "episodic",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "tags": ["tag1"],
+      "evidenceMessageId": "id_da_mensagem"
+    }
+  ]
+}`;
+}
+
 export interface SemanticGoalDefinition {
   id: string;
   stageId?: string;
@@ -4532,11 +4783,11 @@ export const resolveStageObjectives = resolveStageChecklistGoals;
 
 /**
  * Processamento determinístico de conclusão de checkpoints e progressão sequencial de etapas.
- * - Valida objectiveCompletion proposto pelo Brain
+ * - Valida objectiveCompletion proposto pelo subagente
  * - Registra progresso no banco de dados (completed_goals e objectiveProgress)
  * - Avalia se todos os objetivos ativos da etapa atual foram concluídos
  * - Avança deterministicamente por order ASC para a próxima etapa cadastrada
- * - Entrega a progressão para a próxima etapa sem regredir na última etapa
+ * - Entrega para o subagente responsável pela próxima etapa (sem regredir na última etapa)
  */
 export async function processDeterministicStageProgression(params: {
   supabase: any;
@@ -4560,9 +4811,6 @@ export async function processDeterministicStageProgression(params: {
   currentStageId: string;
   nextStageId: string;
   stageAdvanced: boolean;
-  terminalObjectivesCompleted: boolean;
-  finalStageName?: string;
-  completedObjectivesCount?: number;
   advancementReason?: string;
 }> {
   const {
@@ -4611,7 +4859,7 @@ export async function processDeterministicStageProgression(params: {
     ];
   }
 
-  // 2. Determina a etapa atual na lista com separação estrita de stageId
+  // 2. Determina a etapa atual na lista com separação estrita de stageId e subagentId
   const candidateStageId = (
     params.currentStageId ||
     orchState.currentStageId ||
@@ -4833,8 +5081,6 @@ export async function processDeterministicStageProgression(params: {
   let nextPhase: OrchestrationPhase = currentPhase;
   let nextStageId: string = currentStage.id;
   let stageAdvanced = false;
-  const terminalObjectivesCompleted =
-    stageComplete && currentStageIndex === stagesList.length - 1 && activeGoals.length > 0;
   let advancementReason: string | undefined;
 
   if (stageComplete) {
@@ -4898,10 +5144,6 @@ export async function processDeterministicStageProgression(params: {
     currentStageId: currentStage.id,
     nextStageId,
     stageAdvanced,
-    terminalObjectivesCompleted,
-    ...(terminalObjectivesCompleted
-      ? { finalStageName: currentStage.name, completedObjectivesCount: activeGoals.length }
-      : {}),
     advancementReason,
   };
 }
@@ -4975,6 +5217,25 @@ export async function searchPersonaAudios(params: {
     const deliveredAudios = convRow?.stage_completed_rules?.orchestration?.deliveredAudios || [];
     if (Array.isArray(deliveredAudios)) {
       deliveredAudios.forEach((id: any) => sentAudioIds.add(typeof id === "string" ? id : String(id?.id)));
+    }
+  } catch {}
+
+  // Enriquecimento com mensagens de áudio anteriores
+  try {
+    const { data: msgRows } = await supabase
+      .from("instagram_messages")
+      .select("metadata")
+      .eq("conversation_id", conversationId)
+      .limit(100);
+
+    if (msgRows && Array.isArray(msgRows)) {
+      for (const m of msgRows) {
+        const meta = m.metadata;
+        if (meta && typeof meta === "object") {
+          const aId = meta.audio_id || meta.audioId || meta.vault_audio_id;
+          if (aId) sentAudioIds.add(String(aId));
+        }
+      }
     }
   } catch {}
 
@@ -5745,6 +6006,235 @@ export function detectSpontaneousObjectiveCompletions(
   return matches;
 }
 
+export function buildDescobertaPrompt(input: SubagentInput): string {
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_pergunta_sobre_ele"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da conversa");
+
+  const missionText = input.mission || "Conhecer organicamente quem o pretendente é, sua rotina, vida, trabalho, gostos e contexto pessoal, aproveitando naturalmente os assuntos que surgem.";
+
+  return `Você é a subagente especialista em DESCOBERTA da Larissa (23 anos, moça meiga de Minas Gerais).
+SUA MISSÃO: ${missionText}
+
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
+
+${LARISSA_CHAT_STYLE_V2}
+${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
+${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
+${input.audioCandidatesSnippet ? `\n### ÁUDIOS DO COFRE PRÉ-SELECIONADOS\n${input.audioCandidatesSnippet}\n` : ""}
+- Aplique a Regra da Reciprocidade: conte algo breve sobre você (estuda enfermagem, mora em São João del Rei, trabalha com vendas em casa).
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
+- PRESERVAÇÃO DE TÓPICO ESPECÍFICO EM PERGUNTAS: Se perguntarem se você gosta de algo específico (música, filme, bebida, comida), consulte sobre ESSE item específico com persona_get_fact ou persona_search.
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente afinidade. Se a memória indicar 'false' ou que ela não curte, assuma com sinceridade e bom humor mineiro.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
+- Se ele já revelou algo (ex: trabalho, cidade, filhos, estado civil), NUNCA pergunte sobre isso novamente. Aprofunde ou converse com o que ele trouxe.
+- BÚSSOLA DE ORIENTAÇÃO: NUNCA UM INTERROGATÓRIO. NÃO INSISTA. Máximo 1 pergunta leve por turno. Se o pretendente mudou de assunto, acompanhe o fluxo dele com afeto e escuta atenta.
+- DETECÇÃO DE MEMÓRIAS RICAS (memoryCandidates): Se o pretendente revelar fatos duráveis ou detalhes marcantes (ex: trabalho, cidade, veículos especiais como carro/moto, família, sonhos), proponha em "memoryCandidates" com evidenceMessageId obrigatório da mensagem dele.
+
+### CONTEXTO DA CONVERSA
+${contextBlock}
+
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
+Trabalhe primeiro com o contexto recebido. Chame ferramentas apenas quando necessário:
+- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer", "objective_context": "hobbies"}}
+- stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
+- checklist_get_stage_state: consulta o checklist e estado dos objetivos da fase (alias). Ex: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
+- memory_get_fact: consulta fato sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city" | "job"}}
+- memory_search: busca aberta sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta se determinado tema, pergunta ou revelação já ocorreu entre os dois (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
+
+Regras de Áudio e Decisão:
+- Se houver áudio adequado retornado pelo Cofre, prefira responder com action: "send_audio" e "audioId": "id_do_audio", SEM texto espelho redundante.
+- Se não houver áudio adequado ou for irrelevante, responda em texto com action: "reply".
+- Nem toda resposta precisa terminar em pergunta. Deixe espaço para o outro conduzir.
+
+### CHECKPOINTS DESTA FASE
+- 'chk_pergunta_sobre_ele': Perguntou sobre trabalho, rotina ou hobbies dele com reciprocidade.
+- 'chk_troca_cidade': Falou/perguntou sobre cidade ou moradia.
+
+Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
+{
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
+  "checkpoint": "chk_pergunta_sobre_ele" | "chk_troca_cidade",
+  "summary": "resumo de 3 palavras",
+  "responses": [
+    "balão 1 curto e natural",
+    "balão 2 afetuoso (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
+  "nextPhase": "descoberta",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "kind": "episodic",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "tags": ["tag1"],
+      "evidenceMessageId": "id_da_mensagem"
+    }
+  ]
+}`;
+}
+
+/**
+ * Construtor Unificado de Prompt de Subagente (suporta canônicos e customizados).
+ * Garante que qualquer subagente receba sua missão específica e herde 100% o estilo e as restrições da Larissa.
+ */
+export function buildSubagentPrompt(
+  input: SubagentInput & {
+    subagentId: string;
+    subagentName?: string;
+  }
+): string {
+  const targetId = input.subagentId;
+  if (targetId === "conexao_inicial") {
+    return buildConexaoInicialPrompt(input);
+  }
+  if (targetId === "descoberta") {
+    return buildDescobertaPrompt(input);
+  }
+
+  // Suporte a compatibilidade e a subagentes customizados
+  const contextBlock =
+    input.contextText ||
+    (input.newMessage
+      ? `[ESTADO]\nfase: ${input.currentPhase}\ncheckpoint: ${input.checkpoint || "chk_interacao"}\n\n[MENSAGENS_NOVAS]\n\nPRETENDENTE | ${input.newMessage.id}\n${input.newMessage.text}\n\n[FIM]`
+      : input.recentHistory || "Início da conversa");
+
+  const displayName = input.subagentName || (targetId === "compatibilidade" ? "Compatibilidade" : targetId);
+  const missionText =
+    input.mission ||
+    (targetId === "compatibilidade"
+      ? "Entender valores, momento de vida, visão de relacionamento, família, planos e compatibilidade com Larissa, somente quando houver abertura natural para assuntos mais pessoais."
+      : `Atuar com foco especializado em ${displayName}, mantendo conversa natural e acolhedora.`);
+
+  return `Você é a subagente especialista em ${displayName.toUpperCase()} da Larissa (23 anos, moça meiga de Minas Gerais).
+SUA MISSÃO: ${missionText}
+
+${LARISSA_COMPACT_SUBAGENT_PROMPT}
+
+${LARISSA_CHAT_STYLE_V2}
+${input.emojiBudgetSnippet ? `\n### ORÇAMENTO DE EMOJI\n${input.emojiBudgetSnippet}\n` : ""}
+${input.styleStateSnippet ? `\n### ESTILO RECENTE\n${input.styleStateSnippet}\n` : ""}
+${input.goalsSnippet ? `\n${input.goalsSnippet}\n` : ""}
+${input.softFocusSnippet ? `\n### BÚSSOLA ORGÂNICA DO TURNO\n${input.softFocusSnippet}\n` : ""}
+${input.audioCandidatesSnippet ? `\n### ÁUDIOS DO COFRE PRÉ-SELECIONADOS\n${input.audioCandidatesSnippet}\n` : ""}
+- Jamais chame o pretendente de Larissa.
+- REGRA ONE-TOOL-AND-REPLY: Se uma ferramenta retornar informação suficiente, formule a resposta e NÃO encadeie ferramentas adicionais.
+- PROIBIÇÃO DE TOOLS EM SAUDAÇÕES E EMPATIA: Para cumprimentos comuns ("oi", "tudo bem?", "boa noite", "oie"), risadas ("kkkk") ou reações de empatia direta, responda DIRETO em texto com action: "reply".
+- REGRA ANTI-COMPLACÊNCIA EM FATOS NEGATIVOS: A Larissa é meiga, mas não mente gostos para agradar o homem. Se a memória indicar 'false' ou desinteresse, assuma com sinceridade e bom humor mineiro.
+- RESOLUÇÃO CONTEXTUAL DE PRONOMES ('aí', 'daí', 'lá', 'aqui'): Interprete pronomes de lugar a partir do antecedente imediatamente anterior da conversa.
+- DETECÇÃO DE MEMÓRIAS RICAS (memoryCandidates): Se o pretendente revelar detalhes duráveis (veículos, sonhos, família, trabalho, cidade), proponha em "memoryCandidates" com evidenceMessageId obrigatório da mensagem dele.
+
+### CONTEXTO DA CONVERSA
+${contextBlock}
+
+### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
+Trabalhe primeiro apenas com o contexto recebido.
+- cofre_search: consulta áudios da Larissa no Cofre quando a pergunta ou contexto sugerir envio de áudio (ex: hobbies, rotina, dia a dia). Retorna no máximo 3 candidatos. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre rotina", "objective_context": "rotina"}}
+- stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "${input.currentPhase}"}}
+- persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
+- persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
+- memory_get_fact: consulta fato estruturado sobre o pretendente (ContactMemory). Ex: {"action": "call_tool", "tool": "memory_get_fact", "parameters": {"entity": "self", "field": "age" | "city"}}
+- memory_search: busca aberta por trechos relevantes sobre o pretendente. Ex: {"action": "call_tool", "tool": "memory_search", "parameters": {"entity": "self", "query": "..."}}
+- conversation_search: consulta a memória episódica DESTA conversa para checar se determinado tema, pergunta ou revelação já ocorreu (anti-repetição de perguntas e de histórias). Ex: {"action": "call_tool", "tool": "conversation_search", "parameters": {"query": "já perguntei a profissão dele?"}}
+
+Regras de Áudio e Decisão:
+- Se houver áudio adequado retornado pelo Cofre, prefira responder com action: "send_audio" e "audioId": "id_do_audio", SEM texto espelho redundante.
+- Se não houver áudio adequado ou for irrelevante, responda em texto com action: "reply".
+- Nem toda resposta precisa terminar em pergunta. Deixe espaço para o outro conduzir.
+
+### CHECKPOINTS DESTA FASE
+- 'chk_interacao': Interação regular em andamento. Próxima fase: '${input.currentPhase}'.
+- 'chk_concluido': Subagente concluiu sua atuação no momento ou conduziu o alinhamento. Próxima fase: '${input.currentPhase}'.
+
+Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de raciocínio:
+{
+  "action": "reply" | "send_audio",
+  "audioId": "id_do_audio_se_send_audio",
+  "checkpoint": "chk_interacao" | "chk_concluido",
+  "summary": "resumo de 3 palavras",
+  "responses": [
+    "balão 1 curto de celular",
+    "balão 2 leve (se necessário)"
+  ],
+  "suggestedResponse": "texto completo dos balões juntos (ou vazio se send_audio)",
+  "nextPhase": "${input.currentPhase}",
+  "memoryCandidates": [
+    {
+      "entity": "self",
+      "kind": "episodic",
+      "key": "chave",
+      "value": "detalhe revelado",
+      "summary": "resumo do detalhe",
+      "tags": ["tag1"],
+      "evidenceMessageId": "id_da_mensagem"
+    }
+  ]
+}`;
+}
+
+// Construtor unificado mantido para compatibilidade retroativa
+export function buildOrchestratorPrompt(input: OrchestratorInput): string {
+  return `Você é a IA Atria, Auditora Oficial de Atendimento e Relacionamento do Vendeo.
+Você atua na condução estratégica do atendimento para a persona **Larissa** (23 anos, moça meiga de Minas Gerais, estudante de enfermagem e trabalha com vendas).
+O pretendente/cliente é quem está conversando com a Larissa. Quem enviou a última mensagem foi o cliente (${input.newMessage.sender}).
+A fala formulada em "suggestedResponse" é a resposta direta da **Larissa** para o cliente.
+
+### DIRETRIZES DA PERSONA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
+- Tom: carinhoso, meigo, natural de Minas Gerais (usando 'né', 'kkk', 'vc', 'tô', 'tá', 'pra').
+- PROIBIDO terminar balão com ponto final (.)
+- PROIBIDO usar ponto de exclamação (!)
+- Jamais chame o cliente de Larissa. Responda ao que o cliente falou antes de perguntar qualquer coisa.
+- Mantenha a resposta curta, humana e fluida de WhatsApp/Instagram.
+- REGRA INVIOLÁVEL DE 'UAI' (RARO E OPCIONAL): O 'uai' é estritamente OPCIONAL e MUITO RARO (use no máximo em 1 a cada 15 falas). Na dúvida, NUNCA use 'uai'. Se puder falar sem 'uai', prefira SEMPRE sem 'uai'.
+- DIRETRIZ DE FECHAMENTO (ZERO PERGUNTA MECÂNICA): PROIBIDO terminar toda fala com a pergunta mecânica "e você?", "e vc?", "e tu?". Varie os fechamentos: comente, reaja, use deboche meigo ("sou moça de família rapaz kkk"), afirme ou solte risada ("kkk"). Só faça pergunta de volta quando houver real motivo (máximo 20% a 30% das falas).
+- ESTILO NUNCA SOBRESCREVE FATO: Não transforme fatos negativos em positivos. Matéria mais difícil: Embriologia. Matéria que não gosta: Farmacologia.
+- INTERPRETAÇÃO RIGOROSA DE BOOLEANOS (false): Fatos com value: false significam CATEGORICAMENTE que ela NÃO GOSTA, NÃO CONSOME, NÃO BEBE e NÃO ASSISTE. Jamais invente que consome ou gosta de vez em quando.
+
+### DOSSIÊ DA CONVERSA
+- ID da Conversa: ${input.conversationId}
+- Fase Atual: ${input.currentPhase}
+- Histórico Recente de Mensagens:
+${input.conversationSummary}
+- Memórias Relevantes: ${input.relevantMemories.length > 0 ? input.relevantMemories.join(" | ") : "Nenhuma memória registrada ainda."}
+- Ferramentas Permitidas: ${input.allowedTools.join(", ")}
+
+### DIRETRIZES DA FASE [${input.currentPhase}]
+${input.phaseRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
+
+### ÚLTIMA MENSAGEM DO CLIENTE
+- Remetente: ${input.newMessage.sender}
+- Texto: "${input.newMessage.text}"
+- Horário: ${input.newMessage.timestamp}
+
+### REGRAS OBRIGATÓRIAS DE AUDITORIA
+1. Avalie a interação do cliente com base no histórico e diretrizes da fase.
+2. Para avançar de 'conexao_inicial' para 'descoberta', você DEVE definir o checkpoint como 'chk_rapport_estabelecido' e próxima fase 'descoberta'.
+3. Se o cliente ainda estiver apenas em troca de saudações ou reciprocidade inicial, mantenha a fase 'conexao_inicial' e checkpoint 'chk_saudacao_feita'.
+4. Formule uma resposta curta e acolhedora em 'suggestedResponse' (estilo Larissa, sem ponto final).
+5. Responda ESTRITAMENTE em formato JSON puro com as seguintes chaves:
+{
+  "action": "reply",
+  "currentPhase": "${input.currentPhase}",
+  "nextPhase": "conexao_inicial",
+  "checkpoint": "chk_saudacao_feita",
+  "summary": "resumo conciso do turno",
+  "suggestedResponse": "resposta carinhosa da Larissa para o cliente",
+  "requiredTools": ["send_text"],
+  "reasoning": "análise analítica da decisão tomada"
+}`;
+}
+
 // ----------------------------------------------------------------------------
 // 7.5. Provedores de Memória Estruturada (Memory Providers) (.agents/ARCHITECTURE.md)
 // ----------------------------------------------------------------------------
@@ -6484,6 +6974,378 @@ export async function executeMemoryWriter(params: {
   return { factsExtracted: factsCount, trace };
 }
 
+// ----------------------------------------------------------------------------
+// 8. Helper de Invocação de Modelo (Runtime Mock ou Kie.ai Sol / Terra)
+// ----------------------------------------------------------------------------
+
+function extractKieResponseText(rawTextOrPayload: any): string {
+  if (!rawTextOrPayload) return "";
+  if (typeof rawTextOrPayload === "object") {
+    if (typeof rawTextOrPayload.output_text === "string") return rawTextOrPayload.output_text;
+    if (Array.isArray(rawTextOrPayload.output)) {
+      return rawTextOrPayload.output
+        .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
+        .map((content: any) => (typeof content?.text === "string" ? content.text : ""))
+        .filter(Boolean)
+        .join("\n");
+    }
+  }
+
+  if (typeof rawTextOrPayload === "string") {
+    try {
+      const parsed = JSON.parse(rawTextOrPayload);
+      const res = extractKieResponseText(parsed);
+      if (res) return res;
+    } catch {}
+
+    const lines = rawTextOrPayload.split("\n");
+    let accumulatedDelta = "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const dataStr = line.slice(6).trim();
+      if (!dataStr || dataStr === "[DONE]") continue;
+      try {
+        const data = JSON.parse(dataStr);
+        if (data.type === "response.output_text.done" && typeof data.text === "string") {
+          return data.text;
+        }
+        if (data.type === "response.output_item.done" && Array.isArray(data.item?.content)) {
+          const joined = data.item.content
+            .map((c: any) => c.text || "")
+            .filter(Boolean)
+            .join("\n");
+          if (joined) return joined;
+        }
+        if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
+          accumulatedDelta += data.delta;
+        }
+      } catch {}
+    }
+    if (accumulatedDelta.trim()) return accumulatedDelta.trim();
+  }
+
+  return "";
+}
+
+export interface ModelCallOptions {
+  runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number; inputTokens?: number; outputTokens?: number }> };
+  supabase: any;
+  model?: string;
+  temperature?: number;
+  reasoningEffort?: "low" | "medium";
+  disallowDowngrade?: boolean;
+  recordOpenAiUsage?: (record: OpenAiUsageRecord) => void;
+}
+
+async function callModelOrOpenAi(
+  prompt: string,
+  options: ModelCallOptions
+): Promise<{ content: string; tokens: number; inputTokens: number; outputTokens: number; tokenMeasurement: "provider" | "estimated" }> {
+  if (options.runtime?.callModel) {
+    const res = await options.runtime.callModel(prompt);
+    const content = res.content || (res as any).text || "";
+    const hasSplitUsage = Number.isFinite(res.inputTokens) && Number.isFinite(res.outputTokens);
+    const inputTokens = hasSplitUsage ? Number(res.inputTokens) : estimateTextTokens(prompt);
+    const outputTokens = hasSplitUsage ? Number(res.outputTokens) : estimateTextTokens(content);
+    return { content, tokens: res.tokens || inputTokens + outputTokens, inputTokens, outputTokens, tokenMeasurement: hasSplitUsage ? "provider" : "estimated" };
+  }
+
+  // 1. Motor Oficial Prioritário: OpenAI (api.openai.com)
+  let openAiKey = (Deno?.env?.get?.("OPENAI_API_KEY") || "").trim();
+  if (!openAiKey) {
+    try {
+      const { data: cfgSecret } = await options.supabase
+        .from("instagram_config")
+        .select("app_secret")
+        .eq("id", "openai_api_key")
+        .maybeSingle();
+      openAiKey = (cfgSecret?.app_secret || "").trim();
+    } catch (_err) {
+      // Fail-safe silencioso
+    }
+  }
+
+  const primaryModel = await resolveConfiguredOpenAiModel(options.supabase, options.model);
+  const maxRetries = 3;
+  let lastError: any = null;
+
+  if (!openAiKey) {
+    throw new Error("BRAIN_MODEL_FAILED: OPENAI_API_KEY ausente para execução do Brain.");
+  }
+
+  let currentModel = primaryModel;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const reqBody: any = {
+        model: currentModel,
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" },
+      };
+      const isReasoningModel =
+        currentModel.includes("luna") ||
+        currentModel.includes("terra") ||
+        currentModel.startsWith("gpt-5") ||
+        currentModel.startsWith("gpt-6") ||
+        currentModel.startsWith("o1") ||
+        currentModel.startsWith("o3") ||
+        currentModel.startsWith("o4");
+
+      if (!isReasoningModel) {
+        reqBody.temperature = options.temperature ?? 0.3;
+      }
+
+      const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openAiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(reqBody),
+        signal: AbortSignal.timeout(35000),
+      });
+
+      if (oaiRes.ok) {
+        const jsonRes = await oaiRes.json();
+        const choice = jsonRes.choices?.[0];
+        let content = choice?.message?.content || "";
+        options.recordOpenAiUsage?.({
+          id: typeof jsonRes.id === "string" ? jsonRes.id : "",
+          source: "chat_completion",
+          model: typeof jsonRes.model === "string" ? jsonRes.model : currentModel,
+          usage: jsonRes.usage ?? null,
+          serviceTier: typeof jsonRes.service_tier === "string" ? jsonRes.service_tier : null,
+        });
+        const providerInput = jsonRes.usage?.prompt_tokens;
+        const providerOutput = jsonRes.usage?.completion_tokens;
+        const hasSplitUsage = Number.isFinite(providerInput) && Number.isFinite(providerOutput);
+        const inputTokens = hasSplitUsage ? providerInput : estimateTextTokens(prompt);
+        const outputTokens = hasSplitUsage ? providerOutput : estimateTextTokens(content);
+        const tokens = jsonRes.usage?.total_tokens || inputTokens + outputTokens;
+
+        if (!content && choice?.message?.reasoning_content) {
+          const match = choice.message.reasoning_content.match(/\{[\s\S]*\}/);
+          if (match) content = match[0];
+        }
+
+        if (content.trim()) {
+          return { content: content.trim(), tokens, inputTokens, outputTokens, tokenMeasurement: hasSplitUsage ? "provider" : "estimated" };
+        }
+      }
+
+      const errText = await oaiRes.text();
+      lastError = new Error(`OpenAI (${currentModel}) retornou erro HTTP ${oaiRes.status}: ${errText.slice(0, 200)}`);
+      
+      // Auto-recuperação defensiva: se o erro for de temperature não suportada, remove temperature e retenta imediatamente
+      if (oaiRes.status === 400 && errText.includes("temperature")) {
+        console.warn(`[Brain] Modelo ${currentModel} rejeitou parâmetro 'temperature'. Removendo temperature e retentando imediatamente...`);
+        delete reqBody.temperature;
+        continue;
+      }
+
+      if ([500, 502, 503, 504, 429].includes(oaiRes.status)) {
+        console.warn(`[Brain] OpenAI (${currentModel}) retornou status transitório ${oaiRes.status} na tentativa ${attempt}/${maxRetries}. Aguardando retry...`);
+        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+        continue;
+      }
+      break;
+    } catch (fetchErr: any) {
+      lastError = fetchErr;
+      console.warn(`[Brain] Falha de conexão com OpenAI na tentativa ${attempt}/${maxRetries}:`, fetchErr.message);
+      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+    }
+  }
+
+  // FAIL-CLOSED: O Brain oficial NUNCA degrada para Kie/Atria/Groq com fallback
+  throw new Error(`BRAIN_MODEL_FAILED: Falha na execução do modelo oficial ${primaryModel} (${lastError?.message || "falha desconhecida"})`);
+}
+
+const callBrainModel = callModelOrOpenAi;
+
+async function waitForHumanSendDelay({
+  supabase, conversationId, seconds, cycleId, phase, label, detail,
+  currentBalloon, totalBalloons, audioDurationSeconds, currentResponsePreview,
+}: {
+  supabase: any; conversationId: string; seconds: number; cycleId: string;
+  phase: "typing" | "recording_audio"; label: string; detail: string;
+  currentBalloon: number; totalBalloons: number; audioDurationSeconds?: number; currentResponsePreview?: string;
+}) {
+  const deadline = Date.now() + Math.max(0, seconds) * 1000;
+  while (Date.now() < deadline) {
+    const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    await publishAutoPilotState(supabase, conversationId, {
+      cycleId, status: "processing",
+      activity: activity(phase, label, detail, {
+        cycleId, currentBalloon, totalBalloons, countdownSeconds: remaining,
+        audioDurationSeconds, currentResponsePreview,
+      }),
+      appendEvent: false,
+    });
+    const { data } = await supabase.from("instagram_conversations")
+      .select("ai_auto_respond, stage_completed_rules").eq("id", conversationId).maybeSingle();
+    if (data?.ai_auto_respond === false || data?.stage_completed_rules?.cancel_current_cycle === true) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(100, deadline - Date.now()))));
+  }
+  return true;
+}
+
+function safeOperationalConsoleText(value: unknown, maxLength = 500): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return value.trim()
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/gi, "[credencial redigida]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [credencial redigida]")
+    .replace(/\b(OPENAI_API_KEY|META_ACCESS_TOKEN|ACCESS_TOKEN|API[_-]?KEY)\s*[:=]\s*[^\s,;]+/gi, "$1=[credencial redigida]")
+    .slice(0, maxLength);
+}
+
+function safeOperationalStringList(values: unknown, maxItems = 8): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .slice(0, maxItems)
+    .map((value) => safeOperationalConsoleText(value, 500))
+    .filter((value): value is string => Boolean(value));
+}
+
+function safeContextWindowConsoleMetadata(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const safeMessages = (items: unknown, withPreview: boolean) => Array.isArray(items)
+    ? items.slice(withPreview ? -8 : 0, withPreview ? undefined : 25).map((rawItem: unknown) => {
+      const item = rawItem && typeof rawItem === "object" && !Array.isArray(rawItem)
+        ? rawItem as Record<string, unknown>
+        : {};
+      return {
+        id: safeOperationalConsoleText(item.id, 120) || null,
+        sender: item.sender === "Larissa" ? "Larissa" : "Pretendente",
+        timestamp: safeOperationalConsoleText(item.timestamp, 80) || null,
+        ...(withPreview ? { text: safeOperationalConsoleText(item.text, 180) || "" } : {}),
+      };
+    })
+    : [];
+  const cuts = source.cuts && typeof source.cuts === "object" && !Array.isArray(source.cuts)
+    ? source.cuts as Record<string, unknown>
+    : {};
+  const safeNumber = (raw: unknown) => Number.isInteger(raw) && Number(raw) >= 0 ? Number(raw) : 0;
+  const safeIds = Array.isArray(source.finalMandatoryMessageIds)
+    ? source.finalMandatoryMessageIds.slice(0, 30).map((id) => safeOperationalConsoleText(id, 120)).filter((id): id is string => Boolean(id))
+    : [];
+  return {
+    candidateCount: safeNumber(source.candidateCount),
+    deduplicatedCount: safeNumber(source.deduplicatedCount),
+    budgetedCount: safeNumber(source.budgetedCount),
+    includedCount: safeNumber(source.includedCount),
+    includedMessages: safeMessages(source.includedMessages, false),
+    previews: safeMessages(source.previews, true),
+    lastLarissaOutboundId: safeOperationalConsoleText(source.lastLarissaOutboundId, 120) || null,
+    finalMandatoryMessageIds: safeIds,
+    mandatoryCount: safeNumber(source.mandatoryCount),
+    lastLarissaOutboundRequired: source.lastLarissaOutboundRequired === true,
+    lastLarissaOutboundIncluded: typeof source.lastLarissaOutboundIncluded === "boolean" ? source.lastLarissaOutboundIncluded : null,
+    replyTargetRequiredCount: safeNumber(source.replyTargetRequiredCount),
+    replyTargetsIncludedCount: safeNumber(source.replyTargetsIncludedCount),
+    currentInboundDuplicateCount: safeNumber(source.currentInboundDuplicateCount),
+    droppedNonMandatoryCount: safeNumber(source.droppedNonMandatoryCount),
+    mandatoryContextOverflow: source.mandatoryContextOverflow === true,
+    cutByMessageLimit: source.cutByMessageLimit === true,
+    cutByCharLimit: source.cutByCharLimit === true,
+    windowCharacterCount: safeNumber(source.windowCharacterCount),
+    cuts: {
+      messageLimit: cuts.messageLimit === true,
+      tokenBudget: cuts.tokenBudget === true,
+      finalCharacters: cuts.finalCharacters === true,
+      messageTextLimit: cuts.messageTextLimit === true,
+      mandatoryTokenOverflow: cuts.mandatoryTokenOverflow === true,
+    },
+  };
+}
+
+const META_TEXT_LIMIT = 2000;
+
+export function validateFinalTextDispatchPayload(text: unknown): { valid: boolean; error?: string } {
+  if (typeof text !== "string" || !text.trim()) return { valid: false, error: "EMPTY_TEXT_BALLOON" };
+  const value = text.trim();
+  if (value.length > META_TEXT_LIMIT) return { valid: false, error: "TEXT_BALLOON_TOO_LONG" };
+  if (value.startsWith("{") && ["\"action\"", "\"reasoning\"", "\"memoryWrites\"", "\"questionIntents\"", "\"turnContract\"", "\"responses\""].filter((key) => value.includes(key)).length >= 2) {
+    return { valid: false, error: "INTERNAL_BRAIN_PAYLOAD_LEAK_BLOCKED" };
+  }
+  return { valid: true };
+}
+
+/**
+ * Classifica a ação do balão (áudio vs texto) e executa a validação de pré-despacho apropriada.
+ * - Para ações de áudio: não valida como texto e retorna { isAudio: true, valid: true }.
+ * - Para ações de texto: submete o balão a validateFinalTextDispatchPayload.
+ */
+export function checkOutboundActionDispatchPayload(
+  currentAction: { type?: string; [key: string]: unknown } | undefined,
+  balloonText: unknown
+): { isAudio: boolean; valid: boolean; error?: string } {
+  const isCurrentActionAudio =
+    currentAction?.type === "audio" ||
+    (typeof balloonText === "string" && balloonText.startsWith("[audio:"));
+
+  if (isCurrentActionAudio) {
+    return { isAudio: true, valid: true };
+  }
+
+  const check = validateFinalTextDispatchPayload(balloonText);
+  return { isAudio: false, valid: check.valid, error: check.error };
+}
+const callModelOrKie = callModelOrOpenAi;
+const callModelOrAtria = callModelOrOpenAi;
+
+// ----------------------------------------------------------------------------
+// 9. Motor Operacional Determinístico do Backend (runExperimentalOrchestration)
+// ----------------------------------------------------------------------------
+export interface RunOrchestrationParams {
+  supabase: any;
+  conversationId: string;
+  newMessage: {
+    id: string;
+    text: string;
+    timestamp: string;
+    sender: string;
+  };
+  correlationId?: string;
+  model?: string;
+  memoryProvider?: MemoryProvider;
+  responseDelayMinutes?: number;
+  isManualRetry?: boolean;
+  preClaimedCycleToken?: string;
+  runtime?: {
+    sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
+    callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }>;
+    memoryProvider?: MemoryProvider;
+    _fastTest?: boolean;
+  };
+}
+
+export interface OrchestrationResult {
+  handled: boolean;
+  skippedDuplicate?: boolean;
+  sentToMeta?: boolean;
+  blockLegacyFallback?: boolean; // SINAL EXPLÍCITO: Quando true, bloqueia terminantemente qualquer fallback para o legado
+  decision?: OrchestratorDecision;
+  durationMs?: number;
+  tokens?: number;
+  trace?: string[];
+  error?: string;
+}
+
+export const STALE_INBOUND_CUTOFF_MS = 48 * 60 * 60 * 1000;
+export const LARISSA_TIMEZONE = "America/Sao_Paulo";
+
+function messageTimestampMs(message: any): number {
+  const raw = message?.timestamp || message?.createdAt || message?.created_at;
+  const parsed = typeof raw === "number" ? raw : Date.parse(String(raw || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function daypartForHour(hour: number): "morning" | "afternoon" | "night" {
+  if (hour >= 5 && hour < 12) return "morning";
+  if (hour >= 12 && hour < 18) return "afternoon";
+  return "night";
+}
+
 export function buildTemporalContext(cycleNow: Date, lastRelevantMessageAt?: string | null): string {
   const parts = new Intl.DateTimeFormat("pt-BR", {
     timeZone: LARISSA_TIMEZONE,
@@ -6559,21 +7421,6 @@ export async function runBrainOrchestration(
   }
 
   let stageRules = convRow?.stage_completed_rules || {};
-
-  const { data: autoPilotStatesRow } = await supabase
-    .from("instagram_conversations")
-    .select("stage_completed_rules")
-    .eq("id", "__autopilot_states__")
-    .maybeSingle();
-  const existingAutoPilotState = autoPilotStatesRow?.stage_completed_rules?.states?.[conversationId];
-  if (existingAutoPilotState?.pendingManualResponse) {
-    return {
-      handled: true,
-      sentToMeta: false,
-      blockLegacyFallback: true,
-      error: "manual_response_pending",
-    };
-  }
 
   // Debounce Real (Quiet Period): Respeita responseDelayMinutes da conversa/configuração
   const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
@@ -6723,9 +7570,6 @@ export async function runBrainOrchestration(
   const messageInboundRevisions: Record<string, number> = { ...(orchState.messageInboundRevisions || {}) };
   const isExplicitManualCycle = params.isManualRetry === true || Boolean(params.preClaimedCycleToken);
   const isInboundEligibleForCycle = (messageId: string): boolean => {
-    // Mensagens explicitamente reabertas como pending (por recuperação operacional)
-    // permanecem elegíveis mesmo se a ativação atual já tiver avançado o watermark.
-    if (ledger[messageId] === "pending") return true;
     if (isExplicitManualCycle || activationWatermarkRev === null) return true;
     const msgRev = messageInboundRevisions[messageId];
     return typeof msgRev === "number" && msgRev > activationWatermarkRev;
@@ -6994,22 +7838,6 @@ export async function runBrainOrchestration(
         markProcessedIds: staleMessageIds,
         cycleRecord: currentCycle,
       });
-      await publishAutoPilotState(supabase, conversationId, {
-        cycleId: correlationId,
-        status: "idle",
-        activity: activity(
-          "idle",
-          "Nenhuma mensagem nova",
-          "O ciclo terminou sem encontrar mensagem inbound pendente. Nenhuma resposta foi enviada.",
-          { cycleId: correlationId },
-        ),
-        cycleEvent: {
-          phase: "idle",
-          event: "cycle_skipped_idempotent",
-          label: "Nenhuma mensagem pendente",
-          detail: "Este conteúdo já havia sido processado ou não estava pendente; nenhum envio foi iniciado.",
-        },
-      });
       return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };
     }
 
@@ -7039,22 +7867,6 @@ export async function runBrainOrchestration(
         processingStatus: "idle",
         markProcessedIds: [...staleMessageIds, ...unactionableIds],
         cycleRecord: currentCycle,
-      });
-      await publishAutoPilotState(supabase, conversationId, {
-        cycleId: correlationId,
-        status: "idle",
-        activity: activity(
-          "idle",
-          "Nenhuma resposta necessária",
-          "As mensagens pendentes não tinham texto substantivo para responder. Nenhuma resposta foi enviada.",
-          { cycleId: correlationId },
-        ),
-        cycleEvent: {
-          phase: "idle",
-          event: "cycle_skipped_unactionable",
-          label: "Mensagem sem conteúdo acionável",
-          detail: "O ciclo encerrou sem envio porque as mensagens continham somente mídia ou conteúdo não acionável.",
-        },
       });
       return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };
     }
@@ -7276,6 +8088,8 @@ export async function runBrainOrchestration(
     ];
     const candidateObjectiveEvidence = buildObjectiveCandidateEvidence(spontaneousMatches)
       .map((e) => ({ ...e, evidenceMessageId: e.evidenceMessageId || newMessage.id }));
+    const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
+    const shadowWouldCompleteObjectives: string[] = [];
     if (candidateObjectiveEvidence.length) {
       currentCycle.trace.push(`objective_candidate_evidence: ${candidateObjectiveEvidence.map((e) => e.objectiveId).join(",")}`);
     }
@@ -7289,9 +8103,14 @@ export async function runBrainOrchestration(
     // CONVERSATION BRAIN & ESCADA DE MEMÓRIA EM 6 NÍVEIS
     // ------------------------------------------------------------------------
 
-    // Toda sessão nova usa o formato persistente. As chaves antigas abaixo
-    // continuam sendo lidas apenas para migrar estados já gravados.
-    const persistentAgentSessionEnabled = true;
+    const persistentAgentSessionEnabled =
+      typeof (params as any)?.persistentAgentSessionEnabled === "boolean"
+        ? (params as any).persistentAgentSessionEnabled
+        : typeof stageRules?.config?.persistent_agent_session_enabled === "boolean"
+        ? stageRules.config.persistent_agent_session_enabled
+        : (typeof Deno !== "undefined"
+            ? Deno.env.get("PERSISTENT_AGENT_SESSION_ENABLED")
+            : process.env.PERSISTENT_AGENT_SESSION_ENABLED) !== "false";
 
     const rawSessionId =
       stageRules?.orchestration?.openai_session_id ||
@@ -7316,8 +8135,8 @@ export async function runBrainOrchestration(
 
     // PONTO 1: MIGRAÇÃO DE SESSIONS ANTIGAS SEM MARCAÇÃO (ex: caso Denis)
     // Regra obrigatória: se existe openai_session_id e openai_session_kind != "persistent"
-    // A versão identifica sessões persistentes. O snapshot biográfico atualiza-se por evento
-    // na sessão existente, sem recriar a season/CV quando esse perfil for instalado.
+    // OU persistent_session_version estiver ausente/incompatível (< 1),
+    // tratar a Session como pré-Persistent/Legacy e criar uma nova Session Persistent limpa.
     const isPersistentSessionValid = Boolean(
       rawSessionId &&
       rawSessionKind === "persistent" &&
@@ -7325,21 +8144,9 @@ export async function runBrainOrchestration(
       rawSessionVersion >= 1
     );
 
-    const rawPersonaProfileVersion =
-      typeof stageRules?.orchestration?.persona_memory_profile_version === "number"
-        ? stageRules.orchestration.persona_memory_profile_version
-        : typeof orchState?.persona_memory_profile_version === "number"
-        ? orchState.persona_memory_profile_version
-        : typeof stageRules?.persona_memory_profile_version === "number"
-        ? stageRules.persona_memory_profile_version
-        : null;
     const persistentSessionId = persistentAgentSessionEnabled
       ? (isPersistentSessionValid ? rawSessionId : null)
       : rawSessionId;
-
-    const includePersonaProfileSnapshot = Boolean(
-      persistentAgentSessionEnabled && persistentSessionId && rawPersonaProfileVersion !== 1
-    );
 
     if (rawSessionId && !isPersistentSessionValid && persistentAgentSessionEnabled) {
       currentCycle.trace.push("unmarked_or_legacy_session_migrated_to_persistent=true");
@@ -7361,7 +8168,7 @@ export async function runBrainOrchestration(
     try {
       const { data: recentDbRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+        .select("id, sender_id, is_mine, is_from_me, text, message, created_at, timestamp, direction, media_type, media_url, audio_transcript")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
         .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);
@@ -7443,14 +8250,35 @@ export async function runBrainOrchestration(
       speechActsSummary = speechActHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
     } catch {}
 
+    // Determinação do Provedor do Brain: OpenAI Agent único oficial
+    const configuredBrainProvider: "internal" | "openai_agent" = "openai_agent";
+
+    const isOpenAiAgentBrain = true;
+
     // NÍVEL 5: projeção compacta da fonte autoritativa PersonaMemory.
     // Se o provedor for openai_agent, NÃO injeta o resumo genérico de 8 tópicos,
     // pois o novo Brain utiliza a ferramenta real persona_memory_search sob demanda.
+    let personaMemorySummary = "";
+    if (!isOpenAiAgentBrain) {
+      try {
+        const personaFacts = await searchPersonaMemory({
+          supabase,
+          personaId: "larissa",
+          query: "identidade cidade estudo trabalho preferências rotina",
+          limit: 8,
+          allowLegacyFallback: false,
+        });
+        personaMemorySummary = formatPersonaMemoryHitsForBrain(personaFacts || []);
+      } catch {}
+    }
+
     // Telemetria do Brain
     let brainRecentMessagesCount = finalRecentMessages.length;
     let brainInputTokens = 0;
     let brainOutputTokens = 0;
     let brainToolResultTokens = 0;
+    let subagentInputTokens = 0;
+    let subagentOutputTokens = 0;
     let brainMemorySearchesCount = 0;
     let brainHistorySearchesCount = 0;
     let brainHistoryHits = 0;
@@ -7463,20 +8291,20 @@ export async function runBrainOrchestration(
     const tokenMeasurements = new Set<"provider" | "estimated">();
 
     if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
-    // Estilo e orçamento de emoji antecipados para alimentar o Brain no turno único
+    // Estilo e orçamentos de emoji antecipados para alimentar o Agent Terra no turno único
     const recentLarissaOutbounds: string[] = [];
     try {
       const { data: recentMsgs } = await supabase
         .from("instagram_messages")
-        .select("text, is_mine, sender_id, created_at")
+        .select("message, text, is_from_me, sender_id, created_at")
         .eq("conversation_id", conversationId)
-        .or("is_mine.eq.true,sender_id.eq.me,sender_id.eq.larissa")
+        .or("is_from_me.eq.true,sender_id.eq.me,sender_id.eq.larissa")
         .order("created_at", { ascending: false })
         .limit(5);
 
       if (recentMsgs && recentMsgs.length > 0) {
         for (const m of recentMsgs) {
-          const txt = m.text || "";
+          const txt = m.text || m.message || "";
           if (txt && typeof txt === "string" && txt.trim()) {
             recentLarissaOutbounds.push(txt.trim());
           }
@@ -7496,9 +8324,10 @@ export async function runBrainOrchestration(
     let cofreSearchesPerformed = 0;
     const toolResultsHistory: string[] = [];
     let brainPlan: ConversationBrainPlan | null = null;
-    let needsHumanReview = false;
-    let pendingManualResponse: ReturnType<typeof createPendingManualResponse> | null = null;
-    configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
+    let brainIterations = 0;
+
+    if (isOpenAiAgentBrain) {
+      configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
       const { data: agentSettingRows } = await supabase
         .from("instagram_config")
         .select("id, app_secret")
@@ -7540,14 +8369,14 @@ export async function runBrainOrchestration(
             try {
               const { data: replyRow } = await supabase
                 .from("instagram_messages")
-                .select("id, is_mine, text")
+                .select("id, is_from_me, text, message")
                 .eq("id", replyId)
                 .maybeSingle();
               if (replyRow) {
                 replyTargets[replyId] = {
                   id: String(replyRow.id),
-                  sender: replyRow.is_mine ? "larissa" : "pretendente",
-                  text: String(replyRow.text || ""),
+                  sender: replyRow.is_from_me ? "larissa" : "pretendente",
+                  text: String(replyRow.text || replyRow.message || ""),
                 };
               }
             } catch {}
@@ -7646,7 +8475,6 @@ export async function runBrainOrchestration(
           runtime,
           strictOpenAiPilot: isStrict,
           recentStyleStateSnippet: recentStyleSnippet,
-          includePersonaProfileSnapshot,
           memoryScopeId: currentMemoryScopeId,
           recentQuestionIntentsSnippet: persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
           searchCofreAudios: (p) => searchCofreAudios({
@@ -7992,40 +8820,172 @@ export async function runBrainOrchestration(
         currentCycle.trace.push("OPENAI_AGENT_FAILED");
         throw new Error(`OPENAI_AGENT_FAILED: ${err?.message || String(err)}`);
       }
+    }
+
+    while (!isOpenAiAgentBrain && brainIterations < 3 && !brainPlan) {
+      brainIterations++;
+
+      // Freshness Gate antes de cada chamada do Brain
+      if (brainIterations > 1) {
+        const freshnessInBrainLoop = await checkFreshnessGate({
+          supabase,
+          conversationId,
+          claimedMessageIds,
+          cycleStartedAt: currentCycle.startedAt,
+          initialInboundRevision,
+        });
+        if (!freshnessInBrainLoop.isFresh) {
+          return await handleCyclePreemption("during_brain_tool_loop", freshnessInBrainLoop);
+        }
+      }
+
+      const brainPrompt = buildConversationBrainPrompt({
+        conversationId,
+        currentStage: currentStageId,
+        liveState: currentLiveState,
+        recentMessages: finalRecentMessages,
+        contactMemorySummary,
+        landmarksSummary,
+        speechActsSummary,
+        personaMemorySummary,
+        stageObjectives: stageChecklistForRouter.goals as any,
+        currentObjective: stageChecklistForRouter.currentObjective as any,
+        toolResultsHistory,
+      });
+      const configuredBrainModel = await resolveConfiguredOpenAiModel(supabase, params.model);
+      currentCycle.trace.push(`configured_brain_model=${configuredBrainModel}`);
+      const brainRes = await callModelOrOpenAi(brainPrompt, {
+        runtime,
+        supabase,
+        model: configuredBrainModel,
+        recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
+      });
+      tokenMeasurements.add(brainRes.tokenMeasurement);
+      brainInputTokens += brainRes.inputTokens;
+      brainOutputTokens += brainRes.outputTokens;
+      totalTokens += brainRes.tokens;
+
+      const rawBrainJson = extractJsonFromText(brainRes.content);
+      if (rawBrainJson && (rawBrainJson.action === "call_tool" || rawBrainJson.tool)) {
+        const toolName = String(rawBrainJson.tool || rawBrainJson.name || "").trim();
+        const toolParams = rawBrainJson.parameters || rawBrainJson.params || {};
+
+        if (toolName === "conversation_history_search") {
+          if (memorySearchesPerformed < MAX_BRAIN_SEARCHES) {
+            memorySearchesPerformed++;
+            brainHistorySearchesCount++;
+            brainUsedRawHistory = true;
+            brainMemorySourcesUsed.add("raw_history");
+            const q = String(toolParams.query || inboundsText).trim();
+            const hits = await searchRawConversationHistory({
+              supabase,
+              conversationId,
+              query: q,
+              limit: BRAIN_ORCHESTRATION_BUDGETS.brain_history_search_results,
+            });
+            brainHistoryHits += hits.length;
+            const formattedHits = hits.map((h, i) => {
+              const ctx = h.contextWindow.map((c) => `  [${c.sender} @ ${c.createdAt}] ${c.text}`).join("\n");
+              return `Hit ${i + 1} (score: ${h.matchScore}):\n${ctx}`;
+            }).join("\n\n");
+            toolResultsHistory.push(`[TOOL: conversation_history_search | query: "${q}"]\n${formattedHits || "Nenhum resultado encontrado no histórico bruto."}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: conversation_history_search] Limite de buscas de memória atingido.`);
+          }
+        } else if (toolName === "persona_memory_search") {
+          if (memorySearchesPerformed < MAX_BRAIN_SEARCHES) {
+            memorySearchesPerformed++;
+            brainMemorySearchesCount++;
+            brainMemorySourcesUsed.add("persona_memory");
+            const q = String(toolParams.query || inboundsText).trim();
+            let personaToolFacts: any[] = [];
+            try {
+              personaToolFacts = await searchPersonaMemory({
+                supabase,
+                personaId: "larissa",
+                query: q,
+                limit: 8,
+                allowLegacyFallback: false,
+              });
+            } catch {
+              personaToolFacts = [];
+            }
+            const formatted = formatPersonaMemoryHitsForBrain(personaToolFacts);
+            toolResultsHistory.push(`[TOOL: persona_memory_search | query: "${q}"]\n${formatted}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: persona_memory_search] Limite de buscas de memória atingido.`);
+          }
+        } else if (toolName === "episodic_memory_search") {
+          if (memorySearchesPerformed < MAX_BRAIN_SEARCHES) {
+            memorySearchesPerformed++;
+            brainMemorySearchesCount++;
+            brainMemorySourcesUsed.add("episodic_memory");
+            const q = String(toolParams.query || inboundsText).trim();
+            const mClass = toolParams.memoryClass || "all";
+            const epHits = await searchConversationEpisodicMemory({
+              supabase,
+              conversationId,
+              query: q,
+              memoryClass: mClass,
+              limit: 4,
+            });
+            const formatted = epHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
+            toolResultsHistory.push(`[TOOL: episodic_memory_search | query: "${q}"]\n${formatted || "Nenhum episódio relevante encontrado."}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: episodic_memory_search] Limite de buscas de memória atingido.`);
+          }
+        } else if (toolName === "cofre_audio_search") {
+          if (cofreSearchesPerformed < 1) {
+            cofreSearchesPerformed++;
+            brainUsedAudio = true;
+            brainMemorySourcesUsed.add("cofre_audio");
+            const q = String(toolParams.query || inboundsText).trim();
+            const cofreMatches = await searchCofreAudios({
+              supabase,
+              conversationId,
+              query: q,
+              limit: 3,
+            });
+            brainAudioCandidates = cofreMatches;
+            const formatted = cofreMatches.map((c) => `• audio_id: "${c.audio_id}" | título: "${c.title}" | instrução: "${c.when_to_use}" | transcrição: "${c.full_transcript}"`).join("\n");
+            toolResultsHistory.push(`[TOOL: cofre_audio_search | query: "${q}"]\n${formatted || "Nenhum áudio com aderência semântica encontrado."}`);
+          } else {
+            toolResultsHistory.push(`[TOOL: cofre_audio_search] Limite de busca de áudio atingido.`);
+          }
+        } else {
+          toolResultsHistory.push(`[TOOL: ${toolName}] Ferramenta não suportada pelo Brain.`);
+        }
+      } else if (rawBrainJson) {
+        // Brain concluiu (modo legado)
+        brainPlan = {
+          action: "reply",
+          currentStage: currentStageId,
+          objectiveDecision: (rawBrainJson.objectiveDecision as any) || "pursue",
+          satisfiedObjectiveId: rawBrainJson.satisfiedObjectiveId || undefined,
+          evidenceMessageId: rawBrainJson.evidenceMessageId || undefined,
+          liveStatePatch: rawBrainJson.liveStatePatch || {},
+          missionPackage: rawBrainJson.missionPackage || undefined,
+          reasoning: rawBrainJson.reasoning || rawBrainJson.reason || "Planejamento concluído pelo Brain.",
+        };
+      }
+    }
     brainToolResultTokens = estimateTextTokens(toolResultsHistory.join("\n"));
 
-    if (!brainPlan) throw new Error("OPENAI_AGENT_FAILED: plano oficial ausente");
-
-    const plannedResponses = [
-      ...(brainPlan.responses || []),
-      ...(brainPlan.outboundActions || []).filter((action: any) => action?.type === "text").map((action: any) => String(action.text || "")),
-      ...(brainPlan.suggestedResponse ? [brainPlan.suggestedResponse] : []),
-    ];
-    const uncertainResponse = plannedResponses.find(detectUnsupportedUncertainty);
-    needsHumanReview = Boolean(brainPlan.needsHumanReview || uncertainResponse);
-    if (needsHumanReview) {
-      pendingManualResponse = createPendingManualResponse({
-        inboundMessages: canonicalClaimed.map((message) => String(message.text || "")).filter(Boolean),
-        inboundMessageIds: claimedMessageIds,
-        reason: brainPlan.humanReviewReason || (uncertainResponse
-          ? "A resposta gerada contém incerteza factual e precisa de confirmação humana."
-          : undefined),
-        source: uncertainResponse ? "uncertain_response" : "brain_review",
-        candidateResponse: uncertainResponse,
-        now: cycleNow,
-      });
-      brainPlan.action = "wait";
-      brainPlan.responses = [];
-      brainPlan.suggestedResponse = "";
-      brainPlan.outboundActions = [];
-      brainPlan.audioId = undefined;
-      brainPlan.selectedAudioId = undefined;
-      brainPlan.reasoning = pendingManualResponse.reason;
-      brainPlan.objectiveDecision = "none";
-      brainPlan.liveStatePatch = {};
-      pendingDetectedFacts.splice(0);
-      currentCycle.trace.push("manual_response_review_required");
+    // Fallback seguro caso o Brain esgote iterações sem emitir plano
+    if (!brainPlan && !isOpenAiAgentBrain) {
+      brainPlan = {
+        action: "reply",
+        currentStage: currentStageId,
+        objectiveDecision: "pursue",
+        liveStatePatch: {
+          lastUserEmotionalTone: "tranquilo",
+          currentTopic: "interação em andamento",
+        },
+        reasoning: "Plano gerado por fallback do Brain.",
+      };
     }
+
+    if (!brainPlan) throw new Error("OPENAI_AGENT_FAILED: plano oficial ausente");
 
     // Atualiza o LiveState com o patch do Brain (com poda estrita de coleções)
     currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
@@ -8083,73 +9043,6 @@ export async function runBrainOrchestration(
       return await handleCyclePreemption("during_conversation_agent", freshnessAfterRouter);
     }
 
-    // Uma resposta recíproca curta ("e vc?") deve herdar o assunto da pergunta
-    // pessoal mais recente da Larissa. A seleção do áudio não pode depender
-    // somente de o Agent lembrar de chamar a ferramenta opcional.
-    let mandatoryAudioCandidate: CofreAudioCandidate | null = null;
-    const reciprocalAudioIntent = inferReciprocalPersonaAudioIntent({
-      inboundTexts: claimedMessages
-        .filter((message: any) => message.sender === "pretendente" || message.direction === "inbound")
-        .map((message: any) => String(message.text || "")),
-      recentMessages: finalRecentMessages.map((message: any) => ({
-        sender: message.sender,
-        isMine: message.isMine,
-        text: String(message.text || ""),
-        createdAt: message.createdAt || message.created_at || message.timestamp,
-      })),
-      now: cycleNow,
-    });
-
-    if (reciprocalAudioIntent) {
-      currentCycle.trace.push(`reciprocal_audio_intent=${reciprocalAudioIntent.topic}`);
-      const alreadySelectedAudio = Array.isArray(brainPlan.outboundActions)
-        ? brainPlan.outboundActions.some((action: any) => action?.type === "audio")
-        : Boolean(brainPlan.audioId || brainPlan.selectedAudioId);
-
-      if (!alreadySelectedAudio) {
-        const intentCandidates = await searchCofreAudios({
-          supabase,
-          conversationId,
-          query: reciprocalAudioIntent.searchQuery,
-          limit: 3,
-        });
-        const audioCandidates = [
-          ...intentCandidates,
-          ...brainAudioCandidates.filter((candidate) =>
-            !intentCandidates.some((intentCandidate) => intentCandidate.audio_id === candidate.audio_id)
-          ),
-        ];
-        brainAudioCandidates = audioCandidates;
-        if (audioCandidates.length > 0) {
-          brainUsedAudio = true;
-          brainMemorySourcesUsed.add("cofre_audio");
-        }
-
-        mandatoryAudioCandidate = audioCandidates.find((candidate) =>
-          isPersonaAudioInstructionMatch(
-            reciprocalAudioIntent.topic,
-            candidate.when_to_use || candidate.usage_instruction || "",
-          )
-        ) || null;
-
-        if (mandatoryAudioCandidate) {
-          currentCycle.trace.push(`reciprocal_audio_selected=${mandatoryAudioCandidate.audio_id}`);
-          const existingActions = Array.isArray(brainPlan.outboundActions)
-            ? [...brainPlan.outboundActions]
-            : (Array.isArray(brainPlan.responses)
-              ? brainPlan.responses.map((text: any) => ({ type: "text", text: String(text || "").trim() }))
-              : []);
-          brainPlan.outboundActions = [
-            { type: "audio", audioId: mandatoryAudioCandidate.audio_id },
-            ...existingActions.filter((action: any) => action?.type !== "audio"),
-          ];
-          brainPlan.action = "reply";
-        } else {
-          currentCycle.trace.push("reciprocal_audio_no_matching_unused_candidate");
-        }
-      }
-    }
-
     let finalSubDecision: BrainDecision | null = null;
 
     if (brainPlan.action === "wait") {
@@ -8165,26 +9058,15 @@ export async function runBrainOrchestration(
       };
       currentCycle.trace.push("brain_action: wait");
     } else {
-      // Prepara o contrato consolidado para a validação determinística
+      // Prepara o MissionPackage consolidado para o executor
       const requestedDirective = brainPlan.objectiveDecision;
       const normalizedDirective: MissionPackage["objectiveDirective"] =
         ["pursue", "defer", "already_satisfied", "none"].includes(requestedDirective)
           ? requestedDirective
           : "pursue";
-      let audioSelection = mandatoryAudioCandidate
-        ? {
-            selectedAudioId: mandatoryAudioCandidate.audio_id,
-            candidateAudios: [{
-              audioId: mandatoryAudioCandidate.audio_id,
-              title: mandatoryAudioCandidate.title,
-              transcript: mandatoryAudioCandidate.full_transcript,
-              instruction: mandatoryAudioCandidate.when_to_use,
-              adherenceScore: mandatoryAudioCandidate.match_score || 1,
-            }],
-            preferAudio: true,
-          }
-        : authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
-      let agentSelectedAudioId: string | null = null;
+      let audioSelection = authorizeMissionAudioSelection(brainPlan.missionPackage, brainAudioCandidates);
+      if (isOpenAiAgentBrain) {
+        let agentSelectedAudioId: string | null = null;
         if (Array.isArray(brainPlan.outboundActions)) {
           const audioAct = brainPlan.outboundActions.find((a: any) => a && a.type === "audio");
           if (audioAct && typeof audioAct.audioId === "string" && audioAct.audioId.trim()) {
@@ -8220,7 +9102,16 @@ export async function runBrainOrchestration(
             };
           }
         }
-      const turnContract = normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4);
+      }
+      const turnContract = isOpenAiAgentBrain
+        ? normalizeBrainTurnContract(brainPlan.missionPackage?.turnContract, 4)
+        : buildTurnContract(
+          canonicalClaimed.map((message) => message.text),
+          {
+            ...brainPlan.missionPackage?.turnContract,
+            objectiveDirective: normalizedDirective,
+          } as any
+        );
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
         objectiveDirective: normalizedDirective,
@@ -8231,6 +9122,7 @@ export async function runBrainOrchestration(
           contactMemorySummary ? `FATOS DO PRETENDENTE:\n${contactMemorySummary}` : "",
           landmarksSummary ? `MARCOS HISTÓRICOS:\n${landmarksSummary}` : "",
           speechActsSummary ? `ATOS DE FALA RECENTES:\n${speechActsSummary}` : "",
+          personaMemorySummary ? `FATOS RELEVANTES DA LARISSA:\n${personaMemorySummary}` : "",
         ]),
         liveStateContext: serializeLiveStateForPrompt(currentLiveState),
         selectedAudioId: audioSelection.selectedAudioId,
@@ -8242,10 +9134,10 @@ export async function runBrainOrchestration(
         `audio_id: "${audio.audioId}" | título: "${audio.title}" | instrução: "${audio.instruction}" | transcrição: "${audio.transcript}"`
       ).join("\n") || "";
 
-      const hasAgentOutboundActions = Array.isArray(brainPlan.outboundActions) && brainPlan.outboundActions.length > 0;
-      const hasAgentResponses = Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0;
+      const hasAgentOutboundActions = isOpenAiAgentBrain && Array.isArray(brainPlan.outboundActions) && brainPlan.outboundActions.length > 0;
+      const hasAgentResponses = isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0;
 
-      if (hasAgentOutboundActions || hasAgentResponses || brainPlan.action === "send_audio") {
+      if (isOpenAiAgentBrain && (hasAgentOutboundActions || hasAgentResponses || brainPlan.action === "send_audio")) {
         // Execução em turno único: o Agent Brain produz o plano com ações canônicas ordenadas
         let rawActions: OutboundAction[] = [];
         if (hasAgentOutboundActions) {
@@ -8340,7 +9232,6 @@ export async function runBrainOrchestration(
               if (audioSelection.selectedAudioId && act.audioId === audioSelection.selectedAudioId) {
                 allowedOutboundActions.push(act);
               } else {
-                currentCycle.trace.push("brain_audio_rejected: brain_audio_id_not_authorized");
                 currentCycle.trace.push(`unauthorized_audio_action_pruned: ${act.audioId}`);
               }
             }
@@ -8407,24 +9298,86 @@ export async function runBrainOrchestration(
           }
         }
 
-      currentCycle.trace.push("single_openai_brain_execution_used: true");
-      currentCycle.trace.push("single_model_execution_confirmed: true");
+      currentCycle.trace.push("single_turn_agent_execution_used: true");
+      currentCycle.trace.push("second_model_inference_skipped: true");
       currentCycle.trace.push(`model: ${configuredAgentModel}`);
       currentCycle.trace.push(`brain_reasoning_effort=${agentSettings.get("openai_brain_reasoning_effort") || "remote_configured"}`);
       currentCycle.trace.push(`brain_verbosity=${agentSettings.get("openai_brain_verbosity") || "remote_configured"}`);
       currentCycle.trace.push(`brain_safe_responses_count=${finalSubDecision.responses?.length || 0}`);
       currentCycle.trace.push("brain_plan_recovery_mode=none");
-      // Se o Brain gerou balões, aplica sanitização determinística mandatória
-      if (finalSubDecision.action === "reply" && (!finalSubDecision.responses || finalSubDecision.responses.length === 0)) {
-        const hasAudioOnly = finalSubDecision.outboundActions?.some((a: any) => a.type === "audio");
-        if (hasAudioOnly) {
-          // Válido: turno composto apenas por áudio
-          currentCycle.trace.push("brain_plan_audio_only_valid");
+      } else {
+        // Constrói prompt do executor enxuto (modo legado)
+        const executorPrompt = buildSubagentExecutorPrompt({
+          subagentId: "openai_agent",
+          subagentName: "Larissa",
+          mission: "Conduzir a conversa com afeto e organicidade",
+          missionPackage: missionPkg,
+          recentMessages: finalRecentMessages,
+          emojiBudgetSnippet: emojiBudgetInfo.promptSnippet,
+          styleStateSnippet: `Última forma: ${recentStyleState.last_response_shape} | Emojis recentes: ${recentStyleState.recent_emojis.join(" ") || "nenhum"}`,
+          candidateAudiosSnippet: candidateAudiosSnippet || undefined,
+        });
+        await publishAutoPilotState(supabase, conversationId, {
+          status: "processing",
+          activity: activity(
+            "brain",
+            `Formulando resposta...`,
+            `Formulando resposta...`,
+            {
+              brainThought: `Executando turno...`,
+              currentPhase,
+            }
+          ),
+        });
+
+        // Resolução do modelo (fallback legado)
+        const brainLegacyModel = await resolveConfiguredOpenAiModel(supabase, params.model);
+
+        const execRes = await callModelOrOpenAi(executorPrompt, {
+          runtime,
+          supabase,
+          model: brainLegacyModel,
+          disallowDowngrade: true,
+          recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
+        });
+        tokenMeasurements.add(execRes.tokenMeasurement);
+        totalTokens += execRes.tokens;
+        subagentInputTokens += execRes.inputTokens;
+        subagentOutputTokens += execRes.outputTokens;
+        finalGenerationTokens += execRes.outputTokens;
+        const rawSubJson = extractJsonFromText(execRes.content);
+        if (rawSubJson && (rawSubJson.action === "call_tool" || rawSubJson.action === "tool_call" || rawSubJson.tool)) {
+          currentCycle.trace.push("subagent_tool_request_rejected");
+          finalSubDecision = {
+            action: "wait",
+            checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
+            summary: "Saída inválida do executor",
+            suggestedResponse: "",
+            nextPhase: currentPhase,
+            reasoning: "Executor tentou solicitar ferramenta, operação proibida no runtime experimental",
+            requiredTools: [],
+          };
         } else {
-          finalSubDecision.action = "wait";
-          finalSubDecision.suggestedResponse = "";
-          finalSubDecision.requiredTools = [];
-          currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
+          finalSubDecision = validateBrainDecision(rawSubJson, currentPhase);
+          currentCycle.trace.push("agent_executed: openai_agent");
+        }
+      }
+
+      // Se o subagente gerou balões, aplica sanitização determinística mandatória
+      if (finalSubDecision.action === "reply" && (!finalSubDecision.responses || finalSubDecision.responses.length === 0)) {
+        if (isOpenAiAgentBrain) {
+          const hasAudioOnly = finalSubDecision.outboundActions?.some((a: any) => a.type === "audio");
+          if (hasAudioOnly) {
+            // Válido: turno composto apenas por áudio
+            currentCycle.trace.push("brain_plan_audio_only_valid");
+          } else {
+            finalSubDecision.action = "wait";
+            finalSubDecision.suggestedResponse = "";
+            finalSubDecision.requiredTools = [];
+            currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
+          }
+        } else {
+          finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
         }
       }
 
@@ -8437,6 +9390,8 @@ export async function runBrainOrchestration(
       currentCycle.trace.push(`brain_history_search_count: ${brainHistorySearchesCount}`);
       currentCycle.trace.push(`brain_history_hits: ${brainHistoryHits}`);
       currentCycle.trace.push(`brain_tool_result_tokens: ${brainToolResultTokens}`);
+      currentCycle.trace.push(`subagent_input_tokens: ${subagentInputTokens}`);
+      currentCycle.trace.push(`subagent_output_tokens: ${subagentOutputTokens}`);
       currentCycle.trace.push(`total_cycle_tokens: ${totalTokens}`);
       currentCycle.trace.push(`token_measurement: ${tokenMeasurements.size === 1 ? [...tokenMeasurements][0] : "estimated"}`);
       currentCycle.trace.push(`brain_used_raw_history: ${brainUsedRawHistory}`);
@@ -8444,10 +9399,10 @@ export async function runBrainOrchestration(
       currentCycle.trace.push(`brain_used_contact_memory: ${brainUsedContactMemory}`);
       currentCycle.trace.push(`brain_used_audio: ${brainUsedAudio}`);
 
-      // O Brain só pode usar o áudio previamente autorizado pelo backend.
+      // O executor só pode usar o áudio previamente autorizado pelo Brain/backend.
       const audioIntegrity = enforceAuthorizedAudioDecision(finalSubDecision, missionPkg);
       if (!audioIntegrity.allowed) {
-        currentCycle.trace.push(`brain_audio_rejected: ${audioIntegrity.reason}`);
+        currentCycle.trace.push(`executor_audio_rejected: ${audioIntegrity.reason}`);
         finalSubDecision = {
           ...finalSubDecision,
           action: "wait",
@@ -8457,7 +9412,7 @@ export async function runBrainOrchestration(
           responses: [],
           suggestedResponse: "",
           requiredTools: [],
-          reasoning: "O Brain tentou usar áudio não autorizado pelo backend",
+          reasoning: "Executor tentou usar áudio não autorizado pelo Brain",
         };
       } else if (audioIntegrity.audioId) {
         finalSubDecision.audioId = audioIntegrity.audioId;
@@ -8485,6 +9440,86 @@ export async function runBrainOrchestration(
           lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
           isRetry: false,
         });
+        if (!isOpenAiAgentBrain && lintResult.requiresRetry) {
+          currentCycle.trace.push(`style_lint_retry_triggered: ${lintResult.retryReason}`);
+
+          const retryPrompt = `${executorPrompt}
+
+### INSTRUÇÃO DE AJUSTE DE ESTILO (Style Lint Retry)
+Detectada inconsistência com a digitação da Larissa: ${lintResult.retryReason}
+
+Reescreva mantendo exatamente fatos e intenção.
+Use o estilo de digitação da Larissa: curto, natural, informal, sem formalidade, sem eco e em balões proporcionais.
+
+Responda ESTRITAMENTE em JSON puro:
+{
+  "action": "reply",
+  "checkpoint": "${finalSubDecision.checkpoint}",
+  "summary": "${finalSubDecision.summary}",
+  "responses": [
+    "balão 1 corrigido",
+    "balão 2 corrigido"
+  ],
+  "nextPhase": "${finalSubDecision.nextPhase}"
+}`;
+          try {
+            const retryRes = await callModelOrOpenAi(retryPrompt, {
+              runtime,
+              supabase,
+              model: brainLegacyModel,
+              disallowDowngrade: true,
+              recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
+            });
+            totalTokens += retryRes.tokens;
+            finalGenerationTokens += retryRes.tokens;
+            const retryJson = extractJsonFromText(retryRes.content);
+            if (retryJson) {
+              const validatedRetry = validateBrainDecision(retryJson, currentPhase);
+              candidateBalloons = (validatedRetry.responses && validatedRetry.responses.length > 0)
+                ? validatedRetry.responses
+                : splitIntoBalloons(validatedRetry.suggestedResponse);
+
+              // Passa pelo lint em modo defensivo (isRetry: true)
+              lintResult = runStyleLint(candidateBalloons, {
+                emojiBudget: effectiveEmojiBudget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+
+              finalSubDecision.responses = lintResult.cleanedBalloons;
+              finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+              currentCycle.trace.push("style_lint_retry_completed");
+            } else {
+              lintResult = runStyleLint(candidateBalloons, {
+                emojiBudget: effectiveEmojiBudget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              finalSubDecision.responses = lintResult.cleanedBalloons;
+              finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+            }
+          } catch (retryErr: any) {
+            currentCycle.trace.push(`style_lint_retry_err: ${retryErr.message || String(retryErr)}`);
+            lintResult = runStyleLint(candidateBalloons, {
+              emojiBudget: effectiveEmojiBudget,
+              recentEmojis: emojiBudgetInfo.recentEmojis,
+              recentReactions: recentStyleState.recent_reactions,
+              lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+              isRetry: true,
+            });
+            finalSubDecision.responses = lintResult.cleanedBalloons;
+            finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+          }
+        } else if (!isOpenAiAgentBrain) {
+          finalSubDecision.responses = lintResult.cleanedBalloons;
+          finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
+          currentCycle.trace.push("style_lint_passed_first_try");
+        }
+
         // ------------------------------------------------------------------
         // CONVERSATION QUALITY GATE & RETRY SEMÂNTICO (Máximo 1)
         // ------------------------------------------------------------------
@@ -8499,6 +9534,91 @@ export async function runBrainOrchestration(
         let qualityRetried = false;
         let qualityFallbackUsed = false;
 
+        if (!qualityResult.passed && !isOpenAiAgentBrain) {
+          qualityRetried = true;
+          const issueCodes = qualityResult.issues.map((issue) => issue.code);
+          currentCycle.trace.push(`conversation_quality_retry_issues: ${issueCodes.join(",")}`);
+          const qualityRetryPrompt = `${executorPrompt}
+
+### QUALITY RETRY ÚNICO
+A resposta anterior falhou semanticamente por: ${issueCodes.join(", ")}.
+Fala do pretendente: ${JSON.stringify(inboundTexts.join(" "))}
+Contrato obrigatório: ${JSON.stringify(turnContract)}
+
+Reescreva a mesma missão. Responda primeiro à pergunta direta, acrescente reação real, não ecoe a fala, não introduza tópico adiado e respeite o limite de perguntas e balões.
+Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
+          try {
+            const retryRes = await callModelOrOpenAi(qualityRetryPrompt, {
+              runtime,
+              supabase,
+              model: brainLegacyModel,
+              disallowDowngrade: true,
+              recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
+            });
+            totalTokens += retryRes.tokens;
+            finalGenerationTokens += retryRes.outputTokens;
+            const retryJson = extractJsonFromText(retryRes.content);
+            if (retryJson) {
+              const retriedDecision = validateBrainDecision(retryJson, currentPhase);
+              const retriedBalloons = retriedDecision.responses?.length
+                ? retriedDecision.responses
+                : splitIntoBalloons(retriedDecision.suggestedResponse);
+              const retryLint = runStyleLint(retriedBalloons, {
+                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              finalSubDecision.responses = retryLint.cleanedBalloons;
+              finalSubDecision.suggestedResponse = retryLint.cleanedBalloons.join("\n\n");
+              qualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: retryLint.cleanedBalloons,
+                turnContract,
+              });
+            }
+          } catch (qualityRetryErr: any) {
+            currentCycle.trace.push(`conversation_quality_retry_err: ${qualityRetryErr.message || String(qualityRetryErr)}`);
+          }
+
+          if (!qualityResult.passed) {
+            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
+            if (fallback) {
+              qualityFallbackUsed = true;
+              const fallbackLint = runStyleLint(fallback, {
+                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              qualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: fallbackLint.cleanedBalloons,
+                turnContract,
+              });
+              if (qualityResult.passed) {
+                finalSubDecision.responses = fallbackLint.cleanedBalloons;
+                finalSubDecision.suggestedResponse = fallbackLint.cleanedBalloons.join("\n\n");
+                currentCycle.trace.push("conversation_quality_safe_fallback_used");
+              } else {
+                finalSubDecision.action = "wait";
+                finalSubDecision.responses = [];
+                finalSubDecision.suggestedResponse = "";
+                finalSubDecision.requiredTools = [];
+                currentCycle.trace.push("conversation_quality_fallback_rejected_dispatch_blocked");
+              }
+            } else {
+              finalSubDecision.action = "wait";
+              finalSubDecision.responses = [];
+              finalSubDecision.suggestedResponse = "";
+              finalSubDecision.requiredTools = [];
+              currentCycle.trace.push("conversation_quality_blocked_dispatch");
+            }
+          }
+        }
+
         currentCycle.trace.push(`conversation_quality_passed=${qualityResult.passed}`);
         currentCycle.trace.push(`conversation_quality_retry=${qualityRetried}`);
         currentCycle.trace.push(`conversation_quality_issues=${JSON.stringify(qualityResult.issues.map((issue) => issue.code))}`);
@@ -8508,14 +9628,14 @@ export async function runBrainOrchestration(
         currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`question_budget_final_count=${qualityResult.newQuestionCount}`);
         currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
-        currentCycle.trace.push("conversation_quality_observe_only=true");
+        if (isOpenAiAgentBrain) currentCycle.trace.push("conversation_quality_observe_only=true");
 
-        if (qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
+        if (isOpenAiAgentBrain && qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
           currentCycle.trace.push("question_budget_exceeded_observed");
         }
 
         // Limite físico de payload: se exceder maxBalloons, apara os balões excedentes em vez de calar a conversa
-        if ((finalSubDecision.responses || []).length > turnContract.maxBalloons) {
+        if (isOpenAiAgentBrain && (finalSubDecision.responses || []).length > turnContract.maxBalloons) {
           currentCycle.trace.push("technical_balloon_limit_trimmed");
           finalSubDecision.responses = (finalSubDecision.responses || []).slice(0, turnContract.maxBalloons);
         }
@@ -8536,7 +9656,11 @@ export async function runBrainOrchestration(
               `anti_repeat_gate_blocked: pruned=${antiRepeatResult.blockedBalloons.length}, remaining=${finalAfterAntiRepeat.length}`
             );
           }
-          const normalizedAfterAntiRepeat = finalAfterAntiRepeat.filter(Boolean);
+          const normalizedAfterAntiRepeat = isOpenAiAgentBrain
+            ? finalAfterAntiRepeat.filter(Boolean)
+            : finalAfterAntiRepeat
+              .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+              .filter(Boolean);
           let finalQualityResult = runConversationQualityGate({
             inboundMessages: inboundTexts,
             candidateBalloons: normalizedAfterAntiRepeat,
@@ -8545,6 +9669,32 @@ export async function runBrainOrchestration(
           currentCycle.trace.push(`post_antirepeat_quality_passed=${finalQualityResult.passed}`);
           currentCycle.trace.push(`post_antirepeat_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
           let authoritativeBalloons = normalizedAfterAntiRepeat;
+          if (!finalQualityResult.passed && !qualityFallbackUsed && !isOpenAiAgentBrain) {
+            const finalFallback = safeHighConfidenceFallback(inboundTexts, turnContract);
+            if (finalFallback) {
+              const finalFallbackLint = runStyleLint(finalFallback, {
+                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+                recentEmojis: emojiBudgetInfo.recentEmojis,
+                recentReactions: recentStyleState.recent_reactions,
+                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+                isRetry: true,
+              });
+              const normalizedFallbackBalloons = finalFallbackLint.cleanedBalloons
+                .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+                .filter(Boolean);
+              finalQualityResult = runConversationQualityGate({
+                inboundMessages: inboundTexts,
+                candidateBalloons: normalizedFallbackBalloons,
+                turnContract,
+              });
+              if (finalQualityResult.passed) {
+                authoritativeBalloons = normalizedFallbackBalloons;
+                qualityFallbackUsed = true;
+                currentCycle.trace.push("post_antirepeat_quality_safe_fallback_used");
+              }
+            }
+          }
+
           currentCycle.trace.push(`final_quality_passed=${finalQualityResult.passed}`);
           currentCycle.trace.push(`final_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
 
@@ -8582,63 +9732,58 @@ export async function runBrainOrchestration(
             currentCycle.trace.push("unauthorized_intimacy_leak_sanitized");
           }
 
-          finalSubDecision.responses = authoritativeBalloons;
-          finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
-          if (finalSubDecision.outboundActions) {
-            const audioAction = finalSubDecision.outboundActions.find((a) => a.type === "audio");
-            finalSubDecision.outboundActions = [
-              ...(audioAction ? [audioAction] : []),
-              ...authoritativeBalloons.map((t) => ({ type: "text" as const, text: t })),
-            ];
+          if (isOpenAiAgentBrain) {
+            finalSubDecision.responses = authoritativeBalloons;
+            finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+            if (finalSubDecision.outboundActions) {
+              const audioAction = finalSubDecision.outboundActions.find((a) => a.type === "audio");
+              finalSubDecision.outboundActions = [
+                ...(audioAction ? [audioAction] : []),
+                ...authoritativeBalloons.map((t) => ({ type: "text" as const, text: t })),
+              ];
+            }
           }
 
+          if (!finalQualityResult.passed && !isOpenAiAgentBrain) {
+            finalSubDecision.action = "wait";
+            finalSubDecision.responses = [];
+            finalSubDecision.suggestedResponse = "";
+            finalSubDecision.requiredTools = [];
+            currentCycle.trace.push("post_antirepeat_quality_blocked_dispatch");
+            authoritativeBalloons = isOpenAiAgentBrain
+              ? authoritativeBalloons.filter(Boolean)
+              : authoritativeBalloons
+                .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
+                .filter(Boolean);
+
+            const secondPassGuard = validateBackendQuestionIntentGuard({
+              candidateBalloons: authoritativeBalloons,
+              questionIntents: brainPlan?.questionIntents || [],
+              recentQuestionIntents: currentRecentQuestionIntents,
+              recentLarissaOutbounds,
+              lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+            });
+
+            if (secondPassGuard.isBlocked) {
+              currentCycle.trace.push(
+                `second_pass_intent_guard_blocked: pruned=${secondPassGuard.prunedBalloons.length}, reasons=${secondPassGuard.reasons.join(" | ")}`
+              );
+              authoritativeBalloons = secondPassGuard.allowedBalloons;
+            }
+
+            if (secondPassGuard.failClosed || authoritativeBalloons.length === 0) {
+              finalSubDecision.action = "wait";
+              finalSubDecision.responses = [];
+              finalSubDecision.suggestedResponse = "";
+              finalSubDecision.requiredTools = [];
+              currentCycle.trace.push("second_pass_intent_guard_fail_closed");
+            } else {
+              finalSubDecision.responses = authoritativeBalloons;
+              finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
+            }
           }
         }
       }
-    }
-
-    const finalUncertainResponse = [
-      ...(finalSubDecision?.responses || []),
-      ...(finalSubDecision?.outboundActions || []).filter((action: any) => action?.type === "text").map((action: any) => String(action.text || "")),
-      ...(finalSubDecision?.suggestedResponse ? [finalSubDecision.suggestedResponse] : []),
-    ].find(detectUnsupportedUncertainty);
-    if (finalUncertainResponse && !needsHumanReview) {
-      needsHumanReview = true;
-      pendingManualResponse = createPendingManualResponse({
-        inboundMessages: canonicalClaimed.map((message) => String(message.text || "")).filter(Boolean),
-        inboundMessageIds: claimedMessageIds,
-        reason: "A resposta contém incerteza factual e foi retida para revisão humana.",
-        source: "uncertain_response",
-        candidateResponse: finalUncertainResponse,
-        now: cycleNow,
-      });
-      finalSubDecision = {
-        ...finalSubDecision!,
-        action: "wait",
-        responses: [],
-        suggestedResponse: "",
-        outboundActions: [],
-        audioId: undefined,
-        audioUrl: undefined,
-        requiredTools: [],
-        reasoning: pendingManualResponse.reason,
-        objectiveCompletion: undefined,
-        memoryCandidates: [],
-      };
-      currentCycle.trace.push("manual_response_review_required_final_guard");
-    }
-    if (needsHumanReview && finalSubDecision) {
-      finalSubDecision.action = "wait";
-      finalSubDecision.responses = [];
-      finalSubDecision.suggestedResponse = "";
-      finalSubDecision.outboundActions = [];
-      finalSubDecision.audioId = undefined;
-      finalSubDecision.audioUrl = undefined;
-      finalSubDecision.objectiveCompletion = undefined;
-      finalSubDecision.memoryCandidates = [];
-      finalSubDecision.nextPhase = currentPhase;
-      brainObjectiveCompletion = null;
-      pendingDetectedFacts.splice(0);
     }
 
     // ------------------------------------------------------------------------
@@ -9112,9 +10257,7 @@ export async function runBrainOrchestration(
           ...officialObjectiveProgressAtCycleStart,
         },
         nextPhase: validatedNextPhase,
-        nextStageId: currentStageId,
         stageAdvanced: false,
-        terminalObjectivesCompleted: false,
         advancementReason: undefined as string | undefined,
       };
 
@@ -9132,30 +10275,26 @@ export async function runBrainOrchestration(
       } else {
         // 1. Calcula progressão determinística usando ESTADO LOCAL/OVERLAY (cycleMemoryProvider)
         // O overlay permite que a progressão enxergue os fatos do turno sem NENHUMA escrita no banco!
-        if (needsHumanReview) {
-          currentCycle.trace.push("manual_response_review_stage_progression_skipped");
-        } else {
-          stageProgression = await processDeterministicStageProgression({
-            supabase,
-            conversationId,
-            currentPhase,
-            currentStageId,
-            decision,
-            claimedMessages: claimedMessages || [],
-            rawInbounds: rawInbounds || [],
-            stageRules,
-            orchState,
-            currentCycle,
-            memoryProvider: cycleMemoryProvider,
-            episodicMemory: [],
-          });
-        }
+        stageProgression = await processDeterministicStageProgression({
+          supabase,
+          conversationId,
+          currentPhase,
+          currentStageId,
+          decision,
+          claimedMessages: claimedMessages || [],
+          rawInbounds: rawInbounds || [],
+          stageRules,
+          orchState,
+          currentCycle,
+          memoryProvider: cycleMemoryProvider,
+          episodicMemory: [],
+        });
         decision.nextPhase = stageProgression.nextPhase;
 
         // 2. Executa MemoryWriter CONTRA O OVERLAY DE MEMÓRIA (cycleMemoryProvider)
         // Zero escritas reais no banco antes do commit atômico condicional (CAS)!
         try {
-          if (!needsHumanReview) await executeMemoryWriter({
+          await executeMemoryWriter({
             conversationId,
             claimedMessages: claimedMessages,
             lastLarissaTurn: baseContextPayload.lastLarissaTurn,
@@ -9204,7 +10343,7 @@ export async function runBrainOrchestration(
           };
         }
 
-        // Integração de memoryCandidates validados pelo Brain com evidência comprovada
+        // Integração de memoryCandidates validados do subagente com evidência comprovada
         for (const cand of validatedMemoryCandidates) {
           const normEnt = (cand.entity || "self").toLowerCase().trim();
           const normFld = (cand.key || "").toLowerCase().trim();
@@ -9287,8 +10426,7 @@ export async function runBrainOrchestration(
           recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
           openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || orchState.openai_session_id) : null),
           openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
-          persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
-          persona_memory_profile_version: persistentAgentSessionEnabled ? 1 : null,
+          persistent_session_version: persistentAgentSessionEnabled ? 1 : null,
           technicalRetryCount: 0,
           technicalRetryExhaustedAt: null,
           manualRetryAttempt: null,
@@ -9331,8 +10469,7 @@ export async function runBrainOrchestration(
           preempt_requested: false,
           openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || freshRules.openai_session_id) : null),
           openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
-          persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
-          persona_memory_profile_version: persistentAgentSessionEnabled ? 1 : null,
+          persistent_session_version: persistentAgentSessionEnabled ? 1 : null,
           orchestration: updatedState,
         };
 
@@ -9361,75 +10498,21 @@ export async function runBrainOrchestration(
 
 
         const completedUsage = cycleUsageMetadata();
-        const objectiveFinalizationKey = stageProgression.terminalObjectivesCompleted
-          ? `${stageProgression.nextStageId}:${stageProgression.updatedCompletedGoals.slice().sort().join(",")}`
-          : null;
-        const shouldRequestObjectiveFinalization = Boolean(
-          objectiveFinalizationKey &&
-          existingAutoPilotState?.objectiveFinalizationNotifiedKey !== objectiveFinalizationKey &&
-          existingAutoPilotState?.pendingObjectiveFinalization?.key !== objectiveFinalizationKey
-        );
-
-        if (shouldRequestObjectiveFinalization) {
-          const { error: pauseError } = await supabase.rpc("patch_autopilot_pause_atomic", {
-            p_conversation_id: conversationId,
-            p_paused: true,
-          });
-          if (pauseError) {
-            console.warn(`[Orchestrator] Falha ao pausar chat com objetivos concluídos (${conversationId}):`, pauseError);
-            await supabase
-              .from("instagram_conversations")
-              .update({ ai_auto_respond: false, ai_debounce_until: null })
-              .eq("id", conversationId);
-          }
-        }
-
         await publishAutoPilotState(supabase, conversationId, {
           cycleId: correlationId,
-          ...(shouldRequestObjectiveFinalization
-            ? {
-                isEnabled: false,
-                status: "awaiting_finalization",
-                pauseReason: "objectives_completed",
-                pausedAt: new Date().toISOString(),
-                objectiveFinalizationNotifiedKey: objectiveFinalizationKey,
-                pendingObjectiveFinalization: {
-                  key: objectiveFinalizationKey,
-                  stageId: stageProgression.nextStageId,
-                  stageName: stageProgression.finalStageName || "Última etapa",
-                  completedObjectivesCount: stageProgression.completedObjectivesCount || 0,
-                  createdAt: new Date().toISOString(),
-                },
-              }
-            : { status: needsHumanReview ? "needs_manual_response" : "idle" }),
-          ...(pendingManualResponse ? { pendingManualResponse } : {}),
+          status: "idle",
           lastThoughts: {
-            brainThought: decision.reasoning,
-            responsePreview: decision.suggestedResponse,
+            atriaThought: decision.reasoning,
+            solThought: decision.suggestedResponse,
             previewResponses: [decision.suggestedResponse],
-            ...(balloons.length > 0 && sentBalloonsCount === balloons.length
-              ? { sentAt: new Date().toISOString() }
-              : {}),
           },
           activity: activity(
             "completed",
-            shouldRequestObjectiveFinalization
-              ? "Objetivos concluídos — sua revisão necessária"
-              : needsHumanReview
-              ? "Resposta manual necessária"
-              : balloons.length > 0 && sentBalloonsCount === balloons.length
-              ? "Resposta enviada"
-              : sentBalloonsCount > 0
-              ? "Envio parcial confirmado"
-              : "Brain avaliou",
-            shouldRequestObjectiveFinalization
-              ? "A IA concluiu os objetivos finais. Revise a conversa e finalize quando estiver pronta."
-              : needsHumanReview
-              ? pendingManualResponse?.reason || "A IA não encontrou uma resposta segura."
-              : decision.suggestedResponse || "Turno concluído.",
+            sentSuccessfully ? "Atria respondeu" : "Atria avaliou",
+            decision.suggestedResponse || "Turno concluído.",
             {
-              brainThought: decision.reasoning,
-              responsePreview: decision.suggestedResponse,
+              atriaThought: decision.reasoning,
+              solThought: decision.suggestedResponse,
               currentResponsePreview: decision.suggestedResponse,
               previewResponses: [decision.suggestedResponse],
               decision,
@@ -9439,11 +10522,7 @@ export async function runBrainOrchestration(
             phase: "completed",
             event: "cycle_completed",
             label: "Ciclo concluído",
-            detail: shouldRequestObjectiveFinalization
-              ? "Os objetivos finais foram concluídos. O chat foi pausado e aguarda a finalização do operador."
-              : needsHumanReview
-              ? "O Brain reteve a resposta; o operador precisa revisar a mensagem recebida."
-              : sentBalloonsCount > 0
+            detail: sentBalloonsCount > 0
               ? "Todos os envios deste ciclo foram confirmados."
               : "Ciclo concluído sem envio de resposta.",
             metadata: {
@@ -9838,6 +10917,4 @@ export async function runBrainOrchestration(
   }
 }
 
-// Alias de compatibilidade para suítes/scripts que ainda carregam o nome
-// histórico. A produção chama exclusivamente runBrainOrchestration.
 export const runExperimentalOrchestration = runBrainOrchestration;

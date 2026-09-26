@@ -19,7 +19,6 @@ import {
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 import { getApiUrl } from "../http/network";
-import { apiFetch } from "@/infrastructure/http/apiFetch";
 
 export class SupabaseVaultRepository implements IVaultRepository {
   private customClient?: any;
@@ -351,7 +350,7 @@ export class SupabaseVaultRepository implements IVaultRepository {
         formData.append("file", file);
         formData.append("type", item.type);
 
-        const uploadRes = await apiFetch(getApiUrl("/api/instagram/upload"), {
+        const uploadRes = await fetch(getApiUrl("/api/instagram/upload"), {
           method: "POST",
           body: formData,
         });

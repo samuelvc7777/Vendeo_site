@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 import { toast } from "sonner";
 import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/SupabaseAutoPilotRepository";
 import { AutoPilotChatState, AutoPilotConfig, AutoPilotPendingAction } from "@/domain/entities/AutoPilot";
@@ -22,38 +21,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
   const [chatStates, setChatStates] = useState<Record<string, AutoPilotChatState>>({});
   const [currentProcessingId, setCurrentProcessingId] = useState<string | null>(null);
   const chatStatesRef = useRef(chatStates);
-  const notifiedManualReviewsRef = useRef<Record<string, string>>({});
-  const notifiedObjectiveFinalizationsRef = useRef<Record<string, string>>({});
   useEffect(() => { chatStatesRef.current = chatStates; }, [chatStates]);
-
-  useEffect(() => {
-    for (const [conversationId, state] of Object.entries(chatStates)) {
-      const pending = state.pendingManualResponse;
-      if (state.status !== "needs_manual_response" || !pending) continue;
-      if (notifiedManualReviewsRef.current[conversationId] === pending.createdAt) continue;
-      notifiedManualReviewsRef.current[conversationId] = pending.createdAt;
-      const excerpt = pending.inboundMessage.length > 120
-        ? `${pending.inboundMessage.slice(0, 117)}…`
-        : pending.inboundMessage;
-      toast("A IA precisa de você", {
-        description: `Uma conversa aguarda resposta manual: “${excerpt}”`,
-        duration: 10000,
-      });
-    }
-  }, [chatStates]);
-
-  useEffect(() => {
-    for (const [conversationId, state] of Object.entries(chatStates)) {
-      const pending = state.pendingObjectiveFinalization;
-      if (!pending || state.status !== "awaiting_finalization") continue;
-      if (notifiedObjectiveFinalizationsRef.current[conversationId] === pending.key) continue;
-      notifiedObjectiveFinalizationsRef.current[conversationId] = pending.key;
-      toast("Objetivos finais concluídos", {
-        description: `A IA concluiu os objetivos de ${pending.stageName}. Abra o chat para finalizar.`,
-        duration: 12000,
-      });
-    }
-  }, [chatStates]);
 
   const mergeStatesMonotonic = useCallback((incoming: Record<string, AutoPilotChatState>) => {
     setChatStates((previous) => {
@@ -226,8 +194,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
   }, []);
 
   const registerClientMessage = useCallback(async (conversationId: string, timestamp?: string) => {
-    const state = chatStatesRef.current[conversationId];
-    if (!state?.isEnabled || state.pendingManualResponse) return;
+    if (!chatStatesRef.current[conversationId]?.isEnabled) return;
     const updated = await autoPilotRepo.resetChatDebounce(conversationId, timestamp);
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
@@ -269,31 +236,5 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  const completeManualResponse = useCallback(async (conversationId: string) => {
-    const updated = await autoPilotRepo.saveChatState(conversationId, {
-      status: "idle",
-      pendingManualResponse: null,
-      lastResponseSentAt: new Date().toISOString(),
-      pauseReason: undefined,
-      pausedAt: undefined,
-    });
-    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-    return updated;
-  }, []);
-
-  const completeObjectiveFinalization = useCallback(async (conversationId: string) => {
-    const pending = chatStatesRef.current[conversationId]?.pendingObjectiveFinalization;
-    const updated = await autoPilotRepo.saveChatState(conversationId, {
-      isEnabled: false,
-      status: "disabled",
-      pauseReason: "objectives_completed",
-      pendingObjectiveFinalization: null,
-      ...(pending ? { objectiveFinalizationHandledKey: pending.key } : {}),
-    });
-    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-    toast.success("Conversa finalizada e aviso confirmado.");
-    return updated;
-  }, []);
-
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, completeManualResponse, completeObjectiveFinalization, refreshState, applyRemoteStateUpdate };
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }
