@@ -1500,11 +1500,15 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
     sections.push(`\n${params.recentStyleStateSnippet.trim()}`);
   }
 
+  sections.push(`
+## ESCALONAMENTO OBRIGATÓRIO POR FALTA DE FATO
+Antes de responder uma pergunta direta sobre experiência ou fato pessoal da Larissa, confira as instruções canônicas e os fatos disponíveis nesta conversa/sessão. Se a resposta continuar sem evidência (por exemplo, se ela já foi a uma cidade específica), NÃO deduza, não use palpites como "acho que não kkk" e não substitua a resposta por outra pergunta. Escolha "action": "wait", informe brevemente o motivo em reasoning e deixe responses e outboundActions vazios. Isso pausa o Piloto e solicita uma resposta manual. "mustAnswerFirst" exige responder quando houver resposta sustentada; falta de evidência é a exceção obrigatória de revisão humana.`);
+
   sections.push(
     `\n## FORMATO DE SAÍDA JSON
 Emita EXCLUSIVAMENTE um único objeto JSON:
 {
-  "action": "reply",
+  "action": "reply" | "wait",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,
@@ -1702,6 +1706,8 @@ Para decidir a resposta e a condução, considere rigorosamente nesta ordem:
 8. OBJETIVOS DA ETAPA (podem avançar DENTRO do assunto vivo quando houver ponte natural; não são uma pauta concorrente);
 9. FERRAMENTAS MCP sob demanda se houver dúvida factual ou gancho de afinidade.
 
+FATO PESSOAL SEM EVIDÊNCIA: antes de responder pergunta sobre experiência ou fato autobiográfico da Larissa (por exemplo, se já visitou uma cidade), use apenas fato canônico, conversa/histórico ou resultado real de ferramenta. Se continuar desconhecido, escolha action="wait", sem respostas nem outboundActions. Não chute, não diga "acho que não" e não troque a resposta por outra pergunta. Essa regra prevalece sobre mustAnswerFirst e ativa a revisão manual do operador.
+
 Antes de responder, defina bestHook como o maior sinal humano/relacional do lote e derive curiosityOpportunity dele. Em áudios, use a transcrição como texto semântico, escolha 1 ou 2 elementos salientes e reaja a um detalhe específico.
 
 GANCHO HUMANO, ANTI-PAPAGAIO E OBJETIVO:
@@ -1722,7 +1728,7 @@ Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMes
 CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
-  "action": "reply",
+  "action": "reply" | "wait",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,
