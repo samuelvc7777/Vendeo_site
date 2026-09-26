@@ -3960,48 +3960,27 @@ serve(async (req: Request) => {
           });
         }
 
-        // 0. Auto-recuperação de stale locks e claims presas (P0)
-        // O ciclo só pode ser recuperado depois do TTL oficial compartilhado
-        // com claim_experimental_cycle e com a espera local do Agent.
-        // Reverte mensagens 'claimed' para 'pending' e limpa o token de ciclo.
+        // 0. Auto-recuperação atômica de ciclos stale (P0)
+        // A RPC compara timestamptz, usa FOR UPDATE e valida ownership/outbox.
+        // Nunca fazer read-modify-write do estado do ciclo aqui: o operador
+        // ->> retornaria TEXT e poderia recuperar um ciclo novo por comparação lexical.
         try {
           const staleThresholdIso = getStaleCycleThresholdIso();
-          const { data: staleConvs } = await supabase
-            .from("instagram_conversations")
-            .select("id, stage_completed_rules")
-            .not("stage_completed_rules->active_cycle_token", "is", null)
-            .lte("stage_completed_rules->>active_cycle_at", staleThresholdIso)
-            .limit(10);
+          const { data: staleRecovery, error: staleRecoveryError } = await supabase.rpc(
+            "recover_stale_experimental_cycles_atomic",
+            {
+              p_stale_before: staleThresholdIso,
+              p_limit: 10,
+            },
+          );
 
-          if (staleConvs && staleConvs.length > 0) {
-            for (const sc of staleConvs) {
-              const rules = sc.stage_completed_rules || {};
-              const orch = rules.orchestration || {};
-              const ledger = { ...(orch.messageLedger || {}) };
-              for (const [mid, st] of Object.entries(ledger)) {
-                if (st === "claimed") ledger[mid] = "pending";
-              }
-              const cleanOrch = {
-                ...orch,
-                messageLedger: ledger,
-                activeClaimedMessageIds: [],
-                processingCycleToken: null,
-              };
-              const cleanRules = {
-                ...rules,
-                orchestration: cleanOrch,
-                active_cycle_token: null,
-                active_cycle_at: null,
-              };
-              await supabase
-                .from("instagram_conversations")
-                .update({ stage_completed_rules: cleanRules })
-                .eq("id", sc.id);
-              console.log(`[Cloud AutoPilot] Stale cycle recuperado com sucesso para conv=${sc.id}`);
-            }
+          if (staleRecoveryError) {
+            console.error("[Cloud AutoPilot] Erro na recuperação atômica de ciclos stale:", staleRecoveryError);
+          } else if (staleRecovery) {
+            console.log("[Cloud AutoPilot] Recuperação atômica de ciclos stale concluída:", staleRecovery);
           }
         } catch (staleErr) {
-          console.warn("[Cloud AutoPilot] Erro ao recuperar stale cycles:", staleErr);
+          console.error("[Cloud AutoPilot] Falha fechada na recuperação atômica de ciclos stale:", staleErr);
         }
 
         // 1. Busca conversas prontas para serem respondidas cujo tempo de espera já venceu

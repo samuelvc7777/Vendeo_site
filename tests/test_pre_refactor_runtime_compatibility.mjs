@@ -34,19 +34,36 @@ test("TTL de stale usa a fonte única de 300s", () => {
   );
   assert.match(indexSource, /getStaleCycleThresholdIso\(\)/);
   assert.doesNotMatch(indexSource, /180_000/);
-  assert.match(indexSource, /\.lte\("stage_completed_rules->>active_cycle_at", staleThresholdIso\)/);
+  const staleRecoveryBlock = indexSource.slice(
+    indexSource.indexOf("// 0. Auto-recuperação atômica de ciclos stale"),
+    indexSource.indexOf("// 1. Busca conversas", indexSource.indexOf("// 0. Auto-recuperação atômica de ciclos stale")),
+  );
+  assert.match(staleRecoveryBlock, /recover_stale_experimental_cycles_atomic/);
+  assert.match(staleRecoveryBlock, /p_stale_before: staleThresholdIso/);
+  assert.match(staleRecoveryBlock, /p_limit: 10/);
+  assert.doesNotMatch(staleRecoveryBlock, /\.lte\(/);
+  assert.doesNotMatch(staleRecoveryBlock, /stage_completed_rules/);
+  assert.doesNotMatch(staleRecoveryBlock, /\.from\("instagram_conversations"\)/);
 });
 
 test("ciclo com menos de 300s não é stale", () => {
   const t0 = Date.parse("2026-09-26T12:00:00.000Z");
   assert.equal(isCycleStaleAt(new Date(t0).toISOString(), t0 + 180_000), false);
   assert.equal(isCycleStaleAt(new Date(t0).toISOString(), t0 + 299_999), false);
+  assert.equal(isCycleStaleAt("2026-09-26 12:00:00.000+00", t0 + 20_000), false);
+  assert.equal(isCycleStaleAt("2026-09-26 12:00:00.000+00", t0 + 180_000), false);
+  assert.equal(isCycleStaleAt("2026-09-26 12:00:00.000+00", t0 + 299_999), false);
 });
 
 test("ciclo com 300s ou mais pode ser considerado stale", () => {
   const t0 = Date.parse("2026-09-26T12:00:00.000Z");
   assert.equal(isCycleStaleAt(new Date(t0).toISOString(), t0 + 300_000), true);
   assert.equal(isCycleStaleAt(new Date(t0).toISOString(), t0 + 301_000), true);
+  assert.equal(isCycleStaleAt("2026-09-26 12:00:00.000+00", t0 + 300_000), true);
+  assert.equal(
+    isCycleStaleAt("2026-09-26 10:26:29.416+00", Date.parse("2026-09-26T10:26:49.181Z")),
+    false,
+  );
 });
 
 test("resultado do Agent mantém authority antes do TTL e superseded continua fail-closed", () => {
