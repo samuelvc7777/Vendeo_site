@@ -23,6 +23,7 @@ import {
   isPureEmojiMessage,
 } from "./ConversationQualityGate.ts";
 import { getStaleCycleThresholdIso } from "./autopilot_cycle_safety.ts";
+import { isPrivilegedOperationalRequest } from "./operational_authorization.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -4781,10 +4782,139 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
+    // Retoma o turno persistido após o operador responder uma resolução manual.
+    if ((path === "/autopilot/brain-events" || path === "/api/autopilot/brain-events") && req.method === "GET") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+        return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      const conversationId = new URL(req.url).searchParams.get("conversationId") || "";
+      if (!conversationId) return new Response(JSON.stringify({ success: false, error: "conversationId é obrigatório." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const { data: events, error: eventError } = await supabase.from("brain_turn_events")
+        .select("id, conversation_id, session_id, turn_id, decision_id, action_id, event_type, status, human_message, metadata, created_at")
+        .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(100);
+      if (eventError) return new Response(JSON.stringify({ success: false, error: eventError.message }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const { data: failedActions } = await supabase.from("brain_decision_actions")
+        .select("id, decision_id, action_index, action_type, payload, status")
+        .eq("conversation_id", conversationId).eq("status", "failed_confirmed").order("created_at", { ascending: true });
+      return new Response(JSON.stringify({ success: true, events: (events || []).reverse(), failedActions: failedActions || [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    if ((path === "/autopilot/retry-failed-action" || path === "/api/autopilot/retry-failed-action") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+        return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = String(body?.conversationId || "");
+        const actionId = String(body?.actionId || "");
+        if (!conversationId || !actionId) return new Response(JSON.stringify({ success: false, error: "conversationId e actionId são obrigatórios." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const { data: prepared, error: prepareError } = await supabase.rpc("prepare_brain_action_manual_retry", {
+          p_conversation_id: conversationId, p_action_id: actionId,
+        });
+        if (prepareError || prepared?.success !== true) return new Response(JSON.stringify({ success: false, error: prepareError?.message || prepared?.reason || "Ação não está elegível para envio manual." }), { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const result = await runDurableOutboxDispatcher({ supabase, conversationId, targetCycleId: prepared.entry?.cycleId });
+        const queuedForBrainReview = result.errors.includes("pending_inbound_requires_brain_review") || result.errors.includes("brain_review_in_progress");
+        return new Response(JSON.stringify({ success: result.dispatchedCount > 0 || queuedForBrainReview, queuedForBrainReview, result }), { status: result.dispatchedCount > 0 ? 200 : queuedForBrainReview ? 202 : 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error: any) {
+        return new Response(JSON.stringify({ success: false, error: error?.message || "Falha ao enviar a ação." }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    if ((path === "/autopilot/manual-resolution" || path === "/api/autopilot/manual-resolution") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+        return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = String(body?.conversationId || "");
+        const answer = String(body?.answer || "").trim();
+        const saveForFuture = body?.saveForFuture === true;
+        if (!conversationId || !answer) {
+          return new Response(JSON.stringify({ success: false, error: "conversationId e answer são obrigatórios." }), {
+            status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: waitingTurn, error: turnError } = await supabase.from("brain_turns")
+          .select("id, inbound_message_ids").eq("conversation_id", conversationId)
+          .eq("status", "waiting_manual").order("updated_at", { ascending: false }).limit(1).maybeSingle();
+        if (turnError || !waitingTurn?.id || !Array.isArray(waitingTurn.inbound_message_ids) || waitingTurn.inbound_message_ids.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: "Não há uma resolução manual aguardando nesta conversa." }), {
+            status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: inbound } = await supabase.from("instagram_messages")
+          .select("id, text, sender_id, created_at, timestamp")
+          .eq("conversation_id", conversationId)
+          .eq("id", waitingTurn.inbound_message_ids[waitingTurn.inbound_message_ids.length - 1])
+          .maybeSingle();
+        if (!inbound?.id) {
+          return new Response(JSON.stringify({ success: false, error: "As mensagens do turno aguardando não estão disponíveis." }), {
+            status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: manualDecision } = await supabase.from("brain_decisions")
+          .select("payload").eq("turn_id", waitingTurn.id).eq("decision_type", "manual_resolution")
+          .order("version", { ascending: false }).limit(1).maybeSingle();
+        const manualRequest = manualDecision?.payload?.manualResolution || {};
+        const memoryKey = `manual_resolution_${String(manualRequest.question || "fato").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 90)}`;
+        const { data: prepared, error: prepareError } = await supabase.rpc("prepare_brain_manual_resolution", {
+          p_conversation_id: conversationId,
+          p_turn_id: waitingTurn.id,
+          p_answer: answer,
+          p_save_for_future: saveForFuture,
+          p_memory_key: memoryKey,
+        });
+        if (prepareError || prepared?.success !== true) {
+          return new Response(JSON.stringify({ success: false, error: prepareError?.message || prepared?.error || "Falha ao preparar a retomada do Brain." }), {
+            status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const result = await runBrainOrchestration({
+          supabase,
+          conversationId,
+          newMessage: {
+            id: inbound.id,
+            text: inbound.text || "",
+            timestamp: inbound.created_at || inbound.timestamp || new Date().toISOString(),
+            sender: inbound.sender_id || "pretendente",
+          },
+          correlationId: `manual_resolution_${waitingTurn.id}_${Date.now()}`,
+          responseDelayMinutes: 0,
+          isManualRetry: true,
+          manualResolution: {
+            turnId: waitingTurn.id,
+            question: String(prepared.question || body?.question || "Informação solicitada pelo Brain"),
+            context: String(prepared.context || ""),
+            answer,
+          },
+        });
+
+        return new Response(JSON.stringify({ success: Boolean(result.handled), result }), {
+          status: result.handled ? 200 : 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        console.error("[Brain] Erro ao retomar resolução manual:", err?.message || err);
+        return new Response(JSON.stringify({ success: false, error: err?.message || "Erro ao retomar o Brain." }), {
+          status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // 8.11. AUTOPILOT: RETRY MANUAL ÚNICO (/autopilot/retry-once)
     // Autoriza EXATAMENTE UMA tentativa manual do Brain quando technical_retry_exhausted
     // ==========================================
     if ((path === "/autopilot/retry-once" || path === "/api/autopilot/retry-once") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+        return new Response(JSON.stringify({ error: "Acesso operacional exige a sessão autenticada do operador." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       try {
         const body = await req.json().catch(() => ({}));
         const conversationId = body?.conversationId;

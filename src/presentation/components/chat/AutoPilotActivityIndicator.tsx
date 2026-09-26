@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
+import { AutoPilotActivityPhase, AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
 
@@ -636,7 +636,7 @@ function getValidThought(raw?: string | null): string | null {
 }
 
 export function AutoPilotActivityIndicator({
-  state,
+  state: sourceState,
   variant,
   conversationId,
 }: {
@@ -644,18 +644,15 @@ export function AutoPilotActivityIndicator({
   variant: Variant;
   conversationId?: string;
 }) {
-  const shouldRender = variant === "floating" ? state.isEnabled : isAutoPilotWorking(state);
-  const copy = getCopy(state);
-  const activity = state.activity;
-  const targetId = conversationId || state.conversationId;
+  const targetId = conversationId || sourceState.conversationId;
 
   // Contagem regressiva suave para prévia e delay (recalcula com precisão mesmo em caso de F5/refresh)
   const calcInitialCountdown = () => {
-    if (state.scheduledResponseAt && (state.status === "waiting_delay" || activity?.phase === "waiting")) {
-      const diffSec = Math.round((Date.parse(state.scheduledResponseAt) - Date.now()) / 1000);
+    if (sourceState.scheduledResponseAt && (sourceState.status === "waiting_delay" || sourceState.activity?.phase === "waiting")) {
+      const diffSec = Math.round((Date.parse(sourceState.scheduledResponseAt) - Date.now()) / 1000);
       return Math.max(0, diffSec);
     }
-    return activity?.countdownSeconds ?? 0;
+    return sourceState.activity?.countdownSeconds ?? 0;
   };
 
   const [remainingSeconds, setRemainingSeconds] = useState<number>(calcInitialCountdown);
@@ -665,6 +662,143 @@ export function AutoPilotActivityIndicator({
   const [isSendingNow, setIsSendingNow] = useState<boolean>(false);
   const [isConsoleOpen, setIsConsoleOpen] = useState<boolean>(false);
   const [isRetryingManual, setIsRetryingManual] = useState<boolean>(false);
+  const [manualResolutionAnswer, setManualResolutionAnswer] = useState("");
+  const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
+  const [canonicalEvents, setCanonicalEvents] = useState<AutoPilotCycleEvent[]>([]);
+  const [failedConfirmedActions, setFailedConfirmedActions] = useState<Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>>([]);
+  const [retryingActionId, setRetryingActionId] = useState<string | null>(null);
+  const [operationsAccessDenied, setOperationsAccessDenied] = useState(false);
+  const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
+
+  useEffect(() => {
+    if (!targetId) return;
+    let cancelled = false;
+    const loadCanonicalEvents = async () => {
+      try {
+        const sessionResponse = await fetch("/api/operator/session", { cache: "no-store" });
+        const session = await sessionResponse.json().catch(() => ({}));
+        if (!sessionResponse.ok || session.authenticated !== true) {
+          if (!cancelled) {
+            setOperatorAuthenticated(false);
+            setOperationsAccessDenied(true);
+            setCanonicalEvents([]);
+            setFailedConfirmedActions([]);
+          }
+          return;
+        }
+        if (!cancelled) setOperatorAuthenticated(true);
+        const query = new URLSearchParams({ conversationId: targetId });
+        const response = await fetch(`/api/operator/brain/events?${query.toString()}`, { cache: "no-store" });
+        const result = await response.json().catch(() => ({}));
+        if (response.status === 401) {
+          if (!cancelled) {
+            setOperatorAuthenticated(false);
+            setOperationsAccessDenied(true);
+          }
+          return;
+        }
+        if (!response.ok || result?.success !== true || cancelled) return;
+        setOperationsAccessDenied(false);
+        const events = Array.isArray(result.events) ? result.events : [];
+        setCanonicalEvents(events.map((event: any) => ({
+          cycleId: event.turn_id || event.session_id || targetId,
+          conversationId: event.conversation_id || targetId,
+          sequence: Number(event.id) || 0,
+          phase: event.metadata?.phase || event.status || "observed",
+          event: event.event_type || "brain_event",
+          label: event.metadata?.label || event.event_type || "Evento do Brain",
+          detail: event.human_message || undefined,
+          timestamp: event.created_at || new Date().toISOString(),
+          metadata: event.metadata || {},
+        })));
+        setFailedConfirmedActions(Array.isArray(result.failedActions) ? result.failedActions : []);
+      } catch { /* A observabilidade não interrompe o atendimento. */ }
+    };
+    void loadCanonicalEvents();
+    const interval = window.setInterval(loadCanonicalEvents, 15000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [targetId]);
+
+  const handleManualFailedAction = async (actionId: string) => {
+    if (!targetId || !operatorAuthenticated || retryingActionId) return;
+    setRetryingActionId(actionId);
+    try {
+      const response = await fetch("/api/operator/brain/retry-failed-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: targetId, actionId }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success !== true) throw new Error(result?.error || "A ação não pôde ser enviada.");
+      toast.success(result.queuedForBrainReview
+        ? "Ação autorizada e aguardando o Brain revisar as mensagens novas."
+        : "Envio confirmado. A mensagem foi registrada no histórico da conversa.");
+    } catch (error: any) {
+      toast.error(error?.message || "Não foi possível enviar a ação.");
+    } finally {
+      setRetryingActionId(null);
+    }
+  };
+
+  const latestCanonicalEvent = canonicalEvents[canonicalEvents.length - 1];
+  const canonicalEventToStatus: Record<string, { status: AutoPilotChatState["status"]; phase: AutoPilotActivityPhase }> = {
+    brain_late: { status: "processing", phase: "brain" },
+    manual_resolution_required: { status: "waiting_human", phase: "completed" },
+    manual_resolution_received: { status: "processing", phase: "brain" },
+    decision_persisted: { status: "processing", phase: "sending" },
+    action_sending: { status: "processing", phase: "sending" },
+    action_sent: { status: "processing", phase: "sending" },
+    action_cancelled: { status: "processing", phase: "validating" },
+    manual_delivery_authorized: { status: "processing", phase: "brain" },
+    action_failed_retryable: { status: "processing", phase: "sending" },
+    turn_completed: { status: "idle", phase: "completed" },
+    action_dispatch_uncertain: { status: "failed", phase: "failed" },
+    action_failed_confirmed: { status: "failed", phase: "failed" },
+    cycle_completed: { status: "idle", phase: "completed" },
+  };
+  const validOperationalPhases: AutoPilotActivityPhase[] = [
+    "waiting", "scheduled", "starting", "loading_context", "context", "search", "reanalyzing", "brain", "atria", "sol",
+    "checklist", "validating", "typing", "recording_audio", "sending", "completed", "cancelled", "idle", "failed",
+  ];
+  const latestOperationalPhase = validOperationalPhases.includes(latestCanonicalEvent?.phase as AutoPilotActivityPhase)
+    ? latestCanonicalEvent?.phase as AutoPilotActivityPhase
+    : undefined;
+  const phaseProjection = latestOperationalPhase
+    ? {
+        status: latestOperationalPhase === "failed"
+          ? "failed" as const
+          : latestOperationalPhase === "waiting" || latestOperationalPhase === "scheduled"
+          ? "waiting_delay" as const
+          : latestOperationalPhase === "idle" || latestOperationalPhase === "completed" || latestOperationalPhase === "cancelled"
+          ? "idle" as const
+          : "processing" as const,
+        phase: latestOperationalPhase,
+      }
+    : undefined;
+  const canonicalProjection = latestCanonicalEvent
+    ? canonicalEventToStatus[latestCanonicalEvent.event] || phaseProjection
+    : undefined;
+  const state: AutoPilotChatState = canonicalProjection
+    ? {
+        ...sourceState,
+        status: canonicalProjection.status,
+        activity: {
+          ...(sourceState.activity || {}),
+          phase: canonicalProjection.phase,
+          label: latestCanonicalEvent.label,
+          detail: latestCanonicalEvent.detail,
+          updatedAt: latestCanonicalEvent.timestamp,
+        },
+        pauseReason: latestCanonicalEvent.event === "manual_resolution_required"
+          ? latestCanonicalEvent.detail || sourceState.pauseReason
+          : sourceState.pauseReason,
+      }
+    : sourceState;
+  const shouldRender = variant === "floating"
+    ? state.isEnabled || state.status === "waiting_human" || state.status === "failed"
+    : isAutoPilotWorking(state);
+  const copy = getCopy(state);
+  const activity = state.activity;
 
   // Fases e Stepper Cognitivo
   const phase = activity?.phase;
@@ -855,10 +989,10 @@ export function AutoPilotActivityIndicator({
   };
 
   const handleManualRetryOnce = async () => {
-    if (!targetId || isRetryingManual) return;
+    if (!targetId || !operatorAuthenticated || isRetryingManual) return;
     setIsRetryingManual(true);
     try {
-      const res = await fetch(getApiUrl("/api/autopilot/retry-once"), {
+      const res = await fetch("/api/operator/brain/retry-once", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId }),
@@ -876,6 +1010,31 @@ export function AutoPilotActivityIndicator({
     }
   };
 
+  const handleSubmitManualResolution = async (saveForFuture: boolean) => {
+    if (!targetId || !operatorAuthenticated || !manualResolutionAnswer.trim() || isSubmittingResolution) return;
+    setIsSubmittingResolution(true);
+    try {
+      const response = await fetch("/api/operator/brain/manual-resolution", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: targetId,
+          answer: manualResolutionAnswer.trim(),
+          saveForFuture,
+          question: state.pauseReason || "",
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) throw new Error(result.error || "Não foi possível retomar o Brain.");
+      setManualResolutionAnswer("");
+      toast.success(saveForFuture ? "Fato salvo para novas sessões. Brain retomou o turno." : "Brain retomou o turno com este fato apenas nesta sessão.");
+    } catch (error: any) {
+      toast.error(error?.message || "Erro ao enviar a informação ao Brain.");
+    } finally {
+      setIsSubmittingResolution(false);
+    }
+  };
+
   if (!shouldRender) return null;
 
   // VARIANTE INBOX (Lista de conversas - limpa e elegante)
@@ -885,6 +1044,7 @@ export function AutoPilotActivityIndicator({
       <ActivityIcon state={state} className="h-3 w-3 shrink-0" />
         <span className="truncate">{state.scheduledResponseAt && remainingSeconds > 0 ? `IA responde em ${remainingSeconds}s` : remainingSeconds === 0 && (state.status === "waiting_delay" || activity?.phase === "waiting") ? "IA iniciando..." : copy.title}</span>
         {state.isEnabled && isWorking && <TypingDots compact />}
+        {operationsAccessDenied && <a href="/operator?returnTo=%2F" onClick={(event) => event.stopPropagation()} className="ml-1 shrink-0 text-amber-300 underline underline-offset-2" title="Entrar como operador para ver eventos do Brain">Operador</a>}
       </span>
     );
   }
@@ -1057,6 +1217,27 @@ export function AutoPilotActivityIndicator({
             )}
           </div>
         </div>
+
+        {state.status === "waiting_human" && operatorAuthenticated && (
+          <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+            <p className="text-xs font-semibold text-amber-200">Brain parou porque precisa saber:</p>
+            <p className="mt-1 whitespace-pre-wrap text-[11px] text-zinc-300">{state.pauseReason || "Uma informação factual para continuar."}</p>
+            <textarea
+              value={manualResolutionAnswer}
+              onChange={(event) => setManualResolutionAnswer(event.target.value)}
+              rows={2}
+              maxLength={1000}
+              placeholder="Responda apenas o fato pedido pelo Brain..."
+              className="mt-2 w-full resize-y rounded-lg border border-zinc-700 bg-zinc-950/70 p-2 text-xs text-zinc-100 outline-none focus:border-amber-400"
+              disabled={isSubmittingResolution}
+            />
+            <p className="mt-2 text-[10px] text-zinc-400">Salvar essa informação para novas sessões?</p>
+            <div className="mt-2 flex justify-end gap-2">
+              <button type="button" onClick={() => handleSubmitManualResolution(false)} disabled={isSubmittingResolution || !manualResolutionAnswer.trim()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-[10px] text-zinc-200 disabled:opacity-50">{isSubmittingResolution ? "Retomando..." : "Não"}</button>
+              <button type="button" onClick={() => handleSubmitManualResolution(true)} disabled={isSubmittingResolution || !manualResolutionAnswer.trim()} className="rounded-lg bg-amber-400 px-3 py-1.5 text-[10px] font-semibold text-zinc-950 disabled:opacity-50">{isSubmittingResolution ? "Retomando..." : "Sim"}</button>
+            </div>
+          </div>
+        )}
 
         {/* Stepper Cognitivo do Brain - Fluxo Canônico Brain -> Envio */}
         {isWorking && (
@@ -1275,8 +1456,28 @@ export function AutoPilotActivityIndicator({
               </div>
             )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-[11px]">
-              {(state.cycleEvents || []).map((event) => <ConsoleCycleEventCard key={`${event.cycleId}-${event.sequence}`} event={event} />)}
-              {(!state.cycleEvents || state.cycleEvents.length === 0) && <div className="text-zinc-500">Nenhum evento operacional persistido neste ciclo.</div>}
+              {operationsAccessDenied && (
+                <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 font-sans text-xs text-amber-100">
+                  Esta instância usa uma sessão administrativa global de operador. <a href={`/operator?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="font-semibold underline underline-offset-2">Entrar como operador</a> para carregar a timeline e liberar ações autorizadas.
+                </div>
+              )}
+              {failedConfirmedActions.length > 0 && (
+                <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3">
+                  <div className="mb-2 text-xs font-semibold text-red-200">Falha confirmada pelo provedor</div>
+                  <div className="space-y-2">
+                    {failedConfirmedActions.map((action) => (
+                      <div key={action.id} className="flex items-center justify-between gap-3 rounded-lg bg-black/20 p-2">
+                        <span className="min-w-0 truncate text-zinc-200">{action.action_type === "audio" ? "Áudio" : "Mensagem de texto"} • ação {action.action_index + 1}</span>
+                        <button type="button" onClick={() => handleManualFailedAction(action.id)} disabled={Boolean(retryingActionId)} className="shrink-0 rounded-md bg-red-400 px-2.5 py-1.5 text-[10px] font-semibold text-zinc-950 disabled:opacity-50">
+                          {retryingActionId === action.id ? "Enviando…" : "Enviar manualmente"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {canonicalEvents.map((event) => <ConsoleCycleEventCard key={`${event.cycleId}-${event.sequence}`} event={event} />)}
+              {canonicalEvents.length === 0 && <div className="text-zinc-500">Nenhum evento operacional persistido para esta conversa.</div>}
             </div>
           </div>
         </div>

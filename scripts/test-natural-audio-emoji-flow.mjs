@@ -68,6 +68,7 @@ function loadModule(filePath, customEnv = {}) {
 
 const chatStyleMod = loadModule("supabase/functions/api/LarissaChatStyle.ts");
 const orchestratorMod = loadModule("supabase/functions/api/brain_orchestrator.ts");
+const legacyObjectiveDetectorMod = loadModule("supabase/functions/api/legacy_pilot_objective_detector.ts");
 
 const {
   LARISSA_CHAT_STYLE_V2,
@@ -82,13 +83,13 @@ const {
 const {
   CANONICAL_SUBAGENTS,
   searchCofreAudios,
-  detectSpontaneousObjectiveCompletions,
   buildConexaoInicialPrompt,
   buildDescobertaPrompt,
   buildSubagentPrompt,
   InMemoryMemoryProvider,
   resolveStageObjectives,
 } = orchestratorMod;
+const { detectSpontaneousObjectiveCompletions } = legacyObjectiveDetectorMod;
 
 // ============================================================================
 // BLOCO 1: REDUÇÃO DE TOKENS & PROMPT COMPACTO

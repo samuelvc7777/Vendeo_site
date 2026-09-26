@@ -60,6 +60,7 @@ function loadModule(filePath, customEnv = {}) {
 
 const chatStyleMod = loadModule("supabase/functions/api/LarissaChatStyle.ts");
 const orchestratorMod = loadModule("supabase/functions/api/experimental_orchestrator.ts");
+const legacyObjectiveDetectorMod = loadModule("supabase/functions/api/legacy_pilot_objective_detector.ts");
 
 const {
   runStyleLint,
@@ -71,13 +72,13 @@ const {
 } = chatStyleMod;
 
 const {
-  detectSpontaneousObjectiveCompletions,
   searchCofreAudios,
   DEFAULT_CONEXAO_GOALS,
   DEFAULT_DESCOBERTA_GOALS,
   DEFAULT_COMPATIBILIDADE_GOALS,
   InMemoryMemoryProvider,
 } = orchestratorMod;
+const { detectSpontaneousObjectiveCompletions } = legacyObjectiveDetectorMod;
 
 console.log("================================================================================");
 console.log("🚀 INICIANDO VALIDAÇÃO PILOTO: 25 TURNOS EXPERIMENTAIS REAIS");

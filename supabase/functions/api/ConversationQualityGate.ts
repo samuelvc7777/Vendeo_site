@@ -514,41 +514,7 @@ function hasOnlyQuestions(text: string): boolean {
  * provide a fact tied to the specific place/activity being asked about.
  * A syntactically valid yes/no answer is not evidence that the answer is true.
  */
-export function isUnsupportedPersonalExperienceQuestion(
-  inboundMessages: string[],
-  relevantPersonaFacts: unknown,
-): boolean {
-  const stopWords = new Set(["a", "as", "o", "os", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "para", "pra", "pro", "por", "que", "vc", "voce", "larissa"]);
-  const evidence = (Array.isArray(relevantPersonaFacts) ? relevantPersonaFacts : [])
-    .map((fact) => {
-      if (typeof fact === "string") return fact;
-      if (!fact || typeof fact !== "object") return "";
-      const item = fact as Record<string, unknown>;
-      return [item.fact, item.key, item.value, item.summary, item.reason]
-        .filter((value) => value !== undefined && value !== null)
-        .map((value) => typeof value === "string" ? value : JSON.stringify(value))
-        .join(" ");
-    })
-    .map(normalize);
-
-  for (const rawMessage of inboundMessages) {
-    const message = normalize(rawMessage);
-    const match = message.match(/\b(?:ja foi|ja visitou|ja esteve|ja viajou|ja conhece|conhece)\s+(?:(?:a|ao|em|na|no|para|pra|pro|por)\s+)?(.+?)(?:\?|$)/);
-    if (!match) continue;
-
-    const targetTerms = match[1]
-      .replace(/\b(?:alguma vez|algum dia|voce|vc|larissa)\b/g, " ")
-      .split(/\s+/)
-      .filter((term) => term.length > 1 && !stopWords.has(term));
-    if (targetTerms.length === 0) continue;
-
-    const hasGroundedExperience = evidence.some((fact) =>
-      targetTerms.every((term) => fact.includes(term)) &&
-      /\b(?:fui|foi|visit\w*|conhec\w*|viaj\w*|estiv\w*|mor\w*|experienc\w*)\b/.test(fact)
-    );
-    if (!hasGroundedExperience) return true;
-  }
-
+export function isUnsupportedPersonalExperienceQuestion(_inboundMessages: string[], _relevantPersonaFacts: unknown): boolean {
   return false;
 }
 
@@ -627,42 +593,6 @@ export function runConversationQualityGate(params: {
   };
 }
 
-export function safeHighConfidenceFallback(inboundMessages: string[], turnContract: TurnContract): string[] | null {
-  const inbound = inboundMessages.join(" ");
-  if (isDatingQuestion(inbound)) {
-    return [
-      "namoro não kkk, tô solteira",
-      turnContract.newQuestionBudget === 0 ? "tô solteira simm" : "e vc?"
-    ];
-  }
-  if (isChildrenOrMarriageQuestion(inbound)) {
-    return [
-      "nossa nunca kkkkk, não tenho filhos e nunca casei",
-      "só namorei uma vez na vida e a experiência nem foi boa kkk"
-    ];
-  }
-  if (isOutingInvite(inbound)) {
-    return [
-      "ah hoje não consigo sair, o plantão do hospital me deixou moída kkk",
-      "mas quem sabe outra hora com calma"
-    ];
-  }
-  if (isPhoneRequest(inbound)) {
-    return [
-      "vamos continuar conversando por aqui no direct primeiro kkk",
-      "pra gente ir se conhecendo melhor, o que vc acha?"
-    ];
-  }
-  if (isGreetingOrWellbeing(inbound)) {
-    if (turnContract.mustAnswerFirst || isWellbeingQuestion(inbound)) {
-      if (/\b(?:bem|tudo|otim[oa]|tranquil[oa]|beleza)\s+e\s+(?:vc|voce)\b/i.test(rawNormalize(inbound))) {
-        return turnContract.newQuestionBudget === 0
-          ? ["Tô bem tbm"]
-          : ["Tô bem simm, e vc como tá?"];
-      }
-      return ["Oiii, tô bem simm e vc?"];
-    }
-    return ["Oiii", "tudo bem com vc?"];
-  }
+export function safeHighConfidenceFallback(_inboundMessages: string[], _turnContract: TurnContract): string[] | null {
   return null;
 }

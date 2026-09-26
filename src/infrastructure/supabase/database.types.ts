@@ -146,6 +146,76 @@ export interface TinderConfigRow {
   updated_at: string;
 }
 
+export interface BrainSessionRow {
+  id: string;
+  conversation_id: string;
+  provider: string;
+  provider_session_id: string;
+  context_version: number;
+  status: "active" | "expired" | "closed" | "failed";
+  bootstrap_context: Json;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrainTurnRow {
+  id: string;
+  conversation_id: string;
+  session_id: string;
+  provider_turn_id: string | null;
+  status: "collecting" | "brain_running" | "waiting_manual" | "brain_late" | "decision_persisted" | "executing" | "completed" | "failed_technical";
+  inbound_message_ids: string[];
+  version: number;
+  lease_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface BrainDecisionRow {
+  id: string;
+  conversation_id: string;
+  session_id: string;
+  turn_id: string;
+  version: number;
+  decision_type: "respond" | "wait" | "manual_resolution" | "request_audio_candidates" | "revise_pending";
+  objective_updates: Json;
+  stage_transition: Json | null;
+  payload: Json;
+  created_at: string;
+}
+
+export interface BrainDecisionActionRow {
+  id: string;
+  decision_id: string;
+  conversation_id: string;
+  action_index: number;
+  action_type: string;
+  payload: Json;
+  status: "pending" | "waiting_delay" | "sending" | "sent" | "cancelled" | "failed_retryable" | "failed_confirmed" | "dispatch_uncertain";
+  not_before: string | null;
+  delivery_mode: "provider" | "manual" | null;
+  idempotency_key: string;
+  provider_message_id: string | null;
+  attempts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrainTurnEventRow {
+  id: number;
+  conversation_id: string;
+  session_id: string | null;
+  turn_id: string | null;
+  decision_id: string | null;
+  action_id: string | null;
+  event_type: string;
+  status: string;
+  human_message: string;
+  metadata: Json;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -188,6 +258,31 @@ export interface Database {
         Row: TinderConfigRow;
         Insert: Partial<TinderConfigRow>;
         Update: Partial<TinderConfigRow>;
+      };
+      brain_sessions: {
+        Row: BrainSessionRow;
+        Insert: Partial<BrainSessionRow>;
+        Update: Partial<BrainSessionRow>;
+      };
+      brain_turns: {
+        Row: BrainTurnRow;
+        Insert: Partial<BrainTurnRow>;
+        Update: Partial<BrainTurnRow>;
+      };
+      brain_decisions: {
+        Row: BrainDecisionRow;
+        Insert: Partial<BrainDecisionRow>;
+        Update: Partial<BrainDecisionRow>;
+      };
+      brain_decision_actions: {
+        Row: BrainDecisionActionRow;
+        Insert: Partial<BrainDecisionActionRow>;
+        Update: Partial<BrainDecisionActionRow>;
+      };
+      brain_turn_events: {
+        Row: BrainTurnEventRow;
+        Insert: Partial<BrainTurnEventRow>;
+        Update: Partial<BrainTurnEventRow>;
       };
     };
   };

@@ -80,6 +80,7 @@ function createValidTestPlan(partial) {
 const mockAudiosDatabase = [
   {
     id: "aud_rotina_enfermagem",
+    objective_id: "obj_test_audio",
     title: "Rotina de enfermagem e estágio",
     audioUrl: "https://storage.vendeo.com/audios/rotina_enfermagem.mp3",
     transcript: "Oi! Meu dia a dia é bem corrido por conta do estágio no hospital e as aulas de enfermagem à noite.",
@@ -90,6 +91,7 @@ const mockAudiosDatabase = [
   },
   {
     id: "aud_profissao_trabalho",
+    objective_id: "obj_test_audio",
     title: "Faculdade e trabalho",
     audioUrl: "https://storage.vendeo.com/audios/faculdade_trabalho.mp3",
     transcript: "Eu faço faculdade de enfermagem, estágio no hospital e trabalho com vendas online.",
@@ -100,6 +102,7 @@ const mockAudiosDatabase = [
   },
   {
     id: "aud_hobbies",
+    objective_id: "obj_test_audio",
     title: "Hobbies e tempo livre",
     audioUrl: "https://storage.vendeo.com/audios/hobbies.mp3",
     transcript: "No meu tempo livre eu sou bem caseira, gosto de ver filmes, ler e às vezes sair pra jantar ou pegar uma praia.",
@@ -110,6 +113,7 @@ const mockAudiosDatabase = [
   },
   {
     id: "aud_desabilitado",
+    objective_id: "obj_test_audio",
     title: "Áudio antigo arquivado",
     audioUrl: "https://storage.vendeo.com/audios/arquivado.mp3",
     transcript: "Áudio que não deve ser usado.",
@@ -370,12 +374,11 @@ test("1. Caminho oficial do OpenAI Agent possui cofre_audio_search", () => {
   assert.ok(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description.includes("Cofre de Áudios"));
   assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /catálogo COMPLETO/i);
   assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /não filtra nem escolhe por assunto/i);
-  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.description, /não é filtro/i);
-  assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.query.type, "string");
-  assert.deepEqual(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.required, ["query"]);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /catálogo COMPLETO/i);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /não filtra nem escolhe por assunto/i);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.parameters.properties.query.description, /não é filtro/i);
+  assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.objective_id.type, "string");
+  assert.deepEqual(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.required, ["objective_id"]);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /todos os áudios habilitados.*esse objetivo/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /Você escolhe semanticamente/i);
+  assert.equal(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.parameters.properties.objective_id.type, "string");
   // Verifica que instructions oficiais locais incluem a seção canônica
   const instructions = buildCanonicalAgentInstructions({ strictOpenAiPilot: true });
   assert.ok(instructions.includes("=== COFRE DE ÁUDIOS"));
@@ -388,6 +391,7 @@ test("2. Ferramenta retorna audioId, title, transcript, whenToUse (sem expor aud
   const results = await executeCofreAudioSearch({
     supabase,
     conversationId: "conv_test_tool",
+    objective_id: "obj_test_audio",
     query: "o que você faz no tempo livre e hobbies?",
   });
 
@@ -405,6 +409,7 @@ test("3. Agent consegue conhecer transcript antes de selecionar", async () => {
   const results = await executeCofreAudioSearch({
     supabase,
     conversationId: "conv_test_transcript",
+    objective_id: "obj_test_audio",
     query: "qual sua rotina na faculdade e estágio?",
   });
 
@@ -420,6 +425,7 @@ test("4. Agent consegue conhecer whenToUse", async () => {
   const results = await executeCofreAudioSearch({
     supabase,
     conversationId: "conv_test_whentouse",
+    objective_id: "obj_test_audio",
     query: "tempo livre",
   });
 
@@ -434,6 +440,7 @@ test("4.1 Pergunta direta 'trabalha com oq' encontra áudio de profissão", asyn
   const results = await searchCofreAudios({
     supabase,
     conversationId: "conv_test_profession_query",
+    objective_id: "obj_test_audio",
     query: "Ja sim, me fala mais sobre vc, trabalha com oq ?",
   });
 
@@ -444,6 +451,7 @@ test("4.1 Pergunta direta 'trabalha com oq' encontra áudio de profissão", asyn
   const agentToolResults = await executeCofreAudioSearch({
     supabase,
     conversationId: "conv_test_profession_query_agent",
+    objective_id: "obj_test_audio",
     query: "Ja sim, me fala mais sobre vc, trabalha com oq ?",
   });
   assert.ok(
@@ -457,6 +465,7 @@ test("4.2 Brain recebe o catálogo completo quando consulta o cofre, sem filtro 
   const directCatalog = await executeCofreAudioSearch({
     supabase,
     conversationId: "conv_test_complete_audio_catalog_fallback",
+    objective_id: "obj_test_audio",
     query: "trabalho com vendas",
     limit: 1,
   });
@@ -469,7 +478,7 @@ test("4.2 Brain recebe o catálogo completo quando consulta o cofre, sem filtro 
   const telemetry = { toolsRequested: [], toolExecutionsCount: 0, sourcesUsed: [], authorizedCandidateAudios: [] };
   const toolResult = await executeOpenAiAppTool({
     toolName: "cofre_audio_search",
-    toolArgs: { query: "trabalho com vendas" },
+    toolArgs: { objective_id: "obj_test_audio", query: "trabalho com vendas" },
     callId: "call_complete_catalog",
     supabase,
     conversationId: "conv_test_complete_audio_catalog",
@@ -498,6 +507,7 @@ test("5. Áudio já enviado não aparece na busca", async () => {
   const results = await executeCofreAudioSearch({
     supabase,
     conversationId: "conv_sent",
+    objective_id: "obj_test_audio",
     query: "o que você faz no tempo livre?",
   });
 
@@ -515,6 +525,7 @@ test("6. Pedido 'manda de novo' não libera replay automático no autopiloto", a
   const results = await searchCofreAudios({
     supabase,
     conversationId: "conv_replay",
+    objective_id: "obj_test_audio",
     query: "manda aquele audio de novo por favor",
     limit: 3,
   });
@@ -1042,6 +1053,7 @@ test("15. Áudio disabled é rejeitado", async () => {
   const candidates = await searchCofreAudios({
     supabase,
     conversationId: "conv_disabled",
+    objective_id: "obj_test_audio",
     query: "antigo arquivado",
   });
   const found = candidates.some((c) => c.audio_id === "aud_desabilitado");
@@ -1053,6 +1065,7 @@ test("16. Catálogo sem correspondência automática continua permitindo decisã
   const candidates = await searchCofreAudios({
     supabase,
     conversationId: "conv_empty",
+    objective_id: "obj_test_audio",
     query: "física nuclear quântica aplicada",
   });
 
@@ -1238,6 +1251,7 @@ test("24. Consulta do cofre não filtra por semântica; a seleção fica com o B
   const candidates = await searchCofreAudios({
     supabase,
     conversationId: "conv_incidental",
+    objective_id: "obj_test_audio",
     query: "meu escritório fica perto da praia",
     limit: 3,
   });

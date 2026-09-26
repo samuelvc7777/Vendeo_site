@@ -4,8 +4,8 @@ import { PersonaAudioAsset, AudioDeliveryHistory } from "@/domain/entities/ChatS
 export class ManagePersonaAudiosUseCase {
   constructor(private audioRepository: IPersonaAudioRepository) {}
 
-  async getAudios(stageId?: string): Promise<PersonaAudioAsset[]> {
-    return this.audioRepository.getAudios({ stageId });
+  async getAudios(objectiveId?: string): Promise<PersonaAudioAsset[]> {
+    return this.audioRepository.getAudios({ objectiveId });
   }
 
   async getAudioById(id: string): Promise<PersonaAudioAsset | null> {
@@ -28,8 +28,8 @@ export class ManagePersonaAudiosUseCase {
     return this.audioRepository.updateAudio(id, { enabled: !currentEnabled });
   }
 
-  async searchAudios(query: string, stageId?: string): Promise<PersonaAudioAsset[]> {
-    return this.audioRepository.searchAudios(query, stageId);
+  async searchAudios(query: string, objectiveId?: string): Promise<PersonaAudioAsset[]> {
+    return this.audioRepository.searchAudios(query, objectiveId);
   }
 
   async getDeliveryHistory(conversationId: string): Promise<AudioDeliveryHistory[]> {

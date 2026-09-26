@@ -15,7 +15,6 @@ import {
 } from "./contact_memory.ts";
 import {
   searchUnifiedConversationMemory,
-  type UnifiedConversationMemoryOutput,
 } from "./conversation_episodic_memory.ts";
 import {
   LARISSA_INTERACTION_DNA_VERSION,
@@ -25,6 +24,7 @@ import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts"
 import { normalizeOpenAiUsage, type AgentSessionUsageTelemetry } from "./openai_usage.ts";
 import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
 import { AGENT_LOCAL_WAIT_MS } from "./autopilot_cycle_safety.ts";
+import { normalizeObjectiveEvidence } from "./objective_evidence.ts";
 import {
   buildCanonicalAgentInstructions,
   QUESTION_INTENTS_CONTRACT_EXAMPLE,
@@ -127,10 +127,12 @@ export type OutboundAction =
   | {
       type: "text";
       text: string;
+      delayBeforeSendSeconds?: number;
     }
   | {
       type: "audio";
       audioId: string;
+      delayBeforeSendSeconds?: number;
     };
 
 export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
@@ -142,13 +144,9 @@ export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
     parameters: {
       type: "object",
       properties: {
-        query: {
-          type: "string",
-          description:
-            "Motivo da consulta ao catálogo completo (ex: pergunta sobre profissão, rotina da faculdade ou hobbies). Não é filtro; o backend devolve todos os áudios elegíveis.",
-        },
+        objective_id: { type: "string", description: "ID exato do objetivo configurado que motivou a consulta." },
       },
-      required: ["query"],
+      required: ["objective_id"],
     },
   },
 };
@@ -170,17 +168,13 @@ export const COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION: OpenAiAgentFunctionToolDe
   type: "function",
   name: "cofre_audio_search",
   description:
-    "Quando você decidir consultar o Cofre de Áudios, retorna o catálogo COMPLETO de áudios habilitados, ainda não enviados nesta conversa, com título, transcrição integral, instrução de uso e duração. O backend não filtra nem escolhe por assunto: compare o catálogo com a conversa e decida se algum áudio deve ser enviado e qual. A query serve apenas para registrar o motivo da consulta.",
+    "Quando decidir consultar áudios de um objetivo configurado, envie objective_id. Retorna todos os áudios habilitados ainda não enviados para esse objetivo, com título, transcrição, instrução de uso e duração. Você escolhe semanticamente se envia algum e qual.",
   parameters: {
     type: "object",
     properties: {
-      query: {
-        type: "string",
-        description:
-          "Motivo da consulta ao catálogo completo (ex: pergunta sobre profissão, rotina da faculdade ou hobbies). Não é filtro; o backend devolve todos os áudios elegíveis.",
-      },
+      objective_id: { type: "string", description: "ID exato do objetivo configurado que motivou a consulta." },
     },
-    required: ["query"],
+    required: ["objective_id"],
   },
   defer_loading: false,
 };
@@ -303,7 +297,8 @@ export async function executePersonaMemoryTool(
 export async function executeCofreAudioSearch(params: {
   supabase: any;
   conversationId: string;
-  query: string;
+  query?: string;
+  objective_id: string;
   limit?: number;
 }): Promise<Array<{
   audioId: string;
@@ -312,16 +307,18 @@ export async function executeCofreAudioSearch(params: {
   whenToUse: string;
   duration?: number;
 }>> {
-  const { supabase, conversationId } = params;
+  const { supabase, conversationId, objective_id } = params;
   if (!supabase) return [];
 
   let audios: any[] = [];
   try {
-    const { data: rows } = await supabase
+    let query = supabase
       .from("persona_audios")
       .select("*")
       .eq("enabled", true)
       .order("title", { ascending: true });
+    if (objective_id) query = query.eq("objective_id", objective_id);
+    const { data: rows } = await query;
     if (Array.isArray(rows)) {
       audios = rows;
     }
@@ -426,7 +423,7 @@ export interface ExecuteOpenAiAppToolParams {
   callId?: string;
   supabase: any;
   conversationId: string;
-  searchCofreAudios?: (params: { supabase: any; conversationId: string; query: string; limit?: number }) => Promise<any[]>;
+  searchCofreAudios?: (params: { supabase: any; conversationId: string; query?: string; objective_id: string; limit?: number }) => Promise<any[]>;
   telemetry: OpenAiBrainTurnResult["telemetry"];
   seenToolCallIds?: Set<string>;
 }
@@ -452,11 +449,13 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
 
   // Validação estrita de argumentos para cofre_audio_search
   let rawQuery: any = toolArgs;
+  let objectiveId: any;
   if (typeof toolArgs === "object" && toolArgs !== null) {
     rawQuery = toolArgs.query;
+    objectiveId = toolArgs.objective_id;
   }
-  if (typeof rawQuery !== "string" || !rawQuery.trim()) {
-    console.warn("[OpenAI Agent] cofre_audio_search argumentos inválidos ou query vazia:", toolArgs);
+  if (typeof objectiveId !== "string" || !objectiveId.trim()) {
+    console.warn("[OpenAI Agent] cofre_audio_search sem objective_id válido:", toolArgs);
     return {
       success: false,
       output: {
@@ -466,7 +465,7 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
     };
   }
 
-  const query = rawQuery.trim().slice(0, 200);
+  const query = typeof rawQuery === "string" ? rawQuery.trim().slice(0, 200) : "";
 
   // Deduplicação estrita de tool calls por callId
   if (callId && seenToolCallIds) {
@@ -490,12 +489,14 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
         supabase,
         conversationId,
         query,
+        objective_id: objectiveId.trim(),
       });
     } else {
       candidates = await executeCofreAudioSearch({
         supabase,
         conversationId,
         query,
+        objective_id: objectiveId.trim(),
       });
     }
   } catch (err: any) {
@@ -531,22 +532,46 @@ export interface PlanValidationResult {
 }
 
 export function validateConversationBrainPlan(
-  plan: any
+  plan: any,
+  allowedPendingActionIds?: string[],
 ): PlanValidationResult {
   if (!plan || typeof plan !== "object") {
     return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
   }
-  const validActions = ["reply", "wait", "send_audio"];
+  const validActions = ["reply", "wait", "manual_resolution", "send_audio"];
   if (!validActions.includes(plan.action)) {
     return {
       valid: false,
       error: `Ação do plano deve ser 'reply' ou 'wait', recebido: '${plan.action}'`,
     };
   }
+  if (plan.pendingActionResolution !== undefined) {
+    const cancelIds = plan.pendingActionResolution?.cancelActionIds;
+    if (!Array.isArray(cancelIds) || cancelIds.some((id: unknown) => typeof id !== "string" || !id.trim())) {
+      return { valid: false, error: "pendingActionResolution.cancelActionIds deve ser uma lista de action_id válidos" };
+    }
+    if (new Set(cancelIds).size !== cancelIds.length) {
+      return { valid: false, error: "pendingActionResolution.cancelActionIds não pode conter duplicatas" };
+    }
+    if (allowedPendingActionIds && cancelIds.some((id: string) => !allowedPendingActionIds.includes(id))) {
+      return { valid: false, error: "pendingActionResolution referencia ação que não está pendente nesta conversa" };
+    }
+  }
   if (plan.action === "send_audio") {
     plan.action = "reply";
   }
   if (plan.action === "wait") {
+    return { valid: true };
+  }
+  if (plan.action === "manual_resolution") {
+    const request = plan.manualResolution;
+    if (!request || typeof request.question !== "string" || !request.question.trim()) {
+      return { valid: false, error: "manualResolution.question é obrigatório quando action='manual_resolution'" };
+    }
+    request.question = request.question.trim().slice(0, 500);
+    if (typeof request.context === "string") request.context = request.context.trim().slice(0, 1500);
+    plan.responses = [];
+    plan.outboundActions = [];
     return { valid: true };
   }
 
@@ -579,6 +604,11 @@ export function validateConversationBrainPlan(
       } else {
         return { valid: false, error: `outboundActions[${i}] tipo inválido: '${act.type}'` };
       }
+      const delay = act.delay_before_send ?? act.delayBeforeSendSeconds;
+      if (delay !== undefined && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0 || delay > 7200)) {
+        return { valid: false, error: `outboundActions[${i}].delay_before_send deve ser um número entre 0 e 7200 segundos` };
+      }
+      if (delay !== undefined) act.delayBeforeSendSeconds = delay;
     }
     // Normalização retrocompatível: popula responses com os textos se responses não veio
     if (!Array.isArray(plan.responses)) {
@@ -614,12 +644,15 @@ export function validateConversationBrainPlan(
         error: "satisfiedObjectiveId é obrigatório e deve ser string não vazia quando objectiveDecision='already_satisfied'",
       };
     }
-    if (!plan.evidenceMessageId || typeof plan.evidenceMessageId !== "string" || !plan.evidenceMessageId.trim()) {
+    const evidence = normalizeObjectiveEvidence(plan.objectiveEvidence, plan.evidenceMessageId);
+    if (!evidence) {
       return {
         valid: false,
-        error: "evidenceMessageId é obrigatório e deve ser string não vazia quando objectiveDecision='already_satisfied'",
+        error: "objectiveEvidence válida (ou evidenceMessageId legado) é obrigatória quando objectiveDecision='already_satisfied'",
       };
     }
+    plan.objectiveEvidence = evidence;
+    plan.evidenceMessageId = evidence.type === "message" ? evidence.id : null;
   }
 
   // Validação de turnContract (aceita tanto na raiz quanto em missionPackage)
@@ -686,6 +719,7 @@ export function validateResponseGenerationInvariant(plan: any): PlanValidationRe
   if (plan.action === "wait") {
     return { valid: true };
   }
+  if (plan.action === "manual_resolution") return { valid: true };
   // Se possuir outboundActions válido (inclusive caso somente de áudio)
   if (Array.isArray(plan.outboundActions) && plan.outboundActions.length > 0) {
     if (plan.outboundActions.length > 4) {
@@ -884,6 +918,17 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
 
 export function recoverSafeBrainPlan(parsedPlan: any): any | null {
   if (!parsedPlan || typeof parsedPlan !== "object" || Array.isArray(parsedPlan)) return null;
+  if (parsedPlan.action === "manual_resolution" && typeof parsedPlan.manualResolution?.question === "string" && parsedPlan.manualResolution.question.trim()) {
+    return {
+      ...parsedPlan,
+      manualResolution: {
+        question: parsedPlan.manualResolution.question.trim().slice(0, 500),
+        context: typeof parsedPlan.manualResolution.context === "string" ? parsedPlan.manualResolution.context.trim().slice(0, 1500) : "",
+      },
+      responses: [],
+      outboundActions: [],
+    };
+  }
   const responses = Array.isArray(parsedPlan.responses) ? parsedPlan.responses : [];
   if (responses.length < 1 || responses.length > 4) return null;
   const safeResponses = responses.map((item: unknown) => typeof item === "string" ? item.trim() : "");
@@ -918,6 +963,7 @@ export function buildFallbackBrainPlan(parsedPlan: any): any {
     action: "reply",
     objectiveDecision: "none",
     satisfiedObjectiveId: null,
+    objectiveEvidence: null,
     evidenceMessageId: null,
     reasoning: "Plano inválido sem respostas seguras",
     liveStatePatch: {},
@@ -935,6 +981,9 @@ export interface RunOpenAiBrainParams {
   supabase: any;
   conversationId: string;
   sessionId?: string | null;
+  resumeTurnId?: string | null;
+  manualResolutionAnswer?: { question: string; context?: string; answer: string };
+  pendingOutboundActions?: Array<{ actionId: string; actionIndex: number; type: string; preview: string }>;
   persistentSessionEnabled?: boolean;
   replyTargets?: Record<string, { id: string; sender: string; text: string }>;
   searchCofreAudios?: (params: any) => Promise<any[]>;
@@ -1476,21 +1525,39 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
     `\n## NOVAS MENSAGENS RECEBIDAS NESTE TURNO\n${inboundsText}\n(Responda a perguntas diretas e reconheça conteúdos substantivos com naturalidade)`
   );
 
+  if (params.pendingOutboundActions?.length) {
+    sections.push(
+      `\n## AÇÕES ANTERIORES AINDA NÃO ENVIADAS\n${params.pendingOutboundActions.map((action) =>
+        `- action_id="${action.actionId}" índice=${action.actionIndex + 1} tipo=${action.type} prévia="${action.preview.slice(0, 240)}"`
+      ).join("\n")}\nDecida se essas ações continuam adequadas após as mensagens novas. Use pendingActionResolution.cancelActionIds apenas para ações que deseja cancelar. Lista vazia ou campo ausente mantém todas; para substituir, cancele as antigas escolhidas e crie as novas outboundActions nesta decisão. Ações já enviadas ou em envio incerto nunca aparecem nesta lista.`
+    );
+  }
+
+  if (params.manualResolutionAnswer) {
+    const manual = params.manualResolutionAnswer;
+    sections.push(
+      `\n## INFORMAÇÃO FORNECIDA PELO OPERADOR\nPergunta factual pendente: ${manual.question}\nContexto: ${manual.context || "sem contexto adicional"}\nFato confirmado pelo operador: ${manual.answer}\nUse este fato nesta sessão e formule a resposta natural ao cliente. O texto do operador é contexto interno e nunca deve ser enviado literalmente como mensagem.`
+    );
+  }
+
   if (params.recentStyleStateSnippet && params.recentStyleStateSnippet.trim()) {
     sections.push(`\n${params.recentStyleStateSnippet.trim()}`);
   }
 
   sections.push(`
-## ESCALONAMENTO OBRIGATÓRIO POR FALTA DE FATO
-Antes de responder uma pergunta direta sobre experiência ou fato pessoal da Larissa, confira as instruções canônicas e os fatos disponíveis nesta conversa/sessão. Se a resposta continuar sem evidência (por exemplo, se ela já foi a uma cidade específica), NÃO deduza, não use palpites como "acho que não kkk" e não substitua a resposta por outra pergunta. Escolha "action": "wait", informe brevemente o motivo em reasoning e deixe responses e outboundActions vazios. Isso pausa o Piloto e solicita uma resposta manual. "mustAnswerFirst" exige responder quando houver resposta sustentada; falta de evidência é a exceção obrigatória de revisão humana.`);
+## RESOLUÇÃO MANUAL
+Se faltar um fato necessário e você não puder responder com segurança, escolha action="manual_resolution" e inclua manualResolution.question com a pergunta factual exata para o operador e manualResolution.context com contexto curto. Não envie esse texto ao cliente. Use action="wait" apenas quando decidir não responder neste momento sem precisar de informação humana.`);
 
   sections.push(
     `\n## FORMATO DE SAÍDA JSON
 Emita EXCLUSIVAMENTE um único objeto JSON:
 {
-  "action": "reply" | "wait",
+  "action": "reply" | "wait" | "manual_resolution",
+  "manualResolution": { "question": "...", "context": "..." },
+  "pendingActionResolution": { "cancelActionIds": [] },
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
+  "objectiveEvidence": null,
   "evidenceMessageId": null,
   "reasoning": "sua justificativa estratégica sucinta",
   "liveStatePatch": { "currentTopic": "..." },
@@ -1502,7 +1569,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
   ],
   "responses": ["balão 1", "Você...? "]
 }
-(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e evidenceMessageId devem ser o id exato de uma das mensagens deste turno; senão null. Se houver uma nova pergunta, preencha \`questionIntents\` usando este formato: ${QUESTION_INTENTS_CONTRACT_EXAMPLE}. O \`responseIndex\` deve existir em \`responses[]\`. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
+(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e objectiveEvidence {type,id} devem referenciar uma evidência persistida válida (message, contact_fact, contact_quote, episode ou manual_fact). evidenceMessageId legado só representa type=message. Se houver ações pendentes listadas, avalie se permanecem adequadas e liste em cancelActionIds somente IDs dessa lista. Se houver uma nova pergunta, preencha \`questionIntents\` usando este formato: ${QUESTION_INTENTS_CONTRACT_EXAMPLE}. O \`responseIndex\` deve existir em \`responses[]\`. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
   );
 
   if (params.schemaFeedback) {
@@ -1686,7 +1753,7 @@ Para decidir a resposta e a condução, considere rigorosamente nesta ordem:
 8. OBJETIVOS DA ETAPA (podem avançar DENTRO do assunto vivo quando houver ponte natural; não são uma pauta concorrente);
 9. FERRAMENTAS MCP sob demanda se houver dúvida factual ou gancho de afinidade.
 
-FATO PESSOAL SEM EVIDÊNCIA: antes de responder pergunta sobre experiência ou fato autobiográfico da Larissa (por exemplo, se já visitou uma cidade), use apenas fato canônico, conversa/histórico ou resultado real de ferramenta. Se continuar desconhecido, escolha action="wait", sem respostas nem outboundActions. Não chute, não diga "acho que não" e não troque a resposta por outra pergunta. Essa regra prevalece sobre mustAnswerFirst e ativa a revisão manual do operador.
+FATO PESSOAL SEM EVIDÊNCIA: antes de responder pergunta sobre experiência ou fato autobiográfico da Larissa, use apenas fato canônico, conversa/histórico ou resultado real de ferramenta. Se continuar desconhecido, escolha action="manual_resolution", forneça manualResolution.question e manualResolution.context, e deixe responses e outboundActions vazios. Não chute nem envie a solicitação ao cliente.
 
 Antes de responder, defina bestHook como o maior sinal humano/relacional do lote e derive curiosityOpportunity dele. Em áudios, use a transcrição como texto semântico, escolha 1 ou 2 elementos salientes e reaja a um detalhe específico.
 
@@ -1703,14 +1770,16 @@ Revise sem expor a revisão: algum balão apenas repete o pretendente ou a Laris
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
 DIRETRIZ DE EVIDÊNCIA:
-Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e evidenceMessageId são OBRIGATÓRIOS. O evidenceMessageId DEVE ser exatamente o ID de uma das mensagens de [MENSAGEM id="..."] deste turno. Para pursue, defer ou none, evidenceMessageId deve ser null.
+Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e objectiveEvidence {type,id} são OBRIGATÓRIOS. Tipos disponíveis: message, contact_fact, contact_quote, episode e manual_fact. Use uma referência persistida apresentada no contexto. O backend valida somente existência e escopo técnico, não o significado. evidenceMessageId legado pode ser usado somente para mensagens. Para pursue, defer ou none, objectiveEvidence deve ser null.
 
 CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
-  "action": "reply" | "wait",
+  "action": "reply" | "wait" | "manual_resolution",
+  "manualResolution": { "question": "...", "context": "..." },
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
+  "objectiveEvidence": null,
   "evidenceMessageId": null,
   "reasoning": "sua justificativa estratégica sucinta",
   "liveStatePatch": { "lastUserEmotionalTone": "...", "currentTopic": "..." },
@@ -2340,7 +2409,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           latestSessionData = sessionData;
 
           const sessionStatus = typeof sessionData?.status === "string" ? sessionData.status : null;
-          if (sessionStatus && sessionStatus !== "idle") {
+          if (sessionStatus && sessionStatus !== "idle" && !params.resumeTurnId) {
             console.warn(`[OpenAI Agent] session_reuse_unhealthy_status (status=${sessionStatus}): sessionId=${sessionId}. A sessão não está idle. Evicting e recriando sessão limpa (recovery)...`);
             sessionId = null;
             telemetry.sessionFallbackTriggered = true;
@@ -2411,7 +2480,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       }
 
       // Se a sessão continua válida após a inspeção, envia o novo evento conversacional
-      if (sessionId) {
+      if (sessionId && !params.resumeTurnId) {
         const eventPayload = {
           events: [
             {
@@ -2478,6 +2547,14 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           telemetry.sessionFallbackTriggered = true;
           telemetry.agentSessionRecoveryTriggered = true;
         }
+      }
+
+      if (sessionId && params.resumeTurnId) {
+        activeSessionId = sessionId;
+        sessionReused = true;
+        telemetry.sessionId = sessionId;
+        telemetry.agentSessionReused = true;
+        telemetry.agentSessionCreated = false;
       }
     }
 
@@ -2613,8 +2690,21 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     const maxPollAttempts = Math.ceil(AGENT_LOCAL_WAIT_MS / pollIntervalMs);
     const waitDeadlineMs = Date.now() + AGENT_LOCAL_WAIT_MS;
 
-    turnId = null;
+    turnId = params.resumeTurnId || null;
     turnData = null;
+    if (turnId && sessionId) {
+      try {
+        const existingTurnRes = await fetchOpenAiBounded(
+          `https://api.openai.com/v1/agents/sessions/${sessionId}/turns/${turnId}`,
+          { headers },
+          10_000,
+        );
+        if (existingTurnRes.ok) turnData = await existingTurnRes.json();
+        else throw new Error(`Não foi possível retomar o turn ${turnId}: HTTP ${existingTurnRes.status}`);
+      } catch (resumeErr) {
+        throw new Error(`brain_turn_resume_failed: ${resumeErr instanceof Error ? resumeErr.message : String(resumeErr)}`);
+      }
+    }
     let identifyAttempt = 0;
     let lastLoggedPendingBucket = -1;
     let appToolRound = 0;
@@ -3125,7 +3215,10 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     }
 
     let parsedPlan = extractJsonFromText(rawResponseText);
-    const basicValidation = validateConversationBrainPlan(parsedPlan);
+    const basicValidation = validateConversationBrainPlan(
+      parsedPlan,
+      (params.pendingOutboundActions || []).map((action) => action.actionId),
+    );
     const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
     const responseGenValidation = validateResponseGenerationInvariant(parsedPlan);
     const questionIntentsValidation = validateQuestionIntentsInvariant(parsedPlan);

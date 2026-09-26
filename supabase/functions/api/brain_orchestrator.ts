@@ -4,8 +4,11 @@
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
+import { resolveCurrentStageId } from "../../../src/domain/entities/stageAuthority.ts";
 import {
   ACTIVE_CYCLE_TTL_SECONDS,
+  AGENT_LOCAL_WAIT_MS,
   checkCycleAuthority,
   classifyCycleOutboxEvidence,
   resolveMissionMemoryContext,
@@ -17,6 +20,8 @@ import {
 } from "./openai_usage.ts";
 import {
   type ConversationEpisode,
+  type EpisodeWriteInput,
+  type OpenLoopWriteInput,
   type EpisodeActor,
   type EpisodeEventType,
   type EpisodicSearchResult,
@@ -93,7 +98,7 @@ export {
   type StyleLintResult,
   type EmojiBudgetResult,
 };
-export { buildTurnContract, normalizeBrainTurnContract, runConversationQualityGate, safeHighConfidenceFallback, isUnsupportedPersonalExperienceQuestion };
+export { buildTurnContract, normalizeBrainTurnContract, runConversationQualityGate, safeHighConfidenceFallback };
 export type { TurnContract };
 
 import {
@@ -535,17 +540,36 @@ export function enforceAuthorizedAudioDecision(
 }
 
 export interface ConversationBrainPlan {
-  action: "reply" | "call_tool" | "wait";
+  action: "reply" | "call_tool" | "wait" | "manual_resolution" | "send_audio";
   tool?: "conversation_history_search" | "persona_memory_search" | "episodic_memory_search" | "cofre_audio_search";
   parameters?: Record<string, any>;
   currentStage?: string;
   objectiveDecision: "pursue" | "defer" | "already_satisfied" | "none";
   satisfiedObjectiveId?: string;
+  objectiveEvidence?: ObjectiveEvidence;
   evidenceMessageId?: string;
   liveStatePatch: Partial<ConversationLiveState>;
   missionPackage?: MissionPackage;
   reasoning?: string;
   responses?: string[];
+  pendingActionResolution?: { cancelActionIds: string[] };
+  manualResolution?: ManualResolutionRequest;
+  outboundActions?: OutboundAction[];
+  audioId?: string;
+  selectedAudioId?: string;
+  objectiveUpdates?: Array<{ objectiveId: string; evidence?: ObjectiveEvidence; evidenceMessageId?: string; value?: unknown }>;
+  objectiveCompletion?: { objectiveId: string; evidence?: ObjectiveEvidence; evidenceMessageId?: string; value?: unknown };
+  stageTransition?: { stageId?: string; nextStageId?: string; reason?: string };
+  nextStageId?: string;
+  socialCueInterpretation?: Record<string, unknown>;
+  selfFactRepeatedRisk?: boolean;
+  memoryWrites?: {
+    contactFacts?: MemoryCandidate[];
+    quotes?: MemoryCandidate[];
+    episodes?: EpisodeWriteInput[];
+    speechActs?: EpisodeWriteInput[];
+    openLoops?: OpenLoopWriteInput[];
+  };
   suggestedResponse?: string;
   currentTopic?: string;
   bestHook?: string;
@@ -564,14 +588,20 @@ export interface ConversationBrainPlan {
 }
 
 export type OrchestrationPhase = "conexao_inicial" | "descoberta" | "compatibilidade" | (string & {});
-export type OrchestrationAction = "reply" | "send_audio" | "wait" | "advance_phase" | "escalate";
+export type OrchestrationAction = "reply" | "send_audio" | "wait" | "manual_resolution" | "advance_phase" | "escalate";
+
+export interface ManualResolutionRequest {
+  question: string;
+  context?: string;
+}
 export type ProcessingStatus =
   | "idle"
   | "analyzing"
   | "decided"
   | "needs_human"
   | "sent"
-  | "failed";
+  | "failed"
+  | "waiting";
 
 export interface StageObjective {
   id: string;
@@ -600,7 +630,8 @@ export interface ConversationObjectiveProgress {
 
 export interface PersonaAudioAsset {
   id: string;
-  stageId?: string;
+  objectiveId?: string;
+  legacyStageId?: string;
   title: string;
   audioUrl: string;
   duration?: number;
@@ -643,9 +674,12 @@ export interface BrainDecision {
   audioUrl?: string;
   objectiveCompletion?: {
     objectiveId: string;
+    evidence?: ObjectiveEvidence;
     evidenceMessageId?: string;
     value?: any;
   };
+  manualResolution?: ManualResolutionRequest;
+  pendingActionResolution?: { cancelActionIds: string[] };
   memoryCandidates?: MemoryCandidate[];
 }
 
@@ -664,9 +698,12 @@ export interface OrchestratorDecision {
   audioUrl?: string;
   objectiveCompletion?: {
     objectiveId: string;
+    evidence?: ObjectiveEvidence;
     evidenceMessageId?: string;
     value?: any;
   };
+  manualResolution?: ManualResolutionRequest;
+  pendingActionResolution?: { cancelActionIds: string[] };
   memoryCandidates?: MemoryCandidate[];
 }
 
@@ -693,7 +730,7 @@ export interface CanonicalMessage {
   claimedByCycleId?: string | null;
 }
 
-export type OutboxStatus = "pending" | "sending" | "sent" | "failed" | "dispatch_uncertain";
+export type OutboxStatus = "pending" | "sending" | "sent" | "failed" | "dispatch_uncertain" | "cancelled";
 
 export interface OutboxEntry {
   id: string;
@@ -716,7 +753,61 @@ export interface OutboxEntry {
   mediaUrl?: string | null;
   audioDurationSeconds?: number | null;
   vaultAudioId?: string | null;
+  payload?: Record<string, unknown>;
+  actionType?: "text" | "audio" | "image";
   claimedBy?: string | null;
+}
+
+function outboxBrainActionId(entry: OutboxEntry): string | undefined {
+  const actionId = entry.payload?.brainActionId;
+  return typeof actionId === "string" && actionId.length > 0 ? actionId : undefined;
+}
+
+export function createBrainOutboxBatch(params: {
+  actions: OutboundAction[];
+  conversationId: string;
+  cycleId: string;
+  idempotencyKey: string;
+  resolvedAudio?: PersonaAudioAsset;
+  nowMs?: number;
+}): OutboxEntry[] {
+  const { actions, conversationId, cycleId, idempotencyKey, resolvedAudio } = params;
+  const nowMs = params.nowMs ?? Date.now();
+  let accumulatedDelaySeconds = 0;
+  return actions.map((action, index) => {
+    const isAudio = action.type === "audio";
+    const requestedDelay = Number(action.delayBeforeSendSeconds);
+    const stepDelay = index === 0
+      ? 0
+      : actions[index - 1]?.type === "audio"
+      ? Math.max(0, Number(resolvedAudio?.duration) || 0)
+      : Number.isFinite(requestedDelay) && requestedDelay >= 0
+      ? requestedDelay
+      : 0;
+    accumulatedDelaySeconds += stepDelay;
+    const content = isAudio
+      ? resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${action.audioId}]`
+      : action.text;
+
+    return {
+      id: `out_${cycleId}_a${index}`,
+      cycleId,
+      conversationId,
+      idempotencyKey: actions.length === 1 ? idempotencyKey : `${idempotencyKey}_a${index}`,
+      content,
+      messageType: isAudio ? "audio" : "text",
+      status: "pending",
+      attempts: 0,
+      maxAttempts: 3,
+      createdAt: new Date(nowMs).toISOString(),
+      actionIndex: index,
+      notBefore: new Date(nowMs + accumulatedDelaySeconds * 1000).toISOString(),
+      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : null,
+      audioDurationSeconds: isAudio && Number.isFinite(Number(resolvedAudio?.duration)) ? Number(resolvedAudio?.duration) : null,
+      vaultAudioId: isAudio ? (resolvedAudio?.id || action.audioId || null) : null,
+      payload: { brainActionId: `brain_action_${cycleId}_${index}` },
+    };
+  });
 }
 
 export interface ProcessingCycle {
@@ -1029,26 +1120,17 @@ export function validateBrainDecision(
   const action: OrchestrationAction =
     obj.action === "send_audio" || (rawAudioId && obj.action !== "wait" && obj.action !== "advance_phase" && obj.action !== "escalate")
       ? "send_audio"
-      : obj.action === "wait" || obj.action === "advance_phase" || obj.action === "escalate"
+      : obj.action === "wait" || obj.action === "manual_resolution" || obj.action === "advance_phase" || obj.action === "escalate"
       ? obj.action
       : "reply";
 
   const rawNext = typeof obj.nextPhase === "string" ? obj.nextPhase.trim() : "";
-  const standardPhases = ["conexao_inicial", "descoberta", "compatibilidade"];
-  const isAllowedPhase =
-    rawNext &&
-    (standardPhases.includes(rawNext) ||
-      rawNext.startsWith("stage_"));
-  const nextPhase: OrchestrationPhase = isAllowedPhase ? rawNext : currentPhase;
+  const nextPhase: OrchestrationPhase = rawNext || currentPhase;
 
   const checkpoint =
     typeof obj.checkpoint === "string" && obj.checkpoint.trim()
       ? obj.checkpoint.trim()
-      : currentPhase === "descoberta"
-      ? "chk_pergunta_sobre_ele"
-      : currentPhase === "compatibilidade"
-      ? "chk_valores_vida"
-      : "chk_saudacao_feita";
+      : "";
 
   const summary =
     typeof obj.summary === "string" && obj.summary.trim()
@@ -1071,11 +1153,12 @@ export function validateBrainDecision(
       ? obj.reasoning.trim()
       : "Execução especializada do Brain";
 
-  let objectiveCompletion: { objectiveId: string; evidenceMessageId?: string; value?: any } | undefined;
+  let objectiveCompletion: { objectiveId: string; evidence?: ObjectiveEvidence; evidenceMessageId?: string; value?: any } | undefined;
   const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
   if (rawObjComp && typeof rawObjComp === "object" && (rawObjComp.objectiveId || rawObjComp.goalId)) {
     objectiveCompletion = {
       objectiveId: String(rawObjComp.objectiveId || rawObjComp.goalId || "").trim(),
+      evidence: normalizeObjectiveEvidence(rawObjComp.evidence, rawObjComp.evidenceMessageId) ?? undefined,
       evidenceMessageId: rawObjComp.evidenceMessageId ? String(rawObjComp.evidenceMessageId).trim() : undefined,
       value: rawObjComp.value !== undefined ? rawObjComp.value : true,
     };
@@ -1164,11 +1247,12 @@ export function validateOrchestratorDecision(data: unknown, allowedPhases?: stri
     throw new Error("Motivo da decisão (reasoning) é obrigatório.");
   }
 
-  let objectiveCompletion: { objectiveId: string; evidenceMessageId?: string; value?: any } | undefined;
+  let objectiveCompletion: { objectiveId: string; evidence?: ObjectiveEvidence; evidenceMessageId?: string; value?: any } | undefined;
   const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
   if (rawObjComp && typeof rawObjComp === "object" && (rawObjComp.objectiveId || rawObjComp.goalId)) {
     objectiveCompletion = {
       objectiveId: String(rawObjComp.objectiveId || rawObjComp.goalId || "").trim(),
+      evidence: normalizeObjectiveEvidence(rawObjComp.evidence, rawObjComp.evidenceMessageId) ?? undefined,
       evidenceMessageId: rawObjComp.evidenceMessageId ? String(rawObjComp.evidenceMessageId).trim() : undefined,
       value: rawObjComp.value !== undefined ? rawObjComp.value : true,
     };
@@ -1204,93 +1288,25 @@ export function validatePhaseTransition(
   checkpoint: string,
   stagesOrder?: Array<{ id: string; order: number }>
 ): { allowed: boolean; validatedNextPhase: OrchestrationPhase; reason?: string } {
-  if (requestedNextPhase === currentPhase) {
-    return { allowed: true, validatedNextPhase: currentPhase };
+  void checkpoint;
+  if (requestedNextPhase === currentPhase) return { allowed: true, validatedNextPhase: currentPhase };
+  if (stagesOrder?.length && !stagesOrder.some((stage) => stage.id === requestedNextPhase)) {
+    return { allowed: false, validatedNextPhase: currentPhase, reason: "Identificador de etapa não configurado." };
   }
-
-  // Transição de 'conexao_inicial' -> 'descoberta'
-  if (
-    (currentPhase === "conexao_inicial" || currentPhase === "stage_1_conexao") &&
-    (requestedNextPhase === "descoberta" || requestedNextPhase === "stage_2_descoberta")
-  ) {
-    const validCheckpoints = [
-      "chk_rapport_estabelecido",
-      "chk_conexao_validada",
-      "chk_saudacao_reciproca",
-      "chk_etapa_concluida",
-      "stage_complete",
-    ];
-    if (validCheckpoints.includes(checkpoint) || checkpoint.includes("rapport") || checkpoint.includes("concluid")) {
-      return { allowed: true, validatedNextPhase: requestedNextPhase };
-    }
-    return {
-      allowed: false,
-      validatedNextPhase: currentPhase,
-      reason: `Checkpoint "${checkpoint}" insuficiente para avançar para descoberta. Requer um de: ${validCheckpoints.join(", ")}`,
-    };
-  }
-
-  // Transição de 'descoberta' -> 'compatibilidade'
-  if (
-    (currentPhase === "descoberta" || currentPhase === "stage_2_descoberta") &&
-    (requestedNextPhase === "compatibilidade" || requestedNextPhase === "stage_3_compatibilidade")
-  ) {
-    return { allowed: true, validatedNextPhase: requestedNextPhase };
-  }
-
-  // Descoberta e compatibilidade não regridem automaticamente sem comando explícito
-  if (
-    (currentPhase === "descoberta" && requestedNextPhase === "conexao_inicial") ||
-    (currentPhase === "compatibilidade" &&
-      (requestedNextPhase === "descoberta" || requestedNextPhase === "conexao_inicial"))
-  ) {
-    return {
-      allowed: false,
-      validatedNextPhase: currentPhase,
-      reason: "Regressão de fase não permitida automaticamente pelo agente.",
-    };
-  }
-
-  // Validação dinâmica por ordem de etapas se fornecida
-  if (stagesOrder && stagesOrder.length > 0) {
-    const curr = stagesOrder.find((s) => s.id === currentPhase);
-    const next = stagesOrder.find((s) => s.id === requestedNextPhase);
-    if (curr && next) {
-      if (next.order < curr.order) {
-        return {
-          allowed: false,
-          validatedNextPhase: currentPhase,
-          reason: "Regressão de etapa não permitida pelo backend.",
-        };
-      }
-      return { allowed: true, validatedNextPhase: requestedNextPhase };
-    }
-  }
-
   return { allowed: true, validatedNextPhase: requestedNextPhase };
 }
 
-// ----------------------------------------------------------------------------
-// 5. Regras de Cada Fase (Diretrizes Operacionais)
-// ----------------------------------------------------------------------------
-export function getRulesForPhase(phase: OrchestrationPhase): string[] {
-  if (phase === "conexao_inicial") {
-    return [
-      "Priorize acolhimento caloroso, simpatia meiga e validação de reciprocidade.",
-      "Não faça interrogatório de múltiplas perguntas em um único turno.",
-      "Responda ao que o pretendente falou antes de perguntar qualquer coisa.",
-      "Avançar para 'descoberta' SOMENTE se o pretendente já respondeu com engajamento (checkpoint: chk_rapport_estabelecido).",
-    ];
-  }
-  if (phase === "descoberta") {
-    return [
-      "Investigue suavemente o que ele faz da vida, onde mora e o que gosta de fazer.",
-      "Aplique sempre a Regra da Reciprocidade: se perguntar sobre ele, conte algo breve sobre você.",
-      "Se ele perguntar sua cidade ou profissão, responda que é de São João del Rei e estuda enfermagem/vendas online.",
-      "Mantenha tom 100% feminino, afetuoso e natural de Minas Gerais.",
-    ];
-  }
-  return [];
+export function selectMessagesForLateTurn<T extends { id: string }>(
+  messages: T[],
+  originalInboundIds: string[],
+): { messages: T[]; deferredIds: string[] } {
+  const original = new Set(originalInboundIds.map(String));
+  const selected = messages.filter((message) => original.has(String(message.id)));
+  const selectedIds = new Set(selected.map((message) => String(message.id)));
+  return {
+    messages: selected,
+    deferredIds: messages.filter((message) => !selectedIds.has(String(message.id))).map((message) => String(message.id)),
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -2055,6 +2071,7 @@ export interface ClaimOutboxAtomicParams {
   conversationId: string;
   outboxKey: string;
   claimToken: string;
+  cycleId?: string;
 }
 
 export async function claimOutboxEntryAtomic(
@@ -2066,7 +2083,7 @@ export async function claimOutboxEntryAtomic(
   isInfraFailure?: boolean;
   entry?: any;
 }> {
-  const { supabase, conversationId, outboxKey, claimToken } = params;
+  const { supabase, conversationId, outboxKey, claimToken, cycleId } = params;
 
   // FAIL CLOSED: A atomicidade REAL exige a execução da RPC no PostgreSQL com SELECT ... FOR UPDATE.
   // Nenhum fallback para read-modify-write (leitura, modificação e gravação) em JS é permitido.
@@ -2082,10 +2099,11 @@ export async function claimOutboxEntryAtomic(
   }
 
   try {
-    const { data, error } = await supabase.rpc("claim_outbox_entry", {
-      p_conversation_id: conversationId,
-      p_outbox_id: outboxKey,
-      p_claim_token: claimToken,
+      const { data, error } = await supabase.rpc("claim_outbox_entry_brain_safe", {
+        p_conversation_id: conversationId,
+        p_outbox_id: outboxKey,
+        p_claim_token: claimToken,
+        p_cycle_id: cycleId || null,
     });
 
     if (error) {
@@ -2249,6 +2267,130 @@ export async function persistDurableOutboxBatchAtomic(
     return { success: true, reason: "persisted_fallback", count: savedKeys.length, keys: savedKeys };
   } catch (err: any) {
     return { success: false, reason: "infra_failure" };
+  }
+}
+
+export async function persistCanonicalBrainDecision(params: {
+  supabase: any;
+  conversationId: string;
+  sessionId: string;
+  providerTurnId: string | null;
+  turnId: string;
+  decisionId: string;
+  inboundMessageIds: string[];
+  decisionType: "respond" | "wait" | "manual_resolution" | "request_audio_candidates" | "revise_pending";
+  decisionPayload: Record<string, unknown>;
+  actions: Array<{ id: string; actionIndex: number; actionType: string; payload: Record<string, unknown>; notBefore: string | null; idempotencyKey: string; status?: "pending" | "waiting_delay" }>;
+  outboxEntries?: OutboxEntry[];
+}): Promise<{ success: boolean; reason?: string }> {
+  try {
+    const now = new Date().toISOString();
+    const { data, error } = await params.supabase.rpc("persist_brain_decision_with_outbox", {
+      p_session: {
+        id: `bs_${params.sessionId}`,
+        conversation_id: params.conversationId,
+        provider: "openai",
+        provider_session_id: params.sessionId,
+        context_version: 1,
+        status: "active",
+        bootstrap_context: {},
+      },
+      p_turn: {
+        id: params.turnId,
+        conversation_id: params.conversationId,
+        session_id: `bs_${params.sessionId}`,
+        provider_turn_id: params.providerTurnId,
+        status: "decision_persisted",
+        inbound_message_ids: params.inboundMessageIds,
+        version: 1,
+        lease_expires_at: null,
+      },
+      p_decision: {
+        id: params.decisionId,
+        conversation_id: params.conversationId,
+        session_id: `bs_${params.sessionId}`,
+        turn_id: params.turnId,
+        version: 1,
+        decision_type: params.decisionType,
+        objective_updates: params.decisionPayload.objectiveUpdates || [],
+        stage_transition: params.decisionPayload.stageTransition || null,
+        payload: { ...params.decisionPayload, createdAt: now },
+      },
+      p_actions: params.actions.map((action) => ({
+        id: action.id,
+        action_index: action.actionIndex,
+        action_type: action.actionType,
+        payload: action.payload,
+        status: action.status || "pending",
+        not_before: action.notBefore,
+        idempotency_key: action.idempotencyKey,
+      })),
+      p_outbox_entries: params.outboxEntries || [],
+    });
+    if (error || data?.success !== true) {
+      return { success: false, reason: error?.message || data?.error || "persist_brain_decision_failed" };
+    }
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, reason: error?.message || "persist_brain_decision_exception" };
+  }
+}
+
+async function syncBrainDecisionActionStatus(params: {
+  supabase: any;
+  actionId?: string;
+  status: "sending" | "sent" | "dispatch_uncertain" | "failed_retryable" | "failed_confirmed";
+  providerMessageId?: string;
+}): Promise<void> {
+  if (!params.actionId) return;
+  try {
+    const update: Record<string, unknown> = { status: params.status, updated_at: new Date().toISOString() };
+    if (params.providerMessageId) update.provider_message_id = params.providerMessageId;
+    const { data, error } = await params.supabase.from("brain_decision_actions")
+      .update(update).eq("id", params.actionId).select("decision_id, conversation_id").maybeSingle();
+    if (error || !data?.decision_id) return;
+    const eventMessage: Record<string, string> = {
+      sending: "Ação iniciada pelo dispatcher.",
+      sent: "Envio confirmado pelo provedor.",
+      dispatch_uncertain: "Envio incerto; novas tentativas e envio manual bloqueados até reconciliação.",
+      failed_retryable: "Falha confirmada; nova tentativa automática programada.",
+      failed_confirmed: "Falha confirmada pelo provedor após esgotar as tentativas.",
+    };
+    const { data: decision } = await params.supabase.from("brain_decisions")
+      .select("session_id, turn_id").eq("id", data.decision_id).maybeSingle();
+    await params.supabase.from("brain_turn_events").insert({
+      conversation_id: data.conversation_id,
+      session_id: decision?.session_id || null,
+      turn_id: decision?.turn_id || null,
+      decision_id: data.decision_id,
+      action_id: params.actionId,
+      event_type: `action_${params.status}`,
+      status: params.status,
+      human_message: eventMessage[params.status],
+      metadata: params.providerMessageId ? { providerMessageId: params.providerMessageId } : {},
+    });
+    if (params.status !== "sent") return;
+    const { data: actions } = await params.supabase.from("brain_decision_actions")
+      .select("status").eq("decision_id", data.decision_id);
+    if (!Array.isArray(actions) || !actions.length || actions.some((action: any) => action.status !== "sent")) return;
+    const { data: decisionTurn } = await params.supabase.from("brain_decisions")
+      .select("turn_id").eq("id", data.decision_id).maybeSingle();
+    if (decisionTurn?.turn_id) {
+      await params.supabase.from("brain_turns").update({ status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", decisionTurn.turn_id);
+      await params.supabase.from("brain_turn_events").insert({
+        conversation_id: data.conversation_id,
+        session_id: decision?.session_id || null,
+        turn_id: decisionTurn.turn_id,
+        decision_id: data.decision_id,
+        event_type: "turn_completed",
+        status: "completed",
+        human_message: "Todas as ações da decisão foram confirmadas como enviadas.",
+        metadata: { actionCount: actions.length },
+      });
+    }
+  } catch (error) {
+    console.warn("[Brain] Não foi possível atualizar a projeção da ação persistida:", error);
   }
 }
 
@@ -3201,9 +3343,9 @@ export async function dispatchOutboxEntry(
 
   if (!outboxEntry.content) {
     if (outboxEntry.actionType === "audio" || outboxEntry.messageType === "audio") {
-      outboxEntry.content = outboxEntry.mediaUrl || outboxEntry.payload?.audioUrl || "";
+      outboxEntry.content = outboxEntry.mediaUrl || (typeof outboxEntry.payload?.audioUrl === "string" ? outboxEntry.payload.audioUrl : "");
     } else {
-      outboxEntry.content = outboxEntry.payload?.text || "";
+      outboxEntry.content = typeof outboxEntry.payload?.text === "string" ? outboxEntry.payload.text : "";
     }
   }
   if (!outboxEntry.messageType) {
@@ -3417,7 +3559,7 @@ export async function reconcileUncertainOutboxAction(
     if (recentMsgs && recentMsgs.length > 0) {
       // Normaliza texto para conferência
       const isAudioType = outboxEntry.messageType === "audio" || outboxEntry.actionType === "audio";
-      const targetText = isAudioType ? "[audio:" : (outboxEntry.content || outboxEntry.payload?.text || "").trim();
+      const targetText = isAudioType ? "[audio:" : (outboxEntry.content || (typeof outboxEntry.payload?.text === "string" ? outboxEntry.payload.text : "")).trim();
       const match = recentMsgs.find((m: any) => {
         if (!m.text) return false;
         if (isAudioType) {
@@ -3508,19 +3650,36 @@ export async function runDurableOutboxDispatcher(
 
   // 1. Carrega estado atual da outbox da conversa
   let outboxMap: Record<string, OutboxEntry> = providedOutboxMap || {};
+  const { data: convRow, error: fetchErr } = await supabase
+    .from("instagram_conversations")
+    .select("stage_completed_rules, ai_auto_respond")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (fetchErr || !convRow) {
+    result.errors.push("conversation_not_found");
+    return result;
+  }
+  const rules = convRow.stage_completed_rules || {};
+  const orchestration = rules.orchestration || {};
+  const activeCycleToken = rules.active_cycle_token;
+  if (activeCycleToken && targetCycleId !== activeCycleToken) {
+    result.pendingCount++;
+    result.blockedCount++;
+    result.errors.push("brain_review_in_progress");
+    return result;
+  }
+  const pendingInboundIds = Object.entries(orchestration.messageLedger || {})
+    .filter(([, status]) => status === "pending")
+    .map(([messageId]) => messageId);
+  if (pendingInboundIds.length > 0) {
+    // Nova entrada pendente precisa passar pelo Brain antes de qualquer ação antiga maturar.
+    result.pendingCount += pendingInboundIds.length;
+    result.blockedCount++;
+    result.errors.push("pending_inbound_requires_brain_review");
+    return result;
+  }
 
   if (!providedOutboxMap || Object.keys(providedOutboxMap).length === 0) {
-    const { data: convRow, error: fetchErr } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules, ai_auto_respond")
-      .eq("id", conversationId)
-      .maybeSingle();
-
-    if (fetchErr || !convRow) {
-      result.errors.push("conversation_not_found");
-      return result;
-    }
-
     const rules = convRow.stage_completed_rules || {};
     const orch = rules.orchestration || {};
     outboxMap = orch.outbox || {};
@@ -3568,6 +3727,9 @@ export async function runDurableOutboxDispatcher(
 
     // A. Já enviado: avança
     if (entry.status === "sent") {
+      continue;
+    }
+    if (entry.status === "cancelled") {
       continue;
     }
 
@@ -3640,6 +3802,7 @@ export async function runDurableOutboxDispatcher(
         conversationId,
         outboxKey: entryKey,
         claimToken: dispatcherToken,
+        cycleId: entry.cycleId,
       });
 
       if (!claimRes.success) {
@@ -3672,12 +3835,17 @@ export async function runDurableOutboxDispatcher(
       const claimedEntry: OutboxEntry = claimRes.entry ? { ...entry, ...claimRes.entry } : entry;
       claimedEntry.status = "sending";
       claimedEntry.claimedBy = dispatcherToken;
+      await syncBrainDecisionActionStatus({
+        supabase,
+        actionId: outboxBrainActionId(claimedEntry),
+        status: "sending",
+      });
 
       if (!claimedEntry.content) {
         if (claimedEntry.actionType === "audio" || claimedEntry.messageType === "audio") {
-          claimedEntry.content = claimedEntry.mediaUrl || claimedEntry.payload?.audioUrl || "";
+          claimedEntry.content = claimedEntry.mediaUrl || (typeof claimedEntry.payload?.audioUrl === "string" ? claimedEntry.payload.audioUrl : "");
         } else {
-          claimedEntry.content = claimedEntry.payload?.text || "";
+          claimedEntry.content = typeof claimedEntry.payload?.text === "string" ? claimedEntry.payload.text : "";
         }
       }
       const rawContent = claimedEntry.content || "";
@@ -3704,6 +3872,12 @@ export async function runDurableOutboxDispatcher(
         });
         entry.status = "sent";
         entry.providerMessageId = providerId;
+        await syncBrainDecisionActionStatus({
+          supabase,
+          actionId: outboxBrainActionId(claimedEntry),
+          status: "sent",
+          providerMessageId: providerId,
+        });
 
         // Se for áudio, commita reserva de áudio caso exista
         if (isAudio && claimedEntry.vaultAudioId) {
@@ -3758,6 +3932,11 @@ export async function runDurableOutboxDispatcher(
         });
         entry.status = "dispatch_uncertain";
         entry.isUncertain = true;
+        await syncBrainDecisionActionStatus({
+          supabase,
+          actionId: outboxBrainActionId(claimedEntry),
+          status: "dispatch_uncertain",
+        });
         result.uncertainCount++;
         result.errors.push(`dispatch_uncertain:${dispatchRes.error}`);
         blockedCycleKeys.add(entryCycleKey);
@@ -3773,6 +3952,11 @@ export async function runDurableOutboxDispatcher(
           error: dispatchRes.error,
         });
         entry.status = nextStatus;
+        await syncBrainDecisionActionStatus({
+          supabase,
+          actionId: outboxBrainActionId(claimedEntry),
+          status: nextStatus === "failed" ? "failed_confirmed" : "failed_retryable",
+        });
         result.errors.push(`dispatch_failed:${dispatchRes.error}`);
         blockedCycleKeys.add(entryCycleKey);
         continue;
@@ -3979,7 +4163,7 @@ Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mens
 - cofre_audio_search: quando você decidir consultar o Cofre, retorna o catálogo completo de áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra nem ranqueia. Você decide se algum áudio combina e qual selecionar. Parâmetro: {"query": "motivo da consulta"}.
 
 ### REGRAS INVIOLÁVEIS DO BRAIN:
-1. Para objectiveDecision: "already_satisfied", somente o objetivo atual (${currentObjective?.id || "nenhum"}) pode ser indicado, acompanhado de evidenceMessageId obrigatório da mensagem inbound atual. Objetivos futuros NUNCA podem ser marcados.
+1. Para objectiveDecision: "already_satisfied", indique o objective_id configurado que você decidiu concluir e o evidenceMessageId de uma evidência persistida válida apresentada no contexto. A evidência pode vir de qualquer turno registrado desta conversa; o backend apenas valida referência e existência.
 2. Não invente fatos e não misture conversas de outros usuários. Escopo estrito desta conversa: ${conversationId}.
 3. O subagente executor NÃO fará pesquisas amplas. Todo contexto necessário deve ser resumido em missionPackage.relevantMemoryContext.
 4. REGRA ABSOLUTA: perguntas diretas do pretendente têm prioridade sobre checkpoint. Identifique-as no turnContract e determine mustAnswerFirst antes de considerar objetivo.
@@ -4001,7 +4185,7 @@ Quando estiver pronto para formular a resposta:
   "currentStage": "${currentStage}",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": "id_do_objetivo_se_already_satisfied",
-  "evidenceMessageId": "id_da_msg_inbound_se_already_satisfied",
+  "evidenceMessageId": "id_da_evidencia_persistida_se_already_satisfied",
   "reasoning": "análise rápida do momento em 1 frase",
   "liveStatePatch": {
     "lastUserEmotionalTone": "tom detectado",
@@ -4249,6 +4433,7 @@ export interface SemanticGoalDefinition {
 export interface ResolvedStageGoal {
   id: string;
   label: string;
+  title?: string;
   kind?: "fact" | "conversation_state";
   status: "completed" | "pending";
   value: any;
@@ -4259,275 +4444,9 @@ export interface ResolvedStageGoal {
   source?: string;
 }
 
-export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [
-  {
-    id: "goal_initial_reciprocity",
-    stageId: "stage_1_conexao",
-    label: "Reciprocidade inicial",
-    memoryEntity: "conversation",
-    memoryField: "initial_reciprocity",
-    description: "Reconhecer que a conversa deixou de ser apenas uma saudação e houve pelo menos uma troca minimamente recíproca entre os dois.",
-    kind: "conversation_state",
-    required: true,
-    order: 1,
-    enabled: true,
-  },
-  {
-    id: "goal_city",
-    stageId: "stage_1_conexao",
-    label: "Cidade",
-    memoryEntity: "self",
-    memoryField: "city",
-    description: "Descobrir onde ele mora ou contexto geográfico",
-    kind: "fact",
-    required: true,
-    order: 2,
-    enabled: true,
-  },
-  {
-    id: "goal_job",
-    stageId: "stage_1_conexao",
-    label: "Profissão / trabalho",
-    memoryEntity: "self",
-    memoryField: "job",
-    description: "Descobrir profissão, ocupação ou trabalho atual",
-    kind: "fact",
-    required: true,
-    order: 3,
-    enabled: true,
-  },
-];
-
-export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [
-  {
-    id: "goal_age",
-    stageId: "stage_2_descoberta",
-    label: "Idade",
-    memoryEntity: "self",
-    memoryField: "age",
-    description: "Descobrir a idade ou faixa etária",
-    kind: "fact",
-    required: true,
-    order: 1,
-    enabled: true,
-  },
-  {
-    id: "goal_routine",
-    stageId: "stage_2_descoberta",
-    label: "Rotina",
-    memoryEntity: "self",
-    memoryField: "routine",
-    description: "Conhecer alguma informação útil sobre como é o cotidiano dele (horário de trabalho, dia/noite, rotina corrida/tranquila, estudos, academia)",
-    kind: "fact",
-    required: true,
-    order: 2,
-    enabled: true,
-  },
-  {
-    id: "goal_hobbies",
-    stageId: "stage_2_descoberta",
-    label: "Hobbies e interesses",
-    memoryEntity: "self",
-    memoryField: "hobbies",
-    description: "Conhecer pelo menos um gosto, hobby ou atividade que ele realmente curta",
-    kind: "fact",
-    required: true,
-    order: 3,
-    enabled: true,
-  },
-  {
-    id: "goal_social_style",
-    stageId: "stage_2_descoberta",
-    label: "Estilo de lazer / rolê",
-    memoryEntity: "self",
-    memoryField: "social_style",
-    description: "Entender de forma natural que tipo de programa costuma gostar (caseiro, restaurante, bar, festa, viagem, natureza, passeios)",
-    kind: "fact",
-    required: true,
-    order: 4,
-    enabled: true,
-  },
-  {
-    id: "goal_discovery_depth",
-    stageId: "stage_2_descoberta",
-    label: "Contexto suficiente de descoberta",
-    memoryEntity: "conversation",
-    memoryField: "discovery_depth",
-    description: "Reconhecer que já existe contexto pessoal suficiente (pelo menos 2 fatos duráveis de categorias distintas ou revelação mais rica acompanhada de reciprocidade) para avançar naturalmente para compatibilidade.",
-    kind: "conversation_state",
-    required: true,
-    order: 5,
-    enabled: true,
-  },
-];
-
-export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [
-  {
-    id: "goal_relationship",
-    stageId: "stage_3_compatibilidade",
-    label: "Status de relacionamento",
-    memoryEntity: "self",
-    memoryField: "relationship_status",
-    description: "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.",
-    kind: "fact",
-    required: true,
-    order: 1,
-    enabled: true,
-  },
-  {
-    id: "goal_relationship_intent",
-    stageId: "stage_3_compatibilidade",
-    label: "O que procura atualmente",
-    memoryEntity: "self",
-    memoryField: "relationship_intent",
-    description: "Entender a intenção atual dele em relação a conhecer alguém (algo sério, conhecer sem pressa, relacionamento, não sabe ainda)",
-    kind: "fact",
-    required: true,
-    order: 2,
-    enabled: true,
-  },
-  {
-    id: "goal_has_children",
-    stageId: "stage_3_compatibilidade",
-    label: "Tem filhos",
-    memoryEntity: "self",
-    memoryField: "has_children",
-    description: "Registrar se ele possui ou não filhos (fato presente). Não misturar com desejo futuro de filhos.",
-    kind: "fact",
-    required: true,
-    order: 3,
-    enabled: true,
-  },
-  {
-    id: "goal_wants_children",
-    stageId: "stage_3_compatibilidade",
-    label: "Quer ter filhos",
-    memoryEntity: "self",
-    memoryField: "wants_children",
-    description: "Registrar a visão dele sobre ter filhos no futuro. Só concluir com evidência clara. Não inferir de ter filhos.",
-    kind: "fact",
-    required: true,
-    order: 4,
-    enabled: true,
-  },
-  {
-    id: "goal_family_values",
-    stageId: "stage_3_compatibilidade",
-    label: "Família e valores",
-    memoryEntity: "self",
-    memoryField: "family_values",
-    description: "Conhecer algum aspecto relevante sobre como ele enxerga família, vínculo, respeito, estabilidade ou relações pessoais",
-    kind: "fact",
-    required: true,
-    order: 5,
-    enabled: true,
-  },
-  {
-    id: "goal_future_plans",
-    stageId: "stage_3_compatibilidade",
-    label: "Planos futuros",
-    memoryEntity: "self",
-    memoryField: "future_plans",
-    description: "Conhecer algum plano relevante de médio/longo prazo (carreira, moradia, viagens, família, projetos pessoais)",
-    kind: "fact",
-    required: true,
-    order: 6,
-    enabled: true,
-  },
-  {
-    id: "goal_faith_values",
-    stageId: "stage_3_compatibilidade",
-    label: "Fé / espiritualidade",
-    memoryEntity: "self",
-    memoryField: "faith_values",
-    description: "Conhecer esse aspecto SOMENTE quando surgir naturalmente. Nunca forçar pergunta religiosa.",
-    kind: "fact",
-    required: true,
-    order: 7,
-    enabled: true,
-  },
-];
-
-export interface StageResolutionResult {
-  stage: string;
-  stageId: string;
-  goals: ResolvedStageGoal[];
-  objectives: any[];
-  currentObjective: ResolvedStageGoal | null;
-  completedObjectives: ResolvedStageGoal[];
-  remainingObjectives: ResolvedStageGoal[];
-  stageComplete: boolean;
-}
-
-/**
- * Validação segura de evidência inbound histórica (Gate de Reconciliação Histórica).
- * Garante que a mensagem de origem:
- * 1. Pertence à MESMA conversa (bloqueio cross-conversation);
- * 2. É comprovadamente inbound do pretendente (is_mine === false, rejeitando outbound de Larissa);
- * 3. Existe no histórico (RAM ou instagram_messages).
- */
-export async function validateHistoricalInboundEvidence(params: {
-  supabase: any;
-  conversationId: string;
-  sourceMessageId?: string;
-  historyMessages?: any[];
-}): Promise<{ valid: boolean; message?: any; reason?: string }> {
-  const { supabase, conversationId, sourceMessageId, historyMessages = [] } = params;
-  if (!sourceMessageId || typeof sourceMessageId !== "string" || !sourceMessageId.trim()) {
-    return { valid: false, reason: "missing_source_message_id" };
-  }
-  const cleanSourceId = sourceMessageId.trim();
-
-  // 1. Checa se a mensagem já está nos historyMessages fornecidos (em RAM)
-  if (Array.isArray(historyMessages) && historyMessages.length > 0) {
-    const memMsg = historyMessages.find((m: any) => String(m.id) === cleanSourceId);
-    if (memMsg) {
-      const msgConvId = String(memMsg.conversation_id || memMsg.conversationId || conversationId);
-      if (msgConvId !== String(conversationId)) {
-        return { valid: false, reason: "cross_conversation_detected" };
-      }
-      const isOutbound = memMsg.is_mine === true || memMsg.sender === "me" || memMsg.sender_id === "me";
-      if (isOutbound) {
-        return { valid: false, reason: "outbound_message_rejected" };
-      }
-      return { valid: true, message: memMsg };
-    }
-  }
-
-  // 2. Consulta autoritativa no banco de dados (instagram_messages)
-  if (supabase && typeof supabase.from === "function") {
-    try {
-      const { data, error } = await supabase
-        .from("instagram_messages")
-        .select("id, conversation_id, is_mine, text, created_at, media_type, media_url, audio_transcript")
-        .eq("id", cleanSourceId)
-        .maybeSingle();
-
-      if (error || !data) {
-        return { valid: false, reason: "message_not_found_in_db" };
-      }
-
-      if (String(data.conversation_id) !== String(conversationId)) {
-        return { valid: false, reason: "cross_conversation_detected" };
-      }
-
-      if (data.is_mine === true) {
-        return { valid: false, reason: "outbound_message_rejected" };
-      }
-
-      // Se for áudio com transcrição, normaliza text para o conteúdo falado
-      if (data.media_type === "audio" && data.audio_transcript && String(data.audio_transcript).trim()) {
-        data.text = String(data.audio_transcript).trim();
-      }
-
-      return { valid: true, message: data };
-    } catch (err: any) {
-      return { valid: false, reason: `db_lookup_error: ${err.message || String(err)}` };
-    }
-  }
-
-  return { valid: false, reason: "unverifiable_provenance" };
-}
+export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [];
+export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [];
+export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [];
 
 export async function resolveStageChecklistGoals(params: {
   supabase: any;
@@ -4535,270 +4454,65 @@ export async function resolveStageChecklistGoals(params: {
   stageNameOrId?: string;
   memoryProvider: MemoryProvider;
   completedGoalIds?: string[];
-  historyMessages?: any[];
-  episodicMemory?: any[];
+  objectiveProgress?: Record<string, any>;
 }): Promise<StageResolutionResult> {
-  const { supabase, conversationId, stageNameOrId, memoryProvider, completedGoalIds = [] } = params;
-  const targetStageQuery = (stageNameOrId || "descoberta").trim().toLowerCase();
-
-  let stagesList: any[] = [];
+  const completedIds = new Set(params.completedGoalIds || []);
+  let stages: any[] = [];
   try {
-    if (supabase && typeof supabase.from === "function") {
-      let stagesRaw: any = null;
-      try {
-        const q = supabase.from("chat_stages").select("*");
-        if (typeof q?.order === "function") {
-          const res = await q.order("stage_order", { ascending: true });
-          stagesRaw = res?.data;
-        } else if (typeof q?.eq === "function" && typeof q?.eq()?.maybeSingle === "function") {
-          const res = await q.eq("id", conversationId || targetStageQuery).maybeSingle();
-          stagesRaw = res?.data;
-        } else {
-          const res = await q;
-          stagesRaw = res?.data;
-        }
-      } catch (_sErr) {}
+    const { data } = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
+    if (Array.isArray(data)) stages = data;
+  } catch {}
 
-      // Se não achou em chat_stages, tenta buscar estágios customizados da conversa em instagram_conversations
-      if (!stagesRaw || (Array.isArray(stagesRaw) && stagesRaw.length === 0)) {
-        try {
-          const res = await supabase
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", conversationId || targetStageQuery)
-            .maybeSingle();
-          stagesRaw = res?.data;
-        } catch (_cErr) {}
-      }
-
-      if (stagesRaw) {
-        const rawList = Array.isArray(stagesRaw)
-          ? stagesRaw
-          : stagesRaw?.stage_completed_rules?.stages || stagesRaw?.stages || [];
-
-        if (Array.isArray(rawList) && rawList.length > 0) {
-          stagesList = rawList.map((s: any) => ({
-            ...s,
-            order: s.stage_order || s.order,
-            objectives: s.goals || s.objectives,
-            goals: s.goals || s.objectives,
-          }));
-        }
-      }
-    }
-  } catch (err) {
-    // Fail-safe silencioso
-  }
-
-  // Busca a etapa correspondente por id ou name
-  let matchedStage = stagesList.find((s) => {
-    const idMatch = s.id && s.id.toLowerCase() === targetStageQuery;
-    const nameMatch = s.name && s.name.toLowerCase().includes(targetStageQuery);
-    return idMatch || nameMatch;
-  });
-
-  if (!matchedStage && targetStageQuery.includes("descoberta")) {
-    matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("descoberta"));
-  } else if (!matchedStage && (targetStageQuery.includes("conexao") || targetStageQuery.includes("conexão"))) {
-    matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("conex"));
-  } else if (!matchedStage && targetStageQuery.includes("compatibilidade")) {
-    matchedStage = stagesList.find((s) => (s.name || "").toLowerCase().includes("compat"));
-  }
-
-  const resolvedStageId = matchedStage?.id || (
-    targetStageQuery.includes("conexao") || targetStageQuery.includes("conexão") || targetStageQuery === "stage_1_conexao"
-      ? "stage_1_conexao"
-      : targetStageQuery.includes("compatibilidade") || targetStageQuery === "stage_3_compatibilidade"
-      ? "stage_3_compatibilidade"
-      : targetStageQuery.includes("descoberta") || targetStageQuery.includes("desc") || targetStageQuery === "stage_2_descoberta"
-      ? "stage_2_descoberta"
-      : targetStageQuery
-  );
-
-  let rawGoals: SemanticGoalDefinition[] = [];
-  if (matchedStage?.objectives && Array.isArray(matchedStage.objectives) && matchedStage.objectives.length > 0) {
-    rawGoals = matchedStage.objectives.map((o: any) => ({
-      id: o.id,
-      stageId: o.stageId || resolvedStageId,
-      label: o.title || o.label,
-      memoryEntity: o.memoryEntity || "self",
-      memoryField: o.memoryField || "",
-      description: o.description,
-      kind: o.kind || (o.id === "goal_initial_reciprocity" || o.id === "goal_discovery_depth" ? "conversation_state" : "fact"),
-      required: true,
-      order: Number(o.order ?? 0),
-      enabled: o.enabled !== false,
-      completionPolicy: o.completionPolicy,
-    }));
-  } else if (matchedStage?.goals && Array.isArray(matchedStage.goals) && matchedStage.goals.length > 0) {
-    rawGoals = matchedStage.goals.map((g: any) => ({
-      ...g,
-      stageId: g.stageId || resolvedStageId,
-      kind: g.kind || (g.id === "goal_initial_reciprocity" || g.id === "goal_discovery_depth" ? "conversation_state" : "fact"),
-      required: true,
-      order: Number(g.order ?? 0),
-      enabled: g.enabled !== false,
-      completionPolicy: g.completionPolicy,
-    }));
-  } else if (resolvedStageId === "stage_1_conexao") {
-    rawGoals = DEFAULT_CONEXAO_GOALS;
-  } else if (resolvedStageId === "stage_3_compatibilidade") {
-    rawGoals = DEFAULT_COMPATIBILIDADE_GOALS;
-  } else {
-    rawGoals = DEFAULT_DESCOBERTA_GOALS;
-  }
-
-  // Ordenação determinística estrita por order ASC
-  const activeGoals = rawGoals
-    .filter((g) => g.enabled !== false)
-    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-
-  const resolvedGoals: ResolvedStageGoal[] = [];
-
-  for (const goal of activeGoals) {
-    const isStateGoal =
-      goal.kind === "conversation_state" ||
-      goal.id === "goal_initial_reciprocity" ||
-      goal.id === "goal_discovery_depth";
-
-    const baseResolved = {
-      id: goal.id,
-      label: goal.label,
-      kind: isStateGoal ? ("conversation_state" as const) : ("fact" as const),
-      required: goal.required !== false,
-      description: goal.description,
-      completionPolicy: goal.completionPolicy,
+  const requested = String(params.stageNameOrId || "").trim().toLowerCase();
+  const stage = stages.find((item: any) =>
+    String(item.id || "").toLowerCase() === requested || String(item.name || "").trim().toLowerCase() === requested,
+  ) || stages[0] || null;
+  const stageId = stage?.id || params.stageNameOrId || "";
+  const configuredObjectives = Array.isArray(stage?.goals) ? stage.goals : Array.isArray(stage?.objectives) ? stage.objectives : [];
+  const objectives = configuredObjectives
+    .filter((item: any) => item && item.enabled !== false)
+    .sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
+  const goals: ResolvedStageGoal[] = objectives.map((item: any) => {
+    const id = String(item.id || "");
+    const progress = params.objectiveProgress?.[id] || {};
+    const isCompleted = completedIds.has(id) || progress.status === "completed";
+    return {
+      id,
+      label: String(item.title || item.label || id),
+      kind: item.kind,
+      status: isCompleted ? "completed" : "pending",
+      value: progress.value ?? null,
+      required: item.required !== false,
+      description: item.description,
+      completionPolicy: item.completionPolicy,
+      evidenceMessageId: progress.evidenceMessageId,
+      source: progress.source,
     };
-
-    if (isStateGoal) {
-      let isCompleted = completedGoalIds.includes(goal.id);
-
-      if (!isCompleted) {
-        if (goal.id === "goal_initial_reciprocity") {
-          const msgs = params.historyMessages || [];
-          if (msgs.length >= 2) {
-            const hasUserSubstantive = msgs.some((m: any) => {
-              const isUser = !m.is_from_me && m.sender_id !== "me" && m.sender !== "me" && !m.is_mine;
-              const text = (m.text || m.content || "").trim();
-              return isUser && text.length > 3 && !/^(oi|olá|ola|oii|boa noite|boa tarde|bom dia)[.!]?$/i.test(text);
-            });
-            if (hasUserSubstantive || msgs.length >= 4) {
-              isCompleted = true;
-            }
-          }
-        } else if (goal.id === "goal_discovery_depth") {
-          let knownFactsCount = 0;
-          const factsToCheck = ["age", "city", "job", "routine", "hobbies", "social_style"];
-          for (const f of factsToCheck) {
-            const r = await memoryProvider.getFact(conversationId, "self", f);
-            if (r.found && r.value !== undefined && r.value !== null && r.value !== "") {
-              knownFactsCount++;
-            }
-          }
-          if (knownFactsCount >= 2) {
-            isCompleted = true;
-          } else if (params.episodicMemory && params.episodicMemory.length >= 2) {
-            isCompleted = true;
-          }
-        }
-      }
-
-      resolvedGoals.push({
-        ...baseResolved,
-        status: isCompleted ? "completed" : "pending",
-        value: isCompleted ? true : null,
-      });
-      continue;
-    }
-
-    // Objetivo do tipo FACT: busca estritamente na memória estruturada do contato
-    const entity = (goal.memoryEntity || "self").trim().toLowerCase();
-    const field = (goal.memoryField || "").trim().toLowerCase();
-    const factRes = await memoryProvider.getFact(conversationId, entity, field);
-    const policy = goal.completionPolicy || "conversation_evidence";
-
-    let factSatisfied = false;
-    let provenEvidenceId: string | undefined = undefined;
-
-    if (factRes.found && factRes.value !== undefined && factRes.value !== null && factRes.value !== "") {
-      const sourceMsgId = factRes.fact?.sourceMessageId;
-      if (policy === "conversation_evidence") {
-        const provRes = await validateHistoricalInboundEvidence({
-          supabase,
-          conversationId,
-          sourceMessageId: sourceMsgId,
-          historyMessages: params.historyMessages,
-        });
-
-        if (provRes.valid) {
-          factSatisfied = true;
-          provenEvidenceId = sourceMsgId;
-        } else {
-          factSatisfied = false;
-        }
-      } else {
-        factSatisfied = true;
-        provenEvidenceId = sourceMsgId;
-      }
-    }
-
-    if (factSatisfied) {
-      resolvedGoals.push({
-        ...baseResolved,
-        status: "completed",
-        value: factRes.value,
-        evidenceMessageId: provenEvidenceId,
-        source: "contact_memory_reconciliation",
-      });
-    } else if (completedGoalIds.includes(goal.id)) {
-      resolvedGoals.push({
-        ...baseResolved,
-        status: "completed",
-        value: goal.kind === "fact" ? null : true,
-      });
-    } else {
-      resolvedGoals.push({
-        ...baseResolved,
-        status: "pending",
-        value: null,
-      });
-    }
-  }
-
-  // Resolução determinística da sequência de checkpoints
-  const completedObjectives = resolvedGoals.filter((g) => g.status === "completed");
-  const openObjectives = resolvedGoals.filter((g) => g.status === "pending");
-  const currentObjective = openObjectives[0] || null;
-  const remainingObjectives = openObjectives.slice(1);
-  const requiredPending = openObjectives;
-  const stageComplete = activeGoals.length > 0 && openObjectives.length === 0;
-
+  });
+  const completedObjectives = goals.filter((goal) => goal.status === "completed");
+  const remainingObjectives = goals.filter((goal) => goal.status === "pending");
   return {
-    stage: matchedStage?.name || (
-      resolvedStageId === "stage_1_conexao" ? "Conexão Inicial" :
-      resolvedStageId === "stage_3_compatibilidade" ? "Compatibilidade" : "Descoberta"
-    ),
-    stageId: resolvedStageId,
-    goals: resolvedGoals,
-    objectives: resolvedGoals.map((g) => ({
-      id: g.id,
-      title: g.label,
-      label: g.label,
-      kind: g.kind || "fact",
-      status: g.status,
-      value: g.value,
-      evidenceMessageId: g.evidenceMessageId,
-      source: g.source,
-      required: g.required !== false,
-      description: g.description,
-    })),
-    currentObjective,
+    stage: stage?.name || stageId,
+    stageId,
+    goals,
+    objectives: goals.map((goal) => ({ ...goal, title: goal.label })),
+    currentObjective: remainingObjectives[0] || null,
     completedObjectives,
     remainingObjectives,
-    stageComplete,
+    stageComplete: goals.length > 0 && remainingObjectives.length === 0,
   };
 }
 
+export interface StageResolutionResult {
+  stage: string;
+  stageId: string;
+  goals: ResolvedStageGoal[];
+  objectives: Array<ResolvedStageGoal & { title: string }>;
+  currentObjective: ResolvedStageGoal | null;
+  completedObjectives: ResolvedStageGoal[];
+  remainingObjectives: ResolvedStageGoal[];
+  stageComplete: boolean;
+}
 export const resolveStageObjectives = resolveStageChecklistGoals;
 
 /**
@@ -4815,15 +4529,10 @@ export async function processDeterministicStageProgression(params: {
   currentPhase: OrchestrationPhase;
   currentStageId?: string;
   decision: OrchestratorDecision;
-  claimedMessages?: any[];
-  rawInbounds?: any[];
   stageRules?: any;
   orchState?: any;
   currentCycle?: any;
-  memoryProvider?: MemoryProvider;
-  episodicMemory?: any[];
-  contactMemory?: any;
-  stageGoals?: any[];
+  objectiveProgress?: Record<string, any>;
 }): Promise<{
   updatedCompletedGoals: string[];
   updatedObjectiveProgress: Record<string, any>;
@@ -4833,341 +4542,63 @@ export async function processDeterministicStageProgression(params: {
   stageAdvanced: boolean;
   advancementReason?: string;
 }> {
-  const {
-    supabase,
-    conversationId,
-    currentPhase,
-    decision,
-    claimedMessages = [],
-    rawInbounds = [],
-    stageRules = {},
-    orchState = {},
-    currentCycle,
-    memoryProvider,
-    episodicMemory = [],
-    contactMemory = null,
-    stageGoals = null,
-  } = params;
-
-  const updatedCompletedGoals: string[] = [
-    ...resolveOfficialCompletedGoals(stageRules, orchState),
-  ];
-  const updatedObjectiveProgress: Record<string, any> = {
-    ...resolveOfficialObjectiveProgress(stageRules, orchState),
+  const stagesResult = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
+  const stages = Array.isArray(stagesResult?.data) ? stagesResult.data : [];
+  const rules = params.stageRules || {};
+  const orchestration = params.orchState || {};
+  const completed = [...resolveOfficialCompletedGoals(rules, orchestration)];
+  const progress = {
+    ...resolveOfficialObjectiveProgress(rules, orchestration),
+    ...(params.objectiveProgress || {}),
   };
+  const configuredCurrent = stages.find((stage: any) => stage.id === params.currentStageId);
+  const currentStageId = configuredCurrent?.id || stages[0]?.id || params.currentStageId || params.currentPhase;
+  const completion = params.decision.objectiveCompletion;
 
-  // 1. Busca lista ordenada de etapas (chat_stages)
-  let stagesList: any[] = [];
-  try {
-    if (supabase) {
-      const stgRes = await supabase
-        .from("chat_stages")
-        .select("*")
-        .order("stage_order", { ascending: true });
-      if (stgRes.data && Array.isArray(stgRes.data) && stgRes.data.length > 0) {
-        stagesList = stgRes.data;
-      }
-    }
-  } catch {}
-
-  // Fallback para etapas canônicas se tabela estiver vazia
-  if (stagesList.length === 0) {
-    stagesList = [
-      { id: "stage_1_conexao", name: "Conexão Inicial", stage_order: 0, goals: DEFAULT_CONEXAO_GOALS },
-      { id: "stage_2_descoberta", name: "Descoberta", stage_order: 1, goals: DEFAULT_DESCOBERTA_GOALS },
-      { id: "stage_3_compatibilidade", name: "Compatibilidade", stage_order: 2, goals: DEFAULT_COMPATIBILIDADE_GOALS },
-    ];
-  }
-
-  // 2. Determina a etapa atual na lista com separação estrita de stageId e subagentId
-  const candidateStageId = (
-    params.currentStageId ||
-    orchState.currentStageId ||
-    (currentPhase === "conexao_inicial" ? "stage_1_conexao" :
-     currentPhase === "descoberta" ? "stage_2_descoberta" :
-     currentPhase === "compatibilidade" ? "stage_3_compatibilidade" :
-     currentPhase)
-  ).trim().toLowerCase();
-
-  let currentStageIndex = stagesList.findIndex(
-    (s) =>
-      (s.id && s.id.toLowerCase() === candidateStageId) ||
-      (candidateStageId === "conexao_inicial" && (s.id === "stage_1_conexao" || s.name?.toLowerCase().includes("conex"))) ||
-      (candidateStageId === "descoberta" && (s.id === "stage_2_descoberta" || s.name?.toLowerCase().includes("descoberta"))) ||
-      (candidateStageId === "compatibilidade" && (s.id === "stage_3_compatibilidade" || s.name?.toLowerCase().includes("compat")))
-  );
-
-
-  let currentStage: any = null;
-  if (currentStageIndex !== -1) {
-    currentStage = stagesList[currentStageIndex];
-  } else {
-    // Preserva a identidade de custom stages desconhecidos em vez de rebaixar cegamente para stage 0
-    if (
-      candidateStageId &&
-      candidateStageId !== "conexao_inicial" &&
-      candidateStageId !== "descoberta" &&
-      candidateStageId !== "compatibilidade"
-    ) {
-      currentStage = {
-        id: candidateStageId,
-        name: candidateStageId,
-        stage_order: 999,
-        goals: [],
+  if (completion?.objectiveId) {
+    const owner = stages.find((stage: any) =>
+      (Array.isArray(stage.goals) ? stage.goals : Array.isArray(stage.objectives) ? stage.objectives : [])
+        .some((objective: any) => objective?.id === completion.objectiveId && objective.enabled !== false),
+    );
+    const objective = owner && (Array.isArray(owner.goals) ? owner.goals : owner.objectives || [])
+      .find((item: any) => item?.id === completion.objectiveId && item.enabled !== false);
+    const evidence = completion.evidence || normalizeObjectiveEvidence(null, completion.evidenceMessageId);
+    const evidenceExists = evidence
+      ? await objectiveEvidenceExists(params.supabase, params.conversationId, evidence)
+      : false;
+    if (objective && evidenceExists) {
+      if (!completed.includes(completion.objectiveId)) completed.push(completion.objectiveId);
+      progress[completion.objectiveId] = {
+        conversationId: params.conversationId,
+        stageId: owner.id,
+        objectiveId: completion.objectiveId,
+        status: "completed",
+        value: completion.value ?? null,
+        evidenceMessageId: completion.evidenceMessageId,
+        evidence,
+        completedAt: new Date().toISOString(),
       };
     } else {
-      currentStageIndex = 0;
-      currentStage = stagesList[0];
+      params.currentCycle?.trace?.push(`objective_update_rejected_invalid_reference: ${completion.objectiveId}`);
     }
   }
 
-  // 3. Obtém os objetivos da etapa atual e reconcilia fatos conhecidos da memória
-  const rawGoals: any[] = (Array.isArray(stageGoals) && stageGoals.length > 0)
-    ? stageGoals
-    : (currentStage?.goals || currentStage?.objectives || []);
-  const activeGoals: any[] = rawGoals
-    .filter((g: any) => g.enabled !== false)
-    .sort((a: any, b: any) => Number(a.order ?? 0) - Number(b.order ?? 0));
-
-  // Reconciliação prévia com ContactMemory para que fatos já conhecidos não bloqueiem currentObjective
-  if (contactMemory && typeof contactMemory === "object") {
-    for (const g of activeGoals) {
-      const entity = g.memoryEntity || "self";
-      const field = g.memoryField;
-      if (field && contactMemory[entity]?.[field]) {
-        const val = contactMemory[entity][field];
-        const factValue = typeof val === "object" && val !== null ? val.value : val;
-        if (factValue !== undefined && factValue !== null && factValue !== "") {
-          const policy = g.completionPolicy;
-          if (policy !== "conversation_evidence") {
-            if (!updatedCompletedGoals.includes(g.id)) {
-              updatedCompletedGoals.push(g.id);
-            }
-            if (!updatedObjectiveProgress[g.id]) {
-              updatedObjectiveProgress[g.id] = {
-                conversationId,
-                stageId: currentStage.id,
-                objectiveId: g.id,
-                status: "completed",
-                value: factValue,
-                completedAt: new Date().toISOString(),
-                source: "memory_fact_sync",
-              };
-            }
-          }
-        }
-      }
-    }
-  }
-
-  const currentObjective = activeGoals.find((g: any) => !updatedCompletedGoals.includes(g.id)) || null;
-
-  // 4. Validação RIGOROSA de objectiveCompletion proposto pelo modelo/LLM
-  if (decision.objectiveCompletion && decision.objectiveCompletion.objectiveId) {
-    const comp = decision.objectiveCompletion;
-    if (currentCycle?.trace) {
-      currentCycle.trace.push(`objective_completion_requested: ${comp.objectiveId}`);
-    }
-
-    // Regra A: O objetivo precisa existir na etapa atual
-    const goalInStage = rawGoals.find((g: any) => g.id === comp.objectiveId);
-    if (!goalInStage) {
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(
-          `objective_completion_rejected_wrong_stage: requested=${comp.objectiveId}, stage=${currentStage.id}`
-        );
-        currentCycle.trace.push(`objective_completion_rejected_reason: wrong_stage_or_not_found`);
-        currentCycle.trace.push(`invalid_objective_completion_rejected: wrong_stage_or_not_found`);
-      }
-    } else if (goalInStage.enabled === false) {
-      // Regra B: O objetivo precisa estar ativo (enabled !== false)
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(`objective_completion_rejected_disabled: ${comp.objectiveId}`);
-        currentCycle.trace.push(`objective_completion_rejected_reason: objective_disabled`);
-        currentCycle.trace.push(`invalid_objective_completion_rejected: objective_disabled`);
-      }
-    } else if (updatedCompletedGoals.includes(comp.objectiveId)) {
-      // Regra C: O objetivo ainda não pode ter sido concluído
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(`objective_completion_rejected_already_completed: ${comp.objectiveId}`);
-        currentCycle.trace.push(`objective_completion_rejected_reason: already_completed`);
-        currentCycle.trace.push(`invalid_objective_completion_rejected: already_completed`);
-      }
-    } else if (!currentObjective || currentObjective.id !== comp.objectiveId) {
-      // Regra D: O LLM só pode concluir o currentObjective (não pode inventar checkpoints futuros ou pular)
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(
-          `objective_completion_rejected_not_current: requested=${comp.objectiveId}, current=${currentObjective?.id || "none"}`
-        );
-        currentCycle.trace.push(`objective_completion_rejected_reason: not_current_objective`);
-        currentCycle.trace.push(`invalid_objective_completion_rejected: not_current_objective`);
-      }
-    } else if (!comp.evidenceMessageId) {
-      // Regra E1: Validação de evidência obrigatória (rejeição categórica se ausente)
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(`objective_completion_rejected_missing_evidence: ${comp.objectiveId}`);
-        currentCycle.trace.push(`objective_completion_rejected_reason: missing_evidence`);
-        currentCycle.trace.push(`invalid_objective_completion_rejected: missing_evidence`);
-      }
-    } else {
-      // Regra E2: Validação de evidência obrigatória (deve existir em claimedMessages ou rawInbounds)
-      const validEvidence =
-        claimedMessages.some((m: any) => String(m.id) === String(comp.evidenceMessageId)) ||
-        rawInbounds.some((m: any) => String(m.id) === String(comp.evidenceMessageId));
-
-      if (!validEvidence) {
-        if (currentCycle?.trace) {
-          currentCycle.trace.push(`objective_completion_rejected_invalid_evidence: ${comp.objectiveId}`);
-          currentCycle.trace.push(`objective_completion_rejected_reason: invalid_evidence`);
-          currentCycle.trace.push(`invalid_objective_completion_rejected: invalid_evidence`);
-        }
-      } else {
-        // Validação 100% aprovada: aceita a conclusão
-        const goalInStage = activeGoals.find((g: any) => g.id === comp.objectiveId);
-        const resolvedValue = (goalInStage?.kind === "fact")
-          ? (comp.value !== undefined && comp.value !== true ? comp.value : null)
-          : (comp.value !== undefined ? comp.value : true);
-
-        updatedCompletedGoals.push(comp.objectiveId);
-        updatedObjectiveProgress[comp.objectiveId] = {
-          conversationId,
-          stageId: currentStage.id,
-          objectiveId: comp.objectiveId,
-          status: "completed",
-          value: resolvedValue,
-          evidenceMessageId: comp.evidenceMessageId,
-          completedAt: new Date().toISOString(),
-          source: (comp as any).source || "current_cycle_completion",
-        };
-        if (currentCycle?.trace) {
-          currentCycle.trace.push(`objective_completion_accepted: ${comp.objectiveId}`);
-          currentCycle.trace.push(`objective_completed_by_agent: ${comp.objectiveId}`);
-        }
-      }
-    }
-  }
-
-  // 5. Unificação Canônica: Resolve objetivos usando resolveStageObjectives e reconcilia fatos da ContactMemory
-  let stageComplete = false;
-  if (memoryProvider) {
-    try {
-      const resolved = await resolveStageObjectives({
-        supabase,
-        conversationId,
-        stageNameOrId: currentStage.id,
-        memoryProvider,
-        completedGoalIds: updatedCompletedGoals,
-        historyMessages: claimedMessages,
-        episodicMemory,
-      });
-
-      // Sincroniza fatos da memória com completed_goals e objective_progress respeitando completionPolicy
-      for (const g of resolved.goals) {
-        if (g.status === "completed") {
-          const goalDef = activeGoals.find((ag: any) => ag.id === g.id);
-          const policy = goalDef?.completionPolicy || (g as any).completionPolicy;
-          // Se for explicitamente conversation_evidence, exige evidência válida (do turno atual ou reconciliação histórica comprovada)
-          const requiresConversationEvidence = policy === "conversation_evidence";
-          const hasHistoricalEvidence = (g as any).source === "contact_memory_reconciliation" && Boolean((g as any).evidenceMessageId);
-          if (!requiresConversationEvidence || hasHistoricalEvidence || updatedCompletedGoals.includes(g.id)) {
-            if (!updatedCompletedGoals.includes(g.id)) {
-              updatedCompletedGoals.push(g.id);
-            }
-            if (!updatedObjectiveProgress[g.id]) {
-              updatedObjectiveProgress[g.id] = {
-                conversationId,
-                stageId: currentStage.id,
-                objectiveId: g.id,
-                status: "completed",
-                value: g.value !== undefined && g.value !== null ? g.value : (goalDef?.kind === "fact" ? null : true),
-                evidenceMessageId: (g as any).evidenceMessageId,
-                completedAt: new Date().toISOString(),
-                source: (g as any).source || "memory_fact_sync",
-              };
-            } else if (goalDef?.kind === "fact" && g.value !== undefined && g.value !== null && updatedObjectiveProgress[g.id].value === null) {
-              updatedObjectiveProgress[g.id].value = g.value;
-            }
-          }
-        }
-      }
-      stageComplete = activeGoals.length > 0 && activeGoals.every((g: any) => updatedCompletedGoals.includes(g.id));
-    } catch (err) {
-      stageComplete = activeGoals.length > 0 && activeGoals.every((g: any) => updatedCompletedGoals.includes(g.id));
-    }
-  } else {
-    stageComplete = activeGoals.length > 0 && activeGoals.every((g: any) => updatedCompletedGoals.includes(g.id));
-  }
-
-  let nextPhase: OrchestrationPhase = currentPhase;
-  let nextStageId: string = currentStage.id;
-  let stageAdvanced = false;
-  let advancementReason: string | undefined;
-
-  if (stageComplete) {
-    // Se há próxima etapa na ordem sequencial
-    if (currentStageIndex < stagesList.length - 1) {
-      const nextStage = stagesList[currentStageIndex + 1];
-      stageAdvanced = true;
-      nextStageId = nextStage.id;
-      advancementReason = `Todos os ${activeGoals.length} checkpoints da etapa "${currentStage.name}" foram concluídos. Avançando deterministicamente para "${nextStage.name}".`;
-
-      // Determina nextPhase pelo id da próxima etapa
-      if (nextStage.id === "stage_1_conexao" || nextStage.name?.toLowerCase().includes("conex")) {
-        nextPhase = "conexao_inicial" as OrchestrationPhase;
-      } else if (nextStage.id === "stage_2_descoberta" || nextStage.name?.toLowerCase().includes("descoberta")) {
-        nextPhase = "descoberta" as OrchestrationPhase;
-      } else if (nextStage.id === "stage_3_compatibilidade" || nextStage.name?.toLowerCase().includes("compat")) {
-        nextPhase = "compatibilidade" as OrchestrationPhase;
-      } else {
-        nextPhase = nextStage.id as OrchestrationPhase;
-      }
-
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(`deterministic_stage_advanced: ${nextPhase}`);
-      }
-    } else {
-      // Última etapa: permanece na etapa sem regredir
-      nextStageId = currentStage.id;
-      nextPhase = currentPhase;
-      if (currentCycle?.trace) {
-        currentCycle.trace.push("deterministic_last_stage_retained");
-      }
-    }
-  } else {
-    // Checkpoints ainda pendentes: bloqueia qualquer avanço solicitado pelo modelo
-    if (decision.nextPhase && decision.nextPhase !== currentPhase) {
-      if (currentCycle?.trace) {
-        currentCycle.trace.push(`model_requested_phase: ${decision.nextPhase}`);
-        currentCycle.trace.push(`backend_authoritative_stage: ${currentStage.id}`);
-        currentCycle.trace.push(
-          `stage_advancement_blocked_pending_checkpoints: requested=${decision.nextPhase}, current=${currentPhase}`
-        );
-      }
-    }
-    nextStageId = currentStage.id;
-    nextPhase = currentPhase;
-  }
-
-  // 6. Traces de observabilidade padronizados
-  if (currentCycle?.trace) {
-    currentCycle.trace.push(`current_stage_id: ${currentStage.id}`);
-    currentCycle.trace.push(`current_objective_id: ${currentObjective?.id || "none"}`);
-    currentCycle.trace.push(`stage_complete: ${stageComplete}`);
-    currentCycle.trace.push(`next_stage_id: ${nextStageId}`);
-    currentCycle.trace.push(`stage_advanced: ${stageAdvanced}`);
-  }
+  const requestedStage = stages.find((stage: any) => stage.id === params.decision.nextPhase);
+  const nextStageId = requestedStage?.id || currentStageId;
+  const nextPhase = requestedStage?.id || params.currentPhase;
+  const stageAdvanced = nextStageId !== currentStageId;
+  if (stageAdvanced) params.currentCycle?.trace?.push(`brain_stage_transition_accepted: ${currentStageId}->${nextStageId}`);
 
   return {
-    updatedCompletedGoals,
-    updatedObjectiveProgress,
+    updatedCompletedGoals: completed,
+    updatedObjectiveProgress: progress,
     nextPhase,
-    currentStageId: currentStage.id,
+    currentStageId,
     nextStageId,
     stageAdvanced,
-    advancementReason,
+    advancementReason: stageAdvanced ? "brain_requested_valid_stage_transition" : undefined,
   };
 }
-
 // Persona Memory da Larissa desacoplada em ./persona_memory.ts (importada e reexportada no topo)
 
 // Incrementar quando uma sessão persistente precisa ser recriada para adotar
@@ -5192,22 +4623,25 @@ export function isPersistentAgentSessionCompatible(params: {
 export async function listEligiblePersonaAudios(params: {
   supabase: any;
   conversationId: string;
-  stageId?: string;
+  objectiveId?: string;
 }): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean; already_sent?: boolean }>> {
-  const { supabase, conversationId, stageId } = params;
+  const { supabase, conversationId, objectiveId } = params;
   let audios: PersonaAudioAsset[] = [];
 
   try {
-    const { data: audioRows } = await supabase
+    let audioQuery = supabase
       .from("persona_audios")
       .select("*")
       .eq("enabled", true)
       .order("title", { ascending: true });
+    if (objectiveId) audioQuery = audioQuery.eq("objective_id", objectiveId);
+    const { data: audioRows } = await audioQuery;
 
     if (audioRows && Array.isArray(audioRows) && audioRows.length > 0) {
       audios = audioRows.map((r: any) => ({
         id: r.id,
-        stageId: r.stage_id || r.stageId || undefined,
+        objectiveId: r.objective_id || r.objectiveId || undefined,
+        legacyStageId: !r.objective_id ? r.stage_id || r.stageId || undefined : undefined,
         title: r.title,
         audioUrl: r.audio_url || r.audioUrl,
         duration: r.duration != null ? Number(r.duration) : undefined,
@@ -5300,13 +4734,6 @@ export async function listEligiblePersonaAudios(params: {
   // operacionalmente elegível; não compara transcrições com mensagens ou consultas.
   return audios
     .filter((a) => a.enabled !== false)
-    .filter((a) => a.transcript && a.transcript.trim().length > 0) // Excluir da seleção automática qualquer áudio sem transcrição
-    .filter((a) => {
-      if (stageId && a.stageId && a.stageId !== stageId) {
-        return false;
-      }
-      return true;
-    })
     .filter((a) => !sentAudioIds.has(String(a.id)))
     .map((audio) => ({
       ...audio,
@@ -5322,7 +4749,7 @@ export async function searchPersonaAudios(params: {
   conversationId: string;
   intent?: string;
   query?: string;
-  stageId?: string;
+  objectiveId?: string;
 }): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean; already_sent?: boolean }>> {
   return listEligiblePersonaAudios(params);
 }
@@ -5712,14 +5139,15 @@ export interface CofreAudioCandidate {
 export async function searchCofreAudios(params: {
   supabase: any;
   conversationId: string;
+  objective_id: string;
   query?: string;
-  objective_context?: string;
   limit?: number;
 }): Promise<CofreAudioCandidate[]> {
-  const { supabase, conversationId } = params;
+  const { supabase, conversationId, objective_id } = params;
   const catalog = await listEligiblePersonaAudios({
     supabase,
     conversationId,
+    objectiveId: objective_id,
   });
   return catalog.map((a) => {
     const fullTranscript = a.transcript || a.title || "";
@@ -5735,265 +5163,6 @@ export async function searchCofreAudios(params: {
       already_sent: a.alreadySentInConversation,
     };
   });
-}
-
-export interface SpontaneousObjectiveMatch {
-  objectiveId: string;
-  memoryEntity: string; // Sempre "self" para dados do pretendente
-  memoryField: string;  // Campo canônico: "job", "city", "age", "has_children", "wants_children", "relationship_status"
-  field: string;        // Compatibilidade
-  value: any;
-  evidenceMessageId?: string;
-  summary: string;
-}
-
-/** Converte uma heurística em contexto para o Brain, sem qualquer mutação de estado. */
-export function buildObjectiveCandidateEvidence(matches: SpontaneousObjectiveMatch[]): Array<{
-  objectiveId: string;
-  evidenceMessageId: string;
-  summary: string;
-}> {
-  return matches.map((match) => ({
-    objectiveId: match.objectiveId,
-    evidenceMessageId: match.evidenceMessageId || "",
-    summary: match.summary || `${match.field}: ${String(match.value).slice(0, 120)}`,
-  }));
-}
-
-/**
- * Detecta conclusões espontâneas de objetivos a partir do texto do pretendente
- * (ex: "trabalho com mineração, sou solteiro e não tenho filhos").
- * Não dispara checklist nem perguntas sobre fatos já revelados.
- */
-export function detectSpontaneousObjectiveCompletions(
-  messages: Array<{ id: string; text?: string; sender?: string }>,
-  pendingGoalIds: string[]
-): SpontaneousObjectiveMatch[] {
-  const matches: SpontaneousObjectiveMatch[] = [];
-  const joinedText = messages
-    .filter((m) => m.sender === "pretendente" || !m.sender)
-    .map((m) => m.text || "")
-    .join(" ");
-
-  if (!joinedText.trim()) return matches;
-
-  const textLower = joinedText.toLowerCase();
-
-  // Helper para checar se o trecho refere-se a terceira pessoa (irmão, ex, amigo, pai, etc.)
-  const isThirdParty = (fullText: string, matchIndex: number) => {
-    const prefix = fullText.slice(Math.max(0, matchIndex - 35), matchIndex);
-    return /\b(?:meu|minha|um|uma|meus|minhas|dele|dela|esse|essa)\s+(?:irmão|irmã|amigo|amiga|ex|namorada|esposa|marido|pai|mãe|filho|filha|primo|prima|colega|chefe|parente)\b|\b(?:ele|ela)\s+/i.test(prefix);
-  };
-
-  // Helper para checar negação anterior
-  const hasNegationPrefix = (fullText: string, matchIndex: number) => {
-    const prefix = fullText.slice(Math.max(0, matchIndex - 20), matchIndex);
-    return /\b(?:não|nao|nem|nunca|jamais)\s*$/i.test(prefix);
-  };
-
-  // 1. Trabalho / Profissão (com distinção estrita de tempo: passado vs presente, e entidade)
-  const isWorkGoal = (id: string) => /work|profession|profissao|trabalho|emprego|job/i.test(id);
-  const targetWorkGoal = pendingGoalIds.find(isWorkGoal);
-  if (targetWorkGoal) {
-    // Primeiro prioriza declaração clara de presente ("hoje sou motorista", "atualmente trabalho como...", "sou motorista")
-    const presentJobMatch = textLower.match(
-      /(?:(?:hoje|atualmente|agora)\s+)?(?:sou\s+(?:médico|médica|engenheiro|engenheira|advogado|advogada|motorista|autônomo|autônoma|empresário|empresária|enfermeiro|enfermeira|professor|professora|pedreiro|estudante|programador|programadora|dev|analista|minerador|mineradora|técnico|técnica|policial|bancário|bancária|vendedor|vendedora)[^,.;!?\n]*|(?:hoje|atualmente|agora)\s+trabalho\s+(?:com|em|na|no|de|como)\s+([^,.;!?\n]+))/i
-    );
-
-    const generalWorkMatch = textLower.match(
-      /(?:trabalho\s+(?:com|em|na|no|de|como)\s+([^,.;!?\n]+)|sou\s+(?:médico|médica|engenheiro|engenheira|advogado|advogada|motorista|autônomo|autônoma|empresário|empresária|enfermeiro|enfermeira|professor|professora|pedreiro|estudante|programador|programadora|dev|analista|minerador|mineradora|técnico|técnica|policial|bancário|bancária|vendedor|vendedora)[^,.;!?\n]*)/i
-    );
-
-    const pastWorkMatch = textLower.match(
-      /(?:trabalhava\s+(?:com|em|na|no|de)\s+([^,.;!?\n]+)|era\s+(?:médico|engenheiro|advogado|motorista|minerador|bancário)[^,.;!?\n]*)/i
-    );
-
-    let chosenMatch: RegExpMatchArray | null = null;
-
-    if (presentJobMatch) {
-      const idx = textLower.indexOf(presentJobMatch[0]);
-      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
-        chosenMatch = presentJobMatch;
-      }
-    } else if (generalWorkMatch) {
-      const idx = textLower.indexOf(generalWorkMatch[0]);
-      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
-        chosenMatch = generalWorkMatch;
-      }
-    }
-
-    if (chosenMatch) {
-      let val = chosenMatch[0].trim();
-      val = val.replace(/^(?:(?:hoje|atualmente|agora)\s+)?(?:sou|trabalho\s+(?:com|em|na|no|de))\s+/i, "").trim();
-      val = val.replace(/\s+e\s+.*$/i, "").trim();
-      if (val.length >= 3) {
-        matches.push({
-          objectiveId: targetWorkGoal,
-          memoryEntity: "self",
-          memoryField: "job",
-          field: "job",
-          value: val,
-          evidenceMessageId: messages[0]?.id,
-          summary: `trabalho: ${val}`,
-        });
-      }
-    }
-  }
-
-  // 2. Relacionamento / Estado Civil (com verificação estrita de negação e entidade)
-  const isRelGoal = (id: string) => /relationship|status|estado_civil|relacionamento|solteiro/i.test(id);
-  const targetRelGoal = pendingGoalIds.find(isRelGoal);
-  if (targetRelGoal) {
-    const relMatch = textLower.match(
-      /\b(?:tô|sou|estou|fiquei)\s+(?:solteiro|divorciado|separado|viúvo)\b|\b(?:sou|tô)\s+livre\b/i
-    );
-    if (relMatch) {
-      const matchIdx = textLower.indexOf(relMatch[0]);
-      const negated = hasNegationPrefix(textLower, matchIdx);
-      const thirdParty = isThirdParty(textLower, matchIdx);
-
-      if (!thirdParty) {
-        if (negated) {
-          // "não sou solteiro" -> não atribui solteiro
-          matches.push({
-            objectiveId: targetRelGoal,
-            memoryEntity: "self",
-            memoryField: "relationship_status",
-            field: "relationship_status",
-            value: "não é solteiro",
-            evidenceMessageId: messages[0]?.id,
-            summary: "estado civil: não é solteiro",
-          });
-        } else {
-          matches.push({
-            objectiveId: targetRelGoal,
-            memoryEntity: "self",
-            memoryField: "relationship_status",
-            field: "relationship_status",
-            value: "solteiro",
-            evidenceMessageId: messages[0]?.id,
-            summary: "estado civil: solteiro",
-          });
-        }
-      }
-    }
-  }
-
-  // 3. Filhos (has_children vs wants_children)
-  const isChildGoal = (id: string) => /has_children|children|filhos|filho|kids/i.test(id) && !/wants_children/i.test(id);
-  const isWantsChildGoal = (id: string) => /wants_children|quer_filhos|desejo_filhos/i.test(id);
-  const targetChildGoal = pendingGoalIds.find(isChildGoal);
-  const targetWantsChildGoal = pendingGoalIds.find(isWantsChildGoal);
-
-  // A. Situação atual sobre ter filhos
-  if (targetChildGoal) {
-    const noKidsMatch = textLower.match(
-      /\b(?:não tenho filhos?|sem filhos?|nem filho|zero filhos?|não sou pai)\b/i
-    );
-    const hasKidsMatch = textLower.match(
-      /\b(?:tenho\s+(?:um|\d+)\s+filhos?|sou pai)\b/i
-    );
-
-    if (noKidsMatch) {
-      const idx = textLower.indexOf(noKidsMatch[0]);
-      if (!isThirdParty(textLower, idx)) {
-        matches.push({
-          objectiveId: targetChildGoal,
-          memoryEntity: "self",
-          memoryField: "has_children",
-          field: "has_children",
-          value: "sem filhos",
-          evidenceMessageId: messages[0]?.id,
-          summary: "filhos: não tem filhos",
-        });
-      }
-    } else if (hasKidsMatch) {
-      const idx = textLower.indexOf(hasKidsMatch[0]);
-      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
-        matches.push({
-          objectiveId: targetChildGoal,
-          memoryEntity: "self",
-          memoryField: "has_children",
-          field: "has_children",
-          value: hasKidsMatch[0].trim(),
-          evidenceMessageId: messages[0]?.id,
-          summary: `filhos: ${hasKidsMatch[0].trim()}`,
-        });
-      }
-    }
-  }
-
-  // B. Desejo futuro de ter filhos
-  if (targetWantsChildGoal) {
-    const wantsKidsMatch = textLower.match(
-      /\b(?:quero\s+(?:ter\s+)?(?:filhos?|\d+|um|uma|dois|duas|três|tres|quatro|alguns)|penso\s+em\s+ter\s+filhos?|pretendo\s+ter\s+filhos?)\b/i
-    );
-    if (wantsKidsMatch) {
-      const idx = textLower.indexOf(wantsKidsMatch[0]);
-      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
-        matches.push({
-          objectiveId: targetWantsChildGoal,
-          memoryEntity: "self",
-          memoryField: "wants_children",
-          field: "wants_children",
-          value: wantsKidsMatch[0].trim(),
-          evidenceMessageId: messages[0]?.id,
-          summary: `desejo de filhos: ${wantsKidsMatch[0].trim()}`,
-        });
-      }
-    }
-  }
-
-  // 4. Cidade / Localização (sem terceiros e sem locais genéricos)
-  const isCityGoal = (id: string) => /city|cidade|local|mora|onde_mora|bairro/i.test(id);
-  const targetCityGoal = pendingGoalIds.find(isCityGoal);
-  if (targetCityGoal) {
-    const cityMatch = textLower.match(
-      /\b(?:moro\s+em|sou\s+de|vivo\s+em|aqui\s+em)\s+([^,.;!?\n]+?)(?:\s+(?:e\s+tenho|e\s+trabalho|e\s+sou|e\s+faço|e\s+vivo|mas|há|desde)|[,.;!?\n]|$)/i
-    );
-    if (cityMatch && !/\b(?:casa|cama|hospital|serviço|trabalho|hotel)\b/i.test(cityMatch[1])) {
-      const idx = textLower.indexOf(cityMatch[0]);
-      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
-        let cityVal = cityMatch[1].trim();
-        cityVal = cityVal.replace(/\s+e\s+.*$/i, "").trim();
-        if (cityVal.length >= 3) {
-          matches.push({
-            objectiveId: targetCityGoal,
-            memoryEntity: "self",
-            memoryField: "city",
-            field: "city",
-            value: cityVal,
-            evidenceMessageId: messages[0]?.id,
-            summary: `cidade: ${cityVal}`,
-          });
-        }
-      }
-    }
-  }
-
-  // 5. Idade (estritamente primeira pessoa no presente, rejeitando passado e terceiros)
-  const isAgeGoal = (id: string) => /age|idade|quantos_anos/i.test(id);
-  const targetAgeGoal = pendingGoalIds.find(isAgeGoal);
-  if (targetAgeGoal) {
-    const isPastAge = /\b(?:tinha|era|quando comecei|na época|antigamente|anos atrás)\b/i.test(textLower);
-    const ageMatch = textLower.match(/\b(?:tenho|faço|tô com|estou com)\s+(\d{2})\s*(?:anos)?\b/i);
-    if (ageMatch && !isPastAge) {
-      const idx = textLower.indexOf(ageMatch[0]);
-      if (!isThirdParty(textLower, idx) && !hasNegationPrefix(textLower, idx)) {
-        matches.push({
-          objectiveId: targetAgeGoal,
-          memoryEntity: "self",
-          memoryField: "age",
-          field: "age",
-          value: parseInt(ageMatch[1], 10),
-          evidenceMessageId: messages[0]?.id,
-          summary: `idade: ${ageMatch[1]} anos`,
-        });
-      }
-    }
-  }
-
-  return matches;
 }
 
 export function buildDescobertaPrompt(input: SubagentInput): string {
@@ -7301,6 +6470,7 @@ export interface RunOrchestrationParams {
   responseDelayMinutes?: number;
   isManualRetry?: boolean;
   preClaimedCycleToken?: string;
+  manualResolution?: { turnId: string; question: string; context?: string; answer: string };
   runtime?: {
     sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
     callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }>;
@@ -7401,7 +6571,7 @@ export async function runBrainOrchestration(
   // 1. Carrega o estado atual da conversa
   const { data: convRow, error: convErr } = await supabase
     .from("instagram_conversations")
-    .select("stage_completed_rules, is_restricted")
+    .select("stage_completed_rules, current_stage_id, is_restricted")
     .eq("id", conversationId)
     .maybeSingle();
 
@@ -7422,8 +6592,9 @@ export async function runBrainOrchestration(
     : new Date(Date.now() + 2500).toISOString();
   let orchState: ConversationOrchestrationState = stageRules.orchestration || {
     version: 1,
-    currentPhase: "conexao_inicial",
-    checkpoint: "chk_saudacao_feita",
+    currentPhase: "",
+    currentStageId: "",
+    checkpoint: "",
     lastProcessedMessageId: null,
     lastProcessedAt: null,
     lastProcessingStatus: "idle",
@@ -7506,7 +6677,7 @@ export async function runBrainOrchestration(
   // um novo ciclo sobre o snapshot lido antes do CAS no PostgreSQL.
   const { data: claimedConversation, error: claimedReadError } = await supabase
     .from("instagram_conversations")
-    .select("stage_completed_rules")
+    .select("stage_completed_rules, current_stage_id")
     .eq("id", conversationId)
     .maybeSingle();
   if (claimedReadError || claimedConversation?.stage_completed_rules?.active_cycle_token !== correlationId) {
@@ -7538,6 +6709,8 @@ export async function runBrainOrchestration(
   let baselineMessageIds: string[] = [];
   let sentSuccessfully = false;
   let currentCycle: ProcessingCycle | null = null;
+  let currentProviderTurnId: string | null = null;
+  let currentLocalBrainTurnId: string | null = params.manualResolution?.turnId || null;
   let currentMemoryScopeId: string | undefined;
   let configuredAgentModel = OPENAI_BRAIN_DEFAULT_MODEL;
   let agentSettings = new Map<string, string>();
@@ -7664,7 +6837,7 @@ export async function runBrainOrchestration(
     }
 
     // 4. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
-    if (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual") {
+    if (!params.manualResolution && (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual")) {
       console.log(`[Orchestrator] Ciclo cancelado pelo operador para ${conversationId}.`);
       await releaseExperimentalCycleAtomic({
         supabase,
@@ -7677,7 +6850,52 @@ export async function runBrainOrchestration(
       return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
     }
 
-    const currentPhase: OrchestrationPhase = orchState.currentPhase || "conexao_inicial";
+    let lateTurnForResume: any = null;
+    let lateProviderSessionId: string | null = null;
+    try {
+      const { data, error } = await supabase
+        .from("brain_turns")
+        .select("id, session_id, provider_turn_id, inbound_message_ids")
+        .eq("conversation_id", conversationId)
+        .eq("status", "brain_late")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      lateTurnForResume = data || null;
+      if (lateTurnForResume?.id) currentLocalBrainTurnId = lateTurnForResume.id;
+      if (lateTurnForResume?.session_id) {
+        const { data: sessionRow, error: sessionError } = await supabase
+          .from("brain_sessions")
+          .select("provider_session_id")
+          .eq("id", lateTurnForResume.session_id)
+          .maybeSingle();
+        if (sessionError) throw sessionError;
+        lateProviderSessionId = sessionRow?.provider_session_id || null;
+      }
+    } catch (lateTurnLookupError) {
+      console.warn("[Brain] Falha ao localizar turno tardio; ciclo permanece fail-closed:", lateTurnLookupError);
+      await releaseExperimentalCycleAtomic({
+        supabase, conversationId, cycleToken: correlationId,
+        processingStatus: "brain_late", lastError: "late_turn_lookup_failed", cycleRecord: currentCycle,
+      });
+      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_turn_lookup_failed" };
+    }
+    if (lateTurnForResume && (!lateTurnForResume.provider_turn_id || !lateProviderSessionId || !Array.isArray(lateTurnForResume.inbound_message_ids) || lateTurnForResume.inbound_message_ids.length === 0)) {
+      await releaseExperimentalCycleAtomic({
+        supabase, conversationId, cycleToken: correlationId,
+        processingStatus: "brain_late", lastError: "late_turn_recovery_reference_invalid", cycleRecord: currentCycle,
+      });
+      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_turn_recovery_reference_invalid" };
+    }
+
+  // Fonte canônica da etapa: coluna normalizada. JSON mantém apenas projeções legadas/read models.
+  let currentPhase: OrchestrationPhase = resolveCurrentStageId(claimedConversation.current_stage_id || convRow?.current_stage_id);
+    if (!currentPhase) {
+      const { data: configuredStages } = await supabase.from("chat_stages")
+        .select("id").order("stage_order", { ascending: true }).limit(1);
+      currentPhase = configuredStages?.[0]?.id || "";
+    }
 
     // 5. BACKEND DETERMINÍSTICO: Ledger & Seleção de TODAS as mensagens pendentes (Sem cortes arbitrários)
     const collectedPendingRaw: CanonicalMessage[] = [];
@@ -7771,6 +6989,16 @@ export async function runBrainOrchestration(
       const timeB = b.timestamp || b.created_at || "";
       return timeA > timeB ? 1 : timeA < timeB ? -1 : 0;
     });
+
+    // Um turno que continua executando no Agent conserva o lote original. Se
+    // chegaram mensagens novas enquanto ele estava atrasado, elas ficam no
+    // ledger pendentes para o próximo turno, em vez de serem marcadas como
+    // respondidas pela conclusão do turno anterior.
+    if (lateTurnForResume && Array.isArray(lateTurnForResume.inbound_message_ids)) {
+      const selection = selectMessagesForLateTurn(pendingMessages, lateTurnForResume.inbound_message_ids);
+      pendingMessages.splice(0, pendingMessages.length, ...selection.messages);
+      if (selection.deferredIds.length > 0) currentCycle.trace.push(`late_turn_new_inbounds_deferred=${selection.deferredIds.length}`);
+    }
 
     const freshPendingMessages: CanonicalMessage[] = [];
     const stalePendingMessages: CanonicalMessage[] = [];
@@ -7998,9 +7226,7 @@ export async function runBrainOrchestration(
         ? [...stageRules.orchestration.recentQuestionIntents]
         : [];
 
-    const currentCheckpoint =
-      orchState.checkpoint ||
-      (currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita");
+    const currentCheckpoint = orchState.checkpoint || "";
 
     // 6. CONTEXT BUILDER: Projeção Mínima & Lookup Pontual de Replies
     const { payload: baseContextPayload, trace: contextTrace } =
@@ -8043,12 +7269,7 @@ export async function runBrainOrchestration(
     // ------------------------------------------------------------------------
     // RESOLUÇÃO DE OBJETIVOS DA ETAPA (Many-to-Many & Subagent Missions)
     // ------------------------------------------------------------------------
-    const currentStageId = (orchState.currentStageId || (
-      currentPhase === "conexao_inicial" ? "stage_1_conexao" :
-      currentPhase === "descoberta" ? "stage_2_descoberta" :
-      currentPhase === "compatibilidade" ? "stage_3_compatibilidade" :
-      currentPhase
-    )).trim().toLowerCase();
+    const currentStageId = resolveCurrentStageId(claimedConversation.current_stage_id, currentPhase);
 
     let completedGoalIds: string[] = [...officialCompletedGoalIdsAtCycleStart];
     let stageChecklistForRouter = await resolveStageObjectives({
@@ -8057,32 +7278,14 @@ export async function runBrainOrchestration(
       stageNameOrId: currentStageId,
       memoryProvider: cycleMemoryProvider,
       completedGoalIds,
-      historyMessages: claimedMessages,
     });
-
-    // DETECÇÃO ESPONTÂNEA DE OBJETIVOS ANTES DO ROTEAMENTO E SUBAGENTE
-    const pendingGoalIdsBefore = stageChecklistForRouter.goals
-      .filter((g) => g.status === "pending")
-      .map((g) => g.id);
-
-    const spontaneousMatches = detectSpontaneousObjectiveCompletions(
-      [{ id: newMessage.id, text: newMessage.text, sender: "pretendente" }],
-      pendingGoalIdsBefore
-    );
-
-    // Heurística é apenas fonte de evidência: não modifica estado, memória ou
-    // checklist. A conclusão pertence exclusivamente ao Brain.
     let workingCompletedGoalIds: string[] = [
       ...completedGoalIds,
       ...(stageChecklistForRouter.completedObjectives || []).map((o: any) => o.id),
     ];
-    const candidateObjectiveEvidence = buildObjectiveCandidateEvidence(spontaneousMatches)
-      .map((e) => ({ ...e, evidenceMessageId: e.evidenceMessageId || newMessage.id }));
+    const candidateObjectiveEvidence: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }> = [];
     const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
     const shadowWouldCompleteObjectives: string[] = [];
-    if (candidateObjectiveEvidence.length) {
-      currentCycle.trace.push(`objective_candidate_evidence: ${candidateObjectiveEvidence.map((e) => e.objectiveId).join(",")}`);
-    }
 
     const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
     const openGoalsSummary = openGoalsForRouter.length > 0
@@ -8279,7 +7482,7 @@ export async function runBrainOrchestration(
     let brainUsedContactMemory = Object.keys(contactFacts).length > 0;
     let brainUsedAudio = false;
     let brainAudioCandidates: CofreAudioCandidate[] = [];
-    const tokenMeasurements = new Set<"provider" | "estimated">();
+    const tokenMeasurements = new Set<"provider" | "estimated" | "unavailable">();
 
     if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
     // Estilo e orçamentos de emoji antecipados para alimentar o Agent Terra no turno único
@@ -8396,6 +7599,15 @@ export async function runBrainOrchestration(
       }
 
       const currentObjective = stageChecklistForRouter.currentObjective;
+      const pendingOutboundActions = Object.values(outboxMap)
+        .filter((entry: any) => entry && ["pending", "waiting_delay"].includes(entry.status))
+        .map((entry: any) => ({
+          actionId: String(entry.payload?.brainActionId || ""),
+          actionIndex: Number.isInteger(entry.actionIndex) ? entry.actionIndex : 0,
+          type: entry.messageType === "audio" ? "audio" : "text",
+          preview: entry.messageType === "audio" ? "[áudio pendente]" : String(entry.content || entry.payload?.text || ""),
+        }))
+        .filter((entry) => entry.actionId);
       await publishAutoPilotState(supabase, conversationId, {
         cycleId: correlationId,
         status: "processing",
@@ -8434,7 +7646,14 @@ export async function runBrainOrchestration(
         const openAiBrainTurn = await runOpenAiBrainTurn({
           supabase,
           conversationId,
-          sessionId: persistentAgentSessionEnabled ? persistentSessionId : null,
+          sessionId: lateProviderSessionId || (persistentAgentSessionEnabled ? persistentSessionId : null),
+          resumeTurnId: lateTurnForResume?.provider_turn_id || null,
+          manualResolutionAnswer: params.manualResolution ? {
+            question: params.manualResolution.question,
+            context: params.manualResolution.context,
+            answer: params.manualResolution.answer,
+          } : undefined,
+          pendingOutboundActions,
           persistentSessionEnabled: persistentAgentSessionEnabled,
           model: configuredAgentModel,
           reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || undefined,
@@ -8472,6 +7691,7 @@ export async function runBrainOrchestration(
             supabase,
             conversationId: p.conversationId,
             query: p.query,
+            objective_id: p.objective_id,
           }),
           nextObjectives: (stageChecklistForRouter.goals || [])
             .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
@@ -8489,6 +7709,8 @@ export async function runBrainOrchestration(
           },
         });
 
+        currentProviderTurnId = openAiBrainTurn.telemetry.turnId || null;
+        currentSessionId = openAiBrainTurn.telemetry.sessionId || currentSessionId;
         if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
           currentCycle.status = "superseded";
           currentCycle.trace.push("late_agent_result_discarded");
@@ -8497,6 +7719,9 @@ export async function runBrainOrchestration(
           return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
         }
 
+        if (openAiBrainTurn.success && lateTurnForResume?.id) {
+          await supabase.from("brain_turns").update({ status: "executing", updated_at: new Date().toISOString() }).eq("id", lateTurnForResume.id);
+        }
         for (const sessionUsage of openAiBrainTurn.telemetry.agentUsageSessions || []) {
           cycleOpenAiUsage.addAgentSession(sessionUsage);
         }
@@ -8533,7 +7758,7 @@ export async function runBrainOrchestration(
           const socialCueTypes = ["direct_compliment", "vocative", "explicit_flirt", "pickup_line", "mixed", "none"];
           const socialCueInterpretation = rawSocialCue ? {
             primaryIntent: safeOperationalConsoleText(rawSocialCue.primaryIntent, 120) || null,
-            socialCueType: socialCueTypes.includes(rawSocialCue.socialCueType) ? rawSocialCue.socialCueType : null,
+            socialCueType: typeof rawSocialCue.socialCueType === "string" && socialCueTypes.includes(rawSocialCue.socialCueType) ? rawSocialCue.socialCueType : null,
             socialCueExpression: safeOperationalConsoleText(rawSocialCue.socialCueExpression, 120) || null,
             requiresExplicitAcknowledgement: typeof rawSocialCue.requiresExplicitAcknowledgement === "boolean"
               ? rawSocialCue.requiresExplicitAcknowledgement
@@ -8797,6 +8022,74 @@ export async function runBrainOrchestration(
             `openai_brain_turn_success: agent=${agentId} tools=${openAiBrainTurn.telemetry.toolsRequested.join(",")}`
           );
         } else {
+          if (
+            openAiBrainTurn.telemetry.status === "local_wait_timeout" &&
+            openAiBrainTurn.telemetry.sessionId &&
+            openAiBrainTurn.telemetry.turnId
+          ) {
+            const providerSessionId = openAiBrainTurn.telemetry.sessionId;
+            const providerTurnId = openAiBrainTurn.telemetry.turnId;
+            const sessionRowId = `bs_${providerSessionId}`;
+            const turnRowId = `brain_turn_${providerTurnId}`;
+            const nowIso = new Date().toISOString();
+            const { error: sessionPersistError } = await supabase.from("brain_sessions").upsert({
+              id: sessionRowId,
+              conversation_id: conversationId,
+              provider: "openai",
+              provider_session_id: providerSessionId,
+              context_version: PERSISTENT_AGENT_SESSION_VERSION,
+              status: "active",
+              bootstrap_context: {},
+              updated_at: nowIso,
+            }, { onConflict: "id" });
+            const { error: turnPersistError } = await supabase.from("brain_turns").upsert({
+              id: turnRowId,
+              conversation_id: conversationId,
+              session_id: sessionRowId,
+              provider_turn_id: providerTurnId,
+              status: "brain_late",
+              inbound_message_ids: claimedMessageIds,
+              version: 1,
+              updated_at: nowIso,
+            }, { onConflict: "id" });
+            if (!sessionPersistError && !turnPersistError) {
+              await supabase.from("brain_turn_events").insert({
+                conversation_id: conversationId,
+                session_id: sessionRowId,
+                turn_id: turnRowId,
+                event_type: "brain_late",
+                status: "brain_late",
+                human_message: "O limite local de espera terminou; o mesmo turno do Brain continua recuperável.",
+                metadata: { providerTurnId, waitLimitMs: AGENT_LOCAL_WAIT_MS },
+              });
+              currentCycle.status = "completed";
+              currentCycle.trace.push(`brain_late_turn_saved: ${providerTurnId}`);
+              const release = await releaseExperimentalCycleAtomic({
+                supabase,
+                conversationId,
+                cycleToken: correlationId,
+                processingStatus: "brain_late",
+                lastError: null,
+                cycleRecord: currentCycle,
+                outboxMap,
+                revertMessageIds: claimedMessageIds,
+              });
+              if (release.released) {
+                await publishAutoPilotState(supabase, conversationId, {
+                  cycleId: correlationId,
+                  status: "processing",
+                  cycleEvent: {
+                    phase: "brain",
+                    event: "brain_late",
+                    label: "Brain continua analisando",
+                    detail: "A espera local foi liberada. O sistema vai retomar o mesmo turno quando ele concluir.",
+                    metadata: { sessionId: providerSessionId, turnId: providerTurnId },
+                  },
+                });
+                return { handled: true, sentToMeta: false, blockLegacyFallback: true, error: "brain_late", trace: currentCycle.trace };
+              }
+            }
+          }
           console.warn(
             `[Brain] OpenAI Agent Brain não concluiu plano (${openAiBrainTurn.error || "plan_null"}).`
           );
@@ -8934,6 +8227,7 @@ export async function runBrainOrchestration(
               supabase,
               conversationId,
               query: q,
+              objective_id: String(toolParams.objective_id || ""),
             });
             brainAudioCandidates = cofreMatches;
             const formatted = cofreMatches.map((c) => `• audio_id: "${c.audio_id}" | título: "${c.title}" | instrução: "${c.when_to_use}" | transcrição: "${c.full_transcript}"`).join("\n");
@@ -8951,6 +8245,7 @@ export async function runBrainOrchestration(
           currentStage: currentStageId,
           objectiveDecision: (rawBrainJson.objectiveDecision as any) || "pursue",
           satisfiedObjectiveId: rawBrainJson.satisfiedObjectiveId || undefined,
+          objectiveEvidence: normalizeObjectiveEvidence(rawBrainJson.objectiveEvidence, rawBrainJson.evidenceMessageId) || undefined,
           evidenceMessageId: rawBrainJson.evidenceMessageId || undefined,
           liveStatePatch: rawBrainJson.liveStatePatch || {},
           missionPackage: rawBrainJson.missionPackage || undefined,
@@ -8989,30 +8284,33 @@ export async function runBrainOrchestration(
     // Validação estrita de already_satisfied (Item 10 dos ajustes)
     let brainObjectiveCompletion: {
       objectiveId: string;
+      evidence?: ObjectiveEvidence;
       evidenceMessageId?: string;
       value?: any;
       source?: string;
     } | null = null;
 
     if (brainPlan.objectiveDecision === "already_satisfied") {
-      const targetObj = stageChecklistForRouter.currentObjective;
-      if (
-        targetObj &&
-        brainPlan.satisfiedObjectiveId === targetObj.id &&
-        claimedMessageIds.includes(String(brainPlan.evidenceMessageId || ""))
-      ) {
-        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, targetObj.id])];
-        brainObjectiveCompletion = {
-          objectiveId: targetObj.id,
-          evidenceMessageId: String(brainPlan.evidenceMessageId),
-          value: targetObj.kind === "fact" ? null : true,
-          source: "brain_already_satisfied_current_turn",
-        };
-        currentCycle.trace.push(`brain_already_satisfied_validated: ${targetObj.id}`);
-      } else {
-        currentCycle.trace.push("brain_already_satisfied_rejected_not_current_or_not_inbound");
-        throw new Error("BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
-      }
+      const objectiveId = String(brainPlan.satisfiedObjectiveId || "");
+      const evidence = normalizeObjectiveEvidence(brainPlan.objectiveEvidence, brainPlan.evidenceMessageId);
+      const { data: configuredStages } = await supabase.from("chat_stages").select("id, goals");
+      const objectiveExists = (configuredStages || []).some((stage: any) =>
+        (Array.isArray(stage.goals) ? stage.goals : Array.isArray(stage.objectives) ? stage.objectives : [])
+          .some((objective: any) => objective?.id === objectiveId && objective.enabled !== false),
+      );
+      const evidenceExists = evidence
+        ? await objectiveEvidenceExists(supabase, conversationId, evidence)
+        : false;
+      if (!objectiveExists || !evidenceExists) throw new Error("BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
+      workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, objectiveId])];
+      brainObjectiveCompletion = {
+        objectiveId,
+        evidence: evidence ?? undefined,
+        evidenceMessageId: evidence?.type === "message" ? evidence.id : undefined,
+        value: null,
+        source: evidence?.type ? `brain_verified_${evidence.type}_evidence` : "brain_verified_persisted_evidence",
+      };
+      currentCycle.trace.push(`brain_objective_reference_validated: ${objectiveId}`);
     }
 
     currentCycle.trace.push(`brain_objective_mode: ${brainPlan.objectiveDecision}`);
@@ -9034,18 +8332,20 @@ export async function runBrainOrchestration(
 
     let finalSubDecision: BrainDecision | null = null;
 
-    if (brainPlan.action === "wait") {
+    if (brainPlan.action === "wait" || brainPlan.action === "manual_resolution") {
       finalSubDecision = {
-        action: "wait",
-        checkpoint: currentPhase === "descoberta" ? "chk_pergunta_sobre_ele" : "chk_saudacao_feita",
-        summary: `Aguardando pretendente: ${brainPlan.reasoning}`,
+        action: brainPlan.action,
+        checkpoint: "",
+        summary: brainPlan.action === "manual_resolution" ? "Resolução manual solicitada pelo Brain" : "Brain decidiu aguardar",
         suggestedResponse: "",
         nextPhase: currentPhase,
         reasoning: brainPlan.reasoning,
+        manualResolution: brainPlan.manualResolution,
+        pendingActionResolution: brainPlan.pendingActionResolution || { cancelActionIds: [] },
         requiredTools: [],
         objectiveCompletion: brainObjectiveCompletion || undefined,
       };
-      currentCycle.trace.push("brain_action: wait");
+      currentCycle.trace.push(`brain_action: ${brainPlan.action}`);
     } else {
       // Prepara o MissionPackage consolidado para o executor
       const requestedDirective = brainPlan.objectiveDecision;
@@ -9057,8 +8357,8 @@ export async function runBrainOrchestration(
       if (isOpenAiAgentBrain) {
         let agentSelectedAudioId: string | null = null;
         if (Array.isArray(brainPlan.outboundActions)) {
-          const audioAct = brainPlan.outboundActions.find((a: any) => a && a.type === "audio");
-          if (audioAct && typeof audioAct.audioId === "string" && audioAct.audioId.trim()) {
+          const audioAct = brainPlan.outboundActions.find((action) => action.type === "audio");
+          if (audioAct?.type === "audio" && audioAct.audioId.trim()) {
             agentSelectedAudioId = audioAct.audioId.trim();
           }
         }
@@ -9127,173 +8427,39 @@ export async function runBrainOrchestration(
       const hasAgentResponses = isOpenAiAgentBrain && Array.isArray(brainPlan.responses) && brainPlan.responses.length > 0;
 
       if (isOpenAiAgentBrain && (hasAgentOutboundActions || hasAgentResponses || brainPlan.action === "send_audio")) {
-        // Execução em turno único: o Agent Brain produz o plano com ações canônicas ordenadas
-        let rawActions: OutboundAction[] = [];
-        if (hasAgentOutboundActions) {
-          rawActions = [...brainPlan.outboundActions];
-        } else if (hasAgentResponses) {
-          rawActions = brainPlan.responses.map((r: any) => ({ type: "text" as const, text: String(r || "").trim() }));
-          if (brainPlan.audioId) {
-            rawActions.push({ type: "audio" as const, audioId: brainPlan.audioId });
-          }
-        } else if (brainPlan.audioId) {
-          rawActions = [{ type: "audio" as const, audioId: brainPlan.audioId }];
-        }
-
-        const rawResponses = rawActions
-          .filter((a) => a.type === "text")
-          .map((a: any) => String(a.text || "").trim())
-          .filter(Boolean);
-
-        const intentGuard = validateBackendQuestionIntentGuard({
-          candidateBalloons: rawResponses,
-          questionIntents: brainPlan.questionIntents || [],
-          recentQuestionIntents: currentRecentQuestionIntents,
-          recentLarissaOutbounds,
-          lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+        const rawActions: OutboundAction[] = hasAgentOutboundActions
+          ? [...(brainPlan.outboundActions || [])]
+          : hasAgentResponses
+            ? brainPlan.responses.map((text: unknown) => ({ type: "text" as const, text: String(text ?? "") }))
+            : brainPlan.audioId
+              ? [{ type: "audio" as const, audioId: String(brainPlan.audioId) }]
+              : [];
+        const authorizedActions = rawActions.map((action: any) => {
+          if (action?.type === "text" && typeof action.text === "string" && action.text.trim()) return action;
+          if (action?.type === "audio" && typeof action.audioId === "string" &&
+              brainAudioCandidates.some((candidate: any) => (candidate.audio_id || candidate.audioId) === action.audioId)) return action;
+          throw new Error("BRAIN_PLAN_INVALID_ACTION_REFERENCE");
         });
-
-        if (intentGuard.isBlocked) {
-          currentCycle.trace.push(
-            `backend_intent_guard_blocked: pruned=${intentGuard.prunedBalloons.length}, reasons=${intentGuard.reasons.join(" | ")}`
-          );
-        }
-
-        const hasAudioAction = rawActions.some((a) => a.type === "audio");
-
-        if (intentGuard.failClosed && !hasAudioAction) {
-          currentCycle.trace.push("backend_intent_guard_fail_closed");
-          finalSubDecision = {
-            action: "wait",
-            checkpoint: "chk_saudacao_feita",
-            summary: `Turno bloqueado por repetição de pergunta (Fail Closed): ${intentGuard.reasons.join(", ")}`,
-            suggestedResponse: "",
-            responses: [],
-            outboundActions: [],
-            nextPhase: currentPhase,
-            reasoning: "Bloqueio determinístico de repetição de pergunta pelo backend",
-            requiredTools: [],
-            objectiveCompletion: brainObjectiveCompletion || undefined,
-          };
-        } else {
-          // Se houver áudio selecionado, recupera a transcrição para podar qualquer texto redundante
-          let selectedAudioTranscript = "";
-          if (audioSelection.selectedAudioId) {
-            const cand = audioSelection.candidateAudios?.[0];
-            selectedAudioTranscript = cand?.transcript || cand?.title || "";
-            if (!selectedAudioTranscript) {
-              const foundCand = brainAudioCandidates.find(
-                (c) => c.audio_id === audioSelection.selectedAudioId || (c as any).audioId === audioSelection.selectedAudioId
-              );
-              selectedAudioTranscript = foundCand?.full_transcript || foundCand?.transcript || foundCand?.title || "";
-            }
-          }
-
-          // Reconstruir lista de outboundActions autorizadas respeitando o guard de texto, metalinguagem robótica e anti-duplicação de áudio
-          const allowedOutboundActions: OutboundAction[] = [];
-          for (const act of rawActions) {
-            if (act.type === "text") {
-              let textVal = String(act.text || "").trim();
-              if (!textVal) continue;
-
-              // PODA DETERMINÍSTICA DE METALINGUAGEM ROBÓTICA: Se o balão contiver vazamento de IA/robô, CORTA!
-              if (detectMetaBotRoboticLeak(textVal)) {
-                currentCycle.trace.push(`robotic_meta_leak_pruned: ${textVal.slice(0, 60)}`);
-                console.warn(`[Orchestrator] PODADO: Balão de texto com metalinguagem robótica inaceitável: "${textVal}"`);
-                continue;
-              }
-
-              // SANITIZAÇÃO DE INTIMIDADE PRECOCE: Remove apelidos indevidos ("amor", "meu bem", "vida")
-              textVal = sanitizeInappropriateIntimacy(textVal);
-              if (!textVal) continue;
-
-              // PODA DETERMINÍSTICA: Se há áudio selecionado e o balão repete o conteúdo do áudio, CORTA O TEXTO!
-              if (selectedAudioTranscript && isTextRedundantWithAudioTranscript(textVal, selectedAudioTranscript)) {
-                currentCycle.trace.push(`redundant_audio_text_pruned: ${textVal.slice(0, 60)}`);
-                console.warn(`[Orchestrator] PODADO: Balão de texto duplicava a transcrição do áudio enviado: "${textVal}"`);
-                continue;
-              }
-
-              if (intentGuard.allowedBalloons.includes(textVal) || intentGuard.allowedBalloons.some((b) => sanitizeInappropriateIntimacy(b) === textVal)) {
-                allowedOutboundActions.push({ type: "text", text: textVal });
-              }
-            } else if (act.type === "audio") {
-              if (audioSelection.selectedAudioId && act.audioId === audioSelection.selectedAudioId) {
-                allowedOutboundActions.push(act);
-              } else {
-                currentCycle.trace.push(`unauthorized_audio_action_pruned: ${act.audioId}`);
-              }
-            }
-          }
-
-          // Se todos os balões de texto foram podados por vazamento robótico mas era necessário responder:
-          if (!allowedOutboundActions.some((a) => a.type === "text")) {
-            const inboundTexts = canonicalClaimed.map((m) => m.text).filter(Boolean);
-            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
-            if (fallback && fallback.length > 0) {
-              for (const fbText of fallback) {
-                allowedOutboundActions.push({ type: "text", text: fbText });
-              }
-              currentCycle.trace.push("robotic_leak_fallback_injected");
-            }
-          }
-
-          const chosenResponses = allowedOutboundActions
-            .filter((a) => a.type === "text")
-            .map((a: any) => a.text);
-          const suggestedText = chosenResponses.join("\n\n");
-          const selectedAudio = allowedOutboundActions.find((a) => a.type === "audio") as { type: "audio"; audioId: string } | undefined;
-
-          finalSubDecision = {
-            action: "reply",
-            checkpoint: "chk_saudacao_feita",
-            summary: "Executado em turno único pelo Agent Brain",
-            suggestedResponse: suggestedText,
-            responses: chosenResponses,
-            outboundActions: allowedOutboundActions,
-            audioId: selectedAudio ? selectedAudio.audioId : undefined,
-            nextPhase: currentPhase,
-            reasoning: brainPlan.reasoning || "Execução direta pelo Agent Brain",
-            requiredTools: [],
-            objectiveCompletion: brainObjectiveCompletion || undefined,
-          };
-
-          // Registra novas perguntas aprovadas no ledger de intenções
-          if (Array.isArray(brainPlan.questionIntents)) {
-            for (const q of brainPlan.questionIntents) {
-              if (
-                !intentGuard.prunedIndices.includes(q.responseIndex) &&
-                finalSubDecision.responses &&
-                finalSubDecision.responses.length > 0
-              ) {
-                const balloonText = finalSubDecision.responses[q.responseIndex] || finalSubDecision.responses[0];
-                const alreadyInList = currentRecentQuestionIntents.some(
-                  (item) => item.intentKey === q.intentKey && item.status === "asked"
-                );
-                if (!alreadyInList) {
-                  currentRecentQuestionIntents.push({
-                    intentKey: q.intentKey,
-                    status: "asked",
-                    askedAt: new Date().toISOString(),
-                    responseIndex: q.responseIndex,
-                    balloonText,
-                    canonicalMeaning: q.canonicalMeaning,
-                    sourceMessageId: claimedMessageIds[claimedMessageIds.length - 1],
-                  });
-                  currentCycle.trace.push(`question_intent_recorded: ${q.intentKey}`);
-                }
-              }
-            }
-          }
-        }
-
-      currentCycle.trace.push("single_turn_agent_execution_used: true");
-      currentCycle.trace.push("second_model_inference_skipped: true");
-      currentCycle.trace.push(`model: ${configuredAgentModel}`);
-      currentCycle.trace.push(`brain_reasoning_effort=${agentSettings.get("openai_brain_reasoning_effort") || "remote_configured"}`);
-      currentCycle.trace.push(`brain_verbosity=${agentSettings.get("openai_brain_verbosity") || "remote_configured"}`);
-      currentCycle.trace.push(`brain_safe_responses_count=${finalSubDecision.responses?.length || 0}`);
-      currentCycle.trace.push("brain_plan_recovery_mode=none");
+        if (!authorizedActions.length) throw new Error("BRAIN_PLAN_INVALID_EMPTY_RESPOND");
+        const responses = authorizedActions.filter((action: any) => action.type === "text").map((action: any) => action.text);
+        const selectedAudio = authorizedActions.find((action: any) => action.type === "audio");
+        finalSubDecision = {
+          action: "reply",
+          checkpoint: "",
+          summary: "Decisão estruturada pelo Brain",
+          suggestedResponse: responses.join("\n\n"),
+          responses,
+          outboundActions: authorizedActions,
+          audioId: selectedAudio?.audioId,
+          nextPhase: brainPlan.stageTransition?.stageId || brainPlan.nextStageId || currentPhase,
+          reasoning: brainPlan.reasoning || "",
+          requiredTools: [],
+          objectiveCompletion: brainObjectiveCompletion || brainPlan.objectiveCompletion || undefined,
+          pendingActionResolution: brainPlan.pendingActionResolution || { cancelActionIds: [] },
+        };
+        currentCycle.trace.push("single_turn_agent_execution_used: true");
+        currentCycle.trace.push("second_model_inference_skipped: true");
+        currentCycle.trace.push(`model: ${configuredAgentModel}`);
       } else {
         // Constrói prompt do executor enxuto (modo legado)
         const executorPrompt = buildSubagentExecutorPrompt({
@@ -9360,13 +8526,12 @@ export async function runBrainOrchestration(
             // Válido: turno composto apenas por áudio
             currentCycle.trace.push("brain_plan_audio_only_valid");
           } else {
-            finalSubDecision.action = "wait";
-            finalSubDecision.suggestedResponse = "";
-            finalSubDecision.requiredTools = [];
-            currentCycle.trace.push("BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES");
+            throw new Error("BRAIN_PLAN_INVALID_EMPTY_RESPOND");
           }
         } else {
-          finalSubDecision.responses = splitIntoBalloons(finalSubDecision.suggestedResponse || "oi, tudo bem?");
+          const responseText = String(finalSubDecision.suggestedResponse || "").trim();
+          if (!responseText) throw new Error("BRAIN_PLAN_INVALID_EMPTY_RESPOND");
+          finalSubDecision.responses = splitIntoBalloons(responseText);
         }
       }
 
@@ -9389,7 +8554,9 @@ export async function runBrainOrchestration(
       currentCycle.trace.push(`brain_used_audio: ${brainUsedAudio}`);
 
       // O executor só pode usar o áudio previamente autorizado pelo Brain/backend.
-      const audioIntegrity = enforceAuthorizedAudioDecision(finalSubDecision, missionPkg);
+      const audioIntegrity = isOpenAiAgentBrain
+        ? { allowed: true, audioId: finalSubDecision.audioId }
+        : enforceAuthorizedAudioDecision(finalSubDecision, missionPkg);
       if (!audioIntegrity.allowed) {
         currentCycle.trace.push(`executor_audio_rejected: ${audioIntegrity.reason}`);
         finalSubDecision = {
@@ -9408,386 +8575,31 @@ export async function runBrainOrchestration(
       }
 
       // ----------------------------------------------------------------------
-      // STYLE LINT DETERMINÍSTICO & RETRY DE ESTILO (Máximo 1)
-      // ----------------------------------------------------------------------
-      const isAudioDecision = finalSubDecision.action === "send_audio" || Boolean(finalSubDecision.audioId);
-      if (
-        finalSubDecision &&
-        (finalSubDecision.action === "reply" || finalSubDecision.action === "advance_phase") &&
-        !isAudioDecision &&
-        ((finalSubDecision.responses && finalSubDecision.responses.length > 0) || finalSubDecision.suggestedResponse)
-      ) {
-        let candidateBalloons = (finalSubDecision.responses && finalSubDecision.responses.length > 0)
-          ? finalSubDecision.responses
-          : splitIntoBalloons(finalSubDecision.suggestedResponse);
-        const effectiveEmojiBudget = turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget;
-
-        let lintResult = runStyleLint(candidateBalloons, {
-          emojiBudget: effectiveEmojiBudget,
-          recentEmojis: emojiBudgetInfo.recentEmojis,
-          recentReactions: recentStyleState.recent_reactions,
-          lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-          isRetry: false,
-        });
-        if (!isOpenAiAgentBrain && lintResult.requiresRetry) {
-          currentCycle.trace.push(`style_lint_retry_triggered: ${lintResult.retryReason}`);
-
-          const retryPrompt = `${executorPrompt}
-
-### INSTRUÇÃO DE AJUSTE DE ESTILO (Style Lint Retry)
-Detectada inconsistência com a digitação da Larissa: ${lintResult.retryReason}
-
-Reescreva mantendo exatamente fatos e intenção.
-Use o estilo de digitação da Larissa: curto, natural, informal, sem formalidade, sem eco e em balões proporcionais.
-
-Responda ESTRITAMENTE em JSON puro:
-{
-  "action": "reply",
-  "checkpoint": "${finalSubDecision.checkpoint}",
-  "summary": "${finalSubDecision.summary}",
-  "responses": [
-    "balão 1 corrigido",
-    "balão 2 corrigido"
-  ],
-  "nextPhase": "${finalSubDecision.nextPhase}"
-}`;
-          try {
-            const retryRes = await callModelOrOpenAi(retryPrompt, {
-              runtime,
-              supabase,
-              model: brainLegacyModel,
-              disallowDowngrade: true,
-              recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
-            });
-            totalTokens += retryRes.tokens;
-            finalGenerationTokens += retryRes.tokens;
-            const retryJson = extractJsonFromText(retryRes.content);
-            if (retryJson) {
-              const validatedRetry = validateBrainDecision(retryJson, currentPhase);
-              candidateBalloons = (validatedRetry.responses && validatedRetry.responses.length > 0)
-                ? validatedRetry.responses
-                : splitIntoBalloons(validatedRetry.suggestedResponse);
-
-              // Passa pelo lint em modo defensivo (isRetry: true)
-              lintResult = runStyleLint(candidateBalloons, {
-                emojiBudget: effectiveEmojiBudget,
-                recentEmojis: emojiBudgetInfo.recentEmojis,
-                recentReactions: recentStyleState.recent_reactions,
-                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-                isRetry: true,
-              });
-
-              finalSubDecision.responses = lintResult.cleanedBalloons;
-              finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
-              currentCycle.trace.push("style_lint_retry_completed");
-            } else {
-              lintResult = runStyleLint(candidateBalloons, {
-                emojiBudget: effectiveEmojiBudget,
-                recentEmojis: emojiBudgetInfo.recentEmojis,
-                recentReactions: recentStyleState.recent_reactions,
-                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-                isRetry: true,
-              });
-              finalSubDecision.responses = lintResult.cleanedBalloons;
-              finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
-            }
-          } catch (retryErr: any) {
-            currentCycle.trace.push(`style_lint_retry_err: ${retryErr.message || String(retryErr)}`);
-            lintResult = runStyleLint(candidateBalloons, {
-              emojiBudget: effectiveEmojiBudget,
-              recentEmojis: emojiBudgetInfo.recentEmojis,
-              recentReactions: recentStyleState.recent_reactions,
-              lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-              isRetry: true,
-            });
-            finalSubDecision.responses = lintResult.cleanedBalloons;
-            finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
-          }
-        } else if (!isOpenAiAgentBrain) {
-          finalSubDecision.responses = lintResult.cleanedBalloons;
-          finalSubDecision.suggestedResponse = lintResult.cleanedBalloons.join("\n\n");
-          currentCycle.trace.push("style_lint_passed_first_try");
-        }
-
-        // ------------------------------------------------------------------
-        // CONVERSATION QUALITY GATE & RETRY SEMÂNTICO (Máximo 1)
-        // ------------------------------------------------------------------
-        const inboundTexts = canonicalClaimed.map((message) => message.text).filter(Boolean);
-        const relevantPersonaFacts = brainPlan?.missionPackage?.relevantPersonaFacts || brainPlan?.relevantPersonaFacts || [];
-        if (
-          finalSubDecision.action !== "wait" &&
-          isUnsupportedPersonalExperienceQuestion(inboundTexts, relevantPersonaFacts)
-        ) {
-          finalSubDecision.action = "wait";
-          finalSubDecision.responses = [];
-          finalSubDecision.suggestedResponse = "";
-          finalSubDecision.requiredTools = [];
-          finalSubDecision.reasoning = "A pergunta exige confirmar uma experiência pessoal e não há fato correspondente disponível para sustentá-la.";
-          currentCycle.trace.push("unsupported_personal_experience_escalated_to_human");
-        }
-        let qualityResult = runConversationQualityGate({
-          inboundMessages: inboundTexts,
-          candidateBalloons: finalSubDecision.responses || [],
-          turnContract,
-        });
-        currentCycle.trace.push(`conversation_quality_passed=${qualityResult.passed}`);
-        currentCycle.trace.push(`conversation_quality_initial_issues=${JSON.stringify(qualityResult.issues.map((issue) => issue.code))}`);
-        let qualityRetried = false;
-        let qualityFallbackUsed = false;
-
-        if (!qualityResult.passed && !isOpenAiAgentBrain) {
-          qualityRetried = true;
-          const issueCodes = qualityResult.issues.map((issue) => issue.code);
-          currentCycle.trace.push(`conversation_quality_retry_issues: ${issueCodes.join(",")}`);
-          const qualityRetryPrompt = `${executorPrompt}
-
-### QUALITY RETRY ÚNICO
-A resposta anterior falhou semanticamente por: ${issueCodes.join(", ")}.
-Fala do pretendente: ${JSON.stringify(inboundTexts.join(" "))}
-Contrato obrigatório: ${JSON.stringify(turnContract)}
-
-Reescreva a mesma missão. Responda primeiro à pergunta direta, acrescente reação real, não ecoe a fala, não introduza tópico adiado e respeite o limite de perguntas e balões.
-Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
-          try {
-            const retryRes = await callModelOrOpenAi(qualityRetryPrompt, {
-              runtime,
-              supabase,
-              model: brainLegacyModel,
-              disallowDowngrade: true,
-              recordOpenAiUsage: (record) => cycleOpenAiUsage.addInference(record),
-            });
-            totalTokens += retryRes.tokens;
-            finalGenerationTokens += retryRes.outputTokens;
-            const retryJson = extractJsonFromText(retryRes.content);
-            if (retryJson) {
-              const retriedDecision = validateBrainDecision(retryJson, currentPhase);
-              const retriedBalloons = retriedDecision.responses?.length
-                ? retriedDecision.responses
-                : splitIntoBalloons(retriedDecision.suggestedResponse);
-              const retryLint = runStyleLint(retriedBalloons, {
-                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
-                recentEmojis: emojiBudgetInfo.recentEmojis,
-                recentReactions: recentStyleState.recent_reactions,
-                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-                isRetry: true,
-              });
-              finalSubDecision.responses = retryLint.cleanedBalloons;
-              finalSubDecision.suggestedResponse = retryLint.cleanedBalloons.join("\n\n");
-              qualityResult = runConversationQualityGate({
-                inboundMessages: inboundTexts,
-                candidateBalloons: retryLint.cleanedBalloons,
-                turnContract,
-              });
-            }
-          } catch (qualityRetryErr: any) {
-            currentCycle.trace.push(`conversation_quality_retry_err: ${qualityRetryErr.message || String(qualityRetryErr)}`);
-          }
-
-          if (!qualityResult.passed) {
-            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
-            if (fallback) {
-              qualityFallbackUsed = true;
-              const fallbackLint = runStyleLint(fallback, {
-                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
-                recentEmojis: emojiBudgetInfo.recentEmojis,
-                recentReactions: recentStyleState.recent_reactions,
-                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-                isRetry: true,
-              });
-              qualityResult = runConversationQualityGate({
-                inboundMessages: inboundTexts,
-                candidateBalloons: fallbackLint.cleanedBalloons,
-                turnContract,
-              });
-              if (qualityResult.passed) {
-                finalSubDecision.responses = fallbackLint.cleanedBalloons;
-                finalSubDecision.suggestedResponse = fallbackLint.cleanedBalloons.join("\n\n");
-                currentCycle.trace.push("conversation_quality_safe_fallback_used");
-              } else {
-                finalSubDecision.action = "wait";
-                finalSubDecision.responses = [];
-                finalSubDecision.suggestedResponse = "";
-                finalSubDecision.requiredTools = [];
-                currentCycle.trace.push("conversation_quality_fallback_rejected_dispatch_blocked");
-              }
-            } else {
-              finalSubDecision.action = "wait";
-              finalSubDecision.responses = [];
-              finalSubDecision.suggestedResponse = "";
-              finalSubDecision.requiredTools = [];
-              currentCycle.trace.push("conversation_quality_blocked_dispatch");
-            }
-          }
-        }
-
-        currentCycle.trace.push(`conversation_quality_passed=${qualityResult.passed}`);
-        currentCycle.trace.push(`conversation_quality_retry=${qualityRetried}`);
-        currentCycle.trace.push(`conversation_quality_issues=${JSON.stringify(qualityResult.issues.map((issue) => issue.code))}`);
-        currentCycle.trace.push(`direct_questions_detected=${qualityResult.directQuestionsDetected}`);
-        currentCycle.trace.push(`direct_questions_answered=${qualityResult.directQuestionsAnswered}`);
-        currentCycle.trace.push(`parrot_score=${qualityResult.parrotScore.toFixed(3)}`);
-        currentCycle.trace.push(`new_question_count=${qualityResult.newQuestionCount}`);
-        currentCycle.trace.push(`question_budget_final_count=${qualityResult.newQuestionCount}`);
-        currentCycle.trace.push(`turn_response_shape=${turnContract.responseShape}`);
-        if (isOpenAiAgentBrain) currentCycle.trace.push("conversation_quality_observe_only=true");
-
-        if (isOpenAiAgentBrain && qualityResult.newQuestionCount > turnContract.newQuestionBudget) {
-          currentCycle.trace.push("question_budget_exceeded_observed");
-        }
-
-        // Limite físico de payload: se exceder maxBalloons, apara os balões excedentes em vez de calar a conversa
-        if (isOpenAiAgentBrain && (finalSubDecision.responses || []).length > turnContract.maxBalloons) {
-          currentCycle.trace.push("technical_balloon_limit_trimmed");
-          finalSubDecision.responses = (finalSubDecision.responses || []).slice(0, turnContract.maxBalloons);
-        }
-
-        // ------------------------------------------------------------------
-        // ANTI-REPEAT + QUALITY GATE FINAL (autoridade absoluta de despacho)
-        // ------------------------------------------------------------------
-        if (finalSubDecision.action !== "wait" && finalSubDecision.responses?.length) {
-          const beforeAntiRepeat = [...finalSubDecision.responses];
-          const antiRepeatResult = await validateAntiRepeatGate({
-            conversationId,
-            candidateBalloons: beforeAntiRepeat,
-            supabase,
-          });
-          const finalAfterAntiRepeat = antiRepeatResult.allowedBalloons;
-          if (antiRepeatResult.isBlocked) {
-            currentCycle.trace.push(
-              `anti_repeat_gate_blocked: pruned=${antiRepeatResult.blockedBalloons.length}, remaining=${finalAfterAntiRepeat.length}`
-            );
-          }
-          const normalizedAfterAntiRepeat = isOpenAiAgentBrain
-            ? finalAfterAntiRepeat.filter(Boolean)
-            : finalAfterAntiRepeat
-              .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
-              .filter(Boolean);
-          let finalQualityResult = runConversationQualityGate({
-            inboundMessages: inboundTexts,
-            candidateBalloons: normalizedAfterAntiRepeat,
-            turnContract,
-          });
-          currentCycle.trace.push(`post_antirepeat_quality_passed=${finalQualityResult.passed}`);
-          currentCycle.trace.push(`post_antirepeat_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
-          let authoritativeBalloons = normalizedAfterAntiRepeat;
-          if (!finalQualityResult.passed && !qualityFallbackUsed && !isOpenAiAgentBrain) {
-            const finalFallback = safeHighConfidenceFallback(inboundTexts, turnContract);
-            if (finalFallback) {
-              const finalFallbackLint = runStyleLint(finalFallback, {
-                emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
-                recentEmojis: emojiBudgetInfo.recentEmojis,
-                recentReactions: recentStyleState.recent_reactions,
-                lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
-                isRetry: true,
-              });
-              const normalizedFallbackBalloons = finalFallbackLint.cleanedBalloons
-                .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
-                .filter(Boolean);
-              finalQualityResult = runConversationQualityGate({
-                inboundMessages: inboundTexts,
-                candidateBalloons: normalizedFallbackBalloons,
-                turnContract,
-              });
-              if (finalQualityResult.passed) {
-                authoritativeBalloons = normalizedFallbackBalloons;
-                qualityFallbackUsed = true;
-                currentCycle.trace.push("post_antirepeat_quality_safe_fallback_used");
-              }
-            }
-          }
-
-          currentCycle.trace.push(`final_quality_passed=${finalQualityResult.passed}`);
-          currentCycle.trace.push(`final_quality_issues=${JSON.stringify(finalQualityResult.issues.map((issue) => issue.code))}`);
-
-          // ------------------------------------------------------------------
-          // GUARDA MANDATÓRIA DE CONDUTA DA PERSONA (UNIVERSAL - INCLUI OPENAI AGENT)
-          // ------------------------------------------------------------------
-          const criticalPersonaIssues = finalQualityResult.issues.filter(
-            (i) =>
-              i.code === "ROBOTIC_META_LEAK" ||
-              i.code === "ACCEPTED_OUTING_INVITE" ||
-              i.code === "PHONE_NUMBER_LEAK"
-          );
-
-          if (criticalPersonaIssues.length > 0) {
-            const fallback = safeHighConfidenceFallback(inboundTexts, turnContract);
-            if (fallback && fallback.length > 0) {
-              authoritativeBalloons = fallback;
-              qualityFallbackUsed = true;
-              currentCycle.trace.push(
-                `critical_persona_issue_replaced_with_fallback: ${criticalPersonaIssues.map((i) => i.code).join(",")}`
-              );
-              finalQualityResult = runConversationQualityGate({
-                inboundMessages: inboundTexts,
-                candidateBalloons: authoritativeBalloons,
-                turnContract,
-              });
-            } else {
-              authoritativeBalloons = authoritativeBalloons.filter((b) => !detectMetaBotRoboticLeak(b));
-              currentCycle.trace.push("critical_robotic_leak_pruned_without_fallback");
-            }
-          }
-
-          if (finalQualityResult.issues.some((i) => i.code === "UNAUTHORIZED_INTIMACY_LEAK")) {
-            authoritativeBalloons = authoritativeBalloons.map(sanitizeInappropriateIntimacy).filter(Boolean);
-            currentCycle.trace.push("unauthorized_intimacy_leak_sanitized");
-          }
-
-          if (isOpenAiAgentBrain) {
-            finalSubDecision.responses = authoritativeBalloons;
-            finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
-            if (finalSubDecision.outboundActions) {
-              const audioAction = finalSubDecision.outboundActions.find((a) => a.type === "audio");
-              finalSubDecision.outboundActions = [
-                ...(audioAction ? [audioAction] : []),
-                ...authoritativeBalloons.map((t) => ({ type: "text" as const, text: t })),
-              ];
-            }
-          }
-
-          if (!finalQualityResult.passed && !isOpenAiAgentBrain) {
-            finalSubDecision.action = "wait";
-            finalSubDecision.responses = [];
-            finalSubDecision.suggestedResponse = "";
-            finalSubDecision.requiredTools = [];
-            currentCycle.trace.push("post_antirepeat_quality_blocked_dispatch");
-            authoritativeBalloons = isOpenAiAgentBrain
-              ? authoritativeBalloons.filter(Boolean)
-              : authoritativeBalloons
-                .map((b) => sanitizeChatPunctuation(capitalizeFirstLetter(b)))
-                .filter(Boolean);
-
-            const secondPassGuard = validateBackendQuestionIntentGuard({
-              candidateBalloons: authoritativeBalloons,
-              questionIntents: brainPlan?.questionIntents || [],
-              recentQuestionIntents: currentRecentQuestionIntents,
-              recentLarissaOutbounds,
-              lastLarissaTurn: baseContextPayload.lastLarissaTurn,
-            });
-
-            if (secondPassGuard.isBlocked) {
-              currentCycle.trace.push(
-                `second_pass_intent_guard_blocked: pruned=${secondPassGuard.prunedBalloons.length}, reasons=${secondPassGuard.reasons.join(" | ")}`
-              );
-              authoritativeBalloons = secondPassGuard.allowedBalloons;
-            }
-
-            if (secondPassGuard.failClosed || authoritativeBalloons.length === 0) {
-              finalSubDecision.action = "wait";
-              finalSubDecision.responses = [];
-              finalSubDecision.suggestedResponse = "";
-              finalSubDecision.requiredTools = [];
-              currentCycle.trace.push("second_pass_intent_guard_fail_closed");
-            } else {
-              finalSubDecision.responses = authoritativeBalloons;
-              finalSubDecision.suggestedResponse = authoritativeBalloons.join("\n\n");
-            }
-          }
-        }
-      }
+      // Quality/style/anti-repeat gates são somente observabilidade: nunca reescrevem
+      // conteúdo, removem balões, trocam a ordem de ações ou mudam a decisão do Brain.
+      const observationBalloons = finalSubDecision.responses || [];
+      const styleObservation = runStyleLint(observationBalloons, {
+        emojiBudget: turnContract.preferNoEmoji ? 0 : emojiBudgetInfo.budget,
+        recentEmojis: emojiBudgetInfo.recentEmojis,
+        recentReactions: recentStyleState.recent_reactions,
+        lastOutboundReaction: recentStyleState.recent_reactions[0] || null,
+        isRetry: false,
+      });
+      const inboundTexts = canonicalClaimed.map((message) => message.text).filter(Boolean);
+      const qualityObservation = runConversationQualityGate({
+        inboundMessages: inboundTexts,
+        candidateBalloons: observationBalloons,
+        turnContract,
+      });
+      const antiRepeatObservation = observationBalloons.length > 0
+        ? await validateAntiRepeatGate({ conversationId, candidateBalloons: observationBalloons, supabase })
+        : null;
+      currentCycle.trace.push(`style_lint_observed_issues=${JSON.stringify((styleObservation.issues || []).map((issue: any) => issue.code || "unknown"))}`);
+      currentCycle.trace.push(`conversation_quality_observed_issues=${JSON.stringify(qualityObservation.issues.map((issue) => issue.code))}`);
+      currentCycle.trace.push(`conversation_quality_observe_only=true`);
+      currentCycle.trace.push(`anti_repeat_observed_blocked=${Boolean(antiRepeatObservation?.isBlocked)}`);
+      currentCycle.trace.push(`anti_repeat_observe_only=true`);
     }
-
-    // ------------------------------------------------------------------------
     // FRESHNESS GATE 2: Revalidação imediatamente após o Brain
     // ------------------------------------------------------------------------
     if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
@@ -9808,6 +8620,8 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     if (!freshnessAfterBrain.isFresh) {
       return await handleCyclePreemption("during_brain_execution", freshnessAfterBrain);
     }
+
+    if (!finalSubDecision) throw new Error("BRAIN_DECISION_MISSING");
 
     // ------------------------------------------------------------------------
     // GUARDA DE INTEGRIDADE DO BACKEND: Valida transição de fase
@@ -9853,7 +8667,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       reasoning: finalSubDecision.reasoning,
       audioId: finalSubDecision.audioId,
       audioUrl: finalSubDecision.audioUrl,
-      objectiveCompletion: finalSubDecision.objectiveCompletion || brainObjectiveCompletion || null,
+      objectiveCompletion: finalSubDecision.objectiveCompletion || brainObjectiveCompletion || undefined,
+      manualResolution: finalSubDecision.manualResolution || undefined,
+      pendingActionResolution: finalSubDecision.pendingActionResolution || { cancelActionIds: [] },
       memoryCandidates: validatedMemoryCandidates,
     };
     currentCycle.decision = decision;
@@ -9870,11 +8686,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     const recheckRules = recheckData?.stage_completed_rules || {};
 
     // 1. Cancelamento manual pelo operador durante a inferência
-    if (
+    if (!params.manualResolution && (
       (recheckData && recheckData.ai_auto_respond === false) ||
       recheckRules.cancel_current_cycle === true ||
       recheckRules.status === "paused_manual"
-    ) {
+    )) {
       currentCycle.status = "cancelled";
       currentCycle.trace.push("cycle_cancelled_before_dispatch");
       for (const id of claimedMessageIds) {
@@ -9931,7 +8747,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     // OUTBOX PATTERN: Sequência Canônica de Ações de Saída (Texto e/ou Áudio)
     // ------------------------------------------------------------------------
     let canonicalOutboundActions: OutboundAction[] = [];
-    if (decision.action === "wait") {
+    if (decision.action === "wait" || decision.action === "manual_resolution") {
       canonicalOutboundActions = [];
     } else if (Array.isArray(decision.outboundActions) && decision.outboundActions.length > 0) {
       canonicalOutboundActions = [...decision.outboundActions];
@@ -10048,86 +8864,109 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
     if (hasFinalDispatchPayload) {
       currentCycle.trace.push("brain_plan_accepted");
 
-      const nowMs = Date.now();
-      const outboxBatch: OutboxEntry[] = [];
-      let accumulatedDelaySeconds = 0;
-
-      for (let i = 0; i < canonicalOutboundActions.length; i++) {
-        const act = canonicalOutboundActions[i];
-        const isAudio = act.type === "audio";
-        const content = balloons[i];
-        const actionKey = canonicalOutboundActions.length === 1 ? idempotencyKey : `${idempotencyKey}_a${i}`;
-        const outboxId = `out_${nowMs}_${Math.random().toString(36).slice(2, 7)}_a${i}`;
-        const stepDelay = isAudio ? Math.max(10, Number(resolvedAudio?.duration) || 10) : 10;
-        accumulatedDelaySeconds += stepDelay;
-        const notBeforeIso = new Date(nowMs + accumulatedDelaySeconds * 1000).toISOString();
-
-        const entry: OutboxEntry = {
-          id: outboxId,
-          cycleId: correlationId,
-          conversationId,
-          idempotencyKey: actionKey,
-          content,
-          messageType: isAudio ? "audio" : "text",
-          status: "pending",
-          attempts: 0,
-          maxAttempts: 3,
-          createdAt: new Date(nowMs).toISOString(),
-          actionIndex: i,
-          notBefore: notBeforeIso,
-          mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : null,
-          audioDurationSeconds: isAudio ? (Number(resolvedAudio?.duration) || 10) : null,
-          vaultAudioId: isAudio ? (resolvedAudio?.id || act.audioId || null) : null,
-        };
-
-        outboxBatch.push(entry);
+      const outboxBatch = createBrainOutboxBatch({
+        actions: canonicalOutboundActions,
+        conversationId,
+        cycleId: correlationId,
+        idempotencyKey,
+        resolvedAudio,
+      });
+      for (const entry of outboxBatch) {
+        const actionKey = entry.idempotencyKey;
         outboxMap[actionKey] = entry;
-
       }
 
       currentCycle.outboxEntryId = outboxBatch[0]?.id;
       currentCycle.trace.push(`outbox_created: ${outboxBatch[0]?.id}`);
 
-      // 1. Persistência ATÔMICA e DURÁVEL de todo o lote antes do primeiro envio
-      const persistBatchRes = await persistDurableOutboxBatchAtomic({
-        supabase,
-        conversationId,
-        cycleToken: correlationId,
-        outboxEntries: outboxBatch,
-      });
-
-      if (!persistBatchRes.success) {
-        console.error(
-          `[Brain] FAIL CLOSED: persistDurableOutboxBatchAtomic falhou para conv=${conversationId}: ${persistBatchRes.reason}`
-        );
-        currentCycle.trace.push(`outbound_batch_persist_failed: ${persistBatchRes.reason}`);
-        if (reservedAudioId) {
-          try {
+      const providerSessionId = currentSessionId;
+      const providerTurnId = currentProviderTurnId;
+      if (providerSessionId) {
+        const decisionId = `brain_decision_${correlationId}`;
+        const brainTurnId = currentLocalBrainTurnId || `brain_turn_${providerTurnId || correlationId}`;
+        const decisionPersisted = await persistCanonicalBrainDecision({
+          supabase,
+          conversationId,
+          sessionId: providerSessionId,
+          providerTurnId,
+          turnId: brainTurnId,
+          decisionId,
+          inboundMessageIds: claimedMessageIds,
+          decisionType: decision.action === "manual_resolution" ? "manual_resolution" : decision.action === "wait" ? "wait" : "respond",
+          decisionPayload: {
+            action: decision.action,
+            manualResolution: decision.manualResolution || null,
+            pendingActionResolution: decision.pendingActionResolution || { cancelActionIds: [] },
+            reasoningSummary: decision.action === "manual_resolution"
+              ? "Brain solicitou um fato ao operador."
+              : decision.action === "wait"
+              ? "Brain decidiu aguardar sem enviar mensagem."
+              : "Brain preparou ações de saída.",
+            objectiveUpdates: brainPlan?.objectiveUpdates || (brainPlan?.objectiveCompletion ? [brainPlan.objectiveCompletion] : []),
+            stageTransition: brainPlan?.stageTransition || null,
+            responses: canonicalOutboundActions.filter((action) => action.type === "text").map((action: any) => action.text),
+          },
+          outboxEntries: outboxBatch,
+          actions: outboxBatch.map((entry, actionIndex) => ({
+            id: `brain_action_${correlationId}_${actionIndex}`,
+            actionIndex,
+            actionType: entry.messageType,
+            payload: {
+              text: entry.messageType === "text" ? entry.content : null,
+              audioId: entry.vaultAudioId || null,
+              mediaUrl: entry.mediaUrl || null,
+              outboxId: entry.id,
+              brainActionId: `brain_action_${correlationId}_${actionIndex}`,
+            },
+            notBefore: entry.notBefore || null,
+            idempotencyKey: entry.idempotencyKey,
+            status: entry.notBefore && Date.parse(entry.notBefore) > Date.now() ? "waiting_delay" : "pending",
+          })),
+        });
+        if (!decisionPersisted.success) {
+          currentCycle.trace.push(`brain_decision_persist_failed: ${decisionPersisted.reason || "unknown"}`);
+          if (reservedAudioId) {
             await releaseAudioDeliveryReservation({
               supabase,
               conversationId,
               audioId: reservedAudioId,
               reservationToken: correlationId,
-              reason: `outbound_batch_persist_failed: ${persistBatchRes.reason}`,
-            });
-          } catch (_relErr) {}
-          reservedAudioId = undefined;
+              reason: "brain_decision_outbox_atomic_persist_failed",
+            }).catch(() => undefined);
+            reservedAudioId = undefined;
+          }
+          currentCycle.status = "failed";
+          await releaseExperimentalCycleAtomic({
+            supabase,
+            conversationId,
+            cycleToken: correlationId,
+            processingStatus: "failed",
+            revertMessageIds: claimedMessageIds,
+          });
+          return {
+            handled: false,
+            sentToMeta: false,
+            blockLegacyFallback: true,
+            error: `Decisão do Brain não persistida; despacho bloqueado (${decisionPersisted.reason || "erro técnico"}).`,
+          };
         }
+        for (const actionId of decision.pendingActionResolution?.cancelActionIds || []) {
+          for (const entry of Object.values(outboxMap)) {
+            if (entry.payload?.brainActionId === actionId) entry.status = "cancelled";
+          }
+        }
+        currentCycle.trace.push(`brain_decision_persisted: ${decisionId}`);
+      } else {
+        currentCycle.trace.push("brain_decision_persist_failed_no_provider_session_id");
         currentCycle.status = "failed";
-        await releaseExperimentalCycleAtomic({
-          supabase,
-          conversationId,
-          cycleToken: correlationId,
-          processingStatus: "failed",
-          revertMessageIds: claimedMessageIds,
-        });
         return {
           handled: false,
           sentToMeta: false,
           blockLegacyFallback: true,
-          error: `Falha na persistência atômica da outbox (${persistBatchRes.reason}). Fail-closed: envio abortado.`,
+          error: "Decisão do Brain sem session_id persistível; despacho bloqueado.",
         };
       }
+
 
       currentCycle.trace.push("outbound_batch_persisted");
       currentCycle.trace.push(`outbound_batch_size=${outboxBatch.length}`);
@@ -10199,7 +9038,15 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           } catch {}
         }
       } else {
-        currentCycle.trace.push("meta_dispatch_halted_b1");
+        currentCycle.trace.push("outbox_waiting_for_not_before");
+        for (const id of claimedMessageIds) ledger[id] = "processed";
+        currentCycle.status = "completed";
+        scheduleNextOutboxDispatch({
+          supabase,
+          conversationId,
+          outboxMap,
+          runtime,
+        });
       }
 
       if (sentBalloonsCount === balloons.length) {
@@ -10223,7 +9070,53 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         });
       }
     } else {
-        // Ação 'wait': não há envio, mas o inbound precisa de revisão humana.
+        // O Brain controla WAIT; o backend persiste apenas o resultado e libera o ciclo.
+        if (currentSessionId) {
+          const decisionId = `brain_decision_${correlationId}`;
+          const brainTurnId = currentLocalBrainTurnId || `brain_turn_${currentProviderTurnId || correlationId}`;
+          const waitingDecision = await persistCanonicalBrainDecision({
+            supabase,
+            conversationId,
+            sessionId: currentSessionId,
+            providerTurnId: currentProviderTurnId,
+            turnId: brainTurnId,
+            decisionId,
+            inboundMessageIds: claimedMessageIds,
+            decisionType: decision.action === "manual_resolution" ? "manual_resolution" : "wait",
+            decisionPayload: {
+              action: decision.action,
+              manualResolution: decision.manualResolution || null,
+              pendingActionResolution: decision.pendingActionResolution || { cancelActionIds: [] },
+              reasoningSummary: decision.action === "manual_resolution"
+                ? "Brain solicitou um fato ao operador."
+                : "Brain decidiu aguardar sem enviar mensagem.",
+            },
+            actions: [],
+          });
+          if (!waitingDecision.success) {
+            currentCycle.status = "failed";
+            return {
+              handled: false,
+              sentToMeta: false,
+              blockLegacyFallback: true,
+              error: `Decisão WAIT do Brain não persistida (${waitingDecision.reason || "erro técnico"}).`,
+            };
+          }
+          await supabase.from("brain_turns").update({
+            status: decision.action === "manual_resolution" ? "waiting_manual" : "completed",
+            completed_at: decision.action === "manual_resolution" ? null : new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+            .eq("id", brainTurnId);
+        } else {
+          currentCycle.status = "failed";
+          return {
+            handled: false,
+            sentToMeta: false,
+            blockLegacyFallback: true,
+            error: "Decisão WAIT do Brain sem session_id persistível; ciclo bloqueado.",
+          };
+        }
         if (reservedAudioId && !sentSuccessfully) {
           try {
             await releaseAudioDeliveryReservation({
@@ -10264,7 +9157,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
       // NUNCA em caso de falha, incerteza de rede (dispatch_uncertain) ou balões incompletos/abortados
       const isConfirmedSuccess =
         currentCycle.status === "completed" &&
-        (decision.action === "wait" || sentBalloonsCount > 0);
+        (decision.action === "wait" || decision.action === "manual_resolution" || sentBalloonsCount > 0);
 
       let stageProgression = {
         updatedCompletedGoals: [
@@ -10298,13 +9191,9 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           currentPhase,
           currentStageId,
           decision,
-          claimedMessages: claimedMessages || [],
-          rawInbounds: rawInbounds || [],
           stageRules,
           orchState,
           currentCycle,
-          memoryProvider: cycleMemoryProvider,
-          episodicMemory: [],
         });
         decision.nextPhase = stageProgression.nextPhase;
 
@@ -10429,8 +9318,10 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
           lastProcessedAt: new Date().toISOString(),
           lastProcessingStatus: sentSuccessfully
             ? "sent"
-            : decision.action === "wait"
+            : decision.action === "manual_resolution"
             ? "needs_human"
+            : decision.action === "wait"
+            ? "waiting"
             : "decided",
           lastCorrelationId: correlationId,
           lastDecision: decision,
@@ -10519,7 +9410,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
 
 
         const completedUsage = cycleUsageMetadata();
-        const needsHumanReview = decision.action === "wait" && claimedMessageIds.length > 0;
+        const needsHumanReview = decision.action === "manual_resolution" && claimedMessageIds.length > 0;
         let humanPauseConfirmed = false;
         if (needsHumanReview) {
           for (let attempt = 1; attempt <= 2 && !humanPauseConfirmed; attempt += 1) {
@@ -10529,7 +9420,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
                 {
                   p_conversation_id: conversationId,
                   p_paused: true,
-                  p_reason: "brain_wait_no_response",
+                  p_reason: "brain_manual_resolution",
                 },
               );
               humanPauseConfirmed = !pauseError && pauseResult?.success === true;
@@ -10547,9 +9438,11 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
             }
           }
         }
+        const manualQuestion = decision.manualResolution?.question || "O Brain precisa de uma informação para continuar.";
+        const manualContext = decision.manualResolution?.context || "";
         const pauseReason = humanPauseConfirmed
-          ? "A IA não encontrou uma resposta segura. Responda manualmente e retome o Piloto quando quiser."
-          : "A IA não encontrou uma resposta segura e não foi possível confirmar a pausa automática. Desative o Piloto e responda manualmente.";
+          ? `Brain precisa saber: ${manualQuestion}${manualContext ? `\nContexto: ${manualContext}` : ""}`
+          : `Brain precisa saber: ${manualQuestion}. Não foi possível confirmar a pausa automática.`;
         await publishAutoPilotState(supabase, conversationId, {
           cycleId: correlationId,
           ...(needsHumanReview
@@ -10562,7 +9455,7 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               }
             : { status: "idle" }),
           lastThoughts: {
-            atriaThought: decision.reasoning,
+            atriaThought: needsHumanReview ? "Brain solicitou uma informação factual ao operador." : "",
             solThought: needsHumanReview ? "" : decision.suggestedResponse,
             previewResponses: needsHumanReview ? [] : [decision.suggestedResponse],
           },
@@ -10575,19 +9468,18 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
               : "Atria avaliou",
             needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
             needsHumanReview
-              ? { atriaThought: decision.reasoning, decision }
+              ? { atriaThought: "Brain solicitou uma informação factual ao operador." }
               : {
-                  atriaThought: decision.reasoning,
+                  atriaThought: "Turno do Brain concluído.",
                   solThought: decision.suggestedResponse,
                   currentResponsePreview: decision.suggestedResponse,
                   previewResponses: [decision.suggestedResponse],
-                  decision,
                 },
           ),
           cycleEvent: {
             phase: "completed",
-            event: needsHumanReview ? "human_review_required" : "cycle_completed",
-            label: needsHumanReview ? "Resposta manual necessária" : "Ciclo concluído",
+            event: needsHumanReview ? "manual_resolution_required" : "cycle_completed",
+            label: needsHumanReview ? "Brain precisa de uma informação" : "Ciclo concluído",
             detail: needsHumanReview
               ? pauseReason
               : sentBalloonsCount > 0
@@ -10898,30 +9790,6 @@ Responda ESTRITAMENTE em JSON puro com action, responses e suggestedResponse.`;
         blockLegacyFallback: true,
         error: err.message || "Ciclo preemptado",
       };
-    }
-
-    // Se a falha foi do agente OpenAI (timeout, sessão in_progress, requires_action unhandled, etc.),
-    // limpa imediatamente o openai_session_id para que a próxima tentativa nunca reutilize a sessão morta.
-    if (err?.message?.includes("OPENAI_AGENT_FAILED") || err?.message?.includes("timeout") || err?.message?.includes("session")) {
-      try {
-        const { data: currentConv } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        if (currentConv?.stage_completed_rules?.orchestration?.openai_session_id) {
-          const rules = currentConv.stage_completed_rules;
-          rules.orchestration.openai_session_id = null;
-          await supabase
-            .from("instagram_conversations")
-            .update({ stage_completed_rules: rules })
-            .eq("id", conversationId);
-          console.log(`[Brain] openai_session_id resetado com sucesso para conv=${conversationId} após falha do agente.`);
-        }
-      } catch (sessionResetErr) {
-        console.warn(`[Brain] Falha ao resetar openai_session_id:`, sessionResetErr);
-      }
     }
 
     if (releaseRes.retryExhausted || params.isManualRetry) {

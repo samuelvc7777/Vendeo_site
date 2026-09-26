@@ -51,10 +51,15 @@ export async function publishAutoPilotState(
       updated.cycleEvents = previousEvents;
 
       const legacyEvent = statePatch.event || statePatch.activity?.event;
-      const shouldAppendEvent = appendEvent !== false && Boolean(cycleEvent || legacyEvent || appendEvent === true);
+      const statusChanged = statePatch.status !== undefined && statePatch.status !== current.status;
+      const phaseChanged = statePatch.activity?.phase !== undefined && statePatch.activity.phase !== current.activity?.phase;
+      const shouldAppendEvent = Boolean(
+        (appendEvent !== false && (cycleEvent || legacyEvent || appendEvent === true)) || statusChanged || phaseChanged
+      );
       if (shouldAppendEvent) {
         const eventData = cycleEvent || {};
-        const event = eventData.event || legacyEvent || statePatch.activity?.label;
+        const event = eventData.event || legacyEvent || statePatch.activity?.event ||
+          (phaseChanged ? `phase_${statePatch.activity?.phase}` : statusChanged ? `status_${statePatch.status}` : statePatch.activity?.label);
         if (event) {
           const lastSequence = previousEvents[previousEvents.length - 1]?.sequence || 0;
           updated.cycleEvents = [
@@ -71,6 +76,23 @@ export async function publishAutoPilotState(
               metadata: eventData.metadata ?? eventMetadata ?? undefined,
             },
           ].slice(-100);
+
+          try {
+            await supabase.from("brain_turn_events").insert({
+              conversation_id: conversationId,
+              event_type: String(event),
+              status: String(statePatch.status || eventData.phase || "observed"),
+              human_message: String(eventData.detail || eventData.label || statePatch.activity?.detail || event).slice(0, 1000),
+              metadata: {
+                cycleId,
+                phase: eventData.phase || statePatch.activity?.phase || null,
+                label: eventData.label || statePatch.activity?.label || String(event),
+                ...(eventData.metadata && typeof eventData.metadata === "object" ? eventData.metadata : {}),
+              },
+            });
+          } catch (eventError) {
+            console.warn("[AutoPilot State] Falha ao gravar evento canônico do Brain:", eventError);
+          }
         }
       }
     }

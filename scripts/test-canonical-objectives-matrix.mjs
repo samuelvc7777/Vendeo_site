@@ -108,7 +108,6 @@ async function runTests() {
     validateSubagentDecision,
     validateOrchestratorDecision,
     validatePhaseTransition,
-    detectSpontaneousObjectiveCompletions,
     runExperimentalOrchestration,
     resolveOfficialCompletedGoals,
     resolveOfficialObjectiveProgress,
@@ -129,6 +128,7 @@ async function runTests() {
     executeEpisodeWriter,
     extractEpisodesFromPretendenteMessage,
   } = orchestratorModule;
+  const { detectSpontaneousObjectiveCompletions } = loadTsModule("supabase/functions/api/legacy_pilot_objective_detector.ts");
 
   let passed = 0;
   async function runTest(num, name, fn) {
@@ -1220,10 +1220,10 @@ async function runTests() {
       assert.notEqual(g.memoryEntity, "contact", "Entidade não pode ser 'contact'");
     });
 
-    // Inspeciona experimental_orchestrator.ts garantindo que detectSpontaneousObjectiveCompletions usa self
-    const orchContent = fs.readFileSync("supabase/functions/api/experimental_orchestrator.ts", "utf8");
-    assert(!orchContent.includes(`memoryEntity: "contact"`), "Não deve haver memoryEntity: contact no código");
-    assert(!orchContent.includes(`memoryField: "work"`), "Não deve haver memoryField: work no código");
+    // O detector lexical só existe no módulo explicitamente legado/pilot.
+    const runtimeContent = fs.readFileSync("supabase/functions/api/brain_orchestrator.ts", "utf8");
+    assert(!runtimeContent.includes("detectSpontaneousObjectiveCompletions"), "Runtime novo não deve importar nem executar o detector legado");
+    assert(!runtimeContent.includes("legacy_pilot_objective_detector"), "Runtime novo não deve depender do módulo de piloto");
   });
 
   // 46. Modo Shadow: Detecção espontânea isolada no shadowSimulation sem poluir ContactMemory nem progresso oficial

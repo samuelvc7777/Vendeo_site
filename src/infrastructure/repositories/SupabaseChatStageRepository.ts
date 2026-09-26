@@ -14,8 +14,8 @@ import {
   ChatStage,
   ChatProgress,
   ConversationGoal,
-  CANONICAL_CHAT_STAGES_MATRIX,
 } from "@/domain/entities/ChatStage";
+import { resolveCurrentStageId } from "@/domain/entities/stageAuthority";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 
@@ -87,128 +87,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
   // --- MÉTODOS DE ETAPAS (chat_stages) ---
 
-  /**
-   * Reconcilia etapas com a matriz canônica oficial sem perder IDs,
-   * nomes nem dados prévios, aplicando as novas regras da matriz.
-   */
-  public reconcileWithCanonicalMatrix(existingStages: ChatStage[]): ChatStage[] {
-    const canonicalMatrix = CANONICAL_CHAT_STAGES_MATRIX;
-    const reconciled: ChatStage[] = existingStages.map((stg) => ({ ...stg, goals: [...(stg.goals || [])] }));
-
-    let conexaoStage = reconciled.find(
-      (s) => s.id === "stage_1_conexao" || s.id === "stage_1" || s.name.toLowerCase().includes("conex")
-    );
-    let descobertaStage = reconciled.find(
-      (s) => s.id === "stage_2_descoberta" || s.id === "stage_2" || s.name.toLowerCase().includes("descoberta")
-    );
-    let compatibilidadeStage = reconciled.find(
-      (s) => s.id === "stage_3_compatibilidade" || s.id === "stage_3" || s.name.toLowerCase().includes("compat")
-    );
-
-    if (!conexaoStage) {
-      const canon = canonicalMatrix.find((c) => c.id === "stage_1_conexao");
-      if (canon) {
-        conexaoStage = JSON.parse(JSON.stringify(canon));
-        if (conexaoStage) {
-          conexaoStage.order = 0;
-          reconciled.push(conexaoStage);
-        }
-      }
-    }
-
-    if (!descobertaStage) {
-      const canon = canonicalMatrix.find((c) => c.id === "stage_2_descoberta");
-      if (canon) {
-        descobertaStage = JSON.parse(JSON.stringify(canon));
-        if (descobertaStage) {
-          descobertaStage.order = 1;
-          reconciled.push(descobertaStage);
-        }
-      }
-    }
-
-    if (!compatibilidadeStage) {
-      const canonComp = canonicalMatrix.find((c) => c.id === "stage_3_compatibilidade");
-      if (canonComp) {
-        compatibilidadeStage = JSON.parse(JSON.stringify(canonComp));
-        if (compatibilidadeStage) {
-          compatibilidadeStage.order = 2;
-          reconciled.push(compatibilidadeStage);
-        }
-      }
-    }
-
-    reconciled.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-
-    for (const stage of reconciled) {
-      const isConexao = stage === conexaoStage;
-      const isDescoberta = stage === descobertaStage;
-      const isCompatibilidade = stage === compatibilidadeStage;
-
-      const goals = stage.goals || [];
-      const updatedGoals = goals.map((g) => {
-        const copy = { ...g };
-
-        // No modelo canônico determinístico, todo objetivo ativo é checkpoint obrigatório
-        copy.required = copy.enabled !== false;
-
-        if (copy.id === "goal_age") {
-          copy.kind = "fact";
-        }
-        if (copy.id === "goal_city") {
-          copy.kind = "fact";
-        }
-        if (copy.id === "goal_job") {
-          copy.kind = "fact";
-        }
-        if (copy.id === "goal_relationship") {
-          copy.kind = "fact";
-          copy.title = "Status de relacionamento";
-          copy.label = "Status de relacionamento";
-          copy.description = "Descobrir o status atual de relacionamento dele (solteiro, separado, divorciado, etc.). Não usar para filhos nem intenção.";
-        }
-
-        if (!copy.kind) {
-          copy.kind = copy.id.includes("reciprocity") || copy.id.includes("depth") ? "conversation_state" : "fact";
-        }
-
-        return copy;
-      });
-
-      if (isConexao) {
-        const canonConexao = canonicalMatrix.find((c) => c.id === "stage_1_conexao");
-        for (const cg of canonConexao?.goals || []) {
-          if (!updatedGoals.some((g) => g.id === cg.id)) {
-            updatedGoals.push({ ...cg, stageId: stage.id, order: updatedGoals.length + 1 });
-          }
-        }
-      }
-
-      if (isDescoberta) {
-        const canonDescoberta = canonicalMatrix.find((c) => c.id === "stage_2_descoberta");
-        for (const dg of canonDescoberta?.goals || []) {
-          if (!updatedGoals.some((g) => g.id === dg.id)) {
-            updatedGoals.push({ ...dg, stageId: stage.id, order: updatedGoals.length + 1 });
-          }
-        }
-      }
-
-      if (isCompatibilidade) {
-        const canonComp = canonicalMatrix.find((c) => c.id === "stage_3_compatibilidade");
-        for (const cg of canonComp?.goals || []) {
-          if (!updatedGoals.some((g) => g.id === cg.id)) {
-            updatedGoals.push({ ...cg, stageId: stage.id, order: updatedGoals.length + 1 });
-          }
-        }
-      }
-
-      stage.goals = updatedGoals.sort((a, b) => (a.order || 0) - (b.order || 0));
-      stage.objectives = stage.goals;
-    }
-
-    return reconciled;
-  }
-
   async getStages(force = false): Promise<ChatStage[]> {
     this.initRealtimeSubscription();
     const now = Date.now();
@@ -218,7 +96,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
     const client = this.getClient();
     if (!client) {
-      return JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
+      return [];
     }
 
     try {
@@ -230,7 +108,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       if (error) {
         console.error("[SupabaseChatStageRepository] Erro ao carregar etapas de chat_stages:", error);
         if (this.cachedStages) return [...this.cachedStages];
-        return JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
+        return [];
       }
 
       if (data && Array.isArray(data) && data.length > 0) {
@@ -241,29 +119,13 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         return [...stages];
       }
 
-      // Se a tabela estiver vazia, popula a partir da matriz canônica oficial
-      const canonicalMatrix: ChatStage[] = JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
-      for (const stg of canonicalMatrix) {
-        await client.from("chat_stages").upsert({
-          id: stg.id,
-          name: stg.name,
-          stage_order: stg.order,
-          color: stg.color || null,
-          icon: stg.icon || null,
-          description: stg.description || null,
-          goals: stg.goals || [],
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-      }
-
-      this.cachedStages = canonicalMatrix;
+      this.cachedStages = [];
       this.lastFetchStagesTime = now;
-      return [...canonicalMatrix];
+      return [];
     } catch (err) {
       console.error("[SupabaseChatStageRepository] Exceção ao buscar etapas:", err);
       if (this.cachedStages) return [...this.cachedStages];
-      return JSON.parse(JSON.stringify(CANONICAL_CHAT_STAGES_MATRIX));
+      return [];
     }
   }
 
@@ -478,11 +340,12 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     try {
       const { data, error } = await client
         .from("instagram_conversations")
-        .select("id, contact_id, stage_completed_rules")
+        .select("id, contact_id, current_stage_id, stage_completed_rules")
         .not("id", "like", "\\_\\_%")
         .not("contact_id", "like", "\\_\\_%");
 
       if (error || !data) return result;
+      const configuredInitialStageId = (await this.getStages())[0]?.id || "";
 
       for (const row of data) {
         const convId = row.id || row.contact_id;
@@ -491,7 +354,8 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
         const orch = rules.orchestration || {};
         const chatProgress = rules.chat_progress || rules;
-        const currentStageId = orch.currentStageId || chatProgress.currentStageId || rules.current_stage_id || row.current_stage_id || "stage_1_conexao";
+        // A coluna normalizada é a fonte canônica; JSON é somente projeção legada.
+        const currentStageId = resolveCurrentStageId(row.current_stage_id, configuredInitialStageId);
         const completedGoalIds = Array.isArray(orch.completedGoalIds)
           ? orch.completedGoalIds
           : (Array.isArray(rules.completed_goals)
@@ -529,11 +393,13 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         .maybeSingle();
 
       if (error || !data?.stage_completed_rules) return null;
+      const configuredInitialStageId = (await this.getStages())[0]?.id || "";
 
       const rules = data.stage_completed_rules;
       const orch = rules.orchestration || {};
       const chatProgress = rules.chat_progress || rules;
-      const currentStageId = orch.currentStageId || chatProgress.currentStageId || rules.current_stage_id || data.current_stage_id || "stage_1_conexao";
+      // A coluna normalizada é a fonte canônica; JSON é somente projeção legada.
+      const currentStageId = resolveCurrentStageId(data.current_stage_id, configuredInitialStageId);
       const completedGoalIds = Array.isArray(orch.completedGoalIds)
         ? orch.completedGoalIds
         : (Array.isArray(rules.completed_goals)
@@ -608,7 +474,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
   ): Promise<ChatProgress> {
     const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
-      currentStageId: "stage_1_conexao",
+      currentStageId: (await this.getStages())[0]?.id || "",
       completedItemIds: [],
       completedGoalIds: [],
       isConverted: false,
@@ -639,7 +505,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
   ): Promise<ChatProgress> {
     const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
-      currentStageId: "stage_1_conexao",
+      currentStageId: (await this.getStages())[0]?.id || "",
       completedItemIds: [],
       completedGoalIds: [],
       isConverted: false,
@@ -686,7 +552,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
   async markAsConverted(conversationId: string, isConverted: boolean): Promise<ChatProgress> {
     const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
-      currentStageId: "stage_1_conexao",
+      currentStageId: (await this.getStages())[0]?.id || "",
       completedItemIds: [],
       completedGoalIds: [],
       isConverted,

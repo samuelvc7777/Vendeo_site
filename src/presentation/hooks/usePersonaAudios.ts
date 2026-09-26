@@ -6,7 +6,7 @@ import { SupabasePersonaAudioRepository } from "@/infrastructure/repositories/Su
 import { ManagePersonaAudiosUseCase } from "@/application/use-cases/ManagePersonaAudiosUseCase";
 import { toast } from "sonner";
 
-export function usePersonaAudios(stageId?: string) {
+export function usePersonaAudios(objectiveId?: string) {
   const [audios, setAudios] = useState<PersonaAudioAsset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -16,7 +16,7 @@ export function usePersonaAudios(stageId?: string) {
   const loadAudios = useCallback(async () => {
     try {
       setIsLoading(true);
-      const data = await useCase.getAudios(stageId);
+      const data = await useCase.getAudios(objectiveId);
       setAudios(data);
     } catch (err: any) {
       console.error("Erro ao carregar áudios da persona:", err);
@@ -24,7 +24,7 @@ export function usePersonaAudios(stageId?: string) {
     } finally {
       setIsLoading(false);
     }
-  }, [useCase, stageId]);
+  }, [useCase, objectiveId]);
 
   useEffect(() => {
     loadAudios();

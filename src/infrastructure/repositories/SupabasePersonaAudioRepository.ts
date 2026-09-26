@@ -40,7 +40,8 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
   private mapRowToAudio(row: any): PersonaAudioAsset {
     return {
       id: row.id,
-      stageId: row.stage_id || undefined,
+      objectiveId: row.objective_id || undefined,
+      legacyStageId: !row.objective_id ? row.stage_id || undefined : undefined,
       title: row.title,
       audioUrl: row.audio_url,
       duration: row.duration != null ? Number(row.duration) : undefined,
@@ -89,7 +90,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
     }
   }
 
-  async getAudios(filters?: { stageId?: string; enabledOnly?: boolean }): Promise<PersonaAudioAsset[]> {
+  async getAudios(filters?: { objectiveId?: string; enabledOnly?: boolean }): Promise<PersonaAudioAsset[]> {
     this.initRealtimeSubscription();
     const now = Date.now();
 
@@ -120,7 +121,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
 
     return allAudios.filter((a) => {
       if (filters?.enabledOnly && !a.enabled) return false;
-      if (filters?.stageId && a.stageId && a.stageId !== filters.stageId) return false;
+      if (filters?.objectiveId && a.objectiveId !== filters.objectiveId) return false;
       return true;
     });
   }
@@ -153,7 +154,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
 
     const rowPayload = {
       id: newId,
-      stage_id: data.stageId || null,
+      objective_id: data.objectiveId || null,
       title: data.title.trim(),
       audio_url: data.audioUrl,
       duration: data.duration != null ? Math.round(data.duration) : null,
@@ -189,7 +190,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
       updated_at: now,
     };
 
-    if (updates.stageId !== undefined) updatePayload.stage_id = updates.stageId || null;
+    if (updates.objectiveId !== undefined) updatePayload.objective_id = updates.objectiveId || null;
     if (updates.title !== undefined) updatePayload.title = updates.title.trim();
     if (updates.audioUrl !== undefined) updatePayload.audio_url = updates.audioUrl;
     if (updates.duration !== undefined) updatePayload.duration = updates.duration != null ? Math.round(updates.duration) : null;
@@ -228,12 +229,12 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
     this.lastFetchAudiosTime = 0;
   }
 
-  async searchAudios(query: string, stageId?: string): Promise<PersonaAudioAsset[]> {
+  async searchAudios(query: string, objectiveId?: string): Promise<PersonaAudioAsset[]> {
     const all = await this.getAudios({ enabledOnly: true });
     const q = query.trim().toLowerCase();
 
     return all.filter((audio) => {
-      if (stageId && audio.stageId && audio.stageId !== stageId) {
+      if (objectiveId && audio.objectiveId !== objectiveId) {
         return false;
       }
       if (!q) return true;

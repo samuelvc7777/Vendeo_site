@@ -71,7 +71,7 @@ export function PersonaAudioVaultModal({
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [editingAudio, setEditingAudio] = useState<PersonaAudioAsset | null>(null);
   const [formTitle, setFormTitle] = useState("");
-  const [formStageId, setFormStageId] = useState("");
+  const [formObjectiveId, setFormObjectiveId] = useState("");
   const [formAudioUrl, setFormAudioUrl] = useState("");
   const [formTranscript, setFormTranscript] = useState("");
   const [formUsageInstruction, setFormUsageInstruction] = useState("");
@@ -139,7 +139,7 @@ export function PersonaAudioVaultModal({
   const filteredAudios = useMemo(() => {
     return audios.filter((a) => {
       if (selectedStageFilter !== "todas") {
-        if (a.stageId !== selectedStageFilter) return false;
+        if (a.objectiveId !== selectedStageFilter) return false;
       }
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -152,10 +152,18 @@ export function PersonaAudioVaultModal({
     });
   }, [audios, selectedStageFilter, searchQuery]);
 
+  const objectives = useMemo(() => stages.flatMap((stage) =>
+    (stage.objectives || stage.goals || []).map((objective) => ({
+      id: objective.id,
+      label: objective.title || objective.label || objective.id,
+      stageName: stage.name,
+    })),
+  ), [stages]);
+
   const openCreateModal = () => {
     setEditingAudio(null);
     setFormTitle("");
-    setFormStageId(stages[0]?.id || "");
+    setFormObjectiveId("");
     setFormAudioUrl("");
     setFormTranscript("");
     setFormUsageInstruction("");
@@ -168,7 +176,7 @@ export function PersonaAudioVaultModal({
   const openEditModal = (audio: PersonaAudioAsset) => {
     setEditingAudio(audio);
     setFormTitle(audio.title);
-    setFormStageId(audio.stageId || "");
+    setFormObjectiveId(audio.objectiveId || "");
     setFormAudioUrl(audio.audioUrl);
     setFormTranscript(audio.transcript || "");
     setFormUsageInstruction(audio.usageInstruction || "");
@@ -238,6 +246,10 @@ export function PersonaAudioVaultModal({
       toast.error("Título e arquivo de áudio são obrigatórios.");
       return;
     }
+    if (!formObjectiveId && !editingAudio?.legacyStageId) {
+      toast.error("Selecione um objetivo para vincular o áudio.");
+      return;
+    }
 
     if (formAudioUrl.startsWith("blob:") || formAudioUrl.startsWith("data:")) {
       toast.error("O áudio ainda não foi hospedado no servidor. Por favor, selecione o arquivo novamente.");
@@ -249,7 +261,7 @@ export function PersonaAudioVaultModal({
       if (editingAudio) {
         await updateAudio(editingAudio.id, {
           title: formTitle.trim(),
-          stageId: formStageId || undefined,
+          objectiveId: formObjectiveId || undefined,
           audioUrl: formAudioUrl.trim(),
           transcript: formTranscript.trim(),
           usageInstruction: formUsageInstruction.trim(),
@@ -259,7 +271,7 @@ export function PersonaAudioVaultModal({
       } else {
         await addAudio({
           title: formTitle.trim(),
-          stageId: formStageId || undefined,
+          objectiveId: formObjectiveId || undefined,
           audioUrl: formAudioUrl.trim(),
           transcript: formTranscript.trim(),
           usageInstruction: formUsageInstruction.trim(),
@@ -279,10 +291,9 @@ export function PersonaAudioVaultModal({
     }
   };
 
-  const getStageName = (stageId?: string) => {
-    if (!stageId) return "Todas as Etapas";
-    const st = stages.find((s) => s.id === stageId);
-    return st ? st.name : "Etapa geral";
+  const getObjectiveName = (objectiveId?: string, legacyStageId?: string) => {
+    if (!objectiveId) return legacyStageId ? "Necessita vinculação a objetivo" : "Sem objetivo";
+    return objectives.find((objective) => objective.id === objectiveId)?.label || objectiveId;
   };
 
   const formatSeconds = (sec?: number) => {
@@ -363,7 +374,7 @@ export function PersonaAudioVaultModal({
             />
           </div>
 
-          {/* Filtro por Etapa */}
+          {/* Filtro por objetivo */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             <button
               type="button"
@@ -374,24 +385,20 @@ export function PersonaAudioVaultModal({
                   : "bg-zinc-800/80 text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              Todas as Etapas
+              Todos os Objetivos
             </button>
-            {stages.map((st) => (
+            {objectives.map((objective) => (
               <button
-                key={st.id}
+                key={objective.id}
                 type="button"
-                onClick={() => setSelectedStageFilter(st.id)}
+                onClick={() => setSelectedStageFilter(objective.id)}
                 className={`px-3 py-1 rounded-lg text-xs font-semibold shrink-0 transition-all flex items-center gap-1.5 ${
-                  selectedStageFilter === st.id
+                  selectedStageFilter === objective.id
                     ? "bg-zinc-700 text-white ring-1 ring-sky-400"
                     : "bg-zinc-800/80 text-zinc-400 hover:text-zinc-200"
                 }`}
               >
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: st.color || "#3b82f6" }}
-                />
-                <span>{st.name}</span>
+                <span>{objective.label}</span>
               </button>
             ))}
           </div>
@@ -425,7 +432,7 @@ export function PersonaAudioVaultModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {filteredAudios.map((audio) => {
                 const isPlaying = playingAudioId === audio.id;
-                const stageName = getStageName(audio.stageId);
+                const objectiveName = getObjectiveName(audio.objectiveId, audio.legacyStageId);
 
                 return (
                   <div
@@ -447,7 +454,7 @@ export function PersonaAudioVaultModal({
                             <span className="truncate">{audio.title}</span>
                           </h4>
                           <p className="text-[11px] text-zinc-400 font-medium truncate mt-0.5">
-                            {stageName}
+                            {objectiveName}
                           </p>
                         </div>
 
@@ -595,20 +602,20 @@ export function PersonaAudioVaultModal({
                 />
               </div>
 
-              {/* Etapa Associada */}
+              {/* Objetivo Associado */}
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-zinc-300">
-                  Etapa Associada (Opcional)
+                  Objetivo Associado
                 </label>
                 <select
-                  value={formStageId}
-                  onChange={(e) => setFormStageId(e.target.value)}
+                  value={formObjectiveId}
+                  onChange={(e) => setFormObjectiveId(e.target.value)}
                   className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500"
                 >
-                  <option value="">Todas as Etapas (Áudio Geral)</option>
-                  {stages.map((st) => (
-                    <option key={st.id} value={st.id}>
-                      Etapa: {st.name}
+                  <option value="">Sem vínculo (somente para áudio legado)</option>
+                  {objectives.map((objective) => (
+                    <option key={objective.id} value={objective.id}>
+                      {objective.stageName} · {objective.label}
                     </option>
                   ))}
                 </select>

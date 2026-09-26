@@ -43,8 +43,8 @@ function loadModule(filePath) {
   return moduleObj.exports;
 }
 
-const orchestrator = loadModule("supabase/functions/api/experimental_orchestrator.ts");
-const { detectSpontaneousObjectiveCompletions } = orchestrator;
+const legacyDetector = loadModule("supabase/functions/api/legacy_pilot_objective_detector.ts");
+const { detectSpontaneousObjectiveCompletions } = legacyDetector;
 
 console.log("🧪 Iniciando auditoria dos 6 casos de Entidade, Negação e Temporalidade...\n");
 
