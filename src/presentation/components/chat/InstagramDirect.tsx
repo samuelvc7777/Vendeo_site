@@ -620,6 +620,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [conversations, setConversations] = useState<DirectConversation[]>([]);
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
   const [messages, setMessages] = useState<Record<string, DirectMessage[]>>({});
+  const messagesRef = useRef<Record<string, DirectMessage[]>>({});
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const composerRef = useRef<InstagramChatComposerRef>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -1470,6 +1474,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const isSentByMe = conv.lastDirection === "out" || conv.lastDirection === "outbound";
     const isCurrentActive = activeChatIdRef.current === conv.id;
 
+    // O evento da conversa pode chegar mesmo quando o broadcast da mensagem
+    // foi perdido durante uma troca de conexão. Revalida o histórico ativo
+    // somente quando o timestamp recebido é mais novo que o que a tela conhece.
+    if (isCurrentActive && conv.lastMessageAt) {
+      const incomingTimestamp = getMessageTimestampMs(conv.lastMessageAt);
+      const knownMessages = messagesRef.current[conv.id] || [];
+      const latestKnownTimestamp = knownMessages.reduce((latest, message) => {
+        return Math.max(
+          latest,
+          getMessageTimestampMs(message.timestamp || message.sentDate || message.createdAt)
+        );
+      }, 0);
+
+      if (incomingTimestamp > latestKnownTimestamp) {
+        void fetchConversationMessages(conv.id);
+      }
+    }
+
     if (!isSentByMe && !isCurrentActive) {
       delete readChatTimestampsRef.current[conv.id];
       if (typeof window !== "undefined") {
@@ -1515,7 +1537,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const others = prevConvs.filter((c) => c.id !== conv.id);
       return [updated, ...others];
     });
-  }, []);
+  }, [fetchConversationMessages]);
 
   // Handler de INSERT de nova conversa via Realtime — adiciona incrementalmente à lista sem full fetch
   const handleRealtimeInstagramConversationInsert = useCallback((conv: {
@@ -1801,7 +1823,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   }, [messages[activeChat?.id || ""]?.length]);
 
   // POLLING RESILIENTE 1 (fallback de reconciliação da conversa ativa)
-  // - Realtime saudável: apenas reconciliação espaçada a cada 5 minutos
+  // - Realtime saudável: reconciliação curta para cobrir perda de eventos
   // - Realtime degradado: fallback a cada 60s (visível) / 120s (oculto)
   // - In-flight dedup: não inicia nova chamada se já há request em curso
   // - Focus/visibilitychange: respeitam janela mínima de 30s desde o último fetch
@@ -1825,11 +1847,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         return;
       }
 
-      // Realtime saudável: reconciliação apenas a cada 5 minutos
+      // Realtime saudável ainda pode perder eventos quando a aba dorme ou
+      // troca de rede; mantenha o histórico ativo atualizado em até 30s.
       if (isRealtimeConnectedRef.current) {
+        const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
+        const minReconciliationMs = isVisible ? 30000 : 120000;
         const sinceLastMs = Date.now() - lastMsgFetchAtRef.current;
-        if (sinceLastMs < 300000) {
-          scheduleNext(300000 - sinceLastMs);
+        if (sinceLastMs < minReconciliationMs) {
+          scheduleNext(minReconciliationMs - sinceLastMs);
           return;
         }
       }
@@ -1990,8 +2015,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
           let nextInterval: number;
           if (isRealtimeConnectedRef.current) {
-            // Realtime ok: reconciliação a cada 5 minutos
-            nextInterval = 300000;
+            // Realtime ok: reconciliação curta para recuperar eventos perdidos.
+            nextInterval = isVisible ? 30000 : 120000;
           } else {
             // Realtime degradado: fallback com backoff
             const base = isVisible ? 60000 : 120000;
