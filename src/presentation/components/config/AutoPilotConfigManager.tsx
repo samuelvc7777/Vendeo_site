@@ -15,6 +15,7 @@ import {
   Info,
 } from "lucide-react";
 import { toast } from "sonner";
+import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 import { AutoPilotConfig } from "@/domain/entities/AutoPilot";
 import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/SupabaseAutoPilotRepository";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
@@ -128,7 +129,7 @@ export function AutoPilotConfigManager() {
       if (checked) {
         toast.success("Piloto Automático ATIVADO! As conversas serão respondidas no tempo programado.");
       } else {
-        toast.info("Piloto Automático DESLIGADO. Filas aguardando foram canceladas; análises em andamento serão concluídas com segurança.");
+        toast.info("Piloto Automático DESLIGADO. Chats ociosos foram desativados; os que já estavam em processamento serão desligados ao concluir o ciclo atual.");
       }
     } catch {
       toast.error("Erro ao alternar Piloto Automático.");
@@ -227,7 +228,7 @@ export function AutoPilotConfigManager() {
               Caso a IA seja desligada enquanto já estiver <strong>em processo de análise (pensamento)</strong> ou <strong>enviando mensagens</strong>, ela <strong>concluirá esse atendimento atual</strong> com segurança para não cortar frases pela metade.
             </p>
             <p className="text-zinc-400 leading-snug">
-              Todas as outras conversas que ainda estiverem aguardando o tempo de resposta são <strong>paradas imediatamente</strong>. Assim que a conversa que já estava em curso finalizar, o sistema para por completo de forma 100% automática.
+              Todas as outras conversas são <strong>desativadas imediatamente</strong>, inclusive as que aguardavam o tempo de resposta. Quando cada ciclo em andamento terminar, a IA também será desativada naquele chat.
             </p>
           </div>
         </div>

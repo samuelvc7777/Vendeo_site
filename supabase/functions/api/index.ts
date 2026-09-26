@@ -2,8 +2,6 @@
 // Deno TypeScript Runtime
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
-import { buildTinderAiPromptForBackend } from "./tinder_ai.ts";
-import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
 import {
   runBrainOrchestration,
   requestBrainCyclePreemptionAtomic,
@@ -22,10 +20,14 @@ import {
   isActionableInboundMessage,
   isPureEmojiMessage,
 } from "./ConversationQualityGate.ts";
+import { createPendingManualResponse, detectProtectedInboundIntent } from "./manual_response_review.ts";
+import { generateEpisodeFingerprint, saveConversationEpisodes } from "./conversation_episodic_memory.ts";
+import { isAuthorizedAutopilotCron } from "./autopilot_cron_auth.ts";
+import { createGlobalShutdownChatState, hasActiveBrainCycle } from "./autopilot_global_shutdown.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-autopilot-cron-token",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
 };
 
@@ -57,226 +59,41 @@ function getSupabaseClient() {
   return createClient(url, key);
 }
 
-
-async function getBaiApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("BAI_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "bai_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("sk-")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da b.ai no Supabase:", err);
-  }
-  return null;
+function constantTimeStringEquals(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const left = encoder.encode(a);
+  const right = encoder.encode(b);
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i++) diff |= left[i] ^ right[i];
+  return diff === 0;
 }
 
-async function getNvidiaApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("NVIDIA_API_KEY") || "").trim();
-  if (envKey) return envKey;
+async function verifyMetaWebhookSignature(supabase: any, req: Request): Promise<boolean> {
+  const supplied = req.headers.get("x-hub-signature-256") || "";
+  if (!supplied.startsWith("sha256=")) return false;
 
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "nvidia_api_key")
-      .maybeSingle();
+  const { data: config } = await supabase
+    .from("instagram_config")
+    .select("app_secret")
+    .eq("id", "default")
+    .maybeSingle();
+  const appSecret = (Deno.env.get("META_APP_SECRET") || config?.app_secret || "").trim();
+  if (!appSecret) return false;
 
-    if (data?.app_secret?.startsWith("nvapi-")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da NVIDIA no Supabase:", err);
-  }
-  return null;
+  const body = await req.clone().text();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(appSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
+  const expected = `sha256=${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return constantTimeStringEquals(supplied.toLowerCase(), expected);
 }
 
-async function getTokenHarborApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("TOKENHARBOR_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "tokenharbor_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("thk_")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave do TokenHarbor no Supabase:", err);
-  }
-  return null;
-}
-
-async function getOpenAiApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("OPENAI_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "openai_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("sk-")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da OpenAI no Supabase:", err);
-  }
-  return null;
-}
-
-async function getKieApiKey(supabase: any): Promise<string | null> {
-  // 1. Prioridade máxima: chave persistida na tabela instagram_config (configurada na UI)
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "kie_api_key")
-      .maybeSingle();
-
-    if (typeof data?.app_secret === "string" && data.app_secret.trim()) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da Kie.ai no Supabase:", err);
-  }
-
-  // 2. Variável de ambiente na Edge Function
-  const envKey = (Deno.env.get("KIE_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  // 3. Fallback via variável de ambiente
-  return (Deno.env.get("KIE_API_FALLBACK_KEY") || "").trim();
-}
-
-/**
- * Resolve a chave da API da Atria (Atria-Dawn-Preview / api.atria-asi.ai).
- * Ordem: variável de ambiente da Edge ➔ instagram_config (atria_api_key).
- */
-async function getAtriaApiKey(supabase: any): Promise<string | null> {
-  const envKeys = [
-    (Deno.env.get("ATRIA_API_KEY") || "").trim(),
-    (Deno.env.get("HERMES_CUSTOM_ATRIA_DAWN_PREVIEW_API_KEY") || "").trim(),
-  ];
-  for (const key of envKeys) {
-    if (key) return key;
-  }
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "atria_api_key")
-      .maybeSingle();
-
-    if (typeof data?.app_secret === "string" && data.app_secret.trim()) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da Atria no Supabase:", err);
-  }
-  return null;
-}
-
-function extractKieResponseText(rawTextOrPayload: any): string {
-  if (!rawTextOrPayload) return "";
-  if (typeof rawTextOrPayload === "object") {
-    if (typeof rawTextOrPayload.output_text === "string") return rawTextOrPayload.output_text;
-    if (typeof rawTextOrPayload.response?.output_text === "string") return rawTextOrPayload.response.output_text;
-    if (Array.isArray(rawTextOrPayload.candidates)) {
-      const parts = rawTextOrPayload.candidates
-        .flatMap((cand: any) => Array.isArray(cand?.content?.parts) ? cand.content.parts : [])
-        .map((p: any) => typeof p?.text === "string" ? p.text : "")
-        .filter(Boolean)
-        .join("");
-      if (parts) return parts;
-    }
-    const outputArr = Array.isArray(rawTextOrPayload.output)
-      ? rawTextOrPayload.output
-      : Array.isArray(rawTextOrPayload.response?.output)
-      ? rawTextOrPayload.response.output
-      : null;
-    if (outputArr) {
-      const text = outputArr
-        .flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
-        .map((content: any) => typeof content?.text === "string" ? content.text : "")
-        .filter(Boolean)
-        .join("\n");
-      if (text) return text;
-    }
-  }
-
-  if (typeof rawTextOrPayload === "string") {
-    try {
-      const parsed = JSON.parse(rawTextOrPayload);
-      const res = extractKieResponseText(parsed);
-      if (res) return res;
-    } catch {}
-
-    const lines = rawTextOrPayload.split("\n");
-    let accumulatedDelta = "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const dataStr = line.slice(6).trim();
-      if (!dataStr || dataStr === "[DONE]") continue;
-      try {
-        const data = JSON.parse(dataStr);
-        // Suporte ao stream do Gemini (SSE: data: {"candidates": [{"content": {"parts": [{"text": "..."}]}}]})
-        if (Array.isArray(data.candidates)) {
-          for (const cand of data.candidates) {
-            if (Array.isArray(cand?.content?.parts)) {
-              for (const part of cand.content.parts) {
-                if (typeof part?.text === "string") {
-                  accumulatedDelta += part.text;
-                }
-              }
-            }
-          }
-        }
-        if (data.type === "response.completed" && Array.isArray(data.response?.output)) {
-          for (const item of data.response.output) {
-            if (Array.isArray(item?.content)) {
-              const joined = item.content.map((c: any) => c.text || "").filter(Boolean).join("\n");
-              if (joined) return joined;
-            }
-          }
-        }
-        if (data.type === "response.output_text.done" && typeof data.text === "string") {
-          return data.text;
-        }
-        if (data.type === "response.output_item.done" && Array.isArray(data.item?.content)) {
-          const joined = data.item.content
-            .map((c: any) => c.text || "")
-            .filter(Boolean)
-            .join("\n");
-          if (joined) return joined;
-        }
-        if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
-          accumulatedDelta += data.delta;
-        }
-        if (data.delta && typeof data.delta.text === "string") {
-          accumulatedDelta += data.delta.text;
-        }
-      } catch {}
-    }
-    if (accumulatedDelta.trim()) return accumulatedDelta.trim();
-  }
-
-  return "";
-}
 
 /**
  * Substitui todos os pontos (.) por vírgulas (,), mantendo estritamente os pontos de interrogação (?)
@@ -533,6 +350,160 @@ serve(async (req: Request) => {
   try {
     const supabase = getSupabaseClient();
 
+    const isWebhook = path === "/meta/webhook" || path === "/instagram/webhook";
+    const isInternalExport = path.startsWith("/internal/");
+    const isCronTick = path === "/autopilot/cron-tick" || path === "/api/autopilot/cron-tick";
+
+    if (isCronTick) {
+      const authorized = await isAuthorizedAutopilotCron(
+        supabase,
+        req.headers.get("x-autopilot-cron-token"),
+      );
+      if (!authorized) {
+        return new Response(JSON.stringify({ error: "Não autorizado." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if (path === "/chat-stage/progress" && req.method === "POST") {
+      const body = await req.json().catch(() => ({}));
+      const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
+      const progressPatch = body?.progressPatch;
+      if (!conversationId || !progressPatch || typeof progressPatch !== "object" || Array.isArray(progressPatch)) {
+        return new Response(JSON.stringify({ error: "conversationId e progressPatch válidos são obrigatórios." }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data, error } = await supabase.rpc("patch_chat_progress_atomic", {
+        p_conversation_id: conversationId,
+        p_progress_patch: progressPatch,
+      });
+      if (error || data?.success !== true) {
+        return new Response(JSON.stringify({ error: error?.message || data?.error || "Não foi possível salvar o progresso." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, result: data }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (path === "/manual-response/memory" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+      const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+      const inboundMessageIds = Array.isArray(body.inboundMessageIds)
+        ? Array.from(new Set(body.inboundMessageIds.map((id) => String(id || "").trim()).filter(Boolean))).slice(0, 20)
+        : [];
+      const responseText = typeof body.responseText === "string" ? body.responseText.trim().slice(0, 2000) : "";
+
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(conversationId) || inboundMessageIds.length === 0 || !responseText) {
+        return new Response(JSON.stringify({ error: "Dados válidos da resposta manual são obrigatórios." }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: rawInboundRows, error: inboundError } = await supabase
+        .from("instagram_messages")
+        .select("id, text, is_mine")
+        .eq("conversation_id", conversationId)
+        .in("id", inboundMessageIds);
+
+      const inboundRows = Array.isArray(rawInboundRows)
+        ? rawInboundRows as Array<{ id: string; text: string | null; is_mine: boolean }>
+        : null;
+
+      if (inboundError || !inboundRows || inboundRows.length !== inboundMessageIds.length || inboundRows.some((message) => message.is_mine)) {
+        return new Response(JSON.stringify({ error: "As mensagens recebidas não correspondem a esta conversa." }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const rowsById = new Map(inboundRows.map((message) => [String(message.id), message]));
+      const orderedRows = inboundMessageIds.map((id) => rowsById.get(id)).filter(Boolean) as Array<{ id: string; text: string | null; is_mine: boolean }>;
+      const originalText = orderedRows.map((message) => String(message.text || "").trim()).filter(Boolean).join("\n").slice(0, 3000);
+      const detectedIntent = detectProtectedInboundIntent({ text: originalText });
+      const lastInboundId = orderedRows[orderedRows.length - 1]?.id;
+      const sourceMessageIds = orderedRows.map((message) => message.id);
+      const invitation = detectedIntent?.intent === "invitation";
+      const topic = invitation
+        ? "invitation"
+        : detectedIntent?.intent === "phone_contact_request"
+        ? "contact_request"
+        : detectedIntent?.intent === "photo_or_attachment"
+        ? "shared_media"
+        : "manual_response";
+      const episodeSourceText = originalText || "Mensagem sem texto";
+      const inviteEpisode = invitation
+        ? [{
+            conversation_id: conversationId,
+            actor: "pretendente" as const,
+            event_type: "plan" as const,
+            topic,
+            summary: `O pretendente já convidou Larissa para se encontrar. Convite: “${episodeSourceText}”. Resposta manual da Larissa: “${responseText}”.`,
+            source_message_id: lastInboundId,
+            source_message_ids: sourceMessageIds,
+            original_text: episodeSourceText,
+            semantic_keys: ["pretendente.invitation", "pretendente.meeting", "date_invitation", "encounter", "manual_response_history"],
+            memory_class: "landmark" as const,
+            metadata: { manual_review: true, response_text: responseText, memory_class: "landmark", importance: 0.95 },
+          }]
+        : [];
+      const replyEpisode = {
+        conversation_id: conversationId,
+        actor: "larissa" as const,
+        event_type: "answer" as const,
+        topic,
+        summary: invitation
+          ? `Larissa respondeu manualmente ao convite do pretendente: “${responseText}”.`
+          : `Larissa respondeu manualmente após a conversa precisar de revisão: “${responseText}”. Mensagem recebida: “${episodeSourceText}”.`,
+        source_message_id: lastInboundId,
+        source_message_ids: sourceMessageIds,
+        original_text: responseText,
+        semantic_keys: invitation
+          ? ["larissa.invitation_response", "pretendente.invitation", "manual_response_history"]
+          : [`larissa.manual_response.${topic}`, "manual_response_history"],
+        memory_class: "speech_act" as const,
+        metadata: { manual_review: true, inbound_text: episodeSourceText, memory_class: "speech_act" },
+      };
+      const episodes = [...inviteEpisode, replyEpisode].map((episode) => ({
+        ...episode,
+        episode_fingerprint: generateEpisodeFingerprint({
+          conversation_id: conversationId,
+          source_message_id: episode.source_message_id,
+          actor: episode.actor,
+          event_type: episode.event_type,
+          topic: episode.topic,
+          semantic_keys: episode.semantic_keys,
+        }),
+      }));
+
+      const writeResult = await saveConversationEpisodes({ supabase, conversationId, episodes });
+      const fingerprints = episodes.map((episode) => episode.episode_fingerprint);
+      const { data: savedEpisodes, error: verifyError } = await supabase
+        .from("conversation_episodic_memory")
+        .select("episode_fingerprint")
+        .eq("conversation_id", conversationId)
+        .in("episode_fingerprint", fingerprints);
+      if (verifyError || !Array.isArray(savedEpisodes) || savedEpisodes.length !== episodes.length) {
+        console.error("[ManualResponseMemory] Não foi possível confirmar toda a memória manual:", verifyError || writeResult);
+        return new Response(JSON.stringify({ error: "A resposta foi enviada, mas não foi possível confirmar a memória da conversa." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, savedEpisodes: savedEpisodes.length, topic }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ==========================================
     // 1. INSTAGRAM / META WEBHOOK (Handshake & Events)
     // ==========================================
@@ -560,6 +531,10 @@ serve(async (req: Request) => {
 
       // POST: Recepção de mensagens do Instagram (incluindo echoes enviadas pelo app oficial)
       if (req.method === "POST") {
+        if (!(await verifyMetaWebhookSignature(supabase, req))) {
+          console.warn("[Webhook] Assinatura da Meta ausente ou inválida; evento rejeitado.");
+          return new Response("Forbidden", { status: 403, headers: corsHeaders });
+        }
         const body = await req.json().catch(() => ({}));
         const entries = body.entry || [];
 
@@ -694,8 +669,10 @@ serve(async (req: Request) => {
 
             let audioUrl: string | undefined;
             let imageUrl: string | undefined;
+            let inboundMediaType: string | undefined;
 
             if (isAudioMsg) {
+              inboundMediaType = "audio";
               const firstAtt = message.attachments?.[0];
               const rawAudioUrl = firstAtt?.payload?.url || firstAtt?.file_url;
 
@@ -735,13 +712,16 @@ serve(async (req: Request) => {
               }
 
               text = audioUrl ? `[audio:${audioUrl}]` : "🎙️ Mensagem de voz";
-            } else if (!text && message.attachments && message.attachments.length > 0) {
+            } else if (message.attachments && message.attachments.length > 0) {
               const att = message.attachments[0];
-              if (att.type === "image" && att.payload?.url) {
+              inboundMediaType = att.type || att.mime_type?.split("/")[0] || "file";
+              if (inboundMediaType === "image" && att.payload?.url) {
                 imageUrl = att.payload.url;
-                text = `[image:${imageUrl}]`;
-              } else if (att.type === "video" && att.payload?.url) {
-                text = `[video:${att.payload.url}]`;
+                if (!text) text = `[image:${imageUrl}]`;
+              } else if (inboundMediaType === "video" && att.payload?.url) {
+                if (!text) text = `[video:${att.payload.url}]`;
+              } else if (!text) {
+                text = `[file:${att.payload?.url || "anexo recebido"}]`;
               }
             }
 
@@ -887,7 +867,7 @@ serve(async (req: Request) => {
                     p_text: text,
                     p_timestamp: timestamp,
                     p_media_url: audioUrl || imageUrl || null,
-                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                    p_media_type: inboundMediaType || (imageUrl ? "image" : null),
                     p_reply_to_message_id: replyToMid,
                     p_audio_transcript: audioTranscript,
                     p_audio_transcription_error: audioTranscriptionError,
@@ -920,7 +900,7 @@ serve(async (req: Request) => {
                 is_mine: true,
                 status: "delivered",
                 media_url: audioUrl || imageUrl || null,
-                media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                media_type: inboundMediaType || (imageUrl ? "image" : null),
                 reply_to_message_id: replyToMid,
                 direction: "outbound",
                 audio_transcript: audioTranscript,
@@ -947,7 +927,7 @@ serve(async (req: Request) => {
                   isMine: isEcho,
                   status: "sent",
                   mediaUrl: audioUrl || imageUrl,
-                  mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+                  mediaType: inboundMediaType || (imageUrl ? "image" : undefined),
                   replyToMessageId: replyToMid,
                 },
               });
@@ -1013,7 +993,8 @@ serve(async (req: Request) => {
                 const isExplicitlyDisabled =
                   chatStateInCloud?.isEnabled === false ||
                   chatStateInCloud?.status === "disabled" ||
-                  chatStateInCloud?.status === "paused_manual";
+                  chatStateInCloud?.status === "paused_manual" ||
+                  Boolean(chatStateInCloud?.pendingManualResponse);
 
                 const convRules = convRow?.stage_completed_rules || {};
                 const isPaused =
@@ -1021,6 +1002,7 @@ serve(async (req: Request) => {
                   convRow?.is_restricted === true ||
                   convRules.status === "paused_handoff" ||
                   convRules.status === "paused_guardrail" ||
+                  Boolean(chatStateInCloud?.pendingManualResponse) ||
                   (convRow?.ai_auto_respond !== true && (
                     convRules.status === "paused_manual" ||
                     convRules.status === "disabled" ||
@@ -1028,9 +1010,13 @@ serve(async (req: Request) => {
                   ));
 
                 const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
+                const protectedIntent = detectProtectedInboundIntent({
+                  text: audioTranscript || text,
+                  mediaType: inboundMediaType || (imageUrl ? "image" : undefined),
+                });
                 const isActionable = isActionableInboundMessage({
                   text,
-                  mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+                  mediaType: inboundMediaType || (imageUrl ? "image" : undefined),
                   audioTranscript,
                 });
 
@@ -1048,6 +1034,41 @@ serve(async (req: Request) => {
                   console.log(
                     `[AutoPilot] Inbound ${messageId} para conv ${conversationId} pertence ao baseline do watermark (rev=${inboundRpcData?.inbound_revision} <= watermark=${inboundRpcData?.watermark_revision}). Zero Brain.`
                   );
+                } else if (protectedIntent && isEnabledGlobally && !isManual) {
+                  const pendingManualResponse = createPendingManualResponse({
+                    inboundMessages: [audioTranscript || text || previewText],
+                    inboundMessageIds: [messageId],
+                    reason: protectedIntent.reason,
+                    source: "protected_inbound",
+                  });
+                  const { data: reviewedResult, error: reviewedError } = await supabase.rpc(
+                    "mark_manual_review_inbounds_processed_atomic",
+                    { p_conversation_id: conversationId, p_message_ids: [messageId] },
+                  );
+                  if (reviewedError || reviewedResult?.success !== true) {
+                    console.error(
+                      `[AutoPilot] Não foi possível finalizar inbound retida no ledger: conv=${conversationId} msg=${messageId}`,
+                      reviewedError || reviewedResult,
+                    );
+                  }
+                  if (convRow?.ai_debounce_until) {
+                    await supabase
+                      .from("instagram_conversations")
+                      .update({ ai_debounce_until: null })
+                      .eq("id", conversationId);
+                  }
+                  await publishAutoPilotState(supabase, conversationId, {
+                    status: "needs_manual_response",
+                    pendingManualResponse,
+                    scheduledResponseAt: null,
+                    activity: activity(
+                      "needs_manual_response",
+                      "A IA precisa de você",
+                      protectedIntent.reason,
+                      { messageId, reason: protectedIntent.intent }
+                    ),
+                  });
+                  console.log(`[AutoPilot] Inbound ${messageId} requer revisão humana (${protectedIntent.intent}); nenhuma resposta automática será enviada.`);
                 } else if (!isActionable) {
                   console.log(
                     `[AutoPilot] Inbound ${messageId} para conv ${conversationId} ignorado para resposta da IA (apenas emoji isolado, foto ou mídia sem texto/áudio). Zero Brain.`
@@ -1055,7 +1076,7 @@ serve(async (req: Request) => {
                 }
 
                 // BRAIN: Único orquestrador oficial de produção (fail-closed)
-                if (!isPaused && isEnabledGlobally && !isManual && isEligibleByWatermark && isActionable) {
+                if (!isPaused && isEnabledGlobally && !isManual && isEligibleByWatermark && isActionable && !protectedIntent) {
                   const delayMinutes =
                     typeof apConfig?.responseDelayMinutes === "number"
                       ? apConfig.responseDelayMinutes
@@ -1587,7 +1608,7 @@ serve(async (req: Request) => {
 
       let query = supabase
         .from("instagram_messages")
-        .select("id, conversation_id, sender_id, is_from_me, message, text, audio_url, media_type, media_url, audio_transcript, created_at")
+        .select("id, conversation_id, sender_id, is_mine, text, media_type, media_url, audio_transcript, created_at")
         .eq("conversation_id", conversationId);
 
       if (before) {
@@ -1610,14 +1631,14 @@ serve(async (req: Request) => {
       const nextBefore = sliced.length > 0 ? sliced[sliced.length - 1].created_at : null;
 
       const formatted = sliced.map((m: any) => {
-        const isFromMe = Boolean(m.is_from_me || m.sender_id === "me" || m.sender_id === "larissa");
+        const isFromMe = Boolean(m.is_mine || m.sender_id === "me" || m.sender_id === "larissa");
         return {
           id: String(m.id || ""),
           conversationId: String(m.conversation_id || conversationId),
           sender: isFromMe ? "larissa" : "pretendente",
           isFromMe,
-          text: String(m.text || m.message || "").trim(),
-          audioUrl: m.audio_url || (m.media_type === "audio" ? m.media_url : null) || null,
+          text: String(m.text || "").trim(),
+          audioUrl: (m.media_type === "audio" ? m.media_url : null) || null,
           audioTranscript: m.audio_transcript || null,
           createdAt: m.created_at || new Date().toISOString(),
         };
@@ -3752,2192 +3773,6 @@ serve(async (req: Request) => {
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
-      }
-    }
-
-    // ==========================================
-    // 8.5.1. GERENCIAMENTO DA CHAVE KIE.AI (SOL) (/ai/kie-status)
-    // ==========================================
-    if (path === "/ai/kie-status") {
-      if (req.method === "GET") {
-        const key = await getKieApiKey(supabase);
-        const isConfigured = Boolean(key && key.trim().length >= 10);
-        const maskedKey = isConfigured && key ? `${key.slice(0, 4)}...${key.slice(-4)}` : null;
-        return new Response(
-          JSON.stringify({
-            configured: isConfigured,
-            model: "gemini-3-8-flash",
-            provider: "Kie.ai (Gemini 3.8 Flash)",
-            maskedKey,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (req.method === "PUT") {
-        const body = await req.json().catch(() => ({}));
-        const apiKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
-
-        if (!apiKey || apiKey.length < 10) {
-          return new Response(
-            JSON.stringify({ error: "Chave inválida. Informe a chave completa da Kie.ai." }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const { error } = await supabase.from("instagram_config").upsert({
-          id: "kie_api_key",
-          app_secret: apiKey,
-          updated_at: new Date().toISOString(),
-        });
-
-        if (error) {
-          return new Response(
-            JSON.stringify({ error: "Falha ao salvar chave Kie no Supabase." }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            message: "Chave Kie.ai (Sol) configurada com sucesso!",
-            maskedKey: `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // ==========================================
-    // 8.5.2. CONFIGURAÇÃO DO OPENAI BRAIN (/ai/openai-config)
-    // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
-    // ==========================================
-    if (path === "/ai/openai-config") {
-      const allowedModels = ["gpt-6-luna", "gpt-6-sol"] as const;
-      const legacyModelLabels: Record<string, string> = {
-        "gpt-5.6-luna": "GPT-5.6 Luna (legado)",
-        "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
-        "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
-      };
-      // Valores suportados pelos modelos GPT-6 do Brain; `max` é o teto de esforço.
-      const allowedReasoningEfforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
-      const allowedVerbosityLevels = ["low", "medium", "high"] as const;
-      const labels: Record<string, string> = {
-        "gpt-6-luna": "GPT-6 Luna",
-        "gpt-6-sol": "GPT-6 Sol",
-      };
-      const { data: configRows, error: configError } = await supabase
-        .from("instagram_config")
-        .select("id, app_secret")
-        .in("id", ["openai_api_key", "openai_brain_model", "openai_brain_agent_id"]);
-      if (configError) return new Response(JSON.stringify({ error: configError.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      const configs = new Map((configRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
-      const apiKey = (Deno.env.get("OPENAI_API_KEY") || configs.get("openai_api_key") || "").trim();
-      const agentId = (Deno.env.get("OPENAI_BRAIN_AGENT_ID") || configs.get("openai_brain_agent_id") || "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482").trim();
-      const mask = (key: string) => key ? `${key.slice(0, 7)}...${key.slice(-4)}` : null;
-      if (!apiKey) return new Response(JSON.stringify({ configured: false, maskedKey: null, model: null, modelLabel: null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      const agentUrl = `https://api.openai.com/v1/agents/${agentId}`;
-      const agentHeaders = { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "agents=v1" };
-      const getAgent = () => fetch(agentUrl, { headers: agentHeaders });
-
-      if (req.method === "GET") {
-        const remote = await getAgent();
-        if (!remote.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${remote.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const agent = await remote.json();
-        const model = String(agent.model || configs.get("openai_brain_model") || "").trim() || null;
-        const reasoningEffort = allowedReasoningEfforts.includes(agent.reasoning?.effort) ? agent.reasoning.effort : null;
-        const verbosity = allowedVerbosityLevels.includes(agent.text?.verbosity) ? agent.text.verbosity : null;
-        const modelLabel = model ? labels[model] || legacyModelLabels[model] || `${model} (legado)` : null;
-        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), model, modelLabel, reasoningEffort, verbosity }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      if (req.method === "PUT") {
-        const body = await req.json().catch(() => ({}));
-        const hasModel = body?.model !== undefined;
-        const hasReasoningEffort = body?.reasoningEffort !== undefined;
-        const hasVerbosity = body?.verbosity !== undefined;
-        if (!hasModel && !hasReasoningEffort && !hasVerbosity && typeof body?.apiKey !== "string") return new Response(JSON.stringify({ error: "Nenhuma configuração foi informada." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const model = hasModel ? body.model : undefined;
-        const reasoningEffort = hasReasoningEffort ? body.reasoningEffort : undefined;
-        const verbosity = hasVerbosity ? body.verbosity : undefined;
-        if (hasModel && !allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha GPT-6 Luna ou GPT-6 Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha none, low, medium, high, xhigh ou max." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        if (hasVerbosity && !allowedVerbosityLevels.includes(verbosity)) return new Response(JSON.stringify({ error: "Verbosity inválida. Escolha low, medium ou high (máxima)." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const suppliedKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
-        const effectiveKey = suppliedKey || apiKey;
-        if (!effectiveKey) return new Response(JSON.stringify({ error: "Configure a chave da API OpenAI antes de escolher o modelo." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const currentResponse = await fetch(agentUrl, { headers: { Authorization: `Bearer ${effectiveKey}`, "OpenAI-Beta": "agents=v1" } });
-        if (!currentResponse.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${currentResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const currentAgent = await currentResponse.json();
-        const targetModel = model || currentAgent.model;
-        const targetReasoningEffort = reasoningEffort || currentAgent.reasoning?.effort;
-        const targetVerbosity = verbosity || currentAgent.text?.verbosity;
-        const remotePatch: Record<string, any> = {};
-        if (hasModel) remotePatch.model = model;
-        if (hasReasoningEffort) remotePatch.reasoning = { ...(currentAgent.reasoning || {}), effort: reasoningEffort };
-        if (hasVerbosity) remotePatch.text = { ...(currentAgent.text || {}), verbosity };
-        let updatedAgent = currentAgent;
-        if (Object.keys(remotePatch).length > 0) {
-          const updateResponse = await fetch(agentUrl, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${effectiveKey}`, "Content-Type": "application/json", "OpenAI-Beta": "agents=v1" },
-            body: JSON.stringify(remotePatch),
-          });
-          if (!updateResponse.ok) return new Response(JSON.stringify({ error: `Falha ao atualizar a configuração do Agent remoto (${updateResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-          updatedAgent = await updateResponse.json();
-          if ((hasModel && updatedAgent.model !== model) || (hasReasoningEffort && updatedAgent.reasoning?.effort !== reasoningEffort) || (hasVerbosity && updatedAgent.text?.verbosity !== verbosity)) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou toda a configuração selecionada" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-        const writes = [];
-        if (hasModel) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_model", app_secret: model, updated_at: new Date().toISOString() }));
-        if (hasReasoningEffort) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_reasoning_effort", app_secret: reasoningEffort, updated_at: new Date().toISOString() }));
-        if (hasVerbosity) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_verbosity", app_secret: verbosity, updated_at: new Date().toISOString() }));
-        const writeResults = await Promise.all(writes);
-        const writeError = writeResults.find((result: any) => result.error)?.error;
-        if (writeError) return new Response(JSON.stringify({ error: writeError.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        if (suppliedKey) {
-          const keyWrite = await supabase.from("instagram_config").upsert({ id: "openai_api_key", app_secret: suppliedKey, updated_at: new Date().toISOString() });
-          if (keyWrite.error) return new Response(JSON.stringify({ error: keyWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-        const finalModel = updatedAgent.model || targetModel;
-        const modelLabel = finalModel ? labels[finalModel] || legacyModelLabels[finalModel] || `${finalModel} (legado)` : null;
-        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), model: finalModel, modelLabel, reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-    }
-
-    // ==========================================
-    // 8.6. REFERÊNCIAS CANÔNICAS DE PERSONA (/ai/persona-references)
-    // ==========================================
-    if (path === "/ai/persona-references") {
-      if (req.method === "GET") {
-        const { data: refs, error: refsErr } = await supabase
-          .from("ai_persona_references")
-          .select("*")
-          .order("created_at", { ascending: false });
-
-        if (refsErr) {
-          return new Response(JSON.stringify({ error: refsErr.message }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        return new Response(JSON.stringify({ success: true, references: refs || [] }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-
-    // ==========================================
-    // 8.5. AUTOPILOT: CRON TICK ASSÍNCRONO (/autopilot/cron-tick)
-    // Acionado a cada 1 minuto pelo pg_cron para processar conversas cujo tempo de debounce venceu
-    // ==========================================
-    if ((path === "/autopilot/cron-tick" || path === "/api/autopilot/cron-tick") && (req.method === "POST" || req.method === "GET")) {
-      try {
-        const nowIso = new Date().toISOString();
-        console.log(`[TRACE-AUTOPILOT] cron:tick check at ${nowIso}`);
-
-        // 0. Verifica se o Piloto Automático está habilitado globalmente
-        const { data: configRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_config__")
-          .maybeSingle();
-        const apConfig = configRow?.stage_completed_rules?.config;
-        const isEnabledGlobally = apConfig?.isEnabledGlobally !== false;
-
-        if (!isEnabledGlobally) {
-          console.log("[Cloud AutoPilot] cron:tick abortado pois o Piloto Automático está desativado globalmente.");
-          await supabase
-            .from("instagram_conversations")
-            .update({ ai_debounce_until: null, ai_auto_respond: false })
-            .not("ai_debounce_until", "is", null);
-
-          return new Response(JSON.stringify({ success: true, message: "Piloto desativado globalmente. Debounces cancelados.", processedCount: 0 }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // 0. Auto-recuperação de stale locks e claims presas (P0)
-        // Se uma conversa ficou com active_cycle_at > 180s sem concluir, o ciclo caiu.
-        // Reverte mensagens 'claimed' para 'pending' e limpa o token de ciclo.
-        try {
-          const staleThresholdIso = new Date(Date.now() - 180_000).toISOString();
-          const { data: staleConvs } = await supabase
-            .from("instagram_conversations")
-            .select("id, stage_completed_rules")
-            .not("stage_completed_rules->active_cycle_token", "is", null)
-            .lt("stage_completed_rules->>active_cycle_at", staleThresholdIso)
-            .limit(10);
-
-          if (staleConvs && staleConvs.length > 0) {
-            for (const sc of staleConvs) {
-              const rules = sc.stage_completed_rules || {};
-              const orch = rules.orchestration || {};
-              const ledger = { ...(orch.messageLedger || {}) };
-              for (const [mid, st] of Object.entries(ledger)) {
-                if (st === "claimed") ledger[mid] = "pending";
-              }
-              const cleanOrch = {
-                ...orch,
-                messageLedger: ledger,
-                activeClaimedMessageIds: [],
-                processingCycleToken: null,
-              };
-              const cleanRules = {
-                ...rules,
-                orchestration: cleanOrch,
-                active_cycle_token: null,
-                active_cycle_at: null,
-              };
-              await supabase
-                .from("instagram_conversations")
-                .update({ stage_completed_rules: cleanRules })
-                .eq("id", sc.id);
-              console.log(`[Cloud AutoPilot] Stale cycle recuperado com sucesso para conv=${sc.id}`);
-            }
-          }
-        } catch (staleErr) {
-          console.warn("[Cloud AutoPilot] Erro ao recuperar stale cycles:", staleErr);
-        }
-
-        // 1. Busca conversas prontas para serem respondidas cujo tempo de espera já venceu
-        const { data: readyConvs, error: queryErr } = await supabase.rpc(
-          "list_autopilot_due_conversations",
-          { p_now: nowIso, p_limit: 20 },
-        );
-
-        if (queryErr) {
-          console.error("[Cloud AutoPilot] Erro ao buscar conversas agendadas:", queryErr);
-          return new Response(JSON.stringify({ error: queryErr.message }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // Filtro em memória seguro: garante que linhas internas de sistema (__autopilot_config__, etc.) nunca sejam processadas
-        const validConvs = (readyConvs || []).filter((c: any) => typeof c.id === "string" && !c.id.startsWith("__"));
-        console.log(`[TRACE-AUTOPILOT] cron:tick found ${validConvs.length} valid conversations ready.`);
-
-        // Limite de concorrência por tick: processa até 3 conversas por ciclo para
-        // evitar pico simultâneo de tokens (rate_limit_exceeded) na OpenAI Agents API.
-        const batchConvs = validConvs.slice(0, 3);
-        const processed: string[] = [];
-
-        if (batchConvs.length > 0) {
-          for (const conv of batchConvs) {
-            // O claim_experimental_cycle é o CAS real. Não limpar debounce antes
-            // dele: uma falha do worker deixaria a conversa sem agenda.
-
-            // A mensagem mais recente pode já ter sido processada enquanto uma
-            // inbound anterior continua pendente. Pagina apenas a janela de 48h.
-            const watermark = conv.stage_completed_rules?.orchestration?.activation_watermark;
-            const ledger = conv.stage_completed_rules?.orchestration?.messageLedger || {};
-            let lastMsg: any = null;
-            let messageOffset = 0;
-            while (!lastMsg) {
-              const { data: inboundPage, error: inboundError } = await supabase
-                .from("instagram_messages")
-                .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url, audio_transcript")
-                .eq("conversation_id", conv.id)
-                .eq("is_mine", false)
-                .gte("created_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
-                .order("created_at", { ascending: false })
-                .range(messageOffset, messageOffset + 99);
-              if (inboundError || !inboundPage?.length) break;
-              lastMsg = inboundPage.find((message: any) => {
-                if (message.sender_id === "me") return false;
-                if (ledger[message.id] === "processed") return false;
-                if (message.id === conv.stage_completed_rules?.orchestration?.lastProcessedMessageId) return false;
-                // Regra P0: Autoridade estrita por inboundRevision monotônica (Zero heurísticas temporais)
-                if (watermark && typeof watermark.inboundRevision === "number") {
-                  const msgRevs = conv.stage_completed_rules?.orchestration?.messageInboundRevisions;
-                  const msgRev = msgRevs?.[message.id];
-                  // Fail-closed: sem revisão individual não existe prova de que a mensagem
-                  // foi admitida depois do watermark. Revisão global da conversa não basta.
-                  if (typeof msgRev !== "number") return false;
-                  if (msgRev <= watermark.inboundRevision) return false;
-                }
-                return true;
-              });
-              if (inboundPage.length < 100) break;
-              messageOffset += 100;
-            }
-
-            const isFromThem = Boolean(lastMsg);
-
-            if (isFromThem) {
-              const convRules = conv.stage_completed_rules || {};
-
-              // BRAIN: Único orquestrador oficial (fail-closed)
-              console.log(`[Brain] cron:tick roteando para Brain em ${conv.id}`);
-              const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
-
-              const brainPromise = runBrainOrchestration({
-                supabase,
-                conversationId: conv.id,
-                newMessage: {
-                  id: lastMsg.id,
-                  text: resolvedAudio.text,
-                  timestamp: lastMsg.timestamp || lastMsg.created_at,
-                  sender: lastMsg.sender_id || "them",
-                  mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
-                  audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
-                },
-              });
-
-              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
-              } else {
-                void brainPromise;
-              }
-
-              processed.push(conv.id);
-            } else {
-              console.log(`[Cloud AutoPilot] Conversa ${conv.id} agendada foi ignorada pois a última mensagem não é do cliente.`);
-              await publishAutoPilotState(supabase, conv.id, {
-                status: "idle",
-                activity: null,
-                scheduledResponseAt: null,
-              });
-              // Limpar ai_debounce_until para evitar varredura em loop infinito
-              await supabase
-                .from("instagram_conversations")
-                .update({ ai_debounce_until: null })
-                .eq("id", conv.id);
-            }
-          }
-        }
-
-        // 2. DISPATCHER DESACOPLADO (P0): Despacha ações de outbox pendentes que já maturaram (not_before <= now)
-        try {
-          const { data: outboxConvs } = await supabase
-            .from("instagram_conversations")
-            .select("id, stage_completed_rules")
-            .eq("ai_auto_respond", true)
-            .not("stage_completed_rules->orchestration->outbox", "is", null)
-            .limit(30);
-
-          if (outboxConvs && outboxConvs.length > 0) {
-            for (const oc of outboxConvs) {
-              const outbox = oc.stage_completed_rules?.orchestration?.outbox || {};
-              const entries = Object.values(outbox) as any[];
-              const hasMaturePending = entries.some(
-                (e: any) => e && e.status === "pending" && (!e.notBefore || e.notBefore <= nowIso)
-              );
-
-              if (hasMaturePending) {
-                console.log(`[Cloud AutoPilot] cron:tick despachando outbox pendente madura para conv=${oc.id}`);
-                const dispatchPromise = runDurableOutboxDispatcher({
-                  supabase,
-                  conversationId: oc.id,
-                });
-
-                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                  (globalThis as any).EdgeRuntime.waitUntil(dispatchPromise);
-                } else {
-                  void dispatchPromise;
-                }
-              }
-            }
-          }
-        } catch (outboxTickErr: any) {
-          console.warn(`[Cloud AutoPilot] cron:tick erro ao verificar outbox pendente:`, outboxTickErr?.message || outboxTickErr);
-        }
-
-        return new Response(JSON.stringify({ success: true, processedCount: processed.length, processed }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no cron tick" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // ==========================================
-    // 8.6. AUTOPILOT: GATILHO DE ATIVAÇÃO IMEDIATA (/autopilot/trigger)
-    // Se a IA for ativada e a última mensagem for do pretendente sem resposta, inicia o ciclo em nuvem na hora!
-    // ==========================================
-    if ((path === "/autopilot/trigger" || path === "/api/autopilot/trigger") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const conversationId = body?.conversationId;
-        if (!conversationId) {
-          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // 1. Busca a conversa para verificar o activation_watermark determinístico
-        const { data: convData } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules, ai_auto_respond")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        const activationWatermark = convData?.stage_completed_rules?.orchestration?.activation_watermark;
-
-        // 2. Busca a última mensagem registrada para esta conversa
-        const { data: lastMsgs, error: msgErr } = await supabase
-          .from("instagram_messages")
-          .select("id, text, timestamp, created_at, sender_id, is_mine, media_type, media_url, audio_transcript")
-          .eq("conversation_id", conversationId)
-          .order("timestamp", { ascending: false })
-          .limit(1);
-
-        if (msgErr || !lastMsgs || lastMsgs.length === 0) {
-          return new Response(JSON.stringify({ triggered: false, status: "idle", reason: "no_messages_found", detail: "Nenhuma mensagem encontrada." }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        const lastMsg = lastMsgs[0];
-        const isFromThem = !lastMsg.is_mine && lastMsg.sender_id !== "me";
-
-        // 3. Validação determinística contra o Watermark de Ativação
-        // Autoridade unicamente baseada em inboundRevision monotônica sob lock FOR UPDATE
-        if (isFromThem) {
-          const currentInboundRev = convData?.stage_completed_rules?.orchestration?.inboundRevision || 0;
-          const watermarkRev = typeof activationWatermark?.inboundRevision === "number"
-            ? activationWatermark.inboundRevision
-            : null;
-          const messageInboundRevisions = convData?.stage_completed_rules?.orchestration?.messageInboundRevisions || {};
-          const msgRev = messageInboundRevisions[lastMsg.id];
-          const isProvenPostWatermark = Boolean(
-            watermarkRev === null ||
-            (typeof msgRev === "number" && msgRev > watermarkRev)
-          );
-
-          const isPriorToWatermark = Boolean(
-            activationWatermark &&
-            watermarkRev !== null &&
-            !isProvenPostWatermark
-          );
-
-          if (isPriorToWatermark) {
-            console.log(`[Autopilot] activation_noop_no_new_inbound conv=${conversationId} msgRev=${typeof msgRev === "number" ? msgRev : "missing"} watermarkRev=${watermarkRev} currentRev=${currentInboundRev}`);
-            return new Response(JSON.stringify({
-              triggered: false,
-              status: "idle",
-              reason: "activation_noop_no_new_inbound",
-              detail: "Autopiloto armado em espera. Nenhuma nova mensagem recebida após a ativação.",
-            }), {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-
-          // Se a mensagem for comprovadamente NOVA pós-ativação:
-          console.log(`[Autopilot] new_inbound_after_activation conv=${conversationId} rev=${currentInboundRev} > watermarkRev=${watermarkRev}`);
-
-          // Limpa agendamento e travas manuais antigas para que o ciclo execute imediatamente
-          await supabase.from("instagram_conversations").update({
-            ai_auto_respond: true,
-            ai_debounce_until: null,
-          }).eq("id", conversationId);
-          try {
-            await supabase.rpc("patch_autopilot_pause_atomic", {
-              p_conversation_id: conversationId,
-              p_paused: false,
-            });
-          } catch {}
-
-          // BRAIN: Único orquestrador oficial (fail-closed)
-          console.log(`[Brain] activation_trigger roteando para Brain em ${conversationId}`);
-          const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
-
-          const brainPromise = runBrainOrchestration({
-            supabase,
-            conversationId,
-            newMessage: {
-              id: lastMsg.id,
-              text: resolvedAudio.text,
-              timestamp: lastMsg.timestamp,
-              sender: lastMsg.sender_id || "them",
-              mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
-              audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
-            },
-          });
-
-          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-            (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
-          } else {
-            void brainPromise;
-          }
-
-          return new Response(JSON.stringify({
-            triggered: true,
-            messageId: lastMsg.id,
-            status: "processing",
-            detail: "Nova mensagem pós-ativação detectada. Autopiloto iniciado!",
-          }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // Se a última mensagem for nossa, a IA fica armada em espera sem falar sozinha
-        try {
-          const { data: statesRow } = await supabase
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", "__autopilot_states__")
-            .maybeSingle();
-          const states = statesRow?.stage_completed_rules?.states || {};
-          const current = states[conversationId] || { conversationId, isEnabled: true, status: "idle" };
-          const updatedState = {
-            ...current,
-            isEnabled: true,
-            status: "idle",
-            activity: {
-              phase: "waiting",
-              label: "IA esperando responder",
-              detail: "Aguardando o cliente responder para a IA agir.",
-              updatedAt: new Date().toISOString(),
-            },
-            updatedAt: new Date().toISOString(),
-          };
-          states[conversationId] = updatedState;
-          await supabase.from("instagram_conversations").upsert({
-            id: "__autopilot_states__",
-            username: "system_autopilot_states",
-            stage_completed_rules: { states, updated_at: new Date().toISOString() },
-            updated_at: new Date().toISOString(),
-          });
-          const rtChan = supabase.channel("vendeo_realtime_chat");
-          await rtChan.send({
-            type: "broadcast",
-            event: "autopilot_state_update",
-            payload: { ...updatedState, timestamp: new Date().toISOString() },
-          });
-        } catch (_pubErr) {}
-
-        return new Response(JSON.stringify({
-          triggered: false,
-          status: "idle",
-          detail: "Última mensagem enviada por nós. IA armada aguardando resposta do pretendente.",
-        }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no trigger" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Cancelamento operacional: desativa a IA e invalida o ciclo atual.
-    if ((path === "/autopilot/pause" || path === "/api/autopilot/pause") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const conversationId = body?.conversationId;
-        if (!conversationId) {
-          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // 1. Grava cancelamento atômico na conversa via RPC no PostgreSQL
-        const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
-          "patch_autopilot_pause_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_paused: true,
-            p_reason: "paused_manual",
-          }
-        );
-
-        if (pauseRpcErr || !pauseRpcResult?.success) {
-          // FAIL-CLOSED: se a RPC falhar, atualiza somente colunas físicas isoladas, sem tocar em stage_completed_rules
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              ai_debounce_until: null,
-              ai_auto_respond: false,
-            })
-            .eq("id", conversationId);
-        }
-
-        // 2. Atualiza estado visual no __autopilot_states__
-        const { data: statesRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_states__")
-          .maybeSingle();
-        const states = statesRow?.stage_completed_rules?.states || {};
-        const current = states[conversationId] || { conversationId, isEnabled: false };
-        const nowIso = new Date().toISOString();
-        const updated = {
-          ...current,
-          isEnabled: false,
-          status: "disabled",
-          pauseReason: "paused_manual",
-          pausedAt: nowIso,
-          activity: null,
-          scheduledResponseAt: null,
-          updatedAt: nowIso,
-        };
-        states[conversationId] = updated;
-        await supabase.from("instagram_conversations").upsert({
-          id: "__autopilot_states__",
-          username: "system_autopilot_states",
-          stage_completed_rules: { states, updated_at: nowIso },
-          updated_at: nowIso,
-        });
-
-        // 3. Emite broadcast Realtime
-        const rt = supabase.channel("vendeo_realtime_chat");
-        await rt.send({
-          type: "broadcast",
-          event: "autopilot_state_update",
-          payload: { ...updated, timestamp: nowIso },
-        });
-
-        await publishAutoPilotState(supabase, conversationId, {
-          isEnabled: false,
-          status: "disabled",
-          cycleId: current.activeCycleToken || undefined,
-          activity: activity("cancelled", "Ação cancelada", "IA desativada pelo operador.", { event: "cycle_cancelled" }),
-          scheduledResponseAt: null,
-          pendingAction: null,
-        });
-
-        return new Response(JSON.stringify({ success: true, result: "cancelled", status: "disabled", detail: "Ação cancelada. IA desativada." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro ao pausar" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Rota atômica para ATIVAR OU DESATIVAR o Piloto Automático em um chat específico
-    if ((path === "/autopilot/toggle-chat" || path === "/api/autopilot/toggle-chat") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const conversationId = body?.conversationId;
-        const isEnabled = Boolean(body?.isEnabled);
-        const triggerImmediate = Boolean(body?.triggerImmediate || body?.mode === "immediate");
-        if (!conversationId) {
-          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        let immediateResult: { started: boolean; reason?: string; cycleId?: string } | null = null;
-
-        if (isEnabled) {
-          // Ativação atômica via RPC: busca a última mensagem sob lock FOR UPDATE e grava o watermark + ai_auto_respond = true sem janela de race!
-          const { data: armResult, error: armErr } = await supabase.rpc(
-            "arm_autopilot_with_watermark_atomic",
-            { p_conversation_id: conversationId }
-          );
-
-          if (armErr || !armResult?.success) {
-            console.warn(`[Autopilot] arm_autopilot_with_watermark_atomic falhou para conv=${conversationId}, aplicando fallback seguro...`, armErr?.message || armErr);
-            await supabase.from("instagram_conversations").update({
-              ai_auto_respond: true,
-              ai_debounce_until: null,
-            }).eq("id", conversationId);
-          } else {
-            console.log(`[Autopilot] autopilot_armed_atomic conv=${conversationId} watermark_rev=${armResult?.inbound_revision ?? armResult?.watermark?.inboundRevision}`);
-          }
-
-          // Se o operador solicitou resposta imediata à última mensagem pendente:
-          if (triggerImmediate) {
-            const { data: lastMsgs } = await supabase
-              .from("instagram_messages")
-              .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
-              .eq("conversation_id", conversationId)
-              .order("timestamp", { ascending: false })
-              .limit(1);
-            const lastMsg = lastMsgs?.[0];
-
-            if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
-              const proposedCycleId = `corr_toggle_imm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-              const { data: authResult } = await supabase.rpc(
-                "authorize_send_now_atomic",
-                {
-                  p_conversation_id: conversationId,
-                  p_new_cycle_token: proposedCycleId,
-                  p_stale_seconds: 300,
-                }
-              );
-
-              if (authResult?.success) {
-                const cycleId = authResult.cycleToken || proposedCycleId;
-                const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
-                await publishAutoPilotState(supabase, conversationId, {
-                  cycleId,
-                  status: "starting",
-                  activity: activity("starting", "Iniciando...", "Ciclo iniciado imediatamente ao ativar o piloto.", { cycleId, event: "toggle_immediate_started" }),
-                  scheduledResponseAt: null,
-                });
-
-                const brainPromise = runBrainOrchestration({
-                  supabase,
-                  conversationId,
-                  correlationId: cycleId,
-                  preClaimedCycleToken: cycleId,
-                  newMessage: {
-                    id: lastMsg.id,
-                    text: resolvedAudio.text,
-                    timestamp: lastMsg.timestamp,
-                    sender: lastMsg.sender_id || "them",
-                    mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
-                    audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
-                  },
-                });
-
-                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                  (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
-                } else {
-                  void brainPromise;
-                }
-                immediateResult = { started: true, cycleId };
-              } else if (authResult?.reason === "already_processing") {
-                immediateResult = { started: true, reason: "already_processing", cycleId: authResult.active_cycle_token };
-              } else {
-                immediateResult = { started: false, reason: authResult?.reason || "auth_failed" };
-              }
-            } else {
-              immediateResult = { started: false, reason: "nothing_to_answer" };
-            }
-          }
-        } else {
-          // Desativação atômica via RPC protegendo outbox e active_cycle_token
-          const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
-            "patch_autopilot_pause_atomic",
-            {
-              p_conversation_id: conversationId,
-              p_paused: true,
-              p_reason: "paused_manual",
-            }
-          );
-
-          if (pauseRpcErr || !pauseRpcResult?.success) {
-            console.warn(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}. Atualizando somente coluna física ai_auto_respond.`);
-            await supabase
-              .from("instagram_conversations")
-              .update({
-                ai_auto_respond: false,
-                ai_debounce_until: null,
-              })
-              .eq("id", conversationId);
-          }
-        }
-
-        // Atualiza __autopilot_states__
-        const { data: statesRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_states__")
-          .maybeSingle();
-
-        const states = statesRow?.stage_completed_rules?.states || {};
-        const current = states[conversationId] || { conversationId, isEnabled: !isEnabled };
-        const nowIso = new Date().toISOString();
-        const updated = {
-          ...current,
-          isEnabled,
-          status: isEnabled ? "idle" : "disabled",
-          pauseReason: isEnabled ? undefined : "paused_manual",
-          pausedAt: isEnabled ? undefined : nowIso,
-          enabledAt: isEnabled ? nowIso : current.enabledAt,
-          activity: isEnabled ? current.activity : null,
-          scheduledResponseAt: isEnabled ? current.scheduledResponseAt : null,
-          updatedAt: nowIso,
-        };
-        states[conversationId] = updated;
-
-        await supabase.from("instagram_conversations").upsert({
-          id: "__autopilot_states__",
-          username: "system_autopilot_states",
-          stage_completed_rules: { states, updated_at: nowIso },
-          updated_at: nowIso,
-        });
-
-        // Broadcast Realtime para sincronizar imediatamente todas as abas
-        const rt = supabase.channel("vendeo_realtime_chat");
-        await rt.send({
-          type: "broadcast",
-          event: "autopilot_state_update",
-          payload: { ...updated, timestamp: nowIso },
-        });
-
-        return new Response(JSON.stringify({
-          success: true,
-          isEnabled,
-          immediateTriggered: immediateResult?.started === true,
-          immediateReason: immediateResult?.reason,
-          cycleId: immediateResult?.cycleId,
-          detail: isEnabled
-            ? (immediateResult?.started ? "Piloto ativado e resposta imediata iniciada!" : "Piloto ativado no chat.")
-            : "Piloto desativado no chat.",
-        }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no toggle-chat" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Rota para PAUSAR / RETOMAR A CONTAGEM DURANTE A EDIÇÃO DO BALÃO (HUD Control)
-    if ((path === "/autopilot/hold-edit" || path === "/api/autopilot/hold-edit") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const { conversationId, isEditing } = body || {};
-        if (!conversationId) {
-          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        const { data: rpcHoldResult, error: rpcHoldErr } = await supabase.rpc(
-          "patch_autopilot_hold_edit_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_is_editing: Boolean(isEditing),
-          }
-        );
-
-        if (rpcHoldErr || !rpcHoldResult?.success) {
-          // FAIL-CLOSED: se a RPC falhar, terminantemente proibido fazer read-modify-write de stage_completed_rules em JS
-          console.warn(`[Autopilot] patch_autopilot_hold_edit_atomic falhou para conv=${conversationId}. FAIL-CLOSED: zero escrita direta em stage_completed_rules.`);
-        }
-
-        return new Response(JSON.stringify({ success: true, editing_in_progress: Boolean(isEditing) }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro ao pausar contagem para edição" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Rota para EDITAR A PRÉVIA do balão antes do envio (HUD Control)
-    if ((path === "/autopilot/edit-preview" || path === "/api/autopilot/edit-preview") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const { conversationId, editedText } = body || {};
-        if (!conversationId || typeof editedText !== "string") {
-          return new Response(JSON.stringify({ error: "conversationId e editedText são obrigatórios." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        const { data: rpcEditResult, error: rpcEditErr } = await supabase.rpc(
-          "patch_autopilot_edit_preview_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_edited_text: editedText,
-          }
-        );
-
-        if (rpcEditErr || !rpcEditResult?.success) {
-          // FAIL-CLOSED: se a RPC falhar, terminantemente proibido fazer read-modify-write de stage_completed_rules em JS
-          console.warn(`[Autopilot] patch_autopilot_edit_preview_atomic falhou para conv=${conversationId}. FAIL-CLOSED: zero escrita direta em stage_completed_rules.`);
-        }
-
-        return new Response(JSON.stringify({ success: true, detail: "Edição gravada para o ciclo atual." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro ao editar" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Rota para iniciar o ciclo imediatamente, com resultado operacional explícito.
-    if ((path === "/autopilot/send-now" || path === "/api/autopilot/send-now") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const conversationId = body?.conversationId;
-        if (!conversationId) {
-          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        const proposedCycleId = `corr_sendnow_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-        // 1. Autorização atômica sob lock FOR UPDATE no PostgreSQL
-        const { data: authResult, error: authErr } = await supabase.rpc(
-          "authorize_send_now_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_new_cycle_token: proposedCycleId,
-            p_stale_seconds: 300,
-          }
-        );
-
-        if (authErr) {
-          console.error(`[Brain] send-now erro ao chamar authorize_send_now_atomic:`, authErr.message);
-        }
-
-        if (authResult) {
-          if (!authResult.success) {
-            if (authResult.reason === "disabled") {
-              return new Response(JSON.stringify({ success: false, result: "disabled", status: "disabled", detail: "IA está desativada neste chat." }), {
-                status: 409,
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
-              });
-            }
-            if (authResult.reason === "already_processing") {
-              return new Response(JSON.stringify({
-                success: true,
-                result: "already_processing",
-                cycleId: authResult.active_cycle_token || null,
-                status: "processing",
-                detail: "Ciclo do agente já está em andamento. Envio acelerado sem duplicação de execução."
-              }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
-              });
-            }
-            return new Response(JSON.stringify({ success: false, result: authResult.reason, detail: "Falha na autorização do send-now." }), {
-              status: 409,
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-        } else {
-          // FAIL-CLOSED: Se a RPC authorize_send_now_atomic falhar ou estiver indisponível,
-          // é TERMINANTEMENTE PROIBIDO fazer read-modify-write de stage_completed_rules em JS.
-          console.error(`[Brain] send-now: RPC authorize_send_now_atomic falhou ou retornou nulo. FAIL-CLOSED: zero escrita direta em stage_completed_rules.`);
-          return new Response(JSON.stringify({ success: false, result: "infra_failure", detail: "Falha na autorização atômica do send-now. Operação abortada com segurança." }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        const cycleId = proposedCycleId;
-
-        // O ciclo é disparado mesmo quando o debounce já expirou, desde que ainda haja inbound pendente.
-        {
-          const { data: lastMsgs } = await supabase
-            .from("instagram_messages")
-            .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
-            .eq("conversation_id", conversationId)
-            .order("timestamp", { ascending: false })
-            .limit(1);
-          const lastMsg = lastMsgs?.[0];
-          if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
-            // BRAIN: Único orquestrador oficial (fail-closed)
-            console.log(`[Brain] send-now roteando para Brain em ${conversationId}`);
-            const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
-
-            await publishAutoPilotState(supabase, conversationId, {
-              cycleId,
-              status: "starting",
-              activity: activity("starting", "Iniciando...", "Ciclo iniciado manualmente pelo operador.", { cycleId, event: "send_now_started" }),
-              scheduledResponseAt: null,
-            });
-            const brainPromise = runBrainOrchestration({
-              supabase,
-              conversationId,
-              correlationId: cycleId,
-              preClaimedCycleToken: cycleId,
-              newMessage: {
-                id: lastMsg.id,
-                text: resolvedAudio.text,
-                timestamp: lastMsg.timestamp,
-                sender: lastMsg.sender_id || "them",
-                mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
-                audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
-              },
-            });
-
-            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-              (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
-            } else {
-              void brainPromise;
-            }
-            return new Response(JSON.stringify({ success: true, result: "started", cycleId, status: "starting" }), {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-        }
-
-        // Se não houver inbound pendente, libera o ciclo para não manter lock zombie
-        await releaseExperimentalCycleAtomic({
-          supabase,
-          conversationId,
-          cycleToken: cycleId,
-          processingStatus: "idle",
-        }).catch(() => null);
-
-        return new Response(JSON.stringify({ success: false, result: "nothing_to_answer", status: "idle", detail: "Nenhuma mensagem inbound pendente para responder." }), {
-          status: 409,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro ao adiantar envio" }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // ==========================================
-    // 8.11. AUTOPILOT: RETRY MANUAL ÚNICO (/autopilot/retry-once)
-    // Autoriza EXATAMENTE UMA tentativa manual do Brain quando technical_retry_exhausted
-    // ==========================================
-    if ((path === "/autopilot/retry-once" || path === "/api/autopilot/retry-once") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const conversationId = body?.conversationId;
-        if (!conversationId) {
-          return new Response(JSON.stringify({ success: false, reason: "missing_conversation_id", message: "conversationId é obrigatório." }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        const newCycleToken = `manual_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
-        const authRes = await authorizeManualAutopilotRetryAtomic({
-          supabase,
-          conversationId,
-          newCycleToken,
-        });
-
-        if (!authRes.success) {
-          const httpStatus = authRes.reason === "active_cycle_running" ? 409 : 400;
-          return new Response(JSON.stringify(authRes), {
-            status: httpStatus,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // Publica evento de autorização
-        await publishAutoPilotState(supabase, conversationId, {
-          cycleId: newCycleToken,
-          status: "processing",
-          activity: activity("analyzing", "Tentativa manual autorizada", "Iniciando ciclo manual solicitado pelo operador.", { cycleId: newCycleToken }),
-          cycleEvent: {
-            phase: "started",
-            event: "manual_retry_authorized",
-            label: "Tentativa manual autorizada",
-            detail: "Operador autorizou uma única tentativa manual para este lote.",
-            metadata: {
-              cycleToken: newCycleToken,
-              previousCycleToken: authRes.previousCycleToken,
-              pendingCount: authRes.pendingCount,
-            },
-          },
-        });
-
-        // Localiza a mensagem inbound alvo
-        let targetMessage = {
-          id: authRes.pendingMessageIds?.[0] || `manual_inbound_${Date.now()}`,
-          text: "",
-          timestamp: new Date().toISOString(),
-          sender: "pretendente",
-        };
-        const { data: dbMsg } = await supabase
-          .from("instagram_messages")
-          .select("id, text, created_at, sender_id")
-          .eq("id", targetMessage.id)
-          .maybeSingle();
-        if (dbMsg) {
-          targetMessage = {
-            id: dbMsg.id,
-            text: dbMsg.text || "",
-            timestamp: dbMsg.created_at || new Date().toISOString(),
-            sender: dbMsg.sender_id || "pretendente",
-          };
-        }
-
-        // Dispara a orquestração oficial com isManualRetry: true
-        const orchestrationPromise = runBrainOrchestration({
-          supabase,
-          conversationId,
-          newMessage: targetMessage,
-          correlationId: newCycleToken,
-          isManualRetry: true,
-          preClaimedCycleToken: newCycleToken,
-        });
-
-        // Aguarda a execução terminar para responder ao operador
-        const result = await orchestrationPromise;
-
-        return new Response(JSON.stringify({
-          success: true,
-          cycleToken: newCycleToken,
-          result,
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      } catch (err: any) {
-        console.error("[Autopilot] Erro ao executar retry manual:", err);
-        return new Response(JSON.stringify({
-          success: false,
-          reason: "internal_error",
-          message: err instanceof Error ? err.message : "Erro interno ao processar tentativa manual.",
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Rota para LIGAR / DESLIGAR A IA GLOBALMENTE COM PARADA GRACIOSA (HUD Control)
-    if ((path === "/autopilot/toggle-global" || path === "/api/autopilot/toggle-global") && req.method === "POST") {
-      try {
-        const body = await req.json().catch(() => ({}));
-        const { isEnabledGlobally } = body || {};
-        const isEnabled = Boolean(isEnabledGlobally);
-
-        // 1. Atualiza __autopilot_config__
-        const { data: cfgRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_config__")
-          .maybeSingle();
-        const currentRules = cfgRow?.stage_completed_rules || {};
-        const currentConfig = currentRules.config || {};
-        const updatedConfig = {
-          ...currentConfig,
-          isEnabledGlobally: isEnabled,
-          updatedAt: new Date().toISOString(),
-        };
-
-        await supabase
-          .from("instagram_conversations")
-          .upsert({
-            id: "__autopilot_config__",
-            username: "system_autopilot_config",
-            full_name: "Configurações do Piloto Automático",
-            status: "system",
-            unread: false,
-            last_message: `Delay: ${updatedConfig.responseDelayMinutes || 1}m | Global: ${isEnabled ? "ON" : "OFF"}`,
-            last_message_at: new Date().toISOString(),
-            is_restricted: false,
-            stage_completed_rules: {
-              ...currentRules,
-              config: updatedConfig,
-              updated_at: new Date().toISOString(),
-            },
-            updated_at: new Date().toISOString(),
-          });
-
-        // 2. Se desativado: cancela conversas que estão APENAS aguardando debounce (waiting_delay)
-        // e preserva aquelas onde a IA já está em análise/envio ativo (processing) para concluir com segurança
-        if (!isEnabled) {
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              ai_debounce_until: null,
-              ai_auto_respond: false,
-            })
-            .not("ai_debounce_until", "is", null);
-
-          const { data: statesRow } = await supabase
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", "__autopilot_states__")
-            .maybeSingle();
-
-          const statesRules = statesRow?.stage_completed_rules || {};
-          const states = statesRules.states || {};
-          let statesModified = false;
-
-          for (const [convId, chatState] of Object.entries(states as Record<string, any>)) {
-            if (
-              chatState &&
-              (chatState.status === "waiting_delay" ||
-                (chatState.activity && chatState.activity.phase === "waiting"))
-            ) {
-              chatState.status = "idle";
-              chatState.activity = null;
-              chatState.scheduledResponseAt = null;
-              statesModified = true;
-            }
-          }
-
-          if (statesModified) {
-            await supabase
-              .from("instagram_conversations")
-              .update({
-                stage_completed_rules: {
-                  ...statesRules,
-                  states,
-                  updated_at: new Date().toISOString(),
-                },
-              })
-              .eq("id", "__autopilot_states__");
-
-            await supabase.channel("autopilot_realtime").send({
-              type: "broadcast",
-              event: "autopilot_state_changed",
-              payload: { allStates: states },
-            });
-          }
-        }
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            isEnabledGlobally: isEnabled,
-            detail: isEnabled
-              ? "Piloto Automático ativado globalmente."
-              : "Piloto Automático desativado com parada graciosa.",
-          }),
-          {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
-      } catch (err: unknown) {
-        return new Response(
-          JSON.stringify({
-            error: err instanceof Error ? err.message : "Erro ao alternar chave mestra",
-          }),
-          {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
-      }
-    }
-
-    // ==========================================
-    // 8.6. CONSULTA DO ESTADO DE ORQUESTRAÇÃO BRAIN
-    // ==========================================
-    if (
-      (path === "/autopilot/orchestration/state" || path === "/api/autopilot/orchestration/state") &&
-      req.method === "GET"
-    ) {
-      try {
-        const conversationId = url.searchParams.get("conversationId");
-        if (!conversationId) {
-          return new Response(
-            JSON.stringify({ error: "conversationId query param é obrigatório" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const { data: conv } = await supabase
-          .from("instagram_conversations")
-          .select("id, stage_completed_rules")
-          .eq("id", conversationId)
-          .maybeSingle();
-
-        const orchData = conv?.stage_completed_rules?.orchestration || {};
-        const orchestration = {
-          version: orchData.version || 1,
-          currentPhase: orchData.currentPhase || orchData.phase || "conexao_inicial",
-          checkpoint: orchData.checkpoint || "inicio",
-          lastProcessedMessageId: orchData.lastProcessedMessageId || null,
-          lastProcessedAt: orchData.lastProcessedAt || null,
-          lastProcessingStatus: orchData.lastProcessingStatus || "idle",
-          lastCorrelationId: orchData.lastCorrelationId || null,
-          lastError: orchData.lastError || null,
-          updatedAt: orchData.updatedAt || orchData.updated_at || null,
-        };
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            conversationId,
-            orchestration,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      } catch (err: unknown) {
-        return new Response(
-          JSON.stringify({
-            error: err instanceof Error ? err.message : "Erro ao consultar estado do Brain",
-          }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // 8.7. MOTOR DE IA GENERATIVA GROQ (/ai/generate)
-    // ==========================================
-    if (path === "/ai/generate") {
-      if (req.method === "GET") {
-        return new Response(
-          JSON.stringify({
-            status: "online",
-            service: "Vendeo AI Chat Generator (Edge Function)",
-            defaultModel: "deepseek-v4.1-flash:free",
-            providers: ["atria", "tokenharbor", "nvidia", "groq", "b.ai", "kie"],
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (req.method === "POST") {
-        const body = await req.json().catch(() => ({}));
-        const model = body?.model || "deepseek-v4.1-flash:free";
-        const temperature = typeof body?.temperature === "number" ? body.temperature : (model.includes("deepseek") ? 0.68 : 0.65);
-        const convId = body?.conversationId || "default";
-        const platform = (body?.platform || "instagram").toLowerCase();
-
-        // 0. Busca referências canônicas e ativas de persona da Larissa no Supabase
-        let personaReferences: any[] = [];
-        try {
-          const { data: personaData } = await supabase
-            .from("ai_persona_references")
-            .select("category, them_message, larissa_response, notes")
-            .eq("is_active", true)
-            .limit(20);
-          if (personaData && Array.isArray(personaData)) {
-            personaReferences = personaData;
-          }
-        } catch (pErr) {
-          console.warn("Aviso ao buscar ai_persona_references em /ai/generate:", pErr);
-        }
-
-        // 1. Constrói o prompt contextualizado
-        let promptText = "";
-        // DNA da persona (identidade + regras + few-shot). Viaja como mensagem
-        // de "system" para o motor: sem ele a IA alucina uma vida genérica
-        // (ex: "nutrição", "social media") em vez da Larissa real (Enfermagem).
-        let systemPromptText = "";
-        let formattedHistory: any[] = [];
-        let targetMessagesToRespond: any[] | undefined = undefined;
-        let usedEmojisFromHistory: string[] = [];
-
-        if (platform === "tinder") {
-          const { data: matchData } = await supabase
-            .from("tinder_conversations")
-            .select("*")
-            .eq("match_id", convId)
-            .maybeSingle();
-
-          let name = matchData?.name || body?.conversationName || "Pretendente";
-          if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-            formattedHistory = body.currentMessages.map((m: any) => ({
-              id: m.id || String(Date.now()),
-              sender: (m.isMine || m.is_mine || m.senderId === "me" || m.sender_id === "me" || m.sender === "me" ? "me" : "them") as "me" | "them",
-              text: m.text || "",
-              timestamp: m.timestamp || "Recente",
-              audioTranscript: m.audioTranscript,
-            }));
-          } else {
-            const { data: dbMsgs } = await supabase
-              .from("tinder_messages")
-              .select("*")
-              .eq("match_id", convId)
-              .order("sent_date", { ascending: false })
-              .limit(50);
-
-            const chronDb = dbMsgs ? [...dbMsgs].reverse() : [];
-            formattedHistory = chronDb.map((m: any) => ({
-              id: m.id,
-              sender: (m.sender_id === "me" ? "me" : "them") as "me" | "them",
-              text: m.message || "",
-              timestamp: m.sent_date || "Recente",
-            }));
-          }
-
-          if (Array.isArray(body?.messagesToRespond) && body.messagesToRespond.length > 0) {
-            targetMessagesToRespond = body.messagesToRespond;
-          } else if (body?.targetMessageId) {
-            const target = formattedHistory.find((m: any) => String(m.id) === String(body.targetMessageId));
-            if (target) {
-              targetMessagesToRespond = [target];
-            }
-          }
-
-          const igUseCase = new GenerateAiPromptUseCase();
-          const igRes = igUseCase.execute({
-            pretendente: {
-              id: convId,
-              name,
-              platform: "tinder",
-              bio: matchData?.bio || "sem bio",
-            },
-            tinderHistory: formattedHistory,
-            messagesToRespond: targetMessagesToRespond,
-            personaReferences,
-            mode: "direct_api",
-          });
-          promptText = igRes.prompt;
-          systemPromptText = igRes.systemPrompt || "";
-          systemPromptText = igRes.systemPrompt || "";
-          usedEmojisFromHistory = igRes.usedEmojis || [];
-        } else {
-          // Instagram
-          const { data: convData } = await supabase
-            .from("instagram_conversations")
-            .select("*")
-            .eq("id", convId)
-            .maybeSingle();
-
-          let parsedName = convData?.full_name || convData?.username || body?.conversationName || "Pretendente";
-          let parsedAge: number | undefined;
-          const ageMatch = parsedName.match(/^(.*?)(?:,\s*(\d+))?$/);
-          if (ageMatch) {
-            if (ageMatch[1]?.trim()) parsedName = ageMatch[1].trim();
-            if (ageMatch[2]) parsedAge = parseInt(ageMatch[2], 10);
-          }
-
-          const pretendente = {
-            id: convId,
-            name: parsedName,
-            age: parsedAge,
-            city: body?.city || "não informada",
-            bio: body?.bio || "sem bio",
-            platform: "instagram" as const,
-            username: convData?.username || body?.contactUsername || parsedName.toLowerCase().replace(/\s+/g, "_"),
-          };
-
-          if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-            formattedHistory = body.currentMessages.map((m: any) => ({
-              id: m.id || String(Date.now()),
-              sender: (m.isMine || m.is_mine || m.senderId === "me" || m.sender_id === "me" || m.sender === "me" ? "me" : "them") as "me" | "them",
-              text: m.text || "",
-              timestamp: m.timestamp || "Recente",
-              audioTranscript: m.audioTranscript,
-            }));
-          } else {
-            const { data: dbMsgs } = await supabase
-              .from("instagram_messages")
-              .select("*")
-              .eq("conversation_id", convId)
-              .order("timestamp", { ascending: false })
-              .limit(50);
-
-            const chronDb = dbMsgs ? [...dbMsgs].reverse() : [];
-            formattedHistory = chronDb.map((m: any) => ({
-              id: m.id,
-              sender: (m.is_mine || m.sender_id === "me" ? "me" : "them") as "me" | "them",
-              text: m.text || "",
-              timestamp: m.timestamp || "Recente",
-              audioTranscript: m.audio_transcript,
-            }));
-          }
-
-          if (Array.isArray(body?.messagesToRespond) && body.messagesToRespond.length > 0) {
-            targetMessagesToRespond = body.messagesToRespond;
-          } else if (body?.targetMessageId) {
-            const target = formattedHistory.find((m: any) => String(m.id) === String(body.targetMessageId));
-            if (target) {
-              targetMessagesToRespond = [target];
-            }
-          }
-
-          const igUseCase = new GenerateAiPromptUseCase();
-          const igRes = igUseCase.execute({
-            pretendente,
-            instagramHistory: formattedHistory,
-            messagesToRespond: targetMessagesToRespond,
-            personaReferences,
-            mode: "direct_api",
-            stageContext: body?.stageContext,
-          });
-          promptText = igRes.prompt;
-          systemPromptText = igRes.systemPrompt || "";
-          systemPromptText = igRes.systemPrompt || "";
-          usedEmojisFromHistory = igRes.usedEmojis || [];
-        }
-
-        // 2. Dispara requisição para IA (NVIDIA Kimi K3, b.ai ou Groq)
-        const startTime = Date.now();
-        let chosenModel = model;
-        let rawContent = "";
-        let lastError = "";
-
-        const isDeepseekModel = model.includes("deepseek");
-        const isDeepseekPro = model.includes("pro");
-        const isNvidiaModel =
-          model.includes("kimi") ||
-          model === "moonshotai/kimi-k3" ||
-          isDeepseekModel ||
-          model.includes("nvidia");
-        const isBaiModel =
-          model.includes("flash") && !isDeepseekModel ||
-          model.includes("b.ai") ||
-          model === "qwen3.8-flash" ||
-          model === "qwen3.8-max";
-
-        // Tentativa 0: OpenAI (Apenas se o modelo for explicitamente OpenAI / GPT-4o)
-        const openAiKey = await getOpenAiApiKey(supabase);
-        if (openAiKey && (model.includes("openai") || model.includes("gpt-4o") || model.startsWith("gpt-4"))) {
-          try {
-            const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${openAiKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                model: model.includes("gpt-4o") ? model : "gpt-4o-mini",
-                messages: [{ role: "user", content: promptText }],
-                temperature,
-                max_tokens: 800,
-                response_format: { type: "json_object" },
-              }),
-              signal: AbortSignal.timeout(9000),
-            });
-
-            if (oaiRes.ok) {
-              const oaiData = await oaiRes.json();
-              rawContent = oaiData?.choices?.[0]?.message?.content || "";
-              if (rawContent.trim()) {
-                chosenModel = "ChatGPT Sol (OpenAI)";
-              }
-            } else {
-              lastError = await oaiRes.text();
-              console.warn("[Edge /ai/generate] Falha OpenAI:", lastError);
-            }
-          } catch (oaiErr: any) {
-            lastError = oaiErr?.message || String(oaiErr);
-            console.warn("[Edge /ai/generate] Erro de rede OpenAI:", oaiErr);
-          }
-        }
-
-        // Tentativa 0.1: Se o modelo solicitado for DeepSeek, prioridade máxima para TokenHarbor / NVIDIA Flash
-        if (!rawContent.trim() && isDeepseekModel) {
-          const thApiKey = await getTokenHarborApiKey(supabase);
-          if (thApiKey) {
-            try {
-              const thRes = await fetch("https://tokenharbor.ai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${thApiKey}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Vendeo-Ai-Edge/1.0",
-                },
-                body: JSON.stringify({
-                  model: "deepseek-v4.1-flash:free",
-                  messages: [{ role: "user", content: promptText }],
-                  temperature,
-                  max_tokens: 1000,
-                }),
-                signal: AbortSignal.timeout(20000),
-              });
-
-              if (thRes.ok) {
-                const thData = await thRes.json();
-                rawContent = thData?.choices?.[0]?.message?.content || "";
-                if (rawContent.trim()) {
-                  chosenModel = "deepseek-v4.1-flash:free (TokenHarbor)";
-                }
-              } else {
-                lastError = await thRes.text();
-                console.warn("[Edge /ai/generate] Falha no TokenHarbor:", lastError);
-              }
-            } catch (thErr: any) {
-              lastError = thErr?.message || String(thErr);
-              console.warn("[Edge /ai/generate] Erro de rede TokenHarbor:", thErr);
-            }
-          }
-
-          // Fallback DeepSeek na NVIDIA Flash caso TokenHarbor oscile
-          if (!rawContent.trim()) {
-            const nvApiKey = await getNvidiaApiKey(supabase);
-            if (nvApiKey) {
-              try {
-                const nvRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${nvApiKey}`,
-                    "Content-Type": "application/json",
-                    Accept: "application/json",
-                    "User-Agent": "Vendeo-Ai-Edge/1.0",
-                  },
-                  body: JSON.stringify({
-                    model: "deepseek-ai/deepseek-v4-flash-0731",
-                    messages: [{ role: "user", content: promptText }],
-                    temperature,
-                    max_tokens: 1000,
-                    stream: false,
-                  }),
-                  signal: AbortSignal.timeout(12000),
-                });
-                if (nvRes.ok) {
-                  const nvData = await nvRes.json();
-                  const msgObj = nvData?.choices?.[0]?.message;
-                  rawContent = msgObj?.content || msgObj?.reasoning_content || "";
-                  if (rawContent.trim()) {
-                    chosenModel = "deepseek-ai/deepseek-v4-flash-0731 (NVIDIA)";
-                  }
-                }
-              } catch (nvErr) {
-                console.warn("[Edge /ai/generate] Erro de rede NVIDIA Flash:", nvErr);
-              }
-            }
-          }
-        }
-
-        // Tentativa 0.5: Kie.ai (gemini-3-8-flash - Provedor Oficial Prioritário para Sol / Fallback)
-        if (!rawContent.trim()) {
-          const kieKey = await getKieApiKey(supabase);
-          if (kieKey) {
-            try {
-              const kieRes = await fetch("https://api.kie.ai/gemini/v1/models/gemini-3-8-flash:streamGenerateContent", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${kieKey}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  stream: true,
-                  contents: [{
-                    role: "user",
-                    parts: [{ text: promptText }],
-                  }],
-                  generationConfig: {
-                    temperature: 0.7,
-                  },
-                }),
-                signal: AbortSignal.timeout(45000),
-              });
-
-              if (kieRes.ok) {
-                const sseText = await kieRes.text();
-                rawContent = extractKieResponseText(sseText);
-                if (rawContent.trim()) {
-                  chosenModel = "Kie.ai (gemini-3-8-flash)";
-                }
-              } else {
-                lastError = await kieRes.text();
-                console.warn("[Edge /ai/generate] Falha Kie.ai Gemini:", lastError);
-              }
-            } catch (kieErr: any) {
-              lastError = kieErr?.message || String(kieErr);
-              console.warn("[Edge /ai/generate] Erro de rede Kie.ai Gemini:", kieErr);
-            }
-          }
-        }
-
-
-        // Tentativa 3: b.ai (se o modelo for b.ai ou se Flash)
-        if (!rawContent.trim() && isBaiModel) {
-          const baiApiKey = await getBaiApiKey(supabase);
-          if (baiApiKey) {
-            const targetBaiModel = model.replace(/^bai:/, "") || "qwen3.8-flash";
-            try {
-              const baiRes = await fetch("https://api.b.ai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${baiApiKey}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Vendeo-Ai-Edge/1.0",
-                },
-                body: JSON.stringify({
-                  model: targetBaiModel,
-                  messages: [{ role: "user", content: promptText }],
-                  temperature,
-                  max_tokens: 400,
-                  enable_thinking: false,
-                  stream: false,
-                }),
-              });
-
-              if (baiRes.ok) {
-                const baiData = await baiRes.json();
-                rawContent = baiData?.choices?.[0]?.message?.content || "";
-                chosenModel = targetBaiModel;
-              } else {
-                lastError = await baiRes.text();
-                console.warn("[Edge /ai/generate] Falha na b.ai:", lastError);
-              }
-            } catch (bErr: any) {
-              lastError = bErr?.message || String(bErr);
-              console.warn("[Edge /ai/generate] Erro de rede b.ai:", bErr);
-            }
-          }
-        }
-
-        // Tentativa 4: Groq Cloud (Prioriza 120B para Pro, ou 27b para Flash)
-        if (!rawContent.trim()) {
-          const apiKey = await getGroqApiKey(supabase);
-          if (apiKey) {
-            const candidateModels = isDeepseekPro
-              ? ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
-              : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"];
-
-            for (const currentCandidate of candidateModels) {
-              chosenModel = currentCandidate;
-              const payloadBody: Record<string, any> = {
-                model: currentCandidate,
-                messages: [{ role: "user", content: promptText }],
-                temperature,
-                max_tokens: 600,
-                response_format: { type: "json_object" },
-              };
-
-              let groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Vendeo-Ai-Edge/1.0",
-                },
-                body: JSON.stringify(payloadBody),
-              });
-
-              if (!groqRes.ok && payloadBody.response_format) {
-                delete payloadBody.response_format;
-                groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    "Content-Type": "application/json",
-                    "User-Agent": "Vendeo-Ai-Edge/1.0",
-                  },
-                  body: JSON.stringify(payloadBody),
-                });
-              }
-
-              if (groqRes.ok) {
-                const groqData = await groqRes.json();
-                rawContent = groqData?.choices?.[0]?.message?.content || "";
-                if (rawContent.trim()) {
-                  break;
-                }
-              } else {
-                lastError = await groqRes.text();
-                console.warn(`[Edge /ai/generate] Falha no modelo Groq ${currentCandidate}:`, lastError);
-              }
-            }
-          }
-        }
-
-        if (!rawContent.trim()) {
-          return new Response(
-            JSON.stringify({ success: false, error: `Erro na geração de IA: ${lastError || "Sem resposta"}` }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const latencyMs = Date.now() - startTime;
-
-        function normalizeAiIndices(
-          respList: string[],
-          rawIdx: any,
-          clientMsgsList?: { text?: string; index?: number }[]
-        ): number[][] {
-          if (!Array.isArray(respList) || respList.length === 0) return [];
-
-          const allClientIndices = Array.isArray(clientMsgsList) && clientMsgsList.length > 0
-            ? clientMsgsList.map((m, i) => (typeof m.index === "number" ? m.index : i))
-            : [0];
-
-          const validClientIndices = new Set(allClientIndices);
-          const hasPerResponseIndices = Array.isArray(rawIdx) && rawIdx.some((group: any) => Array.isArray(group));
-
-          return respList.map((_, responseIndex) => {
-            const rawGroup = hasPerResponseIndices && Array.isArray(rawIdx[responseIndex])
-              ? rawIdx[responseIndex]
-              : [];
-            const group = Array.from(new Set(
-              rawGroup
-                .map((n: any) => Number(n))
-                .filter((n: number) => Number.isInteger(n) && validClientIndices.has(n))
-            )).sort((a, b) => a - b);
-
-            if (group.length > 0) return group;
-            if (allClientIndices.length === 1) return [allClientIndices[0]];
-            return [allClientIndices[Math.min(responseIndex, allClientIndices.length - 1)]];
-          });
-        }
-
-        function sanitizeAiAnalysis(value: unknown): string | null {
-          if (typeof value !== "string") return null;
-          const cleaned = value
-            .replace(/:contentReference\[[^\]]*\]\{[^}]*\}/gi, "")
-            .replace(/\[oaicite[^\]]*\]/gi, "")
-            .replace(/\s{2,}/g, " ")
-            .trim();
-          return cleaned || null;
-        }
-
-        // Limpeza e parse
-        let clean = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "").trim();
-        const markdownMatch = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-        if (markdownMatch && markdownMatch[1]) {
-          clean = markdownMatch[1].trim();
-        } else {
-          const firstBrace = clean.indexOf("{");
-          const lastBrace = clean.lastIndexOf("}");
-          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-            clean = clean.slice(firstBrace, lastBrace + 1);
-          }
-        }
-
-        let parsed: any = { responses: [], indices: [] };
-        try {
-          parsed = JSON.parse(clean);
-        } catch {
-          // Resgata o campo responses e analise_do_pretendente se houver erro de sintaxe no JSON
-          const respMatch = clean.match(/"responses"\s*:\s*\[([\s\S]*?)\]/);
-          if (respMatch && respMatch[1]) {
-            const extracted = Array.from(respMatch[1].matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)).map((m) => m[1]);
-            if (extracted.length > 0) {
-              parsed.responses = extracted;
-            }
-          }
-          const analiseMatch = clean.match(/"analise_do_pretendente"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
-          if (analiseMatch && analiseMatch[1]) {
-            parsed.analise_do_pretendente = analiseMatch[1];
-          }
-
-          // Se ainda não conseguiu extrair e clean for um JSON bruto incompleto, resgata as strings internas ou usa fallback limpo
-          if (!parsed.responses || parsed.responses.length === 0) {
-            const anyQuotes = Array.from(clean.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g))
-              .map((m) => m[1])
-              .filter((s) => !["analise_do_pretendente", "responses", "indices"].includes(s) && s.length > 5);
-            if (anyQuotes.length > 0) {
-              parsed.responses = [anyQuotes[anyQuotes.length - 1]];
-            } else {
-              parsed = { responses: ["Opa, bom demais uai kkk"], indices: [[0]] };
-            }
-          }
-        }
-
-        const bannedEmojis = Array.from(
-          new Set([...usedEmojisFromHistory, ...extractUsedEmojis(formattedHistory)])
-        );
-        let responses: string[] = Array.isArray(parsed.responses) ? parsed.responses : [clean];
-        responses = sanitizeResponses(responses, bannedEmojis);
-
-        const clientMsgsForIndices = (
-          targetMessagesToRespond || (formattedHistory || []).filter((m: any) => m.sender !== "me")
-        ).map((m: any, i: number) => ({ index: i, text: m.text || "" }));
-
-        const finalIndices = normalizeAiIndices(responses, parsed.indices, clientMsgsForIndices);
-
-        const completedChecklistIds: string[] = Array.isArray(parsed.completed_checklist_ids)
-          ? parsed.completed_checklist_ids
-          : Array.isArray(parsed.completedChecklistIds)
-          ? parsed.completedChecklistIds
-          : [];
-        const isRaffleStepReached: boolean = Boolean(parsed.is_raffle_step_reached || parsed.isRaffleStepReached);
-
-        const analiseDoPretendente = sanitizeAiAnalysis(
-          parsed.analise_do_pretendente || parsed.analise || (nvidiaReasoning ? nvidiaReasoning.trim() : null)
-        );
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            analise_do_pretendente: analiseDoPretendente,
-            responses,
-            indices: finalIndices,
-            completedChecklistIds,
-            isRaffleStepReached,
-            modelUsed: chosenModel,
-            latencyMs,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // ==========================================
-    // 9. IA PROMPT ASSISTANT (Larissa Contextual)
-    // ==========================================
-    const aiMatch = path.match(/^\/ai\/prompt\/([^/]+)/);
-    if (aiMatch) {
-      const convId = aiMatch[1];
-      let body: any = {};
-      if (req.method === "POST") {
-        body = await req.json().catch(() => ({}));
-      }
-
-      const platformParam = (body?.platform || url.searchParams.get("platform") || "").toLowerCase();
-
-      // Determina a plataforma (instagram ou tinder)
-      let platform = platformParam;
-      if (!platform) {
-        // Se não foi informada explicitamente, detecta se o convId pertence ao Instagram
-        const { data: instaCheck } = await supabase
-          .from("instagram_conversations")
-          .select("id")
-          .eq("id", convId)
-          .maybeSingle();
-        platform = instaCheck ? "instagram" : "tinder";
-      }
-
-      if (platform === "instagram") {
-        // -------------------------------------------------------------
-        // GERAÇÃO OFICIAL LARISSA INSTAGRAM DIRECT (GenerateAiPromptUseCase)
-        // -------------------------------------------------------------
-        const { data: convData } = await supabase
-          .from("instagram_conversations")
-          .select("*")
-          .eq("id", convId)
-          .maybeSingle();
-
-        let parsedName = convData?.full_name || convData?.username || body?.conversationName || "Pretendente";
-        let parsedAge: number | undefined;
-
-        const ageMatch = parsedName.match(/^(.*?)(?:,\s*(\d+))?$/);
-        if (ageMatch) {
-          if (ageMatch[1]?.trim()) parsedName = ageMatch[1].trim();
-          if (ageMatch[2]) parsedAge = parseInt(ageMatch[2], 10);
-        }
-
-        const pretendente = {
-          id: convId,
-          name: parsedName,
-          age: parsedAge,
-          city: body?.city || "não informada",
-          bio: body?.bio || "sem bio",
-          platform: "instagram" as const,
-          username: convData?.username || parsedName.toLowerCase().replace(/\s+/g, "_"),
-        };
-
-        // Carrega histórico real do Instagram (até 500 mensagens mais recentes em ordem cronológica)
-        const { data: igMessagesData } = await supabase
-          .from("instagram_messages")
-          .select("*")
-          .eq("conversation_id", convId)
-          .order("created_at", { ascending: false })
-          .limit(500);
-
-        let instagramHistory: any[] = [];
-        if (igMessagesData && igMessagesData.length > 0) {
-          const chronIg = [...igMessagesData].reverse();
-          instagramHistory = await Promise.all(
-            chronIg.map(async (m: any) => {
-              let text = m.text || "";
-              let transcript = m.audio_transcript || "";
-
-              const clientMsg = Array.isArray(body?.currentMessages)
-                ? body.currentMessages.find((cm: any) => cm.id === m.id)
-                : null;
-
-              if (!transcript && clientMsg?.audioTranscript) {
-                transcript = clientMsg.audioTranscript;
-              }
-
-              const isAudio =
-                m.media_type === "audio" ||
-                clientMsg?.mediaType === "audio" ||
-                (typeof m.text === "string" && m.text.includes("[audio:")) ||
-                (typeof clientMsg?.text === "string" && clientMsg.text.includes("[audio:"));
-
-              if (isAudio && !transcript) {
-                const audioUrl =
-                  m.media_url ||
-                  clientMsg?.mediaUrl ||
-                  clientMsg?.audioUrl ||
-                  (m.text?.match(/\[audio:(.*?)\]/)?.[1]) ||
-                  (clientMsg?.text?.match(/\[audio:(.*?)\]/)?.[1]);
-
-                if (audioUrl) {
-                  try {
-                    const groqText = await transcribeWithGroqCloud(supabase, audioUrl);
-                    if (groqText) {
-                      transcript = groqText;
-                      // Salva no banco de dados para caching permanente (0ms nas próximas chamadas)
-                      await supabase
-                        .from("instagram_messages")
-                        .update({
-                          audio_transcript: groqText,
-                          audio_transcribed_at: new Date().toISOString(),
-                        })
-                        .eq("id", m.id);
-                    }
-                  } catch (tErr) {
-                    console.warn("Aviso ao transcrever áudio com Groq Cloud na Edge Function:", tErr);
-                  }
-                }
-              }
-
-              if (transcript) {
-                text = `[áudio transcrito: "${transcript}"]`;
-              } else if (isAudio) {
-                text = "[áudio recebido]";
-              } else if (!text && (m.media_type === "image" || clientMsg?.mediaType === "image")) {
-                text = "📷 Foto";
-              }
-
-              const rawTimestamp = m.timestamp || m.created_at || new Date().toISOString();
-
-              return {
-                id: m.id,
-                sender: m.is_mine || m.sender_id === "me" ? "me" : "them",
-                text,
-                timestamp: rawTimestamp,
-                sentDate: rawTimestamp,
-              };
-            })
-          );
-        }
-
-        // Se houver mensagens em body.currentMessages que ainda não estão no banco (ex: recém-chegadas), anexa ao histórico
-        if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-          const existingIds = new Set(instagramHistory.map((h: any) => h.id));
-          const pendingClientMsgs = body.currentMessages.filter((cm: any) => cm.id && !existingIds.has(cm.id));
-
-          for (const cm of pendingClientMsgs) {
-            let text = cm.text || "";
-            let transcript = cm.audioTranscript || "";
-            const isAudio =
-              cm.mediaType === "audio" ||
-              (typeof cm.text === "string" && cm.text.includes("[audio:"));
-
-            if (isAudio && !transcript) {
-              const audioUrl = cm.mediaUrl || cm.audioUrl || (cm.text?.match(/\[audio:(.*?)\]/)?.[1]);
-              if (audioUrl) {
-                try {
-                  const groqText = await transcribeWithGroqCloud(supabase, audioUrl);
-                  if (groqText) transcript = groqText;
-                } catch (tErr) {
-                  console.warn("Aviso ao transcrever áudio pendente da tela:", tErr);
-                }
-              }
-            }
-
-            if (transcript) {
-              text = `[áudio transcrito: "${transcript}"]`;
-            } else if (isAudio) {
-              text = "[áudio recebido]";
-            } else if (!text && cm.mediaType === "image") {
-              text = "📷 Foto";
-            }
-
-            const clientTimestamp = cm.sentDate || cm.timestamp || cm.createdAt || new Date().toISOString();
-            instagramHistory.push({
-              id: cm.id,
-              sender: (cm.isMine || cm.senderId === "me") ? "me" : "them",
-              text,
-              timestamp: clientTimestamp,
-              sentDate: clientTimestamp,
-            });
-          }
-        }
-
-        // Se o pretendente tiver histórico vinculado do Tinder, busca para alimentar a memória compartilhada (até 500 mensagens)
-        let tinderHistory: any[] = [];
-        if (convData?.contact_id) {
-          const { data: tinderMsgs } = await supabase
-            .from("tinder_messages")
-            .select("*")
-            .eq("match_id", convData.contact_id)
-            .order("sent_date", { ascending: false })
-            .limit(500);
-
-          if (tinderMsgs && tinderMsgs.length > 0) {
-            const chronTinderMsgs = [...tinderMsgs].reverse();
-            tinderHistory = chronTinderMsgs.map((m: any) => ({
-              id: m.id,
-              sender: m.sender_id === "me" ? "me" : "them",
-              text: m.message,
-              timestamp: m.sent_date || m.created_at || new Date().toISOString(),
-              sentDate: m.sent_date || m.created_at || new Date().toISOString(),
-            }));
-          }
-        }
-
-        // Busca referências ativas de persona no Supabase (se houver)
-        let personaReferences: any[] = [];
-        try {
-          const { data: personaData } = await supabase
-            .from("ai_persona_references")
-            .select("category, them_message, larissa_response, notes")
-            .eq("is_active", true)
-            .limit(20);
-          if (personaData && Array.isArray(personaData)) {
-            personaReferences = personaData;
-          }
-        } catch (pErr) {
-          console.warn("Aviso ao buscar ai_persona_references no Supabase:", pErr);
-        }
-
-        // Executa caso de uso oficial do Instagram
-        const useCase = new GenerateAiPromptUseCase();
-        const result = useCase.execute({
-          pretendente,
-          instagramHistory,
-          tinderHistory,
-          personaReferences,
-          stageContext: body?.stageContext,
-        });
-
-        return new Response(JSON.stringify({
-          success: true,
-          ...result,
-        }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-
-      } else {
-        // -------------------------------------------------------------
-        // GERAÇÃO OFICIAL TINDER (buildTinderAiPromptForBackend)
-        // -------------------------------------------------------------
-        const { data: matchData } = await supabase
-          .from("tinder_conversations")
-          .select("*")
-          .eq("match_id", convId)
-          .maybeSingle();
-
-        // Busca até 500 mensagens mais recentes do Tinder
-        const { data: messagesData } = await supabase
-          .from("tinder_messages")
-          .select("*")
-          .eq("match_id", convId)
-          .order("sent_date", { ascending: false })
-          .limit(500);
-
-        let name = matchData?.name || body?.conversationName || "Pretendente";
-        let birthDate = matchData?.birth_date || null;
-        const ageMatch = name.match(/^(.*?)(?:,\s*(\d+))?$/);
-        if (ageMatch) {
-          if (ageMatch[1]?.trim()) name = ageMatch[1].trim();
-          if (ageMatch[2] && !birthDate) {
-            const ageNum = parseInt(ageMatch[2], 10);
-            const birthYear = new Date().getFullYear() - ageNum;
-            birthDate = `${birthYear}-01-01`;
-          }
-        }
-
-        let messagesToUse = (messagesData && messagesData.length > 0) ? [...messagesData].reverse() : [];
-        if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-          const existingIds = new Set(messagesToUse.map((m: any) => m.id));
-          const pending = body.currentMessages.filter((cm: any) => cm.id && !existingIds.has(cm.id));
-          for (const m of pending) {
-            messagesToUse.push({
-              id: m.id || `msg_${Date.now()}`,
-              match_id: convId,
-              sender_id: (m.isMine || m.senderId === "me") ? "me" : "them",
-              message: m.text || "",
-              sent_date: m.timestamp || m.createdAt || new Date().toISOString(),
-            });
-          }
-        }
-
-        const effectiveMatch = {
-          ...(matchData || {}),
-          match_id: convId,
-          name,
-          birth_date: birthDate,
-        };
-
-        const promptText = buildTinderAiPromptForBackend(
-          effectiveMatch,
-          messagesToUse,
-          { instagram_handle: "lariresende_0611" }
-        );
-
-        return new Response(JSON.stringify({ success: true, prompt: promptText }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
       }
     }
 

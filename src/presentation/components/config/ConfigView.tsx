@@ -5,7 +5,6 @@ import Image from "next/image";
 import {
   Flame,
   Camera,
-  Sparkles,
   CheckCircle2,
   Database,
   Loader2,
@@ -18,7 +17,6 @@ import {
   Eye,
   EyeOff,
   Edit2,
-  Bot,
 } from "lucide-react";
 import { toast } from "sonner";
 import { TinderSession } from "@/domain/entities/Tinder";
@@ -26,6 +24,7 @@ import { TinderConnectModal } from "@/presentation/components/tinder/TinderConne
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { InstagramAccount } from "@/domain/entities/Instagram";
 import { getApiUrl } from "@/infrastructure/http/network";
+import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 import { ChatStagesManager } from "./ChatStagesManager";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
@@ -63,19 +62,10 @@ export function ConfigView() {
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [isEditingGroqKey, setIsEditingGroqKey] = useState(false);
 
-  // Estados da Kie.ai (Modelo Sol - Larissa)
-  const [kieKeyInput, setKieKeyInput] = useState("");
-  const [isKieConfigured, setIsKieConfigured] = useState(false);
-  const [isSavingKie, setIsSavingKie] = useState(false);
-  const [kieMaskedKey, setKieMaskedKey] = useState<string | null>(null);
-  const [showKieKey, setShowKieKey] = useState(false);
-  const [isEditingKieKey, setIsEditingKieKey] = useState(false);
-
   useEffect(() => {
     checkTinderStatus();
     checkInstagramStatus();
     checkGroqStatus();
-    checkKieStatus();
   }, []);
 
   const checkGroqStatus = async () => {
@@ -117,48 +107,6 @@ export function ConfigView() {
       toast.error(msg);
     } finally {
       setIsSavingGroq(false);
-    }
-  };
-
-  const checkKieStatus = async () => {
-    try {
-      const res = await fetch(getApiUrl("/api/ai/kie-status"));
-      if (res.ok) {
-        const data = await res.json();
-        setIsKieConfigured(Boolean(data.configured));
-        setKieMaskedKey(data.maskedKey || null);
-      }
-    } catch {
-      setIsKieConfigured(false);
-      setKieMaskedKey(null);
-    }
-  };
-
-  const handleSaveKieKey = async () => {
-    const key = kieKeyInput.trim();
-    if (!key || key.length < 10) {
-      toast.error("Informe uma chave válida da Kie.ai");
-      return;
-    }
-    setIsSavingKie(true);
-    try {
-      const res = await fetch(getApiUrl("/api/ai/kie-status"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: key }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Falha ao salvar chave.");
-      setIsKieConfigured(true);
-      setKieMaskedKey(data.maskedKey || `${key.slice(0, 4)}...${key.slice(-4)}`);
-      setIsEditingKieKey(false);
-      setKieKeyInput("");
-      toast.success("Chave Kie.ai (Sol) configurada com sucesso no Supabase!");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Erro ao salvar chave";
-      toast.error(msg);
-    } finally {
-      setIsSavingKie(false);
     }
   };
 
@@ -595,135 +543,6 @@ export function ConfigView() {
             </div>
           </div>
 
-          {/* CARD MOTOR KIE.AI (SOL - LARISSA) */}
-          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-4 space-y-3.5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-amber-500 to-orange-400 flex items-center justify-center shadow-md">
-                  <Bot className="w-5 h-5 text-black" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                    Kie.ai (Modelo Sol - Larissa)
-                    {isKieConfigured && (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-[#3ecf8e]" />
-                    )}
-                  </h3>
-                  <p className="text-[11px] text-[#a8a8a8]">
-                    gpt-5-6-sol (Persona Principal com Raciocínio)
-                  </p>
-                </div>
-              </div>
-
-              {isKieConfigured ? (
-                <span className="text-[10px] bg-[#3ecf8e]/15 text-[#3ecf8e] font-bold px-2 py-0.5 rounded-full border border-[#3ecf8e]/30 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#3ecf8e] animate-pulse" />
-                  Ativo
-                </span>
-              ) : (
-                <span className="text-[10px] bg-amber-500/15 text-amber-400 font-bold px-2 py-0.5 rounded-full border border-amber-500/30">
-                  Chave Pendente
-                </span>
-              )}
-            </div>
-
-            <div className="pt-2 border-t border-[#222] space-y-2.5 text-xs">
-              <p className="text-[#a8a8a8] text-[11px] leading-relaxed">
-                Chave da API da Kie.ai utilizada pelo Sol para formular todas as mensagens com o DNA da Larissa, cadência humana e raciocínio profundo.
-              </p>
-
-              {isKieConfigured && !isEditingKieKey ? (
-                <div className="flex items-center justify-between bg-[#1c1c1e] p-2.5 rounded-xl border border-[#262626]">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Key className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <span className="text-[11px] font-mono text-zinc-300 truncate">
-                      {kieMaskedKey || "••••••••••••••••"}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsEditingKieKey(true);
-                      setKieKeyInput("");
-                    }}
-                    className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors flex items-center gap-1 text-[11px] cursor-pointer active:scale-95 transition-transform min-h-[44px]"
-                    title="Editar chave da Kie.ai"
-                  >
-                    <Edit2 className="w-3 h-3" />
-                    <span>Alterar</span>
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="relative">
-                    <input
-                      type={showKieKey ? "text" : "password"}
-                      value={kieKeyInput}
-                      onChange={(e) => setKieKeyInput(e.target.value)}
-                      placeholder="Cole a chave da Kie.ai aqui..."
-                      className="w-full bg-[#1c1c1e] border border-[#333] rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 pr-10 focus:outline-none focus:border-amber-400 font-mono transition-colors min-h-[44px]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKieKey(!showKieKey)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 cursor-pointer p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
-                      title={showKieKey ? "Ocultar chave" : "Mostrar chave"}
-                    >
-                      {showKieKey ? (
-                        <EyeOff className="w-4 h-4" />
-                      ) : (
-                        <Eye className="w-4 h-4" />
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleSaveKieKey}
-                      disabled={isSavingKie || !kieKeyInput.trim()}
-                      className="flex-1 min-h-[44px] py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-black font-semibold text-xs hover:opacity-95 active:scale-95 transition-transform flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                    >
-                      {isSavingKie ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Key className="w-4 h-4" />
-                      )}
-                      Salvar Chave Kie.ai
-                    </button>
-
-                    {isEditingKieKey && (
-                      <button
-                        type="button"
-                        onClick={() => setIsEditingKieKey(false)}
-                        className="min-h-[44px] py-2 px-3 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-medium hover:bg-zinc-700 active:scale-95 transition-transform cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* CARD SUGESTÕES DE RESPOSTA */}
-          <div className="rounded-2xl bg-[#141414] border border-[#262626] p-4 space-y-3 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-amber-400/10 border border-amber-400/30 flex items-center justify-center">
-                  <Sparkles className="w-4 h-4 text-amber-300" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white">Sugestões de Resposta IA</h4>
-                  <p className="text-[11px] text-[#a8a8a8]">Gera respostas contextuais em 1 clique</p>
-                </div>
-              </div>
-              <span className="text-[10px] bg-amber-400/15 text-amber-300 font-bold px-2 py-0.5 rounded-full border border-amber-400/30">
-                Ativado
-              </span>
-            </div>
-          </div>
         </div>
 
         {/* SEÇÃO: FUNIL DE CONVERSÃO & ETAPAS (CHECK-UPS) */}

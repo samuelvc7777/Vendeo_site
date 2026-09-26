@@ -3,6 +3,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import { Download, Loader2, Pause, Play, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
 import { getApiUrl } from "@/infrastructure/http/network";
+import { apiFetch } from "@/infrastructure/http/apiFetch";
 import { toast } from "sonner";
 
 interface InstagramAudioMessageProps {
@@ -68,7 +69,7 @@ export function InstagramAudioMessage({
     setIsTranscribing(true);
 
     try {
-      const res = await fetch(getApiUrl("/api/ai/transcribe"), {
+      const res = await apiFetch(getApiUrl("/api/ai/transcribe"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

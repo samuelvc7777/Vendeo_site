@@ -867,9 +867,20 @@ export async function searchConversationEpisodicMemory(params: {
     namoro: { topics: ["relationship"], keys: ["relationship_status"] },
     casamento: { topics: ["relationship"], keys: ["relationship_status", "marriage"] },
     solteiro: { topics: ["relationship"], keys: ["relationship_status"] },
+    convite: { topics: ["invitation"], keys: ["invitation", "meeting", "date_invitation"] },
+    convidou: { topics: ["invitation"], keys: ["invitation", "meeting", "date_invitation"] },
+    convidar: { topics: ["invitation"], keys: ["invitation", "meeting", "date_invitation"] },
+    chamou: { topics: ["invitation"], keys: ["invitation", "meeting", "date_invitation"] },
+    encontro: { topics: ["invitation"], keys: ["meeting", "date_invitation"] },
+    encontrar: { topics: ["invitation"], keys: ["meeting", "date_invitation"] },
+    sair: { topics: ["invitation"], keys: ["invitation", "meeting", "date_invitation"] },
+    passeio: { topics: ["invitation"], keys: ["invitation", "meeting"] },
     audio: { topics: ["audio"], keys: ["audio_sent"] },
     historia: { topics: ["stories", "education"], keys: ["stories", "education"] },
     cafe: { topics: ["routine"], keys: ["routine", "drinks.likes_coffee"] },
+    cafezinho: { topics: ["invitation", "routine"], keys: ["invitation", "meeting", "routine"] },
+    jantar: { topics: ["invitation"], keys: ["invitation", "meeting"] },
+    cinema: { topics: ["invitation"], keys: ["invitation", "meeting"] },
     medo: { topics: ["fears"], keys: ["fears"] },
     veiculo: { topics: ["vehicle"], keys: ["car", "vehicle"] },
     carro: { topics: ["vehicle"], keys: ["car", "vehicle"] },
@@ -1001,6 +1012,9 @@ export async function searchConversationEpisodicMemory(params: {
     }
     if (askingAboutPretendente && ep.actor === "pretendente" && (ep.event_type === "fact_reveal" || ep.event_type === "answer")) {
       score += 10;
+    }
+    if (ep.actor === "pretendente" && ep.event_type === "plan" && epTopic === "invitation" && targetTopics.has("invitation")) {
+      score += 18;
     }
 
     // 5. Frase quase idêntica
@@ -1253,7 +1267,7 @@ export async function searchRawConversationHistory(params: {
     for (let offset = 0; ; offset += pageSize) {
       let queryBuilder = supabase
         .from("instagram_messages")
-        .select("id, conversation_id, sender_id, is_mine, is_from_me, text, message, audio_transcript, created_at, timestamp, direction")
+        .select("id, conversation_id, sender_id, is_mine, text, audio_transcript, created_at, timestamp, direction")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true });
       const pageResult = typeof queryBuilder.range === "function"
@@ -1281,7 +1295,7 @@ export async function searchRawConversationHistory(params: {
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const rawText = (row.text || row.message || "").trim();
+      const rawText = (row.text || "").trim();
       const rawTranscript = (row.audio_transcript || "").trim();
       const combinedText = `${rawText} ${rawTranscript}`.trim();
       if (!combinedText) continue;
@@ -1339,7 +1353,7 @@ export async function searchRawConversationHistory(params: {
     const resolveSender = (r: any): "larissa" | "pretendente" => {
       const isMine = Boolean(
         r.is_mine ||
-        r.is_from_me ||
+        r.is_mine ||
         r.sender_id === "me" ||
         r.sender_id === "larissa" ||
         r.direction === "outbound"
@@ -1357,7 +1371,7 @@ export async function searchRawConversationHistory(params: {
 
       const hitRow = hit.row;
       const hitSender = resolveSender(hitRow);
-      const hitText = (hitRow.text || hitRow.message || "").trim();
+      const hitText = (hitRow.text || "").trim();
       const hitTranscript = hitRow.audio_transcript ? String(hitRow.audio_transcript).trim() : null;
 
       const contextWindow: RawConversationHistoryContextMessage[] = [];
@@ -1646,4 +1660,3 @@ export async function commitConversationMemoryWrites(params: {
 
   return { episodesCommitted, speechActsCommitted, openLoopsCommitted };
 }
-

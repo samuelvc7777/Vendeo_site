@@ -9,6 +9,7 @@ import {
 import { manageVaultUseCase } from "@/infrastructure/di/container";
 import { convertAndAnalyzeAudio } from "@/presentation/components/chat/audio-converter";
 import { getApiUrl } from "@/infrastructure/http/network";
+import { apiFetch as fetch } from "@/infrastructure/http/apiFetch";
 
 export function useVault() {
   const [folders, setFolders] = useState<VaultFolderWithStats[]>([]);

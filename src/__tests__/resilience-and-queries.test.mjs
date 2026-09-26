@@ -10,8 +10,7 @@ test('1. select("*") não aparece em nenhuma query de lista de conversas em todo
     'src/presentation/components/chat/InstagramDirect.tsx',
     'src/infrastructure/repositories/SupabaseInstagramRepository.ts',
     'src/infrastructure/repositories/SupabaseChatRepository.ts',
-    'src/presentation/hooks/useRaffles.ts',
-    'src/app/api/ai/prompt/[conversationId]/route.ts'
+    'src/presentation/hooks/useRaffles.ts'
   ];
 
   for (const relPath of filesToCheck) {

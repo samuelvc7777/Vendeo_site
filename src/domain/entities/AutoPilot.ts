@@ -20,6 +20,8 @@ export type AutoPilotChatStatus =
   | "processing" // Sendo respondido agora pela IA (simulando digitação)
   | "paused_guardrail" // Pausado por foto recebida ou conteúdo estranho
   | "paused_handoff" // Pausado por chegar no momento da rifa (chamar dono)
+  | "needs_manual_response" // A IA pausou porque não encontrou uma resposta factual segura
+  | "awaiting_finalization" // A IA concluiu os objetivos finais e aguarda o operador
   | "disabled" // Desativado pelo operador
   | "failed"; // Falha no ciclo do piloto automático
 
@@ -52,6 +54,7 @@ export interface AutoPilotActivity {
   totalBalloons?: number;
   updatedAt: string;
   brainThought?: string;
+  responsePreview?: string;
   atriaThought?: string;
   solThought?: string;
   previewResponses?: string[];
@@ -76,6 +79,7 @@ export interface AutoPilotCycleEvent {
 
 export interface AutoPilotLastThoughts {
   brainThought?: string;
+  responsePreview?: string;
   atriaThought?: string;
   solThought?: string;
   previewResponses?: string[];
@@ -104,12 +108,32 @@ export interface AutoPilotChatState {
   pausedAt?: string;
   lastResponseSentAt?: string;
   pendingAction?: AutoPilotPendingAction;
+  pendingManualResponse?: {
+    inboundMessage: string;
+    inboundMessages?: string[];
+    inboundMessageIds: string[];
+    reason: string;
+    source?: "protected_inbound" | "brain_review" | "uncertain_response";
+    candidateResponse?: string;
+    createdAt: string;
+  } | null;
+  pendingObjectiveFinalization?: {
+    key: string;
+    stageId: string;
+    stageName: string;
+    completedObjectivesCount: number;
+    createdAt: string;
+  } | null;
+  objectiveFinalizationNotifiedKey?: string;
+  objectiveFinalizationHandledKey?: string;
   activity?: AutoPilotActivity | null;
   lastThoughts?: AutoPilotLastThoughts | null;
   isSending?: boolean;
   sendingStartedAt?: string | null;
   sendingCycleToken?: string | null;
   activeCycleToken?: string | null;
+  /** Desligamento global solicitado; o ciclo atual termina antes de ai_auto_respond ser desativado. */
+  disableAfterCycle?: boolean;
   cycleId?: string | null;
   cycleEvents?: AutoPilotCycleEvent[];
   lastError?: string;

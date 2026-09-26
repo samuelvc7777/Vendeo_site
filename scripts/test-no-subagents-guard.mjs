@@ -24,6 +24,16 @@ const BANNED_TERMS = [
   "targetSubagent",
   "agentVersions.subagent",
   "shadowSimulation",
+  "AtriaChatService",
+  "KieChatService",
+  "GroqChatService",
+  "GenerateAiResponseUseCase",
+  "buildSubagentExecutorPrompt",
+  "callModelOrOpenAi",
+  "callModelOrKie",
+  "callModelOrAtria",
+  "/api/ai/generate",
+  "/ai/generate",
 ];
 
 const BANNED_FILES = [

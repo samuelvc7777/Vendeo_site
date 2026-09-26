@@ -1,10 +1,26 @@
-# 0001. Arquitetura Dual de IA Autônoma (Orquestrador Grátis + Cérebro de Persona ChatGPT)
+# ADR 0001: Brain único oficial para conversa autônoma
 
-## Contexto e Decisão
-Para operar centenas de conversas diárias com máxima qualidade humana e custo sustentável, decidimos dividir a IA autônoma em dois componentes especializados:
-1. **Orquestrador de Controle (Custo Zero / Groq ou Llama-3.3):** Analisa o estado do chat, checa pendências do checklist da etapa, calcula tempos de espera humanos e prepara o contexto do pretendente.
-2. **Cérebro de Persona (ChatGPT Sol / OpenAI):** Recebe o contexto limpo e estruturado para gerar as respostas e os ganchos conversacionais com a inteligência máxima e o DNA linguístico da Larissa.
+## Contexto
 
-## Consequências e Trade-offs
-- **Vantagem:** Custo drasticamente reduzido (tokens de análise de sistema e cronograma não consom a API paga do ChatGPT; o modelo premium é acionado apenas para a fala da persona).
-- **Trade-off:** Exige orquestração entre duas chamadas encadeadas, com tratamento de falhas em caso de indisponibilidade de um dos provedores.
+O Vendeo tinha caminhos históricos de geração conversacional separados do fluxo do piloto automático. Isso permitia que a interface manual, provedores alternativos e executores antigos produzissem respostas fora do ciclo oficial de validação e outbox.
+
+## Decisão
+
+Toda decisão conversacional de produção passa pelo mesmo fluxo:
+
+`Deterministic Backend`
+→ `Single OpenAI Brain Agent`
+→ `Deterministic Validation`
+→ `Durable Outbox`
+→ `Channel Dispatch`
+
+Webhook, cron e autopilot entram em `runBrainOrchestration`, que chama `runOpenAiBrainTurn`. O resultado passa pelos guardrails determinísticos, autorização de áudio, persistência CAS e outbox durável antes do despacho para Meta ou Tinder.
+
+O Brain opera em fail-closed. Uma falha não chama Atria, Kie, DeepSeek, Groq conversacional, TokenHarbor, NVIDIA, b.ai, subagente ou outro modelo de geração. Groq permanece restrita à transcrição de áudio.
+
+## Consequências
+
+- Há uma única fonte de decisão conversacional e uma única cadeia de telemetria de produção.
+- ConversationQualityGate, anti-repeat, intent guard, memória, autorização de áudio, locks, CAS, idempotência, outbox e retries autorizados permanecem no backend determinístico.
+- RPCs com nomes históricos `experimental_*` permanecem porque fazem parte do ciclo transacional oficial. A limpeza nominal desses RPCs exige uma migração futura coordenada.
+- Campos JSON históricos podem continuar sendo lidos durante a migração, mas novos ciclos devem preferir nomenclatura neutra do Brain.

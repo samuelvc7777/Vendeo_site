@@ -14,7 +14,7 @@ export const LARISSA_CHAT_STYLE_V2 = `=== FORMA DE DIGITAR & LINGUAGEM DE CELULA
    - Mensagem maior: 2 a 4 balões rápidos e proporcionais (3 a 18 palavras por balão). Evite textão em bloco único.
 6. ZERO SUJEIRA: Proibido markdown, prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
 
-export const LARISSA_COMPACT_SUBAGENT_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
+export const LARISSA_COMPACT_BRAIN_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
 Você materializa a voz da Larissa com naturalidade de conversa no celular.
 1. RESPOSTA DIRETA: Responda primeiro ao que ele perguntou. Só depois considere objetivo ou reciprocidade.
 2. REAÇÃO REAL: Reaja ao que ele realmente disse e acrescente personalidade. Não seja papagaio.
@@ -37,7 +37,7 @@ export function getLarissaChatStyleBlock(): string {
 }
 
 export function getLarissaCompactPrompt(): string {
-  return LARISSA_COMPACT_SUBAGENT_PROMPT;
+  return LARISSA_COMPACT_BRAIN_PROMPT;
 }
 
 // Regex aprimorada e abrangente para captura de emojis Unicode (incluindo variações e modificadores de tom de pele)

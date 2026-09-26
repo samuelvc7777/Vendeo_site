@@ -42,7 +42,7 @@ console.log('🧪 Conversation Quality Gate — comportamento conversacional\n')
 {
   const { contract, result } = gate('Oii, tudo bem?', ['Oii, tô bem sim, e vc?']);
   assert(result.passed, 'Resposta direta natural passa');
-  assert(contract.preferNoEmoji === true && contract.maxBalloons === 1, 'Saudação prefere zero emoji e um balão');
+  assert(contract.directQuestions.length === 1 && contract.maxBalloons === 2, 'Saudação mantém a pergunta direta e limite de dois balões');
 }
 
 {
@@ -58,7 +58,7 @@ assert(!gate('Eu trabalho com programação', ['Vc trabalha com programação?']
 assert(gate('Eu trabalho com programação', ['Credo eu ia quebrar a cabeça demais nisso kkk, vc gosta do que faz?'], { newQuestionBudget: 1, responseShape: 'react_and_question', maxBalloons: 1 }).result.passed, 'Reação com conteúdo novo passa');
 assert(gate('Tô cansado hoje', ['Nossa então hoje é chegar em casa e apagar mesmo'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.passed, 'Reação sem pergunta passa');
 assert(!gate('Tô cansado hoje', ['Nossa que puxado, vc tem filhos?'], { newQuestionBudget: 0, responseShape: 'react_only', avoidTopics: ['filhos'], maxBalloons: 1 }).result.passed, 'Checkpoint adiado e pergunta fora do budget falham');
-assert(gate('Oi', ['Oii'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.passed, 'Cumprimento simples não exige segundo balão');
+assert(!gate('Oi', ['Oii'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.passed, 'Cumprimento simples sem retorno de bem-estar é bloqueado');
 
 console.log('\n🧪 Tipos semânticos de resposta direta');
 {
@@ -149,13 +149,13 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
   assert(zeroResult.passed, 'Fallback sem pergunta passa em contrato de budget zero');
 }
 
-const orchestratorSource = fs.readFileSync('supabase/functions/api/experimental_orchestrator.ts', 'utf8');
+const orchestratorSource = fs.readFileSync('supabase/functions/api/brain_orchestrator.ts', 'utf8');
 const compactPromptSource = fs.readFileSync('supabase/functions/api/LarissaChatStyle.ts', 'utf8');
 assert(orchestratorSource.indexOf('runStyleLint(candidateBalloons') < orchestratorSource.indexOf('runConversationQualityGate({', orchestratorSource.indexOf('runStyleLint(candidateBalloons')), 'Caminho real executa Style Lint antes do Quality Gate');
 assert((orchestratorSource.match(/QUALITY RETRY ÚNICO/g) || []).length === 1, 'Quality retry está limitado a uma implementação');
 assert(!/kieKey\s*=\s*["'][a-f0-9]{24,}["']/i.test(orchestratorSource), 'Não existe secret Kie literal');
-assert(/executor_audio_rejected/.test(orchestratorSource) && /enforceAuthorizedAudioDecision/.test(orchestratorSource), 'Caminho real bloqueia troca de selectedAudioId');
-assert(!/FERRAMENTAS SOB DEMANDA/.test(compactPromptSource.match(/LARISSA_COMPACT_SUBAGENT_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não instrui executor a usar tools');
-assert(!/\b23 anos\b|São João del-Rei|Enfermagem/.test(compactPromptSource.match(/LARISSA_COMPACT_SUBAGENT_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não contém fatos mutáveis hardcoded');
+assert(/brain_audio_rejected/.test(orchestratorSource) && /enforceAuthorizedAudioDecision/.test(orchestratorSource), 'Caminho real bloqueia troca de selectedAudioId');
+assert(!/FERRAMENTAS SOB DEMANDA/.test(compactPromptSource.match(/LARISSA_COMPACT_BRAIN_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não instrui Brain a usar tools');
+assert(!/\b23 anos\b|São João del-Rei|Enfermagem/.test(compactPromptSource.match(/LARISSA_COMPACT_BRAIN_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não contém fatos mutáveis hardcoded');
 
 console.log(`\n✅ Conversation Quality Gate: ${passed}/${total} verificações aprovadas`);

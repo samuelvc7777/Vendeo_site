@@ -6,6 +6,8 @@
 import {
   searchPersonaMemory,
   formatPersonaMemoryForToolOutput,
+  loadPersonaMemoryFacts,
+  formatPersonaMemoryProfileForPrompt,
   type PersonaMemoryCompactToolOutput,
 } from "./persona_memory.ts";
 import {
@@ -23,7 +25,7 @@ import {
 } from "./larissa_interaction_dna.ts";
 import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts";
 import { normalizeOpenAiUsage, type AgentSessionUsageTelemetry } from "./openai_usage.ts";
-import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
+import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "./memory_tool_context.ts";
 import { AGENT_LOCAL_WAIT_MS } from "./autopilot_cycle_safety.ts";
 import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
 
@@ -354,25 +356,6 @@ export async function executeCofreAudioSearch(params: {
     const delivered = convRow?.stage_completed_rules?.orchestration?.deliveredAudios || [];
     if (Array.isArray(delivered)) {
       delivered.forEach((d: any) => sentAudioIds.add(typeof d === "string" ? d : String(d?.id)));
-    }
-  } catch {}
-
-  // Enriquecimento com mensagens de áudio anteriores
-  try {
-    const { data: msgRows } = await supabase
-      .from("instagram_messages")
-      .select("metadata")
-      .eq("conversation_id", conversationId)
-      .limit(100);
-
-    if (msgRows && Array.isArray(msgRows)) {
-      for (const m of msgRows) {
-        const meta = m.metadata;
-        if (meta && typeof meta === "object") {
-          const aId = meta.audio_id || meta.audioId || meta.vault_audio_id;
-          if (aId) sentAudioIds.add(String(aId));
-        }
-      }
     }
   } catch {}
 
@@ -966,6 +949,8 @@ export interface RunOpenAiBrainParams {
   schemaRetryCount?: number;
   schemaFeedback?: string;
   recentStyleStateSnippet?: string;
+  /** Injeta o snapshot completo uma única vez numa sessão persistente já existente. */
+  includePersonaProfileSnapshot?: boolean;
   memoryScopeId?: string;
   recentQuestionIntentsSnippet?: string;
   nextObjectives?: Array<{ id: string; label: string; description?: string; kind?: string }>;
@@ -1485,11 +1470,16 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
     sections.push(`\n${params.recentStyleStateSnippet.trim()}`);
   }
 
+  sections.push(`\n## RESPOSTA SEM BASE SEGURA
+Só afirme fatos sobre a Larissa quando forem sustentados por fatos canônicos, memória, mensagens anteriores ou transcrição de áudio autorizada. Se uma pergunta exigir um fato pessoal que não consta nessas fontes, não invente, não chute e não envie “não sei” ou uma resposta vaga. Retorne "needsHumanReview": true, explique em "humanReviewReason" o fato ausente, use "action": "wait" e não inclua texto nem áudio em "responses" ou "outboundActions".`);
+
   sections.push(
     `\n## FORMATO DE SAÍDA JSON
 Emita EXCLUSIVAMENTE um único objeto JSON:
 {
   "action": "reply",
+  "needsHumanReview": false,
+  "humanReviewReason": null,
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,
@@ -1668,6 +1658,8 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     sections.push(`\n${recentStyleStateSnippet.trim()}`);
   }
 
+  sections.push(`\nRESPOSTA SEM BASE SEGURA: só afirme fatos pessoais da Larissa fundamentados em fatos canônicos, memória, mensagens anteriores ou áudio autorizado. Quando não houver base, não chute nem diga “não sei”: defina needsHumanReview=true, explique o fato ausente em humanReviewReason, use action=wait e retorne responses e outboundActions vazios.`);
+
   // Instrução operacional compacta do turno + contrato JSON
   sections.push(
     `\n## INSTRUÇÃO OPERACIONAL DO TURNO
@@ -1706,6 +1698,8 @@ CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 {
   "action": "reply",
+  "needsHumanReview": false,
+  "humanReviewReason": null,
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,
@@ -1900,7 +1894,25 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   telemetry.manualRecentHistoryInjected = !persistentMode && Boolean(builtContext.contextWindow?.includedCount && builtContext.contextWindow.includedCount > 0);
   telemetry.contactMemoryInjected = !persistentMode && Boolean(params.contactMemorySummary);
   telemetry.episodicMemoryInjected = !persistentMode && Boolean(params.landmarksSummary);
-  const contextMessage = builtContext.contextMessage;
+  let personaProfileSnapshot: string | null = null;
+  const loadPersonaProfileSnapshot = async (): Promise<string> => {
+    if (personaProfileSnapshot !== null) return personaProfileSnapshot;
+    const personaFacts = await loadPersonaMemoryFacts({
+      supabase: params.supabase,
+      personaId: "larissa",
+      forceRefresh: true,
+    });
+    personaProfileSnapshot = formatPersonaMemoryProfileForPrompt(personaFacts);
+    if (!personaProfileSnapshot) {
+      throw new Error("Não foi possível carregar o perfil completo da Larissa; o turno persistente será interrompido sem enviar uma resposta incompleta.");
+    }
+    return personaProfileSnapshot;
+  };
+
+  let contextMessage = builtContext.contextMessage;
+  if (persistentMode && params.includePersonaProfileSnapshot) {
+    contextMessage += `\n\n## PERFIL COMPLETO DA LARISSA — CONTEXTO INTERNO\n${await loadPersonaProfileSnapshot()}`;
+  }
 
   telemetry.turnContextChars = contextMessage.length;
   telemetry.turnContextEstimatedTokens = Math.ceil(contextMessage.length / 4);
@@ -2563,9 +2575,10 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       } else {
         // No modo persistente: utiliza as instruções enxutas persistentes (sem memory tools/gates)
         // e define estritamente [COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION] como tool (schema da Agents API com name na raiz)
+        const personaProfile = await loadPersonaProfileSnapshot();
         sessionPayload.agent = {
           ...(sessionPayload.agent || {}),
-          instructions: buildCanonicalAgentInstructions({ persistentMode: true }),
+          instructions: `${buildCanonicalAgentInstructions({ persistentMode: true })}\n\n${personaProfile}`,
           tools: [COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION],
         };
       }

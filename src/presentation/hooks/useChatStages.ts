@@ -357,17 +357,21 @@ export function useChatStages(activeConversationId?: string) {
     }
   };
 
-  const toggleConverted = async (isConverted: boolean) => {
-    if (!activeConversationId) return;
+  const toggleConverted = async (isConverted: boolean, showToast = true) => {
+    if (!activeConversationId) return false;
     try {
       await progressUseCase.toggleConverted(activeConversationId, isConverted);
-      toast.success(
-        isConverted ? "🎉 Conversa marcada como Convertida / Objetivo Concluído!" : "Status de conversão removido."
-      );
+      if (showToast) {
+        toast.success(
+          isConverted ? "🎉 Conversa marcada como Convertida / Objetivo Concluído!" : "Status de conversão removido."
+        );
+      }
       await refreshActiveProgress();
       await fetchChatDetail(activeConversationId);
+      return true;
     } catch (err: any) {
-      toast.error(err.message || "Erro ao atualizar status de conversão.");
+      if (showToast) toast.error(err.message || "Erro ao atualizar status de conversão.");
+      return false;
     }
   };
 

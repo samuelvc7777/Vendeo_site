@@ -2,6 +2,7 @@ import { IAutoPilotRepository } from "@/domain/repositories/IAutoPilotRepository
 import { AutoPilotConfig, AutoPilotChatState } from "@/domain/entities/AutoPilot";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
+import { apiFetch } from "@/infrastructure/http/apiFetch";
 
 const LOCAL_STORAGE_CONFIG_KEY = "vendeo_autopilot_config_v1";
 const LOCAL_STORAGE_STATES_KEY = "vendeo_autopilot_states_v1";
@@ -184,7 +185,7 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
           updated_at: updated.updatedAt,
         };
 
-        await client.from("instagram_conversations").upsert({
+        const { error: configWriteError } = await client.from("instagram_conversations").upsert({
           id: "__autopilot_config__",
           username: "system_autopilot_config",
           full_name: "Configurações do Piloto Automático",
@@ -196,21 +197,20 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
           stage_completed_rules: payload as any,
           updated_at: new Date().toISOString(),
         });
+        if (configWriteError) throw configWriteError;
 
         if (config.isEnabledGlobally !== undefined) {
-          try {
-            const { getApiUrl } = await import("@/infrastructure/http/network");
-            await fetch(getApiUrl("/api/autopilot/toggle-global"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ isEnabledGlobally: config.isEnabledGlobally }),
-            });
-          } catch (e) {
-            console.warn("Aviso ao notificar toggle-global na API:", e);
-          }
+          const { getApiUrl } = await import("@/infrastructure/http/network");
+          const response = await apiFetch(getApiUrl("/api/autopilot/toggle-global"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ isEnabledGlobally: config.isEnabledGlobally }),
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status} ao aplicar desligamento global`);
         }
       } catch (err) {
         console.warn("Aviso ao persistir config do Piloto Automático no Supabase:", err);
+        if (config.isEnabledGlobally !== undefined) throw err;
       }
     }
 
@@ -285,19 +285,9 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
         if (item.activity && item.activity.phase !== "completed") {
           const actUpdateMs = item.activity.updatedAt ? Date.parse(item.activity.updatedAt) : 0;
           if (actUpdateMs > 0 && now - actUpdateMs > 45000) {
-            if (item.lastThoughts?.atriaThought || item.lastThoughts?.solThought) {
-              item.activity = {
-                phase: "completed",
-                label: "Última resposta enviada",
-                detail: "Aguardando nova mensagem do cliente para iniciar novo raciocínio.",
-                updatedAt: new Date().toISOString(),
-                atriaThought: item.lastThoughts.atriaThought,
-                solThought: item.lastThoughts.solThought,
-                previewResponses: item.lastThoughts.previewResponses,
-              };
-            } else {
-              item.activity = null;
-            }
+            // Pensamentos preservados não comprovam que a Meta recebeu a resposta.
+            // Um ciclo travado ou com erro deve continuar visível pelo seu status real.
+            item.activity = null;
             if (item.status === "processing" || item.status === "waiting_delay") {
               item.status = "idle";
             }
@@ -357,33 +347,13 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     const client = this.getClient();
     if (client && typeof state.isEnabled === "boolean") {
       try {
-        const isPaused = state.isEnabled === false;
-        const { data: rpcResult, error: rpcError } = await client.rpc(
-          "patch_autopilot_pause_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_paused: isPaused,
-            p_reason: isPaused ? "paused_manual" : null,
-          }
-        );
-
-        if (!rpcError && rpcResult?.success) {
-          // Sucesso via RPC atômica blindada no PostgreSQL
-        } else {
-          // FAIL-CLOSED: NUNCA fazer read-modify-write de stage_completed_rules em JS.
-          // Se a RPC falhar ou estiver indisponível, atualiza somente a coluna física isolada ai_auto_respond.
-          console.warn(
-            `[AutoPilotRepo] RPC patch_autopilot_pause_atomic indisponível ou falhou para conv=${conversationId}. ` +
-            `Atualizando somente coluna física ai_auto_respond sem tocar em stage_completed_rules.`
-          );
-          await client
-            .from("instagram_conversations")
-            .update({
-              ai_auto_respond: !isPaused,
-              ...(isPaused ? { ai_debounce_until: null } : {}),
-            })
-            .eq("id", conversationId);
-        }
+        const { getApiUrl } = await import("@/infrastructure/http/network");
+        const response = await apiFetch(getApiUrl("/api/autopilot/toggle-chat"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversationId, isEnabled: state.isEnabled }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       } catch (syncErr) {
         console.warn("[AutoPilotRepo] Aviso ao sincronizar linha individual da conversa:", syncErr);
       }
@@ -439,4 +409,3 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     }
   }
 }
-

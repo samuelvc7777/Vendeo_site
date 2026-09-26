@@ -1,5 +1,6 @@
 // supabase/functions/api/autopilot_state.ts
 // Gerenciamento e publicação de estado do AutoPilot (Brain) desacoplado do legado.
+import { applyDeferredGlobalShutdown } from "./autopilot_global_shutdown.ts";
 
 export function activity(
   phase: string,
@@ -29,7 +30,7 @@ export async function publishAutoPilotState(
       isEnabled: true,
       status: "idle",
     };
-    const updated = {
+    let updated = {
       ...current,
       ...statePatch,
       isEnabled:
@@ -41,6 +42,8 @@ export async function publishAutoPilotState(
       conversationId,
       stateUpdatedAt,
     };
+    const deferredShutdown = applyDeferredGlobalShutdown(current, patch, updated, stateUpdatedAt);
+    updated = deferredShutdown.updated;
     const cycleId = statePatch.cycleId || statePatch.activity?.cycleId || current.cycleId || null;
     if (cycleId) {
       const isNewCycle = current.cycleId !== cycleId;
@@ -76,12 +79,23 @@ export async function publishAutoPilotState(
     }
     states[conversationId] = updated;
 
-    await supabase.from("instagram_conversations").upsert({
+    if (deferredShutdown.shouldDisableConversation) {
+      const { error: disableError } = await supabase
+        .from("instagram_conversations")
+        .update({ ai_auto_respond: false, ai_debounce_until: null })
+        .eq("id", conversationId);
+      if (disableError) {
+        throw disableError;
+      }
+    }
+
+    const { error: statesError } = await supabase.from("instagram_conversations").upsert({
       id: "__autopilot_states__",
       username: "system_autopilot_states",
       stage_completed_rules: { states, updated_at: new Date().toISOString() },
       updated_at: new Date().toISOString(),
     });
+    if (statesError) throw statesError;
 
     const realtimeChannel = supabase.channel("vendeo_realtime_chat");
     await realtimeChannel.send({
