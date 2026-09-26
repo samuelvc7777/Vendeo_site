@@ -42,9 +42,9 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     });
   }, []);
 
-  const refreshState = useCallback(async () => {
+  const refreshState = useCallback(async (force = false) => {
     try {
-      const [nextConfig, nextStates] = await Promise.all([autoPilotRepo.getConfig(), autoPilotRepo.getAllChatStates()]);
+      const [nextConfig, nextStates] = await Promise.all([autoPilotRepo.getConfig(), autoPilotRepo.getAllChatStates(force)]);
       setConfig(nextConfig); mergeStatesMonotonic(nextStates);
     } catch (error) { console.warn("Erro ao carregar estado do Piloto Automático:", error); }
   }, [mergeStatesMonotonic]);
@@ -128,7 +128,24 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
       if (!response.ok || result.success !== true || result.isEnabled !== isEnabled) {
         throw new Error(result.error || `HTTP ${response.status}`);
       }
-      await refreshState();
+      await refreshState(true);
+      const confirmedAt = new Date().toISOString();
+      setChatStates((previous) => ({
+        ...previous,
+        [conversationId]: {
+          ...(previous[conversationId] || { conversationId }),
+          conversationId,
+          isEnabled,
+          status: isEnabled ? "idle" : "disabled",
+          pauseReason: isEnabled ? undefined : "paused_manual",
+          pausedAt: isEnabled ? undefined : confirmedAt,
+          enabledAt: isEnabled ? confirmedAt : previous[conversationId]?.enabledAt,
+          activity: undefined,
+          pendingAction: isEnabled ? previous[conversationId]?.pendingAction : undefined,
+          scheduledResponseAt: isEnabled ? previous[conversationId]?.scheduledResponseAt : undefined,
+          stateUpdatedAt: confirmedAt,
+        },
+      }));
       toast.success(isEnabled ? "Piloto Automático ativado neste chat." : "Piloto Automático desativado neste chat.");
     } catch (error) {
       console.error("Falha ao alterar o estado do Piloto Automático:", error);
@@ -156,7 +173,23 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
       if (!res.ok || data.success !== true || data.isEnabled !== true) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
-      await refreshState();
+      await refreshState(true);
+      const confirmedAt = new Date().toISOString();
+      setChatStates((previous) => ({
+        ...previous,
+        [conversationId]: {
+          ...(previous[conversationId] || { conversationId }),
+          conversationId,
+          isEnabled: true,
+          status: data.immediateTriggered ? "processing" : "idle",
+          pauseReason: undefined,
+          pausedAt: undefined,
+          enabledAt: confirmedAt,
+          activity: undefined,
+          stateUpdatedAt: confirmedAt,
+          ...(data.cycleId ? { cycleId: data.cycleId } : {}),
+        },
+      }));
 
       if (isImmediate) {
         if (data.immediateTriggered || data.result === "started") {
@@ -172,6 +205,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
     } catch (err) {
       console.warn("Aviso ao ativar piloto com modo:", err);
       toast.error("Erro ao sincronizar ativação com o backend.");
+      throw err;
     }
 
   }, [refreshState]);
@@ -193,7 +227,22 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
       if (!response.ok || result.success !== true || result.isEnabled !== true) {
         throw new Error(result.error || `HTTP ${response.status}`);
       }
-      await refreshState();
+      await refreshState(true);
+      const confirmedAt = new Date().toISOString();
+      setChatStates((previous) => ({
+        ...previous,
+        [conversationId]: {
+          ...(previous[conversationId] || { conversationId }),
+          conversationId,
+          isEnabled: true,
+          status: "idle",
+          pauseReason: undefined,
+          pausedAt: undefined,
+          enabledAt: confirmedAt,
+          activity: undefined,
+          stateUpdatedAt: confirmedAt,
+        },
+      }));
       toast.success("Piloto Automático retomado no backend.");
     } catch (error) {
       console.error("Falha ao retomar o Piloto Automático:", error);

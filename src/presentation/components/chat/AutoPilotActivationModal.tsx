@@ -18,15 +18,19 @@ export function AutoPilotActivationModal({
 }: AutoPilotActivationModalProps) {
   const [selectedMode, setSelectedMode] = useState<"immediate" | "wait_next" | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleAction = async (mode: "immediate" | "wait_next") => {
     setSelectedMode(mode);
     setIsLoading(true);
+    setErrorMessage(null);
     try {
       await onConfirm(mode);
       onClose();
+    } catch {
+      setErrorMessage("A IA não foi ativada. Verifique sua conexão e tente novamente.");
     } finally {
       setIsLoading(false);
       setSelectedMode(null);
@@ -74,6 +78,11 @@ export function AutoPilotActivationModal({
           <p className="text-xs text-zinc-300 font-medium">
             Como deseja que a Larissa inicie o atendimento nesta conversa?
           </p>
+          {errorMessage && (
+            <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              {errorMessage}
+            </p>
+          )}
 
           {/* Opção 1: Responder Imediatamente */}
           <button
