@@ -30,32 +30,6 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
 };
 
-async function verifyAutoPilotOperator(req: Request, supabase: any): Promise<Response | null> {
-  const authorization = req.headers.get("authorization") || "";
-  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-  if (!token) {
-    return new Response(JSON.stringify({ success: false, error: "Sessão autenticada obrigatória." }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user) {
-    return new Response(JSON.stringify({ success: false, error: "Sessão inválida." }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-  if ((data.user.email || "").toLowerCase() !== "lariresende0679@gmail.com") {
-    return new Response(JSON.stringify({ success: false, error: "Operador não autorizado." }), {
-      status: 403,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-  return null;
-}
-
 const API_VERSION = "v21.0";
 const API_BASE = `https://graph.instagram.com/${API_VERSION}`;
 
@@ -4339,8 +4313,6 @@ serve(async (req: Request) => {
     // Cancelamento operacional: desativa a IA e invalida o ciclo atual.
     if ((path === "/autopilot/pause" || path === "/api/autopilot/pause") && req.method === "POST") {
       try {
-        const authError = await verifyAutoPilotOperator(req, supabase);
-        if (authError) return authError;
         const body = await req.json().catch(() => ({}));
         const conversationId = body?.conversationId;
         if (!conversationId) {
@@ -4426,8 +4398,6 @@ serve(async (req: Request) => {
     // Rota atômica para ATIVAR OU DESATIVAR o Piloto Automático em um chat específico
     if ((path === "/autopilot/toggle-chat" || path === "/api/autopilot/toggle-chat") && req.method === "POST") {
       try {
-        const authError = await verifyAutoPilotOperator(req, supabase);
-        if (authError) return authError;
         const body = await req.json().catch(() => ({}));
         const conversationId = body?.conversationId;
         const isEnabled = Boolean(body?.isEnabled);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { authenticatedApiFetch } from "@/infrastructure/http/authenticatedApiFetch";
+import { autopilotApiFetch } from "@/infrastructure/http/autopilotApiFetch";
 import { toast } from "sonner";
 import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/SupabaseAutoPilotRepository";
 import { AutoPilotChatState, AutoPilotConfig, AutoPilotPendingAction } from "@/domain/entities/AutoPilot";
@@ -119,7 +119,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
   const toggleAutoPilotForChat = useCallback(async (conversationId: string, forceState?: boolean) => {
     const isEnabled = forceState ?? !chatStatesRef.current[conversationId]?.isEnabled;
     try {
-      const response = await authenticatedApiFetch("/api/autopilot/toggle-chat", {
+      const response = await autopilotApiFetch("/api/autopilot/toggle-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId, isEnabled }),
@@ -159,7 +159,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
   ) => {
     const isImmediate = mode === "immediate";
     try {
-      const res = await authenticatedApiFetch("/api/autopilot/toggle-chat", {
+      const res = await autopilotApiFetch("/api/autopilot/toggle-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -218,7 +218,7 @@ export function useAutoPilot({ onSendMessage, onStageChange, isRealtimeHealthy }
 
   const resumeChatFromPause = useCallback(async (conversationId: string) => {
     try {
-      const response = await authenticatedApiFetch("/api/autopilot/toggle-chat", {
+      const response = await autopilotApiFetch("/api/autopilot/toggle-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId, isEnabled: true }),

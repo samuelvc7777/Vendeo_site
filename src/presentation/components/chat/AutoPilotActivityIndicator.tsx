@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { authenticatedApiFetch } from "@/infrastructure/http/authenticatedApiFetch";
+import { autopilotApiFetch } from "@/infrastructure/http/autopilotApiFetch";
 import {
   AlertTriangle,
   BrainCircuit,
@@ -785,7 +785,7 @@ export function AutoPilotActivityIndicator({
     if (!targetId || isCancelling) return;
     setIsCancelling(true);
     try {
-      const res = await authenticatedApiFetch("/api/autopilot/pause", {
+      const res = await autopilotApiFetch("/api/autopilot/pause", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId }),
