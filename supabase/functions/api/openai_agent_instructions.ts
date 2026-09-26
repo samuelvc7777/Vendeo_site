@@ -13,6 +13,20 @@ import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts"
 export const VENDEO_AGENT_INSTRUCTIONS_VERSION = "2.20.0";
 
 /**
+ * Contrato único para anotações de perguntas emitidas pelo Agent.
+ * O índice aponta para o balão correspondente em responses[].
+ */
+export const QUESTION_INTENTS_CONTRACT_EXAMPLE = `[
+  {
+    "responseIndex": 1,
+    "intentKey": "feeling.miss_previous_place",
+    "canonicalMeaning": "saber se o pretendente sente falta de morar no lugar anterior",
+    "kind": "continuity",
+    "target": "pretendente"
+  }
+]`;
+
+/**
  * Constrói as instruções legadas do OpenAI Agent (com ferramentas de memória MCP e gates de memória).
  */
 export function buildLegacyAgentInstructions(): string {
@@ -181,15 +195,7 @@ Antes de formular QUALQUER resposta ou nova pergunta:
   4. ANOTAÇÃO OBRIGATÓRIA (questionIntents):
      Se a sua resposta contiver uma pergunta (qualquer balão com "?"):
      → Forneça exatamente um objeto correspondente em questionIntents:
-       [
-         {
-           "responseIndex": 1,
-           "intentKey": "feeling.miss_previous_place",
-           "canonicalMeaning": "saber se ele sente falta de morar no lugar anterior",
-           "kind": "continuity",
-           "target": "pretendente"
-         }
-       ]
+       ${QUESTION_INTENTS_CONTRACT_EXAMPLE}
      → responseIndex: índice exato (0, 1, 2) do balão em responses[] que contém a pergunta.
      → kind: "discovery" | "continuity" | "follow_up" | "callback".
      → Se nenhum balão contiver pergunta: envie questionIntents = [].
@@ -688,7 +694,9 @@ A Session persistente da OpenAI é a sua fonte autoritativa de memória conversa
    - Se o pretendente perguntar algo pessoal sobre a Larissa que ela já compartilhou em turnos anteriores da Session (ex: "vc faz faculdade de quê mesmo?"), responda demonstrando memória e continuidade afetiva (ex: "Enfermagem kkkkk, já esqueceu?"). Não responda como se fosse a primeira vez.
 
 4. ANOTAÇÃO DE INTENÇÕES (questionIntents & resolvedQuestionIntentIds):
-   - Se a sua resposta contiver uma nova pergunta, anote-a no array \`questionIntents\` do JSON final (máximo 1 nova pergunta por turno).
+   - Se a sua resposta contiver uma nova pergunta, anote-a no array \`questionIntents\` do JSON final (máximo 1 nova pergunta por turno), usando exatamente esta estrutura:
+     ${QUESTION_INTENTS_CONTRACT_EXAMPLE}
+   - Não use formatos alternativos como \`{id, question, objectiveId}\`. O campo \`responseIndex\` deve apontar para um índice existente em \`responses[]\`.
    - Se o pretendente respondeu a uma pergunta que você fez anteriormente, anote o identificador da intenção em \`resolvedQuestionIntentIds\` (ex: ["discover.profession"]).
    - ZERO QUESTION FORCING: Você NÃO é obrigado a fazer perguntas a todo turno. Respostas afetuosas ou reações contextuais puras sem pergunta são totalmente válidas e incentivadas quando a situação pede apenas acolhimento. EXCETO EM SAUDAÇÕES/CUMPRIMENTOS: em toda saudação, é OBRIGATÓRIO perguntar se o pretendente está bem ou devolver a pergunta reciprocamente. Respostas secas de saudação são proibidas.
 

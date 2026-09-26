@@ -25,7 +25,10 @@ import { SOCIAL_CUE_AND_DELTA_GUIDANCE } from "./brain_conversation_guidance.ts"
 import { normalizeOpenAiUsage, type AgentSessionUsageTelemetry } from "./openai_usage.ts";
 import { MEMORY_SCOPE_HEADER, prepareMemoryToolCall } from "../_shared/memory_tool_context.ts";
 import { AGENT_LOCAL_WAIT_MS } from "./autopilot_cycle_safety.ts";
-import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
+import {
+  buildCanonicalAgentInstructions,
+  QUESTION_INTENTS_CONTRACT_EXAMPLE,
+} from "./openai_agent_instructions.ts";
 
 function fetchOpenAiBounded(url: string | URL, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
@@ -854,6 +857,18 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
           error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].canonicalMeaning deve ser string não vazia`,
         };
       }
+      if (!(["discovery", "continuity", "follow_up", "callback"] as const).includes(q.kind)) {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].kind deve ser discovery, continuity, follow_up ou callback`,
+        };
+      }
+      if (q.target !== undefined && q.target !== "pretendente" && q.target !== "terceiro") {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].target deve ser pretendente ou terceiro`,
+        };
+      }
     }
   }
 
@@ -1496,12 +1511,14 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
   "reasoning": "sua justificativa estratégica sucinta",
   "liveStatePatch": { "currentTopic": "..." },
   "turnContract": { "mustAnswerFirst": true, "newQuestionBudget": 1, "responseShape": "natural", "directQuestions": [], "maxBalloons": 2 },
+  "resolvedQuestionIntentIds": [],
+  "questionIntents": [],
   "outboundActions": [
     { "type": "text", "text": "..." }
   ],
-  "responses": ["..."]
+  "responses": ["balão 1", "Você...? "]
 }
-(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e evidenceMessageId devem ser o id exato de uma das mensagens deste turno; senão null. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
+(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e evidenceMessageId devem ser o id exato de uma das mensagens deste turno; senão null. Se houver uma nova pergunta, preencha \`questionIntents\` usando este formato: ${QUESTION_INTENTS_CONTRACT_EXAMPLE}. O \`responseIndex\` deve existir em \`responses[]\`. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
   );
 
   if (params.schemaFeedback) {
