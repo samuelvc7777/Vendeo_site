@@ -3,7 +3,6 @@ import { getMessaging, isSupported, Messaging } from "firebase/messaging";
 
 export const firebaseConfig = {
   apiKey: "AIzaSyBbotUfwf-cjufDlWeJOmSYChrP9_7XNwE",
-  authDomain: "vendeo-e755e.firebaseapp.com",
   projectId: "vendeo-e755e",
   storageBucket: "vendeo-e755e.firebasestorage.app",
   messagingSenderId: "497512130312",

@@ -1,4 +1,4 @@
-import { createBrowserClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 
 let clientInstance: any = null;
 
@@ -12,6 +12,12 @@ export function getSupabaseBrowserClient() {
     return null;
   }
 
-  clientInstance = createBrowserClient(supabaseUrl, supabaseAnonKey);
+  clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      persistSession: false,
+    },
+  });
   return clientInstance;
 }

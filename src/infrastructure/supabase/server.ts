@@ -10,6 +10,8 @@ export function getSupabaseServerClient() {
 
   return createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
       persistSession: false,
     },
   });
@@ -25,6 +27,8 @@ export function getSupabaseAdminClient() {
 
   return createClient(supabaseUrl, serviceRoleKey, {
     auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
       persistSession: false,
     },
   });
