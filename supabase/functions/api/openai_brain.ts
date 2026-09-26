@@ -630,7 +630,7 @@ export function validateConversationBrainPlan(
   if (turnContract.mustAnswerFirst === undefined) turnContract.mustAnswerFirst = true;
   if (turnContract.responseShape === undefined) turnContract.responseShape = "natural";
   if (!Array.isArray(turnContract.directQuestions)) turnContract.directQuestions = [];
-  if (turnContract.newQuestionBudget === undefined) turnContract.newQuestionBudget = 1;
+  if (turnContract.newQuestionBudget === undefined) turnContract.newQuestionBudget = 0;
   if (!Number.isInteger(turnContract.maxBalloons)) turnContract.maxBalloons = 2;
   if (typeof turnContract.mustAnswerFirst !== "boolean") {
     return { valid: false, error: "turnContract.mustAnswerFirst deve ser booleano" };
@@ -909,8 +909,8 @@ export function buildFallbackBrainPlan(parsedPlan: any): any {
   const defaultContract = {
     directQuestions: [],
     mustAnswerFirst: true,
-    newQuestionBudget: 1,
-    responseShape: "answer_and_reciprocate",
+    newQuestionBudget: 0,
+    responseShape: "free_conversation",
     preferNoEmoji: false,
     maxBalloons: 2,
   };
@@ -1494,14 +1494,15 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
   "evidenceMessageId": null,
   "reasoning": "sua justificativa estratégica sucinta",
   "liveStatePatch": { "currentTopic": "..." },
-  "turnContract": { "mustAnswerFirst": true, "newQuestionBudget": 1, "responseShape": "natural", "directQuestions": [], "maxBalloons": 2 },
+  "turnContract": { "mustAnswerFirst": true, "newQuestionBudget": 0, "responseShape": "natural", "directQuestions": [], "maxBalloons": 2 },
   "resolvedQuestionIntentIds": [],
   "questionIntents": [],
   "outboundActions": [
     { "type": "text", "text": "..." }
   ],
-  "responses": ["balão 1", "Você...? "]
+  "responses": ["balão 1", "balão 2"]
 }
+(Padrão: newQuestionBudget é 0; use 1 somente se escolher fazer uma pergunta nova relevante. O limite disponível não é uma meta.)
 (Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e evidenceMessageId devem ser o id exato de uma das mensagens deste turno; senão null. Se houver uma nova pergunta, preencha \`questionIntents\` usando este formato: ${QUESTION_INTENTS_CONTRACT_EXAMPLE}. O \`responseIndex\` deve existir em \`responses[]\`. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
   );
 
@@ -1749,8 +1750,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "turnContract": {
     "directQuestions": [],
     "mustAnswerFirst": true,
-    "newQuestionBudget": 1,
-    "responseShape": "answer_and_reciprocate",
+    "newQuestionBudget": 0,
+    "responseShape": "free_conversation",
     "preferNoEmoji": false,
     "maxBalloons": 2
   },

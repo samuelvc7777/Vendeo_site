@@ -45,7 +45,6 @@ export type ConversationQualityIssueCode =
   | "MISSING_REQUIRED_FACT"
   | "TOO_MANY_BALLOONS_FOR_SIMPLE_TURN"
   | "GENERIC_ASSISTANT_RESPONSE"
-  | "MISSING_WELLBEING_QUESTION"
   | "ACCEPTED_OUTING_INVITE"
   | "PHONE_NUMBER_LEAK"
   | "TEXT_DUPLICATES_AUDIO_TRANSCRIPT"
@@ -386,16 +385,14 @@ export function buildTurnContract(
     directQuestions,
     mustAnswerFirst,
     reactionTarget: requested?.reactionTarget ?? (directQuestions.length === 0 ? inbound || null : null),
-    newQuestionBudget: greeting
-      ? 1
-      : (requested?.newQuestionBudget === 0 || requested?.newQuestionBudget === 1
-          ? requested.newQuestionBudget
-          : 1),
-    responseShape: shape && ["answer_only", "answer_and_reciprocate", "react_only", "react_and_question", "free_conversation"].includes(shape) && !(greeting && shape === "react_only")
-      ? (greeting ? (directQuestions.length > 0 ? "answer_and_reciprocate" : "react_and_question") : shape)
+    newQuestionBudget: requested?.newQuestionBudget === 0 || requested?.newQuestionBudget === 1
+      ? requested.newQuestionBudget
+      : 0,
+    responseShape: shape && ["answer_only", "answer_and_reciprocate", "react_only", "react_and_question", "free_conversation"].includes(shape)
+      ? shape
       : directQuestions.length > 0
-        ? (greeting ? "answer_and_reciprocate" : "answer_only")
-        : (greeting || ((requested as any)?.objectiveDirective === "pursue" && requested?.newQuestionBudget !== 0) ? "react_and_question" : "react_only"),
+        ? "answer_only"
+        : ((requested as any)?.objectiveDirective === "pursue" && requested?.newQuestionBudget === 1 ? "react_and_question" : "react_only"),
     avoidEchoPhrases: Array.isArray(requested?.avoidEchoPhrases) ? requested!.avoidEchoPhrases!.map(String) : detectedQuestions,
     avoidTopics: Array.isArray(requested?.avoidTopics) ? requested!.avoidTopics!.map(String) : [],
     maxBalloons: Math.max(1, Math.min(4, Number(requested?.maxBalloons || (greeting ? 2 : 4)))),
@@ -421,7 +418,7 @@ export function normalizeBrainTurnContract(
     })) : [],
     mustAnswerFirst: raw.mustAnswerFirst === true,
     reactionTarget: raw.reactionTarget ?? null,
-    newQuestionBudget: raw.newQuestionBudget === 0 ? 0 : 1,
+    newQuestionBudget: raw.newQuestionBudget === 1 ? 1 : 0,
     responseShape: typeof raw.responseShape === "string" ? raw.responseShape as TurnResponseShape : "free_conversation",
     avoidEchoPhrases: Array.isArray(raw.avoidEchoPhrases) ? raw.avoidEchoPhrases.map(String) : [],
     avoidTopics: Array.isArray(raw.avoidTopics) ? raw.avoidTopics.map(String) : [],
@@ -548,9 +545,6 @@ export function runConversationQualityGate(params: {
   if (candidateBalloons.length > turnContract.maxBalloons) {
     add("TOO_MANY_BALLOONS_FOR_SIMPLE_TURN", `Foram usados ${candidateBalloons.length} balões; o limite do turno é ${turnContract.maxBalloons}.`);
   }
-  if (isGreetingOrWellbeing(inbound) && questionCount === 0) {
-    add("MISSING_WELLBEING_QUESTION", "Toda saudação exige perguntar se o pretendente está bem ou devolver a pergunta reciprocamente.");
-  }
   if (isOutingInvite(inbound) && detectAcceptedOutingInvite(outbound)) {
     add("ACCEPTED_OUTING_INVITE", "Larissa nunca aceita convites para sair; deve desviar com gentileza usando sua rotina.");
   }
@@ -617,9 +611,9 @@ export function safeHighConfidenceFallback(inboundMessages: string[], turnContra
           ? ["Tô bem tbm"]
           : ["Tô bem simm, e vc como tá?"];
       }
-      return ["Oiii, tô bem simm e vc?"];
+      return [turnContract.newQuestionBudget === 0 ? "Oiii, tô bem simm" : "Oiii, tô bem simm e vc?"];
     }
-    return ["Oiii", "tudo bem com vc?"];
+    return ["Oiii"];
   }
   return null;
 }

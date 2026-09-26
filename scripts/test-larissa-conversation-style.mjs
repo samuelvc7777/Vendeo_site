@@ -118,6 +118,20 @@ function loadTsModule(filePath) {
 const { LARISSA_CANONICAL_PROMPT: canonicalPrompt } = await import('../supabase/functions/api/larissa_canonical_prompt.generated.ts');
 const canonicalMarkdown = fs.readFileSync('supabase/functions/api/larissa_canonical_prompt.md', 'utf8').trim();
 assert.equal(canonicalPrompt, canonicalMarkdown, 'Markdown é a fonte única do prompt fixo');
+assert.ok(
+  canonicalPrompt.includes('`newQuestionBudget` é um limite máximo, nunca uma meta. O padrão é zero perguntas novas.'),
+  'perguntas de continuidade devem ser opcionais, não uma meta por turno',
+);
+assert.match(canonicalPrompt, /"newQuestionBudget": 0,[\s\S]*?"responseShape": "natural"/);
+assert.doesNotMatch(
+  canonicalPrompt,
+  /em toda saudação.{0,100}OBRIGATORIAMENTE perguntar|DEVOLVE?R? a pergunta.{0,100}DEVE exercer reciprocidade|pergunta obrigatória de bem-estar|reciprocidade obrigatória/i,
+  'regras canônicas não podem exigir perguntas automáticas ou reciprocidade universal',
+);
+assert.ok(
+  /não acrescente "e vc\?" automaticamente/i.test(canonicalPrompt),
+  'respostas diretas não devem receber pergunta automática de reciprocidade',
+);
 
 const domainBuilderMod = loadTsModule('src/domain/services/LarissaPromptBuilder.ts');
 assert.ok(domainBuilderMod.LARISSA_CONVERSATION_STYLE, 'LarissaPromptBuilder deve reexportar LARISSA_CONVERSATION_STYLE');

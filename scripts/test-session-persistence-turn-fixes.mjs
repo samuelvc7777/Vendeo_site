@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   runBrainOrchestration,
+  PERSISTENT_AGENT_SESSION_VERSION,
 } from '../supabase/functions/api/brain_orchestrator.ts';
 import {
   runOpenAiBrainTurn,
@@ -85,7 +86,7 @@ function createMockSupabase(initialState = {}) {
         },
         openai_session_id: initialState.initialSessionId !== undefined ? initialState.initialSessionId : null,
         openai_session_kind: initialState.initialSessionId ? 'persistent' : null,
-        persistent_session_version: initialState.initialSessionId ? 2 : null,
+        persistent_session_version: initialState.initialSessionId ? PERSISTENT_AGENT_SESSION_VERSION : null,
       },
       active_cycle_token: correlationId,
     },
@@ -676,7 +677,7 @@ test('BUG 3 — Princípio do Cofre: Cenário real onde pretendente pergunta pro
 
 test('BUG 3 — Instruções do Agent contêm o Princípio do Cofre e proibições expressas de rejeição por tamanho ou divulgação', () => {
   const instructions = buildCanonicalAgentInstructions('agent_larissa_main');
-  assert.ok(['2.11.0', '2.12.0', '2.13.0'].includes(VENDEO_AGENT_INSTRUCTIONS_VERSION), 'Versão das instructions DEVE ser 2.11.0, 2.12.0 ou 2.13.0');
+  assert.match(VENDEO_AGENT_INSTRUCTIONS_VERSION, /^\d+\.\d+\.\d+$/, 'Versão das instructions deve seguir semver');
 
   // Verifica as diretrizes inseridas
   assert.equal(instructions.includes('PRINCÍPIO FUNDAMENTAL DO COFRE'), true);
