@@ -2356,6 +2356,188 @@ export function deriveBrainDeliveryStatus(statuses: string[]):
   return "delivery_pending";
 }
 
+export interface BrainDecisionActionDelivery {
+  id: string;
+  action_index: number;
+  action_type: string;
+  payload: Record<string, any>;
+  status: string;
+  provider_message_id?: string | null;
+}
+
+export interface ConfirmedBrainActionProjection extends BrainDecisionActionDelivery {
+  text: string | null;
+  audioId: string | null;
+  projectionMessageId: string;
+}
+
+export function selectConfirmedBrainActions(
+  actions: BrainDecisionActionDelivery[],
+  outboxEntries?: Record<string, any> | any[],
+): ConfirmedBrainActionProjection[] {
+  return actions
+    .filter((action) => {
+      if (action.status !== "sent") return false;
+      if (outboxEntries === undefined) return true;
+      const entries = Array.isArray(outboxEntries) ? outboxEntries : Object.values(outboxEntries);
+      const outboxId = action.payload?.outboxId;
+      if (!outboxId) return false;
+      const matchingOutbox = entries.find((entry: any) =>
+        entry?.id === outboxId || entry?.idempotencyKey === outboxId || entry?.idempotencyKey === action.payload?.idempotencyKey,
+      );
+      return matchingOutbox?.status === "sent";
+    })
+    .sort((a, b) => a.action_index - b.action_index)
+    .map((action) => ({
+      ...action,
+      text: action.action_type === "text" && typeof action.payload?.text === "string" ? action.payload.text : null,
+      audioId: action.action_type === "audio" && typeof action.payload?.audioId === "string" ? action.payload.audioId : null,
+      projectionMessageId: typeof action.payload?.deliveryProjectionId === "string"
+        ? action.payload.deliveryProjectionId
+        : `out_action_${action.id}`,
+    }));
+}
+
+export function mergeRecentQuestionIntents<T extends { sourceMessageId?: string }>(
+  existing: T[],
+  incoming: T[],
+): T[] {
+  const merged = [...existing];
+  const seen = new Set(existing.map((item) => item.sourceMessageId).filter(Boolean));
+  for (const item of incoming) {
+    const sourceId = item.sourceMessageId;
+    if (sourceId && seen.has(sourceId)) continue;
+    merged.push(item);
+    if (sourceId) seen.add(sourceId);
+  }
+  return merged.slice(-10);
+}
+
+function memoryWriteMatchesAction(item: any, actionIndex: number): boolean {
+  const index = Number.isInteger(item?.actionIndex) ? item.actionIndex
+    : Number.isInteger(item?.responseIndex) ? item.responseIndex
+    : null;
+  return index === actionIndex;
+}
+
+async function projectConfirmedBrainAction(params: {
+  supabase: any;
+  conversationId: string;
+  actionId: string;
+  action?: BrainDecisionActionDelivery;
+}): Promise<void> {
+  const actionResult = params.action
+    ? { data: params.action, error: null }
+    : await params.supabase.from("brain_decision_actions")
+      .select("id, decision_id, conversation_id, action_index, action_type, payload, status, provider_message_id")
+      .eq("id", params.actionId).maybeSingle();
+  const action = actionResult?.data;
+  if (actionResult?.error || !action || action.status !== "sent" || action.conversation_id !== params.conversationId) return;
+
+  const { data: decision, error: decisionError } = await params.supabase.from("brain_decisions")
+    .select("id, turn_id, payload").eq("id", action.decision_id).maybeSingle();
+  if (decisionError || !decision) return;
+
+  const { data: conversation } = await params.supabase.from("instagram_conversations")
+    .select("stage_completed_rules").eq("id", params.conversationId).maybeSingle();
+  const outboxEntries = conversation?.stage_completed_rules?.orchestration?.outbox;
+  const projected = selectConfirmedBrainActions([action], outboxEntries)[0];
+  if (!projected) return;
+  const stableCycleId = `${decision.id}:${action.id}`;
+  const questionIntents = (Array.isArray(decision.payload?.questionIntents) ? decision.payload.questionIntents : [])
+    .filter((item: any) => Number(item?.responseIndex) === Number(action.action_index));
+  const text = projected.text;
+  let audioPayload: { id: string; theme?: string; transcript?: string } | null = null;
+  if (projected.audioId) {
+    const { data: audio } = await params.supabase.from("persona_audios")
+      .select("id, title, transcript").eq("id", projected.audioId).maybeSingle();
+    audioPayload = {
+      id: projected.audioId,
+      theme: audio?.title || projected.audioId,
+      transcript: audio?.transcript || undefined,
+    };
+  }
+
+  await executeEpisodeWriter({
+    conversationId: params.conversationId,
+    claimedMessages: [],
+    sentBalloons: [text || `[audio:${projected.audioId || action.payload?.mediaUrl || "delivered"}]`],
+    sentMessageIds: [projected.projectionMessageId],
+    audioPayload,
+    supabase: params.supabase,
+    trace: [],
+  });
+
+  if (questionIntents.length > 0 && text) {
+    const askedAt = new Date().toISOString();
+    const recentIntents = questionIntents.map((item: any) => ({
+      intentKey: String(item.intentKey || ""),
+      canonicalMeaning: String(item.canonicalMeaning || ""),
+      questionText: text,
+      status: "asked",
+      askedAt,
+      sourceMessageId: projected.projectionMessageId,
+    })).filter((item: any) => item.intentKey);
+    const speechEpisodes: ConversationEpisode[] = recentIntents.map((item: any) => ({
+      conversation_id: params.conversationId,
+      actor: "larissa",
+      event_type: "question_asked",
+      memory_class: "speech_act",
+      topic: item.intentKey,
+      summary: `Larissa perguntou: "${text}" (${item.canonicalMeaning})`,
+      original_text: text,
+      source_message_id: projected.projectionMessageId,
+      semantic_keys: [item.intentKey, "question"],
+      metadata: { intentKey: item.intentKey, canonicalMeaning: item.canonicalMeaning, status: "asked", memory_class: "speech_act", importance: 0.8 },
+    } as ConversationEpisode));
+    await saveConversationEpisodes({ supabase: params.supabase, conversationId: params.conversationId, episodes: speechEpisodes });
+    await params.supabase.rpc("record_brain_delivered_question_intents", {
+      p_conversation_id: params.conversationId,
+      p_intents: recentIntents,
+    });
+  }
+
+  const memoryWrites = decision.payload?.memoryWrites;
+  if (!memoryWrites || typeof memoryWrites !== "object") return;
+  const validMessageIds = new Set([projected.projectionMessageId]);
+  const outboundOnly = (items: any[]) => items.filter((item) =>
+    item?.actor === "larissa" || item?.sourceActor === "larissa" || item?.speaker === "larissa",
+  ).filter((item) => memoryWriteMatchesAction(item, Number(action.action_index)));
+
+  const facts = outboundOnly(Array.isArray(memoryWrites.contactFacts) ? memoryWrites.contactFacts : [])
+    .map((item) => ({ ...item, sourceActor: "larissa", sourceMessageIds: [projected.projectionMessageId] }));
+  const quotes = outboundOnly(Array.isArray(memoryWrites.quotes) ? memoryWrites.quotes : [])
+    .map((item) => ({ ...item, speaker: "larissa", sourceMessageId: projected.projectionMessageId }));
+  if (facts.length || quotes.length) {
+    await commitContactMemoryWrites({
+      supabase: params.supabase,
+      conversationId: params.conversationId,
+      cycleId: stableCycleId,
+      facts,
+      quotes,
+      validMessageIds,
+    });
+  }
+
+  const episodes = outboundOnly(Array.isArray(memoryWrites.episodes) ? memoryWrites.episodes : [])
+    .map((item) => ({ ...item, actor: "larissa", sourceMessageIds: [projected.projectionMessageId], originalText: text || item.originalText }));
+  const speechActs = outboundOnly(Array.isArray(memoryWrites.speechActs) ? memoryWrites.speechActs : [])
+    .map((item) => ({ ...item, actor: "larissa", sourceMessageIds: [projected.projectionMessageId], originalText: text || item.originalText }));
+  const openLoops = outboundOnly(Array.isArray(memoryWrites.openLoops) ? memoryWrites.openLoops : [])
+    .map((item) => ({ ...item, actor: "larissa", sourceMessageId: projected.projectionMessageId }));
+  if (episodes.length || speechActs.length || openLoops.length) {
+    await commitConversationMemoryWrites({
+      supabase: params.supabase,
+      conversationId: params.conversationId,
+      cycleId: stableCycleId,
+      episodes,
+      speechActs,
+      openLoops,
+      validMessageIds,
+    });
+  }
+}
+
 async function syncBrainDecisionActionStatus(params: {
   supabase: any;
   actionId?: string;
@@ -2367,7 +2549,9 @@ async function syncBrainDecisionActionStatus(params: {
     const update: Record<string, unknown> = { status: params.status, updated_at: new Date().toISOString() };
     if (params.providerMessageId) update.provider_message_id = params.providerMessageId;
     const { data, error } = await params.supabase.from("brain_decision_actions")
-      .update(update).eq("id", params.actionId).select("decision_id, conversation_id").maybeSingle();
+      .update(update).eq("id", params.actionId)
+      .select("id, decision_id, conversation_id, action_index, action_type, payload, status, provider_message_id")
+      .maybeSingle();
     if (error || !data?.decision_id) return;
     const eventMessage: Record<string, string> = {
       sending: "Ação iniciada pelo dispatcher.",
@@ -2404,6 +2588,14 @@ async function syncBrainDecisionActionStatus(params: {
         status: deliveryStatus || "delivery_pending",
         human_message: `Estado de entrega: ${deliveryStatus || "delivery_pending"}.`,
         metadata: { actionCount: actions.length },
+      });
+    }
+    if (params.status === "sent" && data.status === "sent") {
+      await projectConfirmedBrainAction({
+        supabase: params.supabase,
+        conversationId: data.conversation_id,
+        actionId: data.id,
+        action: data,
       });
     }
     if (params.status !== "sent") return;
@@ -3843,6 +4035,12 @@ export async function runDurableOutboxDispatcher(
       if (!claimRes.success) {
         if (claimRes.reason === "already_sent") {
           entry.status = "sent";
+          await syncBrainDecisionActionStatus({
+            supabase,
+            actionId: outboxBrainActionId(entry),
+            status: "sent",
+            providerMessageId: entry.providerMessageId || undefined,
+          });
           continue;
         }
         if (claimRes.reason === "action_not_due_yet") {
@@ -8983,6 +9181,8 @@ export async function runBrainOrchestration(
               lastDecision: decision,
             },
             responses: canonicalOutboundActions.filter((action) => action.type === "text").map((action: any) => action.text),
+            questionIntents: Array.isArray(brainPlan?.questionIntents) ? brainPlan.questionIntents : [],
+            memoryWrites: brainPlan?.memoryWrites && typeof brainPlan.memoryWrites === "object" ? brainPlan.memoryWrites : null,
           },
           outboxEntries: outboxBatch,
           actions: outboxBatch.map((entry, actionIndex) => ({
@@ -8995,6 +9195,9 @@ export async function runBrainOrchestration(
               mediaUrl: entry.mediaUrl || null,
               outboxId: entry.id,
               brainActionId: `brain_action_${correlationId}_${actionIndex}`,
+              deliveryProjectionId: `out_${correlationId}_${actionIndex}`,
+              questionIntents: (Array.isArray(brainPlan?.questionIntents) ? brainPlan.questionIntents : [])
+                .filter((intent: any) => Number(intent?.responseIndex) === actionIndex),
             },
             notBefore: entry.notBefore || null,
             idempotencyKey: entry.idempotencyKey,
@@ -9244,7 +9447,19 @@ export async function runBrainOrchestration(
       // A decisão semântica e a outbox foram confirmadas juntas pela RPC antes do dispatch.
       // Estado de entrega nunca reverte essa decisão; memória de saída exige confirmação do provedor.
       const decisionPersisted = currentCycle.trace.some((entry: string) => entry.startsWith("brain_decision_persisted:"));
-      const hasConfirmedDelivery = sentBalloonsCount > 0;
+      const decisionId = `brain_decision_${correlationId}`;
+      const { data: decisionActionRows } = await supabase.from("brain_decision_actions")
+        .select("id, action_index, action_type, payload, status, provider_message_id")
+        .eq("decision_id", decisionId);
+      const { data: deliveryConversation } = await supabase.from("instagram_conversations")
+        .select("stage_completed_rules").eq("id", conversationId).maybeSingle();
+      const decisionOutbox = deliveryConversation?.stage_completed_rules?.orchestration?.outbox;
+      const confirmedActions = selectConfirmedBrainActions(
+        Array.isArray(decisionActionRows) ? decisionActionRows : [],
+        decisionOutbox,
+      );
+      const hasConfirmedDelivery = confirmedActions.length > 0;
+      sentBalloonsCount = confirmedActions.length;
 
       if (!decisionPersisted) {
         currentCycle.trace.push("semantic_commit_skipped_decision_not_persisted");
@@ -9265,7 +9480,10 @@ export async function runBrainOrchestration(
               conversationId,
               claimedMessages: claimedMessages,
               lastLarissaTurn: baseContextPayload.lastLarissaTurn,
-              sentResponseText: decision.suggestedResponse,
+              sentResponseText: confirmedActions
+                .map((action) => action.text)
+                .filter((text): text is string => Boolean(text))
+                .join("\n\n"),
               memoryProvider: cycleMemoryProvider,
               supabase,
               trace: currentCycle.trace,
@@ -9397,7 +9615,12 @@ export async function runBrainOrchestration(
           messageLedger: ledger,
           memory: mergedMemory,
           liveState: currentLiveState,
-          recentQuestionIntents: currentRecentQuestionIntents.slice(-10),
+          recentQuestionIntents: mergeRecentQuestionIntents(
+            currentRecentQuestionIntents,
+            Array.isArray(freshRules?.orchestration?.recentQuestionIntents)
+              ? freshRules.orchestration.recentQuestionIntents
+              : [],
+          ),
           openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || orchState.openai_session_id) : null),
           openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
           persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
@@ -9484,9 +9707,8 @@ export async function runBrainOrchestration(
 
         const completedUsage = cycleUsageMetadata();
         const needsHumanReview = decision.action === "manual_resolution" && claimedMessageIds.length > 0;
-        const decisionOutboxStatuses = Object.values(outboxMap)
-          .filter((entry) => entry.cycleId === correlationId)
-          .map((entry) => entry.status === "failed" ? "failed_confirmed" : entry.status === "waiting_delay" ? "pending" : entry.status);
+        const decisionOutboxStatuses = (Array.isArray(decisionActionRows) ? decisionActionRows : [])
+          .map((action: any) => action.status);
         const deliveryStatus = deriveBrainDeliveryStatus(decisionOutboxStatuses);
         let humanPauseConfirmed = false;
         if (needsHumanReview) {
@@ -9601,11 +9823,9 @@ export async function runBrainOrchestration(
                 sender: "pretendente",
                 direction: "inbound",
               })),
-              sentBalloons: balloons || [],
-              sentMessageIds: (balloons || []).map((_, idx) => `out_${correlationId}_${idx}`),
-              audioPayload: audioPayload
-                ? { id: audioPayload.id, theme: audioPayload.title, transcript: audioPayload.transcript }
-                : null,
+              sentBalloons: [],
+              sentMessageIds: [],
+              audioPayload: null,
               supabase,
               trace: currentCycle.trace || [],
             });
@@ -9614,45 +9834,6 @@ export async function runBrainOrchestration(
           }
 
           // Gravação determinística das intenções de perguntas enviadas como speech_act na memória episódica
-          if (Array.isArray(brainPlan?.questionIntents) && brainPlan.questionIntents.length > 0) {
-            try {
-              const questionEpisodes: ConversationEpisode[] = [];
-              for (const q of brainPlan.questionIntents) {
-                const bText = (balloons || [])[q.responseIndex] || q.canonicalMeaning;
-                questionEpisodes.push({
-                  conversation_id: conversationId,
-                  actor: "larissa" as const,
-                  event_type: "question_asked" as any,
-                  memory_class: "speech_act" as const,
-                  topic: q.intentKey,
-                  summary: `Larissa perguntou: "${bText}" (${q.canonicalMeaning})`,
-                  original_text: bText,
-                  source_message_id: `out_${correlationId}_${q.responseIndex}`,
-                  semantic_keys: [q.intentKey, "question"],
-                  metadata: {
-                    intentKey: q.intentKey,
-                    canonicalMeaning: q.canonicalMeaning,
-                    kind: q.kind,
-                    target: q.target || "pretendente",
-                    status: "asked",
-                    memory_class: "speech_act",
-                    importance: 0.8,
-                  },
-                });
-              }
-              if (questionEpisodes.length > 0) {
-                await saveConversationEpisodes({
-                  supabase,
-                  conversationId,
-                  episodes: questionEpisodes,
-                });
-                currentCycle.trace.push(`question_intents_saved_to_episodes: ${questionEpisodes.length}`);
-              }
-            } catch (qErr: any) {
-              console.warn("[Orchestrator] Erro ao persistir questionEpisodes:", qErr);
-            }
-          }
-
           // Gravação determinística de episódios da conversa a partir dos memoryCandidates pós-CAS
           if (validatedMemoryCandidates.length > 0) {
             try {
@@ -9689,8 +9870,12 @@ export async function runBrainOrchestration(
               const primaryFallbackMsgId = claimedMessages?.[0]?.id ? String(claimedMessages[0].id) : correlationId;
 
               // 1. Contact Memory (Fatos e Quotes)
-              const rawFacts = Array.isArray(brainPlan.memoryWrites.contactFacts) ? brainPlan.memoryWrites.contactFacts : [];
-              const rawQuotes = Array.isArray(brainPlan.memoryWrites.quotes) ? brainPlan.memoryWrites.quotes : [];
+              const rawFacts = Array.isArray(brainPlan.memoryWrites.contactFacts)
+                ? brainPlan.memoryWrites.contactFacts.filter((fact: any) => fact?.sourceActor !== "larissa")
+                : [];
+              const rawQuotes = Array.isArray(brainPlan.memoryWrites.quotes)
+                ? brainPlan.memoryWrites.quotes.filter((quote: any) => quote?.speaker !== "larissa")
+                : [];
 
               const normalizedFacts = rawFacts.map((f: any) => {
                 const srcIds = Array.isArray(f.sourceMessageIds) && f.sourceMessageIds.length > 0
@@ -9723,9 +9908,15 @@ export async function runBrainOrchestration(
               }
 
               // 2. Conversation Memory (Episódios, Speech Acts, Open Loops)
-              const rawEpisodes = Array.isArray(brainPlan.memoryWrites.episodes) ? brainPlan.memoryWrites.episodes : [];
-              const rawSpeechActs = Array.isArray(brainPlan.memoryWrites.speechActs) ? brainPlan.memoryWrites.speechActs : [];
-              const rawOpenLoops = Array.isArray(brainPlan.memoryWrites.openLoops) ? brainPlan.memoryWrites.openLoops : [];
+              const rawEpisodes = Array.isArray(brainPlan.memoryWrites.episodes)
+                ? brainPlan.memoryWrites.episodes.filter((episode: any) => episode?.actor !== "larissa")
+                : [];
+              const rawSpeechActs = Array.isArray(brainPlan.memoryWrites.speechActs)
+                ? brainPlan.memoryWrites.speechActs.filter((speechAct: any) => speechAct?.actor === "pretendente")
+                : [];
+              const rawOpenLoops = Array.isArray(brainPlan.memoryWrites.openLoops)
+                ? brainPlan.memoryWrites.openLoops.filter((loop: any) => loop?.actor !== "larissa")
+                : [];
 
               if (rawEpisodes.length > 0 || rawSpeechActs.length > 0 || rawOpenLoops.length > 0) {
                 const convRes = await commitConversationMemoryWrites({

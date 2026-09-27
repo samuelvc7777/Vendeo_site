@@ -10,7 +10,9 @@ import {
 import {
   createBrainOutboxBatch,
   deriveBrainDeliveryStatus,
+  mergeRecentQuestionIntents,
   persistCanonicalBrainDecision,
+  selectConfirmedBrainActions,
   validatePhaseTransition,
 } from "../supabase/functions/api/brain_orchestrator.ts";
 
@@ -172,6 +174,67 @@ test("falha retryable no primeiro envio e dispatch_uncertain preservam a decisã
   assert.equal(deriveBrainDeliveryStatus(["dispatch_uncertain", "pending"]), "dispatch_uncertain");
   assert.equal(deriveBrainDeliveryStatus(["sent", "pending"]), "partially_sent");
   assert.equal(deriveBrainDeliveryStatus(["sent", "sent"]), "fully_sent");
+});
+
+test("três textos com somente action 0 sent projetam somente a primeira fala", () => {
+  const confirmed = selectConfirmedBrainActions([
+    { id: "a0", action_index: 0, action_type: "text", status: "sent", payload: { text: "primeira", deliveryProjectionId: "out-0" } },
+    { id: "a1", action_index: 1, action_type: "text", status: "pending", payload: { text: "segunda", deliveryProjectionId: "out-1" } },
+    { id: "a2", action_index: 2, action_type: "text", status: "pending", payload: { text: "terceira", deliveryProjectionId: "out-2" } },
+  ]);
+  assert.deepEqual(confirmed.map((action) => action.text), ["primeira"]);
+  assert.deepEqual(confirmed.map((action) => action.projectionMessageId), ["out-0"]);
+});
+
+test("texto sent, áudio pending e texto pending mantêm só o texto entregue na memória", () => {
+  const confirmed = selectConfirmedBrainActions([
+    { id: "t0", action_index: 0, action_type: "text", status: "sent", payload: { text: "texto entregue" } },
+    { id: "au1", action_index: 1, action_type: "audio", status: "pending", payload: { audioId: "audio-1" } },
+    { id: "t2", action_index: 2, action_type: "text", status: "pending", payload: { text: "texto ainda pendente" } },
+  ]);
+  assert.deepEqual(confirmed.map((action) => action.text), ["texto entregue"]);
+  assert.deepEqual(confirmed.map((action) => action.audioId), [null]);
+});
+
+test("texto e áudio sent com terceiro texto pending projetam somente os dois confirmados", () => {
+  const confirmed = selectConfirmedBrainActions([
+    { id: "t0", action_index: 0, action_type: "text", status: "sent", payload: { text: "texto entregue" } },
+    { id: "au1", action_index: 1, action_type: "audio", status: "sent", payload: { audioId: "audio-1" } },
+    { id: "t2", action_index: 2, action_type: "text", status: "pending", payload: { text: "texto pendente" } },
+  ]);
+  assert.deepEqual(confirmed.map((action) => action.id), ["t0", "au1"]);
+  assert.deepEqual(confirmed.map((action) => action.projectionMessageId), ["out_action_t0", "out_action_au1"]);
+});
+
+test("nenhuma action sent não gera projeção de fala outbound", () => {
+  assert.deepEqual(selectConfirmedBrainActions([
+    { id: "a0", action_index: 0, action_type: "text", status: "pending", payload: { text: "planejada" } },
+    { id: "a1", action_index: 1, action_type: "audio", status: "dispatch_uncertain", payload: { audioId: "audio-1" } },
+  ]), []);
+});
+
+test("action só é projetada quando action e outbox registram sent", () => {
+  const action = { id: "a0", action_index: 0, action_type: "text", status: "sent", payload: { text: "confirmada", outboxId: "out-0" } };
+  assert.deepEqual(selectConfirmedBrainActions([action], { "key-0": { id: "out-0", status: "pending" } }), []);
+  assert.deepEqual(selectConfirmedBrainActions([action], { "key-0": { id: "out-0", status: "sent" } }).map((item) => item.text), ["confirmada"]);
+});
+
+test("ações entregues depois entram por ID estável uma vez, sem duplicar a anterior", async () => {
+  const planned = [
+    { id: "a0", action_index: 0, action_type: "text", status: "sent", payload: { text: "primeira", deliveryProjectionId: "out-0" } },
+    { id: "a1", action_index: 1, action_type: "text", status: "pending", payload: { text: "segunda", deliveryProjectionId: "out-1" } },
+  ];
+  const projection = new Map(selectConfirmedBrainActions(planned).map((action) => [action.projectionMessageId, action.text]));
+  planned[1].status = "sent";
+  for (const action of selectConfirmedBrainActions(planned)) projection.set(action.projectionMessageId, action.text);
+  for (const action of selectConfirmedBrainActions(planned)) projection.set(action.projectionMessageId, action.text);
+  assert.deepEqual([...projection.entries()], [["out-0", "primeira"], ["out-1", "segunda"]]);
+  assert.deepEqual(mergeRecentQuestionIntents(
+    [{ intentKey: "q0", sourceMessageId: "out-0" }],
+    [{ intentKey: "q0", sourceMessageId: "out-0" }, { intentKey: "q1", sourceMessageId: "out-1" }],
+  ).map((item) => item.sourceMessageId), ["out-0", "out-1"]);
+  const episodic = await readFile(new URL("../supabase/functions/api/conversation_episodic_memory.ts", import.meta.url), "utf8");
+  assert.match(episodic, /onConflict: "conversation_id,episode_fingerprint"[\s\S]*?ignoreDuplicates: true/);
 });
 
 test("commit semântico é transacional, idempotente e independente do despacho", async () => {
