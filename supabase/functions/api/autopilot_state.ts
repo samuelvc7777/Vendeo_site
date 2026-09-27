@@ -10,6 +10,23 @@ export function activity(
   return { phase, label, detail, updatedAt: new Date().toISOString(), ...extra };
 }
 
+export async function patchAutoPilotProjectionState(
+  supabase: any,
+  conversationId: string,
+  state: Record<string, any>,
+  expectedStateUpdatedAt?: string,
+) {
+  const { data, error } = await supabase.rpc("patch_autopilot_projection_state_atomic", {
+    p_conversation_id: conversationId,
+    p_state_patch: state,
+    ...(expectedStateUpdatedAt ? { p_expected_state_updated_at: expectedStateUpdatedAt } : {}),
+  });
+  if (error || data?.success !== true) {
+    throw new Error(error?.message || data?.reason || "autopilot_projection_patch_failed");
+  }
+  return data as { success: true; applied: boolean; isEnabled: boolean; stateUpdatedAt?: string };
+}
+
 export async function publishAutoPilotState(
   supabase: any,
   conversationId: string,
@@ -97,13 +114,11 @@ export async function publishAutoPilotState(
       }
     }
     states[conversationId] = updated;
-
-    await supabase.from("instagram_conversations").upsert({
-      id: "__autopilot_states__",
-      username: "system_autopilot_states",
-      stage_completed_rules: { states, updated_at: new Date().toISOString() },
-      updated_at: new Date().toISOString(),
-    });
+    const projectionResult = await patchAutoPilotProjectionState(supabase, conversationId, updated, current.stateUpdatedAt);
+    if (!projectionResult.applied) return;
+    updated.isEnabled = projectionResult.isEnabled;
+    if (projectionResult.stateUpdatedAt) updated.stateUpdatedAt = projectionResult.stateUpdatedAt;
+    if (!updated.isEnabled && updated.status !== "disabled") updated.status = "disabled";
 
     const realtimeChannel = supabase.channel("vendeo_realtime_chat");
     await realtimeChannel.send({

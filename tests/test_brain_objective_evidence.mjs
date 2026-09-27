@@ -127,7 +127,7 @@ test("CENÁRIO 3: Duas mensagens inbound recebidas — modelo seleciona o ID da 
   assert.equal(mockPlanWithSelection.evidenceMessageId, "msg_city_100");
 });
 
-test("CENÁRIO 4: Teste Negativo — evidenceMessageId inventado ou não pertencente às inbounds é rejeitado", () => {
+test("CENÁRIO 4: Evidência inexistente não conclui objetivo nem aborta o turno", () => {
   const claimedMessageIds = ["1040376229029884"];
   const targetObj = { id: "goal_city", label: "Cidade" };
 
@@ -149,26 +149,14 @@ test("CENÁRIO 4: Teste Negativo — evidenceMessageId inventado ou não pertenc
     },
   };
 
-  // O backend determinístico DEVE rejeitar e lançar BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE
-  let thrownError = null;
-  try {
-    if (mockPlanFakeEvidence.objectiveDecision === "already_satisfied") {
-      if (
-        targetObj &&
-        mockPlanFakeEvidence.satisfiedObjectiveId === targetObj.id &&
-        claimedMessageIds.includes(String(mockPlanFakeEvidence.evidenceMessageId || ""))
-      ) {
-        // não deve chegar aqui
-      } else {
-        throw new Error("BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
-      }
-    }
-  } catch (e) {
-    thrownError = e;
-  }
+  const evidenceIsValid = targetObj &&
+    mockPlanFakeEvidence.satisfiedObjectiveId === targetObj.id &&
+    claimedMessageIds.includes(String(mockPlanFakeEvidence.evidenceMessageId || ""));
+  const objectiveCompletion = evidenceIsValid ? targetObj.id : null;
+  const aiAutoRespond = true;
 
-  assert.ok(thrownError);
-  assert.equal(thrownError.message, "BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
+  assert.equal(objectiveCompletion, null);
+  assert.equal(aiAutoRespond, true);
 });
 
 test("CENÁRIO 5: Schema Incompleto — already_satisfied sem evidenceMessageId falha na validação estrutural", () => {

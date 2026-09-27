@@ -958,11 +958,11 @@ export function AutoPilotActivityIndicator({
       const res = await autopilotApiFetch("/api/autopilot/pause", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: targetId }),
+        body: JSON.stringify({ conversationId: targetId, source: "cancel_action_button" }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success === true && data.isEnabled === false) {
-        toast.success("Ação cancelada. IA desativada.");
+      if (res.ok && data.success === true && data.result === "cancelled") {
+        toast.success(data.isEnabled ? "Ação cancelada. A IA continua ligada." : "Ação cancelada; a IA permanece desligada como solicitado.");
       } else {
         toast.error(data.detail || "Erro ao cancelar ação.");
       }
@@ -1211,7 +1211,7 @@ export function AutoPilotActivityIndicator({
                 onClick={handleCancelAction}
                 disabled={isCancelling}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-                title="Cancelar ação e desativar a IA neste chat"
+                title="Cancelar apenas o ciclo atual; a IA continuará ligada para próximas mensagens"
               >
                 <StopCircle className="h-3 w-3" />
                 <span className="hidden sm:inline">{isCancelling ? "Cancelando..." : "Cancelar ação"}</span>

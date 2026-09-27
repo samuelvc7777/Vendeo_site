@@ -198,6 +198,9 @@ test("nova RPC só concede EXECUTE a service_role", () => {
 
 test("endpoint backend continua sendo a autoridade de sincronização da pausa", () => {
   assert.match(indexSource, /path === "\/autopilot\/pause"/);
-  assert.match(indexSource, /supabase\.rpc\(\s*"patch_autopilot_pause_atomic"/);
-  assert.match(indexSource, /Atualizando somente coluna física ai_auto_respond/);
+  const pauseRoute = indexSource.slice(indexSource.indexOf('path === "/autopilot/pause"'), indexSource.indexOf('path === "/autopilot/toggle-chat"'));
+  assert.match(pauseRoute, /set_autopilot_runtime_state_atomic/);
+  assert.match(pauseRoute, /p_cancel_current_cycle: true/);
+  assert.doesNotMatch(pauseRoute, /ai_auto_respond:\s*false/);
+  assert.doesNotMatch(pauseRoute, /patch_autopilot_pause_atomic/);
 });

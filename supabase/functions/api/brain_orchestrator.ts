@@ -7683,6 +7683,23 @@ export async function runBrainOrchestration(
       candidateCount: allRecentCandidates.length,
     });
     const finalRecentMessages = budgetedRecentContext.messages;
+    const evidenceObjectiveId = stageChecklistForRouter.currentObjective?.id;
+    if (evidenceObjectiveId) {
+      const evidenceMessages = [
+        ...finalRecentMessages,
+        ...claimedMessages.map((message: any) => ({ ...message, sender: "pretendente" })),
+      ]
+        .filter((message: any, index: number, all: any[]) => all.findIndex((item) => String(item.id) === String(message.id)) === index)
+        .filter((message: any) => message?.id && message.sender !== "larissa")
+        .slice(-30);
+      for (const message of evidenceMessages) {
+        candidateObjectiveEvidence.push({
+          objectiveId: evidenceObjectiveId,
+          evidenceMessageId: String(message.id),
+          summary: String(message.text || "").replace(/\s+/g, " ").slice(0, 280),
+        });
+      }
+    }
     currentCycle.trace.push(`brain_recent_context_estimated_tokens: ${budgetedRecentContext.estimatedTokens}`);
     currentCycle.trace.push(`brain_budget_overflow_required: ${budgetedRecentContext.budgetOverflowRequired}`);
     // NÍVEL 2: ContactMemory (fatos conhecidos sobre o pretendente)
@@ -8616,16 +8633,20 @@ export async function runBrainOrchestration(
       const evidenceExists = evidence
       ? await objectiveEvidenceExists(supabase, conversationId, evidence, currentSessionId)
         : false;
-      if (!objectiveExists || !evidenceExists) throw new Error("BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
-      workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, objectiveId])];
-      brainObjectiveCompletion = {
-        objectiveId,
-        evidence: evidence ?? undefined,
-        evidenceMessageId: evidence?.type === "message" ? evidence.id : undefined,
-        value: brainPlan.objectiveValue ?? null,
-        source: evidence?.type ? `brain_verified_${evidence.type}_evidence` : "brain_verified_persisted_evidence",
-      };
-      currentCycle.trace.push(`brain_objective_reference_validated: ${objectiveId}`);
+      if (!objectiveExists || !evidenceExists) {
+        currentCycle.trace.push(`brain_objective_reference_rejected: ${objectiveId || "missing_objective"}`);
+        console.warn(`[Brain] Objetivo não confirmado por evidência inválida; o turno continua sem marcar conclusão. conv=${conversationId} objective=${objectiveId || "missing"}`);
+      } else {
+        workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, objectiveId])];
+        brainObjectiveCompletion = {
+          objectiveId,
+          evidence: evidence ?? undefined,
+          evidenceMessageId: evidence?.type === "message" ? evidence.id : undefined,
+          value: brainPlan.objectiveValue ?? null,
+          source: evidence?.type ? `brain_verified_${evidence.type}_evidence` : "brain_verified_persisted_evidence",
+        };
+        currentCycle.trace.push(`brain_objective_reference_validated: ${objectiveId}`);
+      }
     }
 
     currentCycle.trace.push(`brain_objective_mode: ${brainPlan.objectiveDecision}`);
@@ -9775,14 +9796,13 @@ export async function runBrainOrchestration(
         if (needsHumanReview) {
           for (let attempt = 1; attempt <= 2 && !humanPauseConfirmed; attempt += 1) {
             try {
-              const { data: pauseResult, error: pauseError } = await supabase.rpc(
-                "patch_autopilot_pause_atomic",
-                {
-                  p_conversation_id: conversationId,
-                  p_paused: true,
-                  p_reason: "brain_manual_resolution",
-                },
-              );
+              const { data: pauseResult, error: pauseError } = await supabase.rpc("set_autopilot_runtime_state_atomic", {
+                p_conversation_id: conversationId,
+                p_status: "waiting_human",
+                p_reason: "brain_manual_resolution",
+                p_cancel_current_cycle: false,
+                p_clear_cancel_current_cycle: false,
+              });
               humanPauseConfirmed = !pauseError && pauseResult?.success === true;
               if (!humanPauseConfirmed) {
                 console.error(
@@ -9807,7 +9827,6 @@ export async function runBrainOrchestration(
           cycleId: correlationId,
           ...(needsHumanReview
             ? {
-                isEnabled: false,
                 status: "waiting_human",
                 pauseReason,
                 pausedAt: new Date().toISOString(),

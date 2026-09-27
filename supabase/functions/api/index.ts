@@ -11,7 +11,7 @@ import {
   releaseExperimentalCycleAtomic,
   runDurableOutboxDispatcher,
 } from "./brain_orchestrator.ts";
-import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
 import {
   getGroqApiKey,
   transcribeWithGroqCloud,
@@ -1119,24 +1119,15 @@ serve(async (req: Request) => {
                   .eq("id", "__autopilot_states__")
                   .maybeSingle();
                 const chatStateInCloud = statesRow?.stage_completed_rules?.states?.[conversationId];
-                const isExplicitlyDisabled =
-                  chatStateInCloud?.isEnabled === false ||
-                  chatStateInCloud?.status === "disabled" ||
-                  chatStateInCloud?.status === "paused_manual" ||
-                  chatStateInCloud?.status === "waiting_human";
-
                 const convRules = convRow?.stage_completed_rules || {};
                 const isPaused =
                   convRow?.ai_auto_respond === false ||
                   convRow?.is_restricted === true ||
                   chatStateInCloud?.status === "waiting_human" ||
+                  convRules.status === "waiting_human" ||
                   convRules.status === "paused_handoff" ||
                   convRules.status === "paused_guardrail" ||
-                  (convRow?.ai_auto_respond !== true && (
-                    convRules.status === "paused_manual" ||
-                    convRules.status === "disabled" ||
-                    isExplicitlyDisabled
-                  ));
+                  (convRow?.ai_auto_respond !== true && (convRules.status === "paused_manual" || convRules.status === "disabled"));
 
                 const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
                 const isActionable = isActionableInboundMessage({
@@ -4139,7 +4130,7 @@ serve(async (req: Request) => {
           console.log("[Cloud AutoPilot] cron:tick abortado pois o Piloto Automático está desativado globalmente.");
           await supabase
             .from("instagram_conversations")
-            .update({ ai_debounce_until: null, ai_auto_respond: false })
+            .update({ ai_debounce_until: null })
             .not("ai_debounce_until", "is", null);
 
           return new Response(JSON.stringify({ success: true, message: "Piloto desativado globalmente. Debounces cancelados.", processedCount: 0 }), {
@@ -4402,16 +4393,7 @@ serve(async (req: Request) => {
           console.log(`[Autopilot] new_inbound_after_activation conv=${conversationId} rev=${currentInboundRev} > watermarkRev=${watermarkRev}`);
 
           // Limpa agendamento e travas manuais antigas para que o ciclo execute imediatamente
-          await supabase.from("instagram_conversations").update({
-            ai_auto_respond: true,
-            ai_debounce_until: null,
-          }).eq("id", conversationId);
-          try {
-            await supabase.rpc("patch_autopilot_pause_atomic", {
-              p_conversation_id: conversationId,
-              p_paused: false,
-            });
-          } catch {}
+          await supabase.from("instagram_conversations").update({ ai_debounce_until: null }).eq("id", conversationId);
 
           // BRAIN: Único orquestrador oficial (fail-closed)
           console.log(`[Brain] activation_trigger roteando para Brain em ${conversationId}`);
@@ -4497,7 +4479,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // Cancelamento operacional: desativa a IA e invalida o ciclo atual.
+    // Cancelamento operacional invalida somente o ciclo atual; a intenção do operador fica intacta.
     if ((path === "/autopilot/pause" || path === "/api/autopilot/pause") && req.method === "POST") {
       try {
         const body = await req.json().catch(() => ({}));
@@ -4509,15 +4491,15 @@ serve(async (req: Request) => {
           });
         }
 
-        // 1. Grava cancelamento atômico na conversa via RPC no PostgreSQL
-        const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
-          "patch_autopilot_pause_atomic",
-          {
-            p_conversation_id: conversationId,
-            p_paused: true,
-            p_reason: "paused_manual",
-          }
-        );
+        const source = typeof body?.source === "string" ? body.source.slice(0, 64) : "unspecified";
+        console.info(JSON.stringify({ event: "autopilot_cycle_cancel_requested", conversationId, source, route: path, timestamp: new Date().toISOString() }));
+        const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc("set_autopilot_runtime_state_atomic", {
+          p_conversation_id: conversationId,
+          p_status: "idle",
+          p_reason: null,
+          p_cancel_current_cycle: true,
+          p_clear_cancel_current_cycle: false,
+        });
 
         if (pauseRpcErr || !pauseRpcResult?.success) {
           console.error("[AutoPilot] RPC de pausa falhou; mantendo a alteração sem confirmação.", pauseRpcErr || pauseRpcResult);
@@ -4527,51 +4509,16 @@ serve(async (req: Request) => {
           });
         }
 
-        // 2. Atualiza estado visual no __autopilot_states__
-        const { data: statesRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_states__")
-          .maybeSingle();
-        const states = statesRow?.stage_completed_rules?.states || {};
-        const current = states[conversationId] || { conversationId, isEnabled: false };
         const nowIso = new Date().toISOString();
-        const updated = {
-          ...current,
-          isEnabled: false,
-          status: "disabled",
-          pauseReason: "paused_manual",
-          pausedAt: nowIso,
-          activity: null,
-          scheduledResponseAt: null,
-          updatedAt: nowIso,
-        };
-        states[conversationId] = updated;
-        await supabase.from("instagram_conversations").upsert({
-          id: "__autopilot_states__",
-          username: "system_autopilot_states",
-          stage_completed_rules: { states, updated_at: nowIso },
-          updated_at: nowIso,
-        });
-
-        // 3. Emite broadcast Realtime
-        const rt = supabase.channel("vendeo_realtime_chat");
-        await rt.send({
-          type: "broadcast",
-          event: "autopilot_state_update",
-          payload: { ...updated, timestamp: nowIso },
-        });
-
         await publishAutoPilotState(supabase, conversationId, {
-          isEnabled: false,
-          status: "disabled",
-          cycleId: current.activeCycleToken || undefined,
-          activity: activity("cancelled", "Ação cancelada", "IA desativada pelo operador.", { event: "cycle_cancelled" }),
+          isEnabled: pauseRpcResult.isEnabled,
+          status: "idle",
+          activity: activity("cancelled", "Ação cancelada", "Ciclo atual cancelado pelo operador.", { event: "cycle_cancelled" }),
           scheduledResponseAt: null,
           pendingAction: null,
         });
 
-        return new Response(JSON.stringify({ success: true, result: "cancelled", isEnabled: false, status: "disabled", detail: "Ação cancelada. IA desativada." }), {
+        return new Response(JSON.stringify({ success: true, result: "cancelled", isEnabled: pauseRpcResult.isEnabled, status: "idle", stateUpdatedAt: nowIso, detail: "Ação cancelada. A IA permanece ligada para próximas mensagens." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (err: unknown) {
@@ -4597,6 +4544,8 @@ serve(async (req: Request) => {
         }
 
         let immediateResult: { started: boolean; reason?: string; cycleId?: string } | null = null;
+        let activationResult: any = null;
+        let deactivationResult: any = null;
 
         if (isEnabled) {
           // Ativação atômica via RPC: busca a última mensagem sob lock FOR UPDATE e grava o watermark + ai_auto_respond = true sem janela de race!
@@ -4612,6 +4561,7 @@ serve(async (req: Request) => {
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
           } else {
+            activationResult = armResult;
             console.log(`[Autopilot] autopilot_armed_atomic conv=${conversationId} watermark_rev=${armResult?.inbound_revision ?? armResult?.watermark?.inboundRevision}`);
           }
 
@@ -4677,54 +4627,52 @@ serve(async (req: Request) => {
             }
           }
         } else {
-          // Desativação atômica via RPC protegendo outbox e active_cycle_token
-          const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc(
-            "patch_autopilot_pause_atomic",
-            {
-              p_conversation_id: conversationId,
-              p_paused: true,
-              p_reason: "paused_manual",
-            }
-          );
+          // Somente este toggle explícito pode desligar a intenção persistente.
+          const { data: pauseRpcResult, error: pauseRpcErr } = await supabase.rpc("disable_autopilot_explicitly_atomic", {
+            p_conversation_id: conversationId,
+            p_reason: "operator_toggle_off",
+          });
 
           if (pauseRpcErr || !pauseRpcResult?.success) {
-            console.error(`[Autopilot] patch_autopilot_pause_atomic falhou para conv=${conversationId}.`, pauseRpcErr || pauseRpcResult);
+            console.error(`[Autopilot] disable_autopilot_explicitly_atomic falhou para conv=${conversationId}.`, pauseRpcErr || pauseRpcResult);
             return new Response(JSON.stringify({ success: false, isEnabled: true, error: "deactivation_failed" }), {
               status: 503,
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
           }
+          deactivationResult = pauseRpcResult;
         }
 
-        // Atualiza __autopilot_states__
-        const { data: statesRow } = await supabase
+        const { data: canonicalRow, error: canonicalError } = await supabase
           .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_states__")
+          .select("ai_auto_respond, updated_at")
+          .eq("id", conversationId)
           .maybeSingle();
+        if (canonicalError || !canonicalRow) throw new Error("canonical_state_unavailable");
+        if (canonicalRow.ai_auto_respond !== isEnabled) throw new Error("canonical_state_mismatch");
+        if (isEnabled && activationResult?.oldValue === false) {
+          console.info(JSON.stringify({ event: "autopilot_enable_changed", conversationId, oldValue: false, newValue: true, reason: "operator_toggle_on", source: "operator_toggle", route: path, timestamp: canonicalRow.updated_at }));
+        } else if (!isEnabled && deactivationResult?.oldValue === true) {
+          console.info(JSON.stringify({ event: "autopilot_enable_changed", conversationId, oldValue: true, newValue: false, reason: "operator_toggle_off", source: "operator_toggle", route: path, timestamp: canonicalRow.updated_at }));
+        }
 
-        const states = statesRow?.stage_completed_rules?.states || {};
-        const current = states[conversationId] || { conversationId, isEnabled: !isEnabled };
+        // Atualiza apenas a projeção desta conversa; a RPC lê ai_auto_respond sob lock.
         const nowIso = new Date().toISOString();
         const updated = {
-          ...current,
+          conversationId,
           isEnabled,
           status: isEnabled ? "idle" : "disabled",
-          pauseReason: isEnabled ? undefined : "paused_manual",
+          pauseReason: isEnabled ? undefined : "operator_toggle_off",
           pausedAt: isEnabled ? undefined : nowIso,
-          enabledAt: isEnabled ? nowIso : current.enabledAt,
-          activity: isEnabled ? current.activity : null,
-          scheduledResponseAt: isEnabled ? current.scheduledResponseAt : null,
-          updatedAt: nowIso,
+          enabledAt: isEnabled ? canonicalRow.updated_at : undefined,
+          activity: null,
+          scheduledResponseAt: null,
+          updatedAt: canonicalRow.updated_at,
+          stateUpdatedAt: canonicalRow.updated_at,
         };
-        states[conversationId] = updated;
-
-        await supabase.from("instagram_conversations").upsert({
-          id: "__autopilot_states__",
-          username: "system_autopilot_states",
-          stage_completed_rules: { states, updated_at: nowIso },
-          updated_at: nowIso,
-        });
+        const projectionResult = await patchAutoPilotProjectionState(supabase, conversationId, updated);
+        updated.isEnabled = projectionResult.isEnabled;
+        if (projectionResult.stateUpdatedAt) updated.stateUpdatedAt = projectionResult.stateUpdatedAt;
 
         // Broadcast Realtime para sincronizar imediatamente todas as abas
         const rt = supabase.channel("vendeo_realtime_chat");
@@ -4740,6 +4688,7 @@ serve(async (req: Request) => {
           immediateTriggered: immediateResult?.started === true,
           immediateReason: immediateResult?.reason,
           cycleId: immediateResult?.cycleId,
+          stateUpdatedAt: updated.stateUpdatedAt,
           detail: isEnabled
             ? (immediateResult?.started ? "Piloto ativado e resposta imediata iniciada!" : "Piloto ativado no chat.")
             : "Piloto desativado no chat.",
@@ -5237,7 +5186,6 @@ serve(async (req: Request) => {
             .from("instagram_conversations")
             .update({
               ai_debounce_until: null,
-              ai_auto_respond: false,
             })
             .not("ai_debounce_until", "is", null);
 
@@ -5257,25 +5205,17 @@ serve(async (req: Request) => {
               (chatState.status === "waiting_delay" ||
                 (chatState.activity && chatState.activity.phase === "waiting"))
             ) {
-              chatState.status = "idle";
-              chatState.activity = null;
-              chatState.scheduledResponseAt = null;
-              statesModified = true;
+              const nowIso = new Date().toISOString();
+              const patch = { status: "idle", activity: null, scheduledResponseAt: null, updatedAt: nowIso, stateUpdatedAt: nowIso };
+              const projectionResult = await patchAutoPilotProjectionState(supabase, convId, patch, chatState.stateUpdatedAt);
+              if (projectionResult.applied) {
+                states[convId] = { ...chatState, ...patch, isEnabled: projectionResult.isEnabled };
+                statesModified = true;
+              }
             }
           }
 
           if (statesModified) {
-            await supabase
-              .from("instagram_conversations")
-              .update({
-                stage_completed_rules: {
-                  ...statesRules,
-                  states,
-                  updated_at: new Date().toISOString(),
-                },
-              })
-              .eq("id", "__autopilot_states__");
-
             await supabase.channel("autopilot_realtime").send({
               type: "broadcast",
               event: "autopilot_state_changed",

@@ -34,7 +34,7 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
       const conversation = conversations.find((item) => item.id === conversationId);
       const contactName = conversation?.fullName || conversation?.username || conversationId;
       toast("A IA precisa de você", {
-        description: `${contactName} aguarda uma resposta manual. O Piloto foi pausado.`,
+        description: `${contactName} aguarda uma resposta sua. A IA continua habilitada neste chat.`,
         duration: 10000,
       });
     }
@@ -145,9 +145,10 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
         throw new Error(result.error || `HTTP ${response.status}`);
       }
       await refreshState(true);
-      const confirmedAt = new Date().toISOString();
+      const confirmedAt = result.stateUpdatedAt || new Date().toISOString();
       setChatStates((previous) => ({
         ...previous,
+        ...(Date.parse(previous[conversationId]?.stateUpdatedAt || "") > Date.parse(confirmedAt) ? {} : {
         [conversationId]: {
           ...(previous[conversationId] || { conversationId }),
           conversationId,
@@ -161,6 +162,7 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
           scheduledResponseAt: isEnabled ? previous[conversationId]?.scheduledResponseAt : undefined,
           stateUpdatedAt: confirmedAt,
         },
+        }),
       }));
       toast.success(isEnabled ? "Piloto Automático ativado neste chat." : "Piloto Automático desativado neste chat.");
     } catch (error) {
@@ -190,9 +192,10 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       await refreshState(true);
-      const confirmedAt = new Date().toISOString();
+      const confirmedAt = data.stateUpdatedAt || new Date().toISOString();
       setChatStates((previous) => ({
         ...previous,
+        ...(Date.parse(previous[conversationId]?.stateUpdatedAt || "") > Date.parse(confirmedAt) ? {} : {
         [conversationId]: {
           ...(previous[conversationId] || { conversationId }),
           conversationId,
@@ -205,6 +208,7 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
           stateUpdatedAt: confirmedAt,
           ...(data.cycleId ? { cycleId: data.cycleId } : {}),
         },
+        }),
       }));
 
       if (isImmediate) {
@@ -244,9 +248,10 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
         throw new Error(result.error || `HTTP ${response.status}`);
       }
       await refreshState(true);
-      const confirmedAt = new Date().toISOString();
+      const confirmedAt = result.stateUpdatedAt || new Date().toISOString();
       setChatStates((previous) => ({
         ...previous,
+        ...(Date.parse(previous[conversationId]?.stateUpdatedAt || "") > Date.parse(confirmedAt) ? {} : {
         [conversationId]: {
           ...(previous[conversationId] || { conversationId }),
           conversationId,
@@ -258,6 +263,7 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
           activity: undefined,
           stateUpdatedAt: confirmedAt,
         },
+        }),
       }));
       toast.success("Piloto Automático retomado no backend.");
     } catch (error) {
