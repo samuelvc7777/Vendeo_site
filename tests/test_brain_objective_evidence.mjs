@@ -19,12 +19,18 @@ test("CENÁRIO 1: Contexto formatado inclui [MENSAGEM id='...'] e contrato com e
       { id: "1040376229029884", text: "Sou de sao joao del rei e vc ?" },
     ],
     recentMessages: [],
+    stageObjectives: [
+      { id: "goal_city", label: "Cidade", status: "completed", value: "São João del-Rei", evidenceMessageId: "1040376229029884" },
+      { id: "goal_job", label: "Trabalho", status: "pending" },
+    ],
     availableSubagents: [{ id: "conexao_inicial", name: "Conexão", mission: "Conectar" }],
   });
 
   assert.ok(context.includes('[MENSAGEM id="1040376229029884"]: "Sou de sao joao del rei e vc ?"'));
   assert.ok(context.includes('"evidenceMessageId": null'));
-  assert.ok(context.includes('evidenceMessageId são OBRIGATÓRIOS'));
+  assert.ok(context.includes("CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE"));
+  assert.ok(context.includes("valor: \"São João del-Rei\""));
+  assert.ok(context.includes("objectiveEvidence {type,id} são OBRIGATÓRIOS"));
 });
 
 test("CENÁRIO 2: Caso real de cidade (already_satisfied + evidenceMessageId válido)", async () => {
@@ -185,7 +191,7 @@ test("CENÁRIO 5: Schema Incompleto — already_satisfied sem evidenceMessageId 
 
   const valResult = validateConversationBrainPlan(incompletePlan);
   assert.equal(valResult.valid, false);
-  assert.ok(valResult.error.includes("evidenceMessageId é obrigatório"));
+  assert.ok(valResult.error.includes("objectiveEvidence válida"));
 });
 
 test("CENÁRIO 6: Decisões pursue, defer e none não exigem evidenceMessageId", () => {

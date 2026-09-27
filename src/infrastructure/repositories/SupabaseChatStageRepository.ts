@@ -18,6 +18,7 @@ import {
 import { resolveCurrentStageId } from "@/domain/entities/stageAuthority";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
+import { brainOperatorFetch } from "../http/brainOperatorApi";
 
 export class SupabaseChatStageRepository implements IChatStageRepository {
   private customClient?: any;
@@ -440,14 +441,15 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         updatedAt: progress.updatedAt || now,
       };
 
-      // 1. Tenta a RPC atômica blindada no PostgreSQL (FOR UPDATE sem clobber de outbox)
-      const { data: rpcResult, error: rpcError } = await client.rpc(
-        "patch_chat_progress_atomic",
-        {
-          p_conversation_id: convId,
-          p_progress_patch: patchPayload,
-        }
-      );
+      // A RPC service_role só é chamada pela Edge Function com sessão validada.
+      const response = await brainOperatorFetch("/operator/chat-progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: convId, progressPatch: patchPayload }),
+      });
+      const result = await response.json().catch(() => ({}));
+      const rpcResult = response.ok ? result : null;
+      const rpcError = response.ok ? null : { message: result.error || `HTTP ${response.status}` };
 
       if (!rpcError && rpcResult?.success) {
         return;

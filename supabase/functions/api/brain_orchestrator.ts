@@ -546,6 +546,7 @@ export interface ConversationBrainPlan {
   currentStage?: string;
   objectiveDecision: "pursue" | "defer" | "already_satisfied" | "none";
   satisfiedObjectiveId?: string;
+  objectiveValue?: unknown;
   objectiveEvidence?: ObjectiveEvidence;
   evidenceMessageId?: string;
   liveStatePatch: Partial<ConversationLiveState>;
@@ -2481,7 +2482,7 @@ async function projectConfirmedBrainAction(params: {
     const speechEpisodes: ConversationEpisode[] = recentIntents.map((item: any) => ({
       conversation_id: params.conversationId,
       actor: "larissa",
-      event_type: "question_asked",
+      event_type: "question",
       memory_class: "speech_act",
       topic: item.intentKey,
       summary: `Larissa perguntou: "${text}" (${item.canonicalMeaning})`,
@@ -4315,7 +4316,11 @@ export function buildConversationBrainPrompt(params: {
   landmarksSummary: string;
   speechActsSummary: string;
   personaMemorySummary: string;
-  stageObjectives: StageObjective[];
+  stageObjectives: Array<StageObjective & {
+    status?: "completed" | "pending";
+    value?: unknown;
+    evidenceMessageId?: string;
+  }>;
   currentObjective?: StageObjective | null;
   toolResultsHistory?: string[];
 }): string {
@@ -4345,8 +4350,17 @@ export function buildConversationBrainPrompt(params: {
   const objBlock = stageObjectives
     .map((o) => {
       const isCurrent = currentObjective?.id === o.id;
-      const marker = isCurrent ? "➡️ [ATUAL]" : "[PENDENTE]";
-      return `${marker} id: "${o.id}" | label: "${o.label || o.title}"${o.description ? ` (${o.description})` : ""}`;
+      const isCompleted = o.status === "completed";
+      const marker = isCompleted
+        ? "✅ [CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE]"
+        : isCurrent
+          ? "➡️ [ATUAL/PENDENTE]"
+          : "[PENDENTE]";
+      const knownValue = o.value === null || o.value === undefined
+        ? ""
+        : ` | valor conhecido: ${JSON.stringify(o.value)}`;
+      const evidence = o.evidenceMessageId ? ` | evidenceMessageId: "${o.evidenceMessageId}"` : "";
+      return `${marker} id: "${o.id}" | label: "${o.label || o.title}" | status: ${isCompleted ? "completed" : "pending"}${knownValue}${evidence}${o.description ? ` | ${o.description}` : ""}`;
     })
     .join("\n");
 
@@ -4360,7 +4374,7 @@ Seu papel é puramente ANALÍTICO E ESTRATÉGICO:
 2. Decidir sobre o objetivo atual da etapa:
    - "pursue": O pretendente deu gancho natural para avançar no objetivo atual ("${currentObjective?.label || "conhecer mais"}").
    - "defer": O pretendente desabafou, fez outra pergunta ou mudou de assunto; devemos acolher e responder primeiro, adiando o objetivo.
-   - "already_satisfied": O pretendente revelou espontaneamente nesta mensagem inbound a informação do objetivo atual.
+   - "already_satisfied": Há evidência persistida no histórico/contexto de que o objetivo atual foi cumprido; informe o valor factual confirmado e cite a mensagem ou evidência exata.
    - "none": Não há objetivo pendente imediato ou apenas conversa livre.
 3. Se precisar de fatos esquecidos ou não presentes na escada de memória, chame ferramentas sob demanda (máximo 2 de memória/histórico + máximo 1 de cofre).
 4. Ao concluir, delegar a execução ao subagente responsável pela etapa (${currentStage}) com o MissionPackage mastigado. Você NÃO formula o balão final da Larissa; quem escreve é o subagente executor.
@@ -4388,6 +4402,8 @@ ${toolsHistoryBlock}
 ### OBJETIVOS DA ETAPA ATUAL ("${currentStage}")
 ${objBlock || "Nenhum objetivo cadastrado."}
 
+Objetivos com status completed já foram cumpridos: não volte a perguntar por eles. Use seus valores como contexto quando fizer sentido. Objetivos pendentes são oportunidades, nunca perguntas obrigatórias; priorize a conversa e só os busque quando houver gancho natural.
+
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA (MÁXIMO 2 DE MEMÓRIA + 1 DE COFRE)
 Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mensagens triviais, NÃO use ferramentas.
 - conversation_history_search: busca no histórico bruto desta conversa por mensagens passadas ou detalhes esquecidos. Parâmetro: {"query": "..."}.
@@ -4397,6 +4413,7 @@ Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mens
 
 ### REGRAS INVIOLÁVEIS DO BRAIN:
 1. Para objectiveDecision: "already_satisfied", indique o objective_id configurado que você decidiu concluir e o evidenceMessageId de uma evidência persistida válida apresentada no contexto. A evidência pode vir de qualquer turno registrado desta conversa; o backend apenas valida referência e existência.
+1a. Quando concluir um objetivo, informe objectiveValue somente com o valor factual explícito na evidência; se ela não contiver um valor utilizável, use null. O backend não extrai nem inventa valores.
 2. Não invente fatos e não misture conversas de outros usuários. Escopo estrito desta conversa: ${conversationId}.
 3. O subagente executor NÃO fará pesquisas amplas. Todo contexto necessário deve ser resumido em missionPackage.relevantMemoryContext.
 4. REGRA ABSOLUTA: perguntas diretas do pretendente têm prioridade sobre checkpoint. Identifique-as no turnContract e determine mustAnswerFirst antes de considerar objetivo.
@@ -4418,6 +4435,7 @@ Quando estiver pronto para formular a resposta:
   "currentStage": "${currentStage}",
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": "id_do_objetivo_se_already_satisfied",
+  "objectiveValue": "valor factual explícito ou null",
   "evidenceMessageId": "id_da_evidencia_persistida_se_already_satisfied",
   "reasoning": "análise rápida do momento em 1 frase",
   "liveStatePatch": {
@@ -4690,20 +4708,28 @@ export async function resolveStageChecklistGoals(params: {
   objectiveProgress?: Record<string, any>;
 }): Promise<StageResolutionResult> {
   const completedIds = new Set(params.completedGoalIds || []);
-  let stages: any[] = [];
-  try {
-    const { data } = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
-    if (Array.isArray(data)) stages = data;
-  } catch {}
+  const { data, error } = await params.supabase
+    .from("chat_stages")
+    .select("id, name, stage_order, goals")
+    .order("stage_order", { ascending: true });
+  if (error) throw new Error(`Não foi possível carregar o catálogo oficial de etapas: ${error.message}`);
+  const stages = Array.isArray(data) ? data : [];
 
   const requested = String(params.stageNameOrId || "").trim().toLowerCase();
+  if (!requested) throw new Error("A etapa atual precisa vir de current_stage_id ou da inicialização oficial da conversa.");
   const stage = stages.find((item: any) =>
     String(item.id || "").toLowerCase() === requested || String(item.name || "").trim().toLowerCase() === requested,
-  ) || stages[0] || null;
-  const stageId = stage?.id || params.stageNameOrId || "";
-  const configuredObjectives = Array.isArray(stage?.goals) ? stage.goals : Array.isArray(stage?.objectives) ? stage.objectives : [];
+  );
+  if (!stage) throw new Error(`A etapa "${params.stageNameOrId}" não existe no catálogo oficial chat_stages.`);
+  const stageId = stage.id;
+  const configuredObjectives = Array.isArray(stage.goals) ? stage.goals : Array.isArray(stage.objectives) ? stage.objectives : [];
   const objectives = configuredObjectives
-    .filter((item: any) => item && item.enabled !== false)
+    .filter((item: any) => {
+      if (!item) return false;
+      if (item.enabled !== false) return true;
+      const id = String(item.id || "");
+      return completedIds.has(id) || params.objectiveProgress?.[id]?.status === "completed";
+    })
     .sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
   const goals: ResolvedStageGoal[] = objectives.map((item: any) => {
     const id = String(item.id || "");
@@ -4774,7 +4800,9 @@ export async function validateAndApplyBrainStageDecision(params: {
   advancementReason?: string;
 }> {
   const stagesResult = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
+  if (stagesResult?.error) throw new Error(`Não foi possível validar a decisão contra chat_stages: ${stagesResult.error.message}`);
   const stages = Array.isArray(stagesResult?.data) ? stagesResult.data : [];
+  if (stages.length === 0) throw new Error("O catálogo oficial chat_stages está vazio.");
   const rules = params.stageRules || {};
   const orchestration = params.orchState || {};
   const completed = [...resolveOfficialCompletedGoals(rules, orchestration)];
@@ -4783,8 +4811,12 @@ export async function validateAndApplyBrainStageDecision(params: {
     ...(params.objectiveProgress || {}),
   };
   const configuredCurrent = stages.find((stage: any) => stage.id === params.currentStageId);
-  const currentStageId = configuredCurrent?.id || stages[0]?.id || params.currentStageId || params.currentPhase;
+  if (!configuredCurrent) {
+    throw new Error(`A etapa atual "${params.currentStageId || params.currentPhase}" não existe em chat_stages.`);
+  }
+  const currentStageId = configuredCurrent.id;
   const completion = params.decision.objectiveCompletion;
+  let invalidCompletion = false;
 
   if (completion?.objectiveId) {
     const owner = stages.find((stage: any) =>
@@ -4794,31 +4826,49 @@ export async function validateAndApplyBrainStageDecision(params: {
     const objective = owner && (Array.isArray(owner.goals) ? owner.goals : owner.objectives || [])
       .find((item: any) => item?.id === completion.objectiveId && item.enabled !== false);
     const evidence = completion.evidence || normalizeObjectiveEvidence(null, completion.evidenceMessageId);
+    const evidenceReferenceMatches = !completion.evidenceMessageId
+      || (evidence?.type === "message" && evidence.id === completion.evidenceMessageId);
     const evidenceExists = evidence
       ? await objectiveEvidenceExists(params.supabase, params.conversationId, evidence, params.manualFactProviderSessionId)
       : false;
-    if (objective && evidenceExists) {
+    if (objective && evidenceExists && evidenceReferenceMatches) {
+      const alreadyCompleted = completed.includes(completion.objectiveId)
+        || progress[completion.objectiveId]?.status === "completed";
       if (!completed.includes(completion.objectiveId)) completed.push(completion.objectiveId);
-      progress[completion.objectiveId] = {
-        conversationId: params.conversationId,
-        stageId: owner.id,
-        objectiveId: completion.objectiveId,
-        status: "completed",
-        value: completion.value ?? null,
-        evidenceMessageId: completion.evidenceMessageId,
-        evidence,
-        completedAt: new Date().toISOString(),
-      };
+      if (!alreadyCompleted || !progress[completion.objectiveId]) {
+        progress[completion.objectiveId] = {
+          conversationId: params.conversationId,
+          stageId: owner.id,
+          objectiveId: completion.objectiveId,
+          status: "completed",
+          value: completion.value ?? null,
+          evidenceMessageId: evidence!.type === "message" ? evidence!.id : undefined,
+          evidence: evidence!,
+          completedAt: new Date().toISOString(),
+        };
+      }
     } else {
+      invalidCompletion = true;
       params.currentCycle?.trace?.push(`objective_update_rejected_invalid_reference: ${completion.objectiveId}`);
     }
   }
 
   const requestedStage = stages.find((stage: any) => stage.id === params.decision.nextPhase);
-  const nextStageId = requestedStage?.id || currentStageId;
-  const nextPhase = requestedStage?.id || params.currentPhase;
+  const sameStage = params.decision.nextPhase === currentStageId;
+  const validForwardTransition = requestedStage && Number(requestedStage.stage_order) > Number(configuredCurrent.stage_order);
+  const transitionAccepted = !invalidCompletion && (sameStage || validForwardTransition);
+  const nextStageId = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
+  const nextPhase = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const stageAdvanced = nextStageId !== currentStageId;
   if (stageAdvanced) params.currentCycle?.trace?.push(`brain_stage_transition_accepted: ${currentStageId}->${nextStageId}`);
+  else if (!sameStage) {
+    const reason = invalidCompletion
+      ? "objective_completion_invalid"
+      : requestedStage
+        ? "stage_transition_must_advance_in_configured_order"
+        : "stage_not_configured";
+    params.currentCycle?.trace?.push(`brain_stage_transition_rejected: ${reason}:${String(params.decision.nextPhase)}`);
+  }
 
   return {
     updatedCompletedGoals: completed,
@@ -7126,9 +7176,11 @@ export async function runBrainOrchestration(
   // Fonte canônica da etapa: coluna normalizada. JSON mantém apenas projeções legadas/read models.
   let currentPhase: OrchestrationPhase = resolveCurrentStageId(claimedConversation.current_stage_id || convRow?.current_stage_id);
     if (!currentPhase) {
-      const { data: configuredStages } = await supabase.from("chat_stages")
+      const { data: configuredStages, error: stageCatalogError } = await supabase.from("chat_stages")
         .select("id").order("stage_order", { ascending: true }).limit(1);
-      currentPhase = configuredStages?.[0]?.id || "";
+      if (stageCatalogError) throw new Error(`Não foi possível inicializar a etapa da conversa: ${stageCatalogError.message}`);
+      if (!configuredStages?.[0]?.id) throw new Error("Não há etapa inicial configurada em chat_stages.");
+      currentPhase = configuredStages[0].id;
     }
 
     // 5. BACKEND DETERMINÍSTICO: Ledger & Seleção de TODAS as mensagens pendentes (Sem cortes arbitrários)
@@ -7512,6 +7564,7 @@ export async function runBrainOrchestration(
       stageNameOrId: currentStageId,
       memoryProvider: cycleMemoryProvider,
       completedGoalIds,
+      objectiveProgress: officialObjectiveProgressAtCycleStart,
     });
     let workingCompletedGoalIds: string[] = [
       ...completedGoalIds,
@@ -7950,6 +8003,14 @@ export async function runBrainOrchestration(
           nextObjectives: (stageChecklistForRouter.goals || [])
             .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
             .map((g) => ({ id: g.id, label: g.label, description: g.description, kind: g.kind })),
+          stageObjectives: stageChecklistForRouter.goals.map((goal) => ({
+            id: goal.id,
+            label: goal.label,
+            status: goal.status,
+            value: goal.value,
+            evidenceMessageId: goal.evidenceMessageId,
+            description: goal.description,
+          })),
           contextPipeline: {
             candidateCount: budgetedRecentContext.candidateCount,
             deduplicatedCount: budgetedRecentContext.deduplicatedCount,
@@ -8378,7 +8439,7 @@ export async function runBrainOrchestration(
 
       const brainPrompt = buildConversationBrainPrompt({
         conversationId,
-        currentStage: currentStageId,
+        currentStage: `${stageChecklistForRouter.stage} [${stageChecklistForRouter.stageId}]`,
         liveState: currentLiveState,
         recentMessages: finalRecentMessages,
         contactMemorySummary,
@@ -8561,7 +8622,7 @@ export async function runBrainOrchestration(
         objectiveId,
         evidence: evidence ?? undefined,
         evidenceMessageId: evidence?.type === "message" ? evidence.id : undefined,
-        value: null,
+        value: brainPlan.objectiveValue ?? null,
         source: evidence?.type ? `brain_verified_${evidence.type}_evidence` : "brain_verified_persisted_evidence",
       };
       currentCycle.trace.push(`brain_objective_reference_validated: ${objectiveId}`);

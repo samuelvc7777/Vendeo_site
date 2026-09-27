@@ -1040,6 +1040,14 @@ export interface RunOpenAiBrainParams {
   memoryScopeId?: string;
   recentQuestionIntentsSnippet?: string;
   nextObjectives?: Array<{ id: string; label: string; description?: string; kind?: string }>;
+  stageObjectives?: Array<{
+    id: string;
+    label: string;
+    status: "completed" | "pending";
+    value?: unknown;
+    evidenceMessageId?: string;
+    description?: string;
+  }>;
   temporalContext?: string;
   contextPipeline?: {
     candidateCount: number;
@@ -1487,7 +1495,7 @@ function buildAgentRecentWindow(params: RunOpenAiBrainParams): {
  */
 export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string {
   const objectiveDesc = params.currentObjectiveDescription ? ` - Descrição: ${params.currentObjectiveDescription}` : "";
-  const objectiveType = "[OBRIGATÓRIO]";
+  const objectiveType = "[PENDENTE; oportunidade opcional, seguir somente se natural]";
   const objectiveLine = params.currentObjectiveId
     ? `${params.currentObjectiveId} ("${params.currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
     : "Nenhum objetivo pendente";
@@ -1497,6 +1505,16 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
     `ETAPA ATUAL: ${params.currentStageId || "identificacao"}`,
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
+
+  if (params.stageObjectives?.length) {
+    sections.push(`OBJETIVOS DA ETAPA E PROGRESSO PERSISTIDO:\n${params.stageObjectives.map((objective) => {
+      const status = objective.status === "completed" ? "CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE" : "PENDENTE — NÃO É OBRIGATÓRIO";
+      const value = objective.value === null || objective.value === undefined ? "" : ` | valor: ${JSON.stringify(objective.value)}`;
+      const evidence = objective.evidenceMessageId ? ` | evidenceMessageId: ${objective.evidenceMessageId}` : "";
+      const description = objective.description ? ` | ${objective.description}` : "";
+      return `• ${objective.id} | ${status}${value}${evidence}${description}`;
+    }).join("\n")}`);
+  }
 
   if (params.nextObjectives && params.nextObjectives.length > 0) {
     sections.push(
@@ -1703,7 +1721,7 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     : buildAgentRecentWindow(params);
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
-  const objectiveType = "[OBRIGATÓRIO]";
+  const objectiveType = "[PENDENTE; oportunidade opcional, seguir somente se natural]";
   const objectiveLine = currentObjectiveId
     ? `${currentObjectiveId} ("${currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
     : "Nenhum objetivo pendente";
@@ -1713,6 +1731,16 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     `ETAPA ATUAL: ${currentStageId}`,
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
+
+  if (params.stageObjectives?.length) {
+    sections.push(`OBJETIVOS DA ETAPA E PROGRESSO PERSISTIDO:\n${params.stageObjectives.map((objective) => {
+      const status = objective.status === "completed" ? "CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE" : "PENDENTE — NÃO É OBRIGATÓRIO";
+      const value = objective.value === null || objective.value === undefined ? "" : ` | valor: ${JSON.stringify(objective.value)}`;
+      const evidence = objective.evidenceMessageId ? ` | evidenceMessageId: ${objective.evidenceMessageId}` : "";
+      const description = objective.description ? ` | ${objective.description}` : "";
+      return `• ${objective.id} | ${status}${value}${evidence}${description}`;
+    }).join("\n")}`);
+  }
 
   if (params.nextObjectives && params.nextObjectives.length > 0) {
     sections.push(
@@ -1805,7 +1833,7 @@ Revise sem expor a revisão: algum balão apenas repete o pretendente ou a Laris
 Avalie o turno, consulte memórias sob demanda se houver incerteza ou gancho real, decida objectiveDecision (pursue, defer, already_satisfied ou none) e gere responses[].
 
 DIRETRIZ DE EVIDÊNCIA:
-Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e objectiveEvidence {type,id} são OBRIGATÓRIOS. Tipos disponíveis: message, contact_fact, contact_quote, episode e manual_fact. Use uma referência persistida apresentada no contexto. O backend valida somente existência e escopo técnico, não o significado. evidenceMessageId legado pode ser usado somente para mensagens. Para pursue, defer ou none, objectiveEvidence deve ser null.
+Se objectiveDecision for "already_satisfied", satisfiedObjectiveId e objectiveEvidence {type,id} são OBRIGATÓRIOS. Tipos disponíveis: message, contact_fact, contact_quote, episode e manual_fact. Use uma referência persistida apresentada no contexto. Informe objectiveValue apenas se o valor factual estiver explícito na evidência; caso contrário, null. O backend valida somente existência e escopo técnico, não o significado nem extrai valores. evidenceMessageId legado pode ser usado somente para mensagens. Para pursue, defer ou none, objectiveEvidence deve ser null.
 
 CONTRATO DE SAÍDA JSON FINAL:
 Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
@@ -1814,6 +1842,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "manualResolution": { "question": "...", "context": "..." },
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
   "satisfiedObjectiveId": null,
+  "objectiveValue": null,
   "objectiveEvidence": null,
   "evidenceMessageId": null,
   "reasoning": "sua justificativa estratégica sucinta",

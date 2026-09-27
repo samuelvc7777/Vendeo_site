@@ -22,17 +22,20 @@ export type EpisodeActor = "larissa" | "pretendente";
 
 export type EpisodeMemoryClass = "landmark" | "speech_act";
 
-export type EpisodeEventType =
-  | "question"
-  | "answer"
-  | "statement"
-  | "self_disclosure"
-  | "fact_reveal"
-  | "topic"
-  | "audio_sent"
-  | "reaction"
-  | "plan"
-  | "preference_reveal";
+export const EPISODE_EVENT_TYPES = [
+  "question",
+  "answer",
+  "statement",
+  "self_disclosure",
+  "fact_reveal",
+  "topic",
+  "audio_sent",
+  "reaction",
+  "plan",
+  "preference_reveal",
+] as const;
+
+export type EpisodeEventType = typeof EPISODE_EVENT_TYPES[number];
 
 export interface ConversationEpisode {
   id?: string;
@@ -668,6 +671,13 @@ export async function saveConversationEpisodes(params: {
   const { supabase, conversationId, episodes } = params;
   if (!supabase || !conversationId || !episodes || episodes.length === 0) {
     return { saved: 0, skipped: 0 };
+  }
+
+  const invalidType = episodes.find((episode) =>
+    !(EPISODE_EVENT_TYPES as readonly string[]).includes(episode.event_type),
+  )?.event_type as string | undefined;
+  if (invalidType) {
+    throw new Error(`Tipo de evento episódico inválido: "${invalidType}".`);
   }
 
   const payloads = episodes.map((ep) => {

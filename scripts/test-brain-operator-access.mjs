@@ -39,16 +39,20 @@ test("cookie não pode ser lido pelo browser e mutações exigem mesma origem", 
   assert.equal(isSameOriginRequest(new Request("https://vendeo.local/api/operator")), false);
 });
 
-test("operações de Brain só atravessam o BFF autenticado com segredo privado", async () => {
+test("operações do operador usam sessão autenticada e segredo somente no servidor", async () => {
   const bff = await readFile(new URL("../src/app/api/operator/brain/[operation]/route.ts", import.meta.url), "utf8");
   const ui = await readFile(new URL("../src/presentation/components/chat/AutoPilotActivityIndicator.tsx", import.meta.url), "utf8");
+  const operatorApi = await readFile(new URL("../src/infrastructure/http/brainOperatorApi.ts", import.meta.url), "utf8");
   assert.match(bff, /verifyBrainOperatorSession/);
   assert.match(bff, /isSameOriginRequest/);
   assert.match(bff, /process\.env\.SUPABASE_SERVICE_ROLE_KEY/);
   assert.doesNotMatch(bff, /NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY/);
-  assert.match(ui, /\/api\/operator\/brain\/events/);
-  assert.match(ui, /\/api\/operator\/brain\/manual-resolution/);
-  assert.match(ui, /\/api\/operator\/brain\/retry-failed-action/);
+  assert.match(ui, /brainOperatorFetch\([`"](?:\$\{[^}]+\})?\/operator\/brain\/events/);
+  assert.match(ui, /brainOperatorFetch\([`"]\/operator\/brain\/manual-resolution/);
+  assert.match(ui, /brainOperatorFetch\([`"]\/operator\/brain\/retry-failed-action/);
+  assert.match(operatorApi, /Authorization.*Bearer/);
+  assert.doesNotMatch(ui, /\/rest\/v1\/rpc\/patch_chat_progress_atomic/);
+  assert.doesNotMatch(ui, /SUPABASE_SERVICE_ROLE_KEY/);
   assert.doesNotMatch(ui, /functions\/v1\/api\/autopilot\/(?:brain-events|manual-resolution|retry-failed-action)/);
 });
 

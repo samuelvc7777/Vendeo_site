@@ -34,6 +34,7 @@ import {
   isBrainOperatorRequest,
   verifyBrainOperatorToken,
 } from "./brain_operator_auth.ts";
+import { handleOperatorChatProgress } from "./operator_chat_progress.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -626,6 +627,10 @@ serve(async (req: Request) => {
       return new Response(JSON.stringify({ success: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
+    }
+
+    if (path === "/operator/chat-progress" && req.method === "POST") {
+      return await handleOperatorChatProgress(req, supabase, await isBrainOperatorRequest(req), corsHeaders);
     }
 
     // ==========================================
