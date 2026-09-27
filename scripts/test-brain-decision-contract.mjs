@@ -9,6 +9,7 @@ import {
 } from "../supabase/functions/api/openai_brain.ts";
 import {
   createBrainOutboxBatch,
+  deriveBrainDeliveryStatus,
   persistCanonicalBrainDecision,
   validatePhaseTransition,
 } from "../supabase/functions/api/brain_orchestrator.ts";
@@ -94,12 +95,12 @@ test("transição de etapa não tem regras semânticas nem nomes de etapa fixos"
   assert.equal(validatePhaseTransition("etapa_a", "inexistente", "", [{ id: "etapa_b", order: 1 }]).allowed, false);
 });
 
-test("persistência mantém ordem, idempotência e estado de espera de cada ação", async () => {
+test("decisão de objetivo e etapa é commitada com outbox pending antes do primeiro envio", async () => {
   let rpcCall;
   const supabase = {
     rpc: async (name, args) => {
       rpcCall = { name, args };
-      return { data: { success: true }, error: null };
+      return { data: { success: true, semantic_state_committed: true }, error: null };
     },
   };
   const future = new Date(Date.now() + 60_000).toISOString();
@@ -112,7 +113,16 @@ test("persistência mantém ordem, idempotência e estado de espera de cada aç�
     decisionId: "decision-1",
     inboundMessageIds: ["in-1"],
     decisionType: "respond",
-    decisionPayload: { action: "reply" },
+    decisionPayload: {
+      action: "reply",
+      semanticState: {
+        cycleToken: "cycle-1",
+        completedGoalIds: ["objective-1"],
+        objectiveProgress: { "objective-1": { status: "completed" } },
+        currentPhase: "stage-b",
+        currentStageId: "stage-b",
+      },
+    },
     outboxEntries: [{
       id: "out-1", cycleId: "cycle-1", conversationId: "conv-1", idempotencyKey: "key-1",
       content: "Oi", messageType: "text", status: "pending", attempts: 0, maxAttempts: 3,
@@ -127,8 +137,80 @@ test("persistência mantém ordem, idempotência e estado de espera de cada aç�
   assert.equal(rpcCall.name, "persist_brain_decision_with_outbox");
   assert.deepEqual(rpcCall.args.p_actions.map((action) => action.id), ["action-1", "action-2"]);
   assert.equal(rpcCall.args.p_actions[1].status, "waiting_delay");
+  assert.equal(rpcCall.args.p_actions[0].status, "pending");
   assert.equal(rpcCall.args.p_outbox_entries[0].id, "out-1");
   assert.equal(rpcCall.args.p_turn.provider_turn_id, "provider-turn-1");
+  assert.equal(rpcCall.args.p_decision.payload.semanticState.currentStageId, "stage-b");
+  assert.equal(deriveBrainDeliveryStatus(["pending", "waiting_delay"]), "delivery_pending");
+});
+
+test("falha retryable no primeiro envio e dispatch_uncertain preservam a decisão persistida", async () => {
+  let savedDecision;
+  const result = await persistCanonicalBrainDecision({
+    supabase: { rpc: async (_name, args) => {
+      savedDecision = args.p_decision;
+      return { data: { success: true, semantic_state_committed: true }, error: null };
+    } },
+    conversationId: "conv-retry",
+    sessionId: "session-retry",
+    providerTurnId: "provider-turn-retry",
+    turnId: "turn-retry",
+    decisionId: "decision-retry",
+    inboundMessageIds: ["in-retry"],
+    decisionType: "respond",
+    decisionPayload: { action: "reply", semanticState: {
+      cycleToken: "cycle-retry", completedGoalIds: ["objective-retry"],
+      objectiveProgress: { "objective-retry": { status: "completed" } },
+      currentPhase: "stage-next", currentStageId: "stage-next",
+    } },
+    actions: [{ id: "action-retry", actionIndex: 0, actionType: "text", payload: { text: "Oi" }, notBefore: null, idempotencyKey: "idem-retry" }],
+    outboxEntries: [],
+  });
+  assert.equal(result.success, true);
+  assert.deepEqual(savedDecision.payload.semanticState.completedGoalIds, ["objective-retry"]);
+  assert.equal(deriveBrainDeliveryStatus(["failed_retryable"]), "delivery_pending");
+  assert.equal(deriveBrainDeliveryStatus(["dispatch_uncertain", "pending"]), "dispatch_uncertain");
+  assert.equal(deriveBrainDeliveryStatus(["sent", "pending"]), "partially_sent");
+  assert.equal(deriveBrainDeliveryStatus(["sent", "sent"]), "fully_sent");
+});
+
+test("commit semântico é transacional, idempotente e independente do despacho", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260927005646_brain_decision_delivery_independence.sql", import.meta.url), "utf8");
+  assert.match(migration, /semantic_state_committed_at/);
+  assert.match(migration, /\(v_rules->>'active_cycle_token'\) IS DISTINCT FROM \(v_semantic_state->>'cycleToken'\)/);
+  assert.match(migration, /expectedCurrentStageId/);
+  assert.match(migration, /semantic_state_committed_at IS NULL/);
+  assert.match(migration, /UPDATE public\.instagram_conversations[\s\S]*?current_stage_id = COALESCE\(v_next_stage_id, current_stage_id\)/);
+  assert.ok(migration.indexOf("UPDATE public.instagram_conversations") < migration.indexOf("RETURN jsonb_build_object"));
+  assert.doesNotMatch(migration, /sentBalloonsCount|dispatchResult|delivery_status[^\n]*IS DISTINCT FROM 'fully_sent'[\s\S]{0,200}semantic/);
+});
+
+test("inbound novo mantém a decisão auditável e deixa ações pendentes para revisão", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260926212713_brain_decision_outbox_sessions.sql", import.meta.url), "utf8");
+  const delivery = await readFile(new URL("../supabase/migrations/20260927005646_brain_decision_delivery_independence.sql", import.meta.url), "utf8");
+  assert.match(migration, /pending_inbound_requires_brain_review/);
+  assert.match(delivery, /'semantic_state_committed'/);
+  assert.match(delivery, /'delivery_pending'/);
+  assert.match(delivery, /persist_durable_outbox_batch/);
+});
+
+test("crash depois da persistência não exige primeiro envio para recuperar semântica", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260927005646_brain_decision_delivery_independence.sql", import.meta.url), "utf8");
+  const atomicRpc = migration.slice(migration.indexOf("CREATE OR REPLACE FUNCTION public.persist_brain_decision_with_outbox"));
+  assert.match(atomicRpc, /PERFORM public\.persist_brain_decision/);
+  assert.match(atomicRpc, /persist_durable_outbox_batch/);
+  assert.match(atomicRpc, /semantic_state_committed_at = COALESCE\(semantic_state_committed_at, now\(\)\)/);
+  assert.match(atomicRpc, /semantic_state_committed/);
+  assert.match(atomicRpc, /'semantic_state_committed', 'semantic_state_committed'/);
+});
+
+test("episódios outbound só são gravados após entrega confirmada", async () => {
+  const brain = await readFile(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
+  const episodeWriter = brain.indexOf("await executeEpisodeWriter({", brain.indexOf("const hasConfirmedDelivery"));
+  const confirmedGate = brain.lastIndexOf("if (hasConfirmedDelivery)", episodeWriter);
+  assert.ok(episodeWriter > -1);
+  assert.ok(confirmedGate > -1 && episodeWriter - confirmedGate < 1200);
+  assert.doesNotMatch(brain, /isConfirmedSuccess/);
 });
 
 test("envio manual só reabre falha confirmada e bloqueia sent, sending e dispatch_uncertain", async () => {

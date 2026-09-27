@@ -2284,6 +2284,9 @@ export async function persistCanonicalBrainDecision(params: {
   outboxEntries?: OutboxEntry[];
 }): Promise<{ success: boolean; reason?: string }> {
   try {
+    if (!params.decisionPayload.semanticState || typeof params.decisionPayload.semanticState !== "object") {
+      return { success: false, reason: "semantic_state_required_for_canonical_decision" };
+    }
     const now = new Date().toISOString();
     const { data, error } = await params.supabase.rpc("persist_brain_decision_with_outbox", {
       p_session: {
@@ -2327,13 +2330,30 @@ export async function persistCanonicalBrainDecision(params: {
       })),
       p_outbox_entries: params.outboxEntries || [],
     });
-    if (error || data?.success !== true) {
+    if (error || data?.success !== true || data?.semantic_state_committed !== true) {
       return { success: false, reason: error?.message || data?.error || "persist_brain_decision_failed" };
     }
     return { success: true };
   } catch (error: any) {
     return { success: false, reason: error?.message || "persist_brain_decision_exception" };
   }
+}
+
+export function deriveBrainDeliveryStatus(statuses: string[]):
+  | "delivery_pending"
+  | "partially_sent"
+  | "fully_sent"
+  | "dispatch_uncertain"
+  | "delivery_failed"
+  | "delivery_cancelled"
+  | null {
+  if (!statuses.length) return null;
+  if (statuses.includes("dispatch_uncertain")) return "dispatch_uncertain";
+  if (statuses.every((status) => status === "sent")) return "fully_sent";
+  if (statuses.some((status) => status === "sent")) return "partially_sent";
+  if (statuses.every((status) => status === "failed_confirmed")) return "delivery_failed";
+  if (statuses.every((status) => status === "cancelled")) return "delivery_cancelled";
+  return "delivery_pending";
 }
 
 async function syncBrainDecisionActionStatus(params: {
@@ -2369,9 +2389,24 @@ async function syncBrainDecisionActionStatus(params: {
       human_message: eventMessage[params.status],
       metadata: params.providerMessageId ? { providerMessageId: params.providerMessageId } : {},
     });
-    if (params.status !== "sent") return;
     const { data: actions } = await params.supabase.from("brain_decision_actions")
       .select("status").eq("decision_id", data.decision_id);
+    if (Array.isArray(actions)) {
+      const deliveryStatus = deriveBrainDeliveryStatus(actions.map((action: any) => action.status));
+      await params.supabase.from("brain_decisions").update({ delivery_status: deliveryStatus })
+        .eq("id", data.decision_id);
+      await params.supabase.from("brain_turn_events").insert({
+        conversation_id: data.conversation_id,
+        session_id: decision?.session_id || null,
+        turn_id: decision?.turn_id || null,
+        decision_id: data.decision_id,
+        event_type: deliveryStatus || "delivery_pending",
+        status: deliveryStatus || "delivery_pending",
+        human_message: `Estado de entrega: ${deliveryStatus || "delivery_pending"}.`,
+        metadata: { actionCount: actions.length },
+      });
+    }
+    if (params.status !== "sent") return;
     if (!Array.isArray(actions) || !actions.length || actions.some((action: any) => action.status !== "sent")) return;
     const { data: decisionTurn } = await params.supabase.from("brain_decisions")
       .select("turn_id").eq("id", data.decision_id).maybeSingle();
@@ -6708,7 +6743,7 @@ export async function runBrainOrchestration(
   let claimedMessageIds: string[] = [];
   let staleMessageIds: string[] = [];
   let baselineMessageIds: string[] = [];
-  let sentSuccessfully = false;
+  let possibleSend = false;
   let currentCycle: ProcessingCycle | null = null;
   let currentProviderTurnId: string | null = null;
   let currentLocalBrainTurnId: string | null = params.manualResolution?.turnId || null;
@@ -8879,7 +8914,19 @@ export async function runBrainOrchestration(
     );
 
     let sentBalloonsCount = 0;
-    sentSuccessfully = false;
+    let stageProgression = await validateAndApplyBrainStageDecision({
+      supabase,
+      conversationId,
+      currentPhase,
+      currentStageId,
+      decision,
+      stageRules,
+      orchState,
+      currentCycle,
+      manualFactProviderSessionId: currentSessionId,
+    });
+    decision.nextPhase = stageProgression.nextPhase;
+    possibleSend = false;
     const audioPayload: PersonaAudioAsset | undefined = resolvedAudio;
 
     if (hasFinalDispatchPayload) {
@@ -8925,6 +8972,16 @@ export async function runBrainOrchestration(
               : "Brain preparou ações de saída.",
             objectiveUpdates: brainPlan?.objectiveUpdates || (brainPlan?.objectiveCompletion ? [brainPlan.objectiveCompletion] : []),
             stageTransition: brainPlan?.stageTransition || null,
+            semanticState: {
+              cycleToken: correlationId,
+              expectedCurrentStageId: convRow?.current_stage_id || null,
+              completedGoalIds: stageProgression.updatedCompletedGoals,
+              objectiveProgress: stageProgression.updatedObjectiveProgress,
+              currentPhase: stageProgression.nextPhase,
+              currentStageId: stageProgression.nextStageId,
+              checkpoint: decision.checkpoint,
+              lastDecision: decision,
+            },
             responses: canonicalOutboundActions.filter((action) => action.type === "text").map((action: any) => action.text),
           },
           outboxEntries: outboxBatch,
@@ -9038,10 +9095,10 @@ export async function runBrainOrchestration(
 
       if (dispatchResult.dispatchedCount > 0) {
         sentBalloonsCount = 1;
-        sentSuccessfully = true;
+        possibleSend = true;
         currentCycle.trace.push("meta_dispatched_b1: success");
       } else if (dispatchResult.uncertainCount > 0) {
-        sentSuccessfully = true;
+        possibleSend = true;
         currentCycle.status = "failed";
         currentCycle.trace.push("meta_dispatch_uncertain_b1");
         const firstBalloonIsAudio = balloons[0]?.startsWith("[audio:") === true;
@@ -9111,6 +9168,16 @@ export async function runBrainOrchestration(
               reasoningSummary: decision.action === "manual_resolution"
                 ? "Brain solicitou um fato ao operador."
                 : "Brain decidiu aguardar sem enviar mensagem.",
+              semanticState: {
+                cycleToken: correlationId,
+                expectedCurrentStageId: convRow?.current_stage_id || null,
+                completedGoalIds: stageProgression.updatedCompletedGoals,
+                objectiveProgress: stageProgression.updatedObjectiveProgress,
+                currentPhase: stageProgression.nextPhase,
+                currentStageId: stageProgression.nextStageId,
+                checkpoint: decision.checkpoint,
+                lastDecision: decision,
+              },
             },
             actions: [],
           });
@@ -9123,6 +9190,7 @@ export async function runBrainOrchestration(
               error: `Decisão WAIT do Brain não persistida (${waitingDecision.reason || "erro técnico"}).`,
             };
           }
+          currentCycle.trace.push(`brain_decision_persisted: ${decisionId}`);
           await supabase.from("brain_turns").update({
             status: decision.action === "manual_resolution" ? "waiting_manual" : "completed",
             completed_at: decision.action === "manual_resolution" ? null : new Date().toISOString(),
@@ -9138,7 +9206,7 @@ export async function runBrainOrchestration(
             error: "Decisão WAIT do Brain sem session_id persistível; ciclo bloqueado.",
           };
         }
-        if (reservedAudioId && !sentSuccessfully) {
+        if (reservedAudioId && !possibleSend) {
           try {
             await releaseAudioDeliveryReservation({
               supabase,
@@ -9173,27 +9241,13 @@ export async function runBrainOrchestration(
       };
       currentCycle.trace.push("cycle_completed");
 
-      // MEMORY WRITER: Executa pós-processamento assíncrono de memória de forma fail-safe
-      // SOMENTE quando o ciclo concluiu com sucesso (todos os balões enviados confirmados ou ação wait concluída)
-      // NUNCA em caso de falha, incerteza de rede (dispatch_uncertain) ou balões incompletos/abortados
-      const isConfirmedSuccess =
-        currentCycle.status === "completed" &&
-        (decision.action === "wait" || decision.action === "manual_resolution" || sentBalloonsCount > 0);
+      // A decisão semântica e a outbox foram confirmadas juntas pela RPC antes do dispatch.
+      // Estado de entrega nunca reverte essa decisão; memória de saída exige confirmação do provedor.
+      const decisionPersisted = currentCycle.trace.some((entry: string) => entry.startsWith("brain_decision_persisted:"));
+      const hasConfirmedDelivery = sentBalloonsCount > 0;
 
-      let stageProgression = {
-        updatedCompletedGoals: [
-          ...officialCompletedGoalIdsAtCycleStart,
-        ],
-        updatedObjectiveProgress: {
-          ...officialObjectiveProgressAtCycleStart,
-        },
-        nextPhase: validatedNextPhase,
-        stageAdvanced: false,
-        advancementReason: undefined as string | undefined,
-      };
-
-      if (!isConfirmedSuccess) {
-        currentCycle.trace.push("memory_writer_skipped_unconfirmed_cycle");
+      if (!decisionPersisted) {
+        currentCycle.trace.push("semantic_commit_skipped_decision_not_persisted");
         await releaseExperimentalCycleAtomic({
           supabase,
           conversationId,
@@ -9204,38 +9258,25 @@ export async function runBrainOrchestration(
           markProcessedIds: [...claimedMessageIds, ...staleMessageIds],
         });
       } else {
-        // 1. Valida a etapa escolhida pelo Brain e persiste a decisão explícita.
-        stageProgression = await validateAndApplyBrainStageDecision({
-          supabase,
-          conversationId,
-          currentPhase,
-          currentStageId,
-          decision,
-          stageRules,
-          orchState,
-          currentCycle,
-          manualFactProviderSessionId: currentSessionId,
-        });
-        decision.nextPhase = stageProgression.nextPhase;
-
-        // 2. Executa MemoryWriter CONTRA O OVERLAY DE MEMÓRIA (cycleMemoryProvider)
-        // Zero escritas reais no banco antes do commit atômico condicional (CAS)!
+        // Fatos inferidos da mensagem outbound só entram na memória após confirmação real de envio.
         try {
-          await executeMemoryWriter({
-            conversationId,
-            claimedMessages: claimedMessages,
-            lastLarissaTurn: baseContextPayload.lastLarissaTurn,
-            sentResponseText: decision.suggestedResponse,
-            memoryProvider: cycleMemoryProvider, // OVERLAY EM RAM: zero persistência antes do CAS
-            supabase,
-            trace: currentCycle.trace,
-          });
+          if (hasConfirmedDelivery) {
+            await executeMemoryWriter({
+              conversationId,
+              claimedMessages: claimedMessages,
+              lastLarissaTurn: baseContextPayload.lastLarissaTurn,
+              sentResponseText: decision.suggestedResponse,
+              memoryProvider: cycleMemoryProvider,
+              supabase,
+              trace: currentCycle.trace,
+            });
+          }
         } catch (memErr: any) {
           currentCycle.trace.push(`memory_writer_error: ${memErr.message || String(memErr)}`);
         }
 
         // 3. Obtém todos os fatos confirmados do turno gravados no overlay em RAM
-        const pendingFacts = cycleMemoryProvider.getPendingFacts();
+        const pendingFacts = hasConfirmedDelivery ? cycleMemoryProvider.getPendingFacts() : [];
 
         // 4. Leitura snapshot para preservação estrita de fatos já existentes no banco
         const { data: preCommitData } = await supabase
@@ -9271,7 +9312,7 @@ export async function runBrainOrchestration(
         }
 
         // Integração de memoryCandidates validados do subagente com evidência comprovada
-        for (const cand of validatedMemoryCandidates) {
+        for (const cand of hasConfirmedDelivery ? validatedMemoryCandidates : []) {
           const normEnt = (cand.entity || "self").toLowerCase().trim();
           const normFld = (cand.key || "").toLowerCase().trim();
           if (!confirmedTurnEntities[normEnt]) confirmedTurnEntities[normEnt] = {};
@@ -9312,7 +9353,7 @@ export async function runBrainOrchestration(
         const snippetsToMerge = [
           ...(latestMemoryFromDb?.snippets || orchState.memory?.snippets || []),
         ];
-        for (const cand of validatedMemoryCandidates) {
+        for (const cand of hasConfirmedDelivery ? validatedMemoryCandidates : []) {
           const snipText = cand.summary || `${cand.key}: ${cand.value}`;
           if (snipText && !snippetsToMerge.some((s: any) => s.snippet === snipText)) {
             snippetsToMerge.push({
@@ -9337,7 +9378,7 @@ export async function runBrainOrchestration(
           checkpoint: decision.checkpoint,
           lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
           lastProcessedAt: new Date().toISOString(),
-          lastProcessingStatus: sentSuccessfully
+          lastProcessingStatus: hasConfirmedDelivery
             ? "sent"
             : decision.action === "manual_resolution"
             ? "needs_human"
@@ -9419,11 +9460,22 @@ export async function runBrainOrchestration(
 
         if (!casResult.committed) {
           console.warn(
-            `[Orchestrator] CAS final falhou para ciclo ${correlationId} (motivo=${casResult.reason}, activeToken=${casResult.activeToken || "null"}). Abortando commit oficial com zero contaminação de memória.`
+            `[Orchestrator] CAS final falhou para ciclo ${correlationId} (motivo=${casResult.reason}, activeToken=${casResult.activeToken || "null"}). Decisão semântica continua durável; gravações derivadas da entrega foram interrompidas.`
           );
+          // A decisão semântica já foi confirmada atomicamente com a outbox. Libera
+          // apenas a custódia deste ciclo; o token CAS evita tocar em ciclo alheio.
+          await releaseExperimentalCycleAtomic({
+            supabase,
+            conversationId,
+            cycleToken: correlationId,
+            processingStatus: "decided",
+            cycleRecord: currentCycle,
+            outboxMap,
+            markProcessedIds: [...claimedMessageIds, ...staleMessageIds],
+          });
           return {
             handled: false,
-            sentToMeta: sentSuccessfully,
+            sentToMeta: possibleSend,
             blockLegacyFallback: true,
             error: "lost_lock_before_atomic_commit",
           };
@@ -9432,6 +9484,10 @@ export async function runBrainOrchestration(
 
         const completedUsage = cycleUsageMetadata();
         const needsHumanReview = decision.action === "manual_resolution" && claimedMessageIds.length > 0;
+        const decisionOutboxStatuses = Object.values(outboxMap)
+          .filter((entry) => entry.cycleId === correlationId)
+          .map((entry) => entry.status === "failed" ? "failed_confirmed" : entry.status === "waiting_delay" ? "pending" : entry.status);
+        const deliveryStatus = deriveBrainDeliveryStatus(decisionOutboxStatuses);
         let humanPauseConfirmed = false;
         if (needsHumanReview) {
           for (let attempt = 1; attempt <= 2 && !humanPauseConfirmed; attempt += 1) {
@@ -9484,8 +9540,10 @@ export async function runBrainOrchestration(
             "completed",
             needsHumanReview
               ? "Aguardando sua resposta"
-              : sentSuccessfully
+              : hasConfirmedDelivery
               ? "Atria respondeu"
+              : deliveryStatus === "dispatch_uncertain"
+              ? "Entrega incerta"
               : "Atria avaliou",
             needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
             needsHumanReview
@@ -9503,11 +9561,19 @@ export async function runBrainOrchestration(
             label: needsHumanReview ? "Brain precisa de uma informação" : "Ciclo concluído",
             detail: needsHumanReview
               ? pauseReason
-              : sentBalloonsCount > 0
-              ? "Todos os envios deste ciclo foram confirmados."
-              : "Ciclo concluído sem envio de resposta.",
+              : deliveryStatus === "dispatch_uncertain"
+              ? "A decisão foi preservada; a confirmação da entrega está pendente de reconciliação."
+              : deliveryStatus === "delivery_pending" || deliveryStatus === "partially_sent"
+              ? "A decisão foi preservada; há ações aguardando entrega."
+              : deliveryStatus === "delivery_failed"
+              ? "A decisão foi preservada; a entrega falhou."
+              : deliveryStatus === "fully_sent"
+              ? "A decisão foi preservada e todos os envios foram confirmados."
+              : "Decisão sem ações de entrega.",
             metadata: {
               action: decision.action,
+              semanticStatus: "semantic_state_committed",
+              deliveryStatus,
               sentBalloonsCount,
               ...(needsHumanReview ? {} : { totalBalloons: balloons.length }),
               model: cycleOpenAiUsage.snapshot()?.models[0] || configuredAgentModel || null,
@@ -9525,7 +9591,7 @@ export async function runBrainOrchestration(
 
         // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
         // Executa UMA ÚNICA VEZ por ciclo normal confirmado, após o commit oficial
-        if (sentSuccessfully) {
+        if (hasConfirmedDelivery) {
           try {
             await executeEpisodeWriter({
               conversationId,
@@ -9717,7 +9783,7 @@ export async function runBrainOrchestration(
 
       return {
         handled: true,
-        sentToMeta: sentSuccessfully,
+        sentToMeta: hasConfirmedDelivery,
         blockLegacyFallback: true,
         decision,
         durationMs,
@@ -9739,7 +9805,7 @@ export async function runBrainOrchestration(
 
     // A evidência persistida prevalece sobre o snapshot local: se o HTTP Meta
     // chegou a começar, a ausência de confirmação NÃO autoriza reprocessamento.
-    let possibleSend = sentSuccessfully || classifyCycleOutboxEvidence(outboxMap, correlationId).possibleSend;
+    possibleSend ||= classifyCycleOutboxEvidence(outboxMap, correlationId).possibleSend;
     let retryAllowed = false;
     try {
       const { data: failureRow, error: failureReadError } = await supabase
@@ -9807,7 +9873,7 @@ export async function runBrainOrchestration(
       );
       return {
         handled: false,
-        sentToMeta: sentSuccessfully,
+        sentToMeta: possibleSend,
         blockLegacyFallback: true,
         error: err.message || "Ciclo preemptado",
       };
@@ -9860,7 +9926,7 @@ export async function runBrainOrchestration(
 
     return {
       handled: false,
-      sentToMeta: sentSuccessfully,
+      sentToMeta: possibleSend,
       blockLegacyFallback: true,
       error: err.message || "Erro na orquestração do Brain",
     };
