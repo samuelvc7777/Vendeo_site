@@ -372,12 +372,12 @@ function createMockSupabase(history = [], audios = mockAudiosDatabase) {
 test("1. Caminho oficial do OpenAI Agent possui cofre_audio_search", () => {
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.name, "cofre_audio_search");
   assert.ok(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description.includes("Cofre de Áudios"));
-  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /catálogo COMPLETO/i);
-  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /não filtra nem escolhe por assunto/i);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /somente.*objective_id solicitado/i);
+  assert.match(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.description, /não faz seleção semântica/i);
   assert.equal(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.properties.objective_id.type, "string");
   assert.deepEqual(COFRE_AUDIO_SEARCH_TOOL_DEFINITION.function.parameters.required, ["objective_id"]);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /todos os áudios habilitados.*esse objetivo/i);
-  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /Você escolhe semanticamente/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /somente.*objective_id solicitado/i);
+  assert.match(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.description, /não faz seleção semântica/i);
   assert.equal(COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION.parameters.properties.objective_id.type, "string");
   // Verifica que instructions oficiais locais incluem a seção canônica
   const instructions = buildCanonicalAgentInstructions({ strictOpenAiPilot: true });
@@ -460,7 +460,7 @@ test("4.1 Pergunta direta 'trabalha com oq' encontra áudio de profissão", asyn
   );
 });
 
-test("4.2 Brain recebe o catálogo completo quando consulta o cofre, sem filtro semântico do backend", async () => {
+test("4.2 Brain recebe somente candidatos do objective_id solicitado, sem filtro semântico", async () => {
   const supabase = createMockSupabase();
   const directCatalog = await executeCofreAudioSearch({
     supabase,
@@ -472,7 +472,7 @@ test("4.2 Brain recebe o catálogo completo quando consulta o cofre, sem filtro 
   assert.deepEqual(
     directCatalog.map((audio) => audio.audioId).sort(),
     ["aud_hobbies", "aud_profissao_trabalho", "aud_rotina_enfermagem"],
-    "O executor direto também devolve o catálogo completo, independentemente da query e do limite legado"
+    "Todos os resultados pertencem ao objective_id solicitado; a busca não classifica por semântica"
   );
 
   const telemetry = { toolsRequested: [], toolExecutionsCount: 0, sourcesUsed: [], authorizedCandidateAudios: [] };
@@ -490,11 +490,16 @@ test("4.2 Brain recebe o catálogo completo quando consulta o cofre, sem filtro 
   assert.deepEqual(
     results.map((audio) => audio.audioId).sort(),
     ["aud_hobbies", "aud_profissao_trabalho", "aud_rotina_enfermagem"],
-    "A query e o limite não podem fazer o backend escolher ou esconder áudios do Brain"
+    "A query textual não escolhe candidatos; o objective_id define o escopo da busca"
   );
   assert.ok(results.every((audio) => audio.transcript), "Cada áudio elegível deve incluir a transcrição completa");
   assert.ok(results.every((audio) => audio.audioUrl === undefined), "O catálogo não deve expor URLs de mídia ao Brain");
   assert.equal(telemetry.authorizedCandidateAudios.length, 3, "Todos os áudios devolvidos ficam disponíveis para seleção pelo Brain");
+
+  const otherObjective = await executeCofreAudioSearch({
+    supabase, conversationId: "conv_other_objective", objective_id: "objective-with-no-audios",
+  });
+  assert.deepEqual(otherObjective, [], "Áudios de outros objetivos nunca aparecem como fallback");
 });
 
 test("5. Áudio já enviado não aparece na busca", async () => {
@@ -1069,7 +1074,7 @@ test("16. Catálogo sem correspondência automática continua permitindo decisã
     query: "física nuclear quântica aplicada",
   });
 
-  assert.equal(candidates.length, 3, "O backend ainda entrega o catálogo completo, sem decidir aderência por query");
+  assert.equal(candidates.length, 3, "A busca retorna os candidatos vinculados ao objetivo, sem decidir aderência semântica");
 
   // Agent prossegue com texto comum
   const plan = createValidTestPlan({
@@ -1077,7 +1082,7 @@ test("16. Catálogo sem correspondência automática continua permitindo decisã
     outboundActions: [
       { type: "text", text: "nossa, física nuclear eu não entendo nadinha kkkk" },
     ],
-    reasoning: "O Brain avalia o catálogo completo, decide que nenhum áudio se encaixa e responde normalmente em texto.",
+    reasoning: "O Brain avalia os candidatos do objetivo, decide que nenhum áudio se encaixa e responde normalmente em texto.",
   });
 
   const validation = validateConversationBrainPlan(plan);
@@ -1257,7 +1262,7 @@ test("24. Consulta do cofre não filtra por semântica; a seleção fica com o B
   });
 
   const hasBeachAudio = candidates.some((c) => c.audio_id === "aud_hobbies" && c.transcript.includes("praia"));
-  assert.equal(hasBeachAudio, true, "O backend entrega o catálogo completo; só o Brain decide se o áudio combina com a mensagem");
+  assert.equal(hasBeachAudio, true, "A busca é escopada pelo objetivo; só o Brain decide se o áudio combina com a mensagem");
 });
 
 // ============================================================================

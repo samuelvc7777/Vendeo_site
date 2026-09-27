@@ -17,7 +17,8 @@ const evidenceRows = {
   contact_memory_facts: [{ id: "fact-a", conversation_id: "conv-a" }],
   contact_memory_quotes: [{ id: "quote-a", conversation_id: "conv-a" }],
   conversation_episodic_memory: [{ id: "episode-a", conversation_id: "conv-a" }],
-  persona_memory: [{ key: "manual-a", persona_id: "larissa", category: "manual_resolution" }],
+  brain_sessions: [{ id: "session-a", conversation_id: "conv-a", provider_session_id: "provider-session-a" }],
+  brain_manual_facts: [{ id: "manual-a", conversation_id: "conv-a", session_id: "session-a", turn_id: "turn-a", fact: "dado local" }],
 };
 
 function evidenceDb(rows = evidenceRows) {
@@ -44,13 +45,16 @@ test("todas as proveniências persistidas aceitam apenas registros do escopo cer
     ["episode", "episode-a"],
     ["manual_fact", "manual-a"],
   ];
-  for (const [type, id] of examples) {
+  for (const [type, id] of examples.filter(([type]) => type !== "manual_fact")) {
     const evidence = normalizeObjectiveEvidence({ type, id });
     assert.deepEqual(evidence, { type, id });
     assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-a", evidence), true, `${type} deve existir`);
   }
   assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-b", { type: "message", id: "msg-a" }), false);
-  assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-a", { type: "manual_fact", id: "manual-a" }), true);
+  assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-a", { type: "manual_fact", id: "manual-a" }, "provider-session-a"), true);
+  assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-a", { type: "manual_fact", id: "manual-a" }, "other-session"), false);
+  assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-b", { type: "manual_fact", id: "manual-a" }, "provider-session-a"), false);
+  assert.equal(await objectiveEvidenceExists(evidenceDb(), "conv-a", { type: "manual_fact", id: "manual-a" }), false);
   assert.equal(normalizeObjectiveEvidence({ type: "other", id: "1" }), null);
   assert.deepEqual(normalizeObjectiveEvidence(null, "legacy-msg"), { type: "message", id: "legacy-msg" });
 });

@@ -593,6 +593,7 @@ export type OrchestrationAction = "reply" | "send_audio" | "wait" | "manual_reso
 export interface ManualResolutionRequest {
   question: string;
   context?: string;
+  factId?: string;
 }
 export type ProcessingStatus =
   | "idle"
@@ -1275,13 +1276,12 @@ export function validateOrchestratorDecision(data: unknown, allowedPhases?: stri
 }
 
 // ----------------------------------------------------------------------------
-// 4. Validador de Transição de Fase pelo Backend (Guarda de Integridade / Normalização)
+// 4. Validador de transição escolhida pelo Brain (guarda de integridade)
 // ----------------------------------------------------------------------------
 // AVISO DE ARQUITETURA: validatePhaseTransition NÃO É autoridade de workflow e
 // NÃO tem permissão para alterar o estado oficial da conversa (currentPhase/currentStageId).
-// Serve exclusivamente para normalização de payload, telemetria de trace, compatibilidade
-// legada e debug. A ÚNICA autoridade determinística oficial para progressão e avanço de etapa
-// é a função processDeterministicStageProgression().
+// O Brain escolhe nextStage. O backend valida se o identificador está configurado;
+// conclusão de objetivo não calcula nem avança etapas.
 export function validatePhaseTransition(
   currentPhase: OrchestrationPhase,
   requestedNextPhase: OrchestrationPhase,
@@ -4160,7 +4160,7 @@ Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mens
 - conversation_history_search: busca no histórico bruto desta conversa por mensagens passadas ou detalhes esquecidos. Parâmetro: {"query": "..."}.
 - persona_memory_search: busca na PersonaMemory fatos biográficos, gostos ou perrengues da Larissa. Parâmetro: {"query": "..."}.
 - episodic_memory_search: busca na memória episódica atos e revelações passadas. Parâmetro: {"query": "...", "memoryClass": "landmark" | "speech_act" | "all"}.
-- cofre_audio_search: quando você decidir consultar o Cofre, retorna o catálogo completo de áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra nem ranqueia. Você decide se algum áudio combina e qual selecionar. Parâmetro: {"query": "motivo da consulta"}.
+- cofre_audio_search: retorna somente áudios habilitados e ainda não enviados vinculados ao objective_id solicitado. O backend consulta exclusivamente esse ID e não faz seleção semântica; você decide se envia algum candidato e qual. Parâmetro: {"objective_id": "id exato do objetivo"}.
 
 ### REGRAS INVIOLÁVEIS DO BRAIN:
 1. Para objectiveDecision: "already_satisfied", indique o objective_id configurado que você decidiu concluir e o evidenceMessageId de uma evidência persistida válida apresentada no contexto. A evidência pode vir de qualquer turno registrado desta conversa; o backend apenas valida referência e existência.
@@ -4372,7 +4372,7 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido. Use ferramentas somente se for estritamente necessário:
-- cofre_search: quando você decidir consultar o Cofre, retorna todos os áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra resultados. Você decide se envia áudio e qual selecionar. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer"}}
+- cofre_search: retorna somente áudios habilitados e ainda não enviados vinculados ao objective_id solicitado. O backend não faz seleção semântica; você decide se envia algum candidato. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"objective_id": "id_exato_do_objetivo"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "conexao_inicial"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para histórias ou perrengues da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
@@ -4516,14 +4516,11 @@ export interface StageResolutionResult {
 export const resolveStageObjectives = resolveStageChecklistGoals;
 
 /**
- * Processamento determinístico de conclusão de checkpoints e progressão sequencial de etapas.
- * - Valida objectiveCompletion proposto pelo subagente
- * - Registra progresso no banco de dados (completed_goals e objectiveProgress)
- * - Avalia se todos os objetivos ativos da etapa atual foram concluídos
- * - Avança deterministicamente por order ASC para a próxima etapa cadastrada
- * - Entrega para o subagente responsável pela próxima etapa (sem regredir na última etapa)
+ * Valida e persiste as decisões explícitas de objetivo e etapa emitidas pelo Brain.
+ * A etapa seguinte vem de decision.nextPhase; o backend só verifica se o ID está
+ * configurado e se a evidência declarada existe. Conclusão de objetivos não avança etapas.
  */
-export async function processDeterministicStageProgression(params: {
+export async function validateAndApplyBrainStageDecision(params: {
   supabase: any;
   conversationId: string;
   currentPhase: OrchestrationPhase;
@@ -4533,6 +4530,7 @@ export async function processDeterministicStageProgression(params: {
   orchState?: any;
   currentCycle?: any;
   objectiveProgress?: Record<string, any>;
+  manualFactProviderSessionId?: string | null;
 }): Promise<{
   updatedCompletedGoals: string[];
   updatedObjectiveProgress: Record<string, any>;
@@ -4564,7 +4562,7 @@ export async function processDeterministicStageProgression(params: {
       .find((item: any) => item?.id === completion.objectiveId && item.enabled !== false);
     const evidence = completion.evidence || normalizeObjectiveEvidence(null, completion.evidenceMessageId);
     const evidenceExists = evidence
-      ? await objectiveEvidenceExists(params.supabase, params.conversationId, evidence)
+      ? await objectiveEvidenceExists(params.supabase, params.conversationId, evidence, params.manualFactProviderSessionId)
       : false;
     if (objective && evidenceExists) {
       if (!completed.includes(completion.objectiveId)) completed.push(completion.objectiveId);
@@ -4634,7 +4632,8 @@ export async function listEligiblePersonaAudios(params: {
       .select("*")
       .eq("enabled", true)
       .order("title", { ascending: true });
-    if (objectiveId) audioQuery = audioQuery.eq("objective_id", objectiveId);
+    if (!objectiveId?.trim()) return [];
+    audioQuery = audioQuery.eq("objective_id", objectiveId.trim());
     const { data: audioRows } = await audioQuery;
 
     if (audioRows && Array.isArray(audioRows) && audioRows.length > 0) {
@@ -4655,7 +4654,9 @@ export async function listEligiblePersonaAudios(params: {
   } catch {}
 
   if (audios.length === 0 && (supabase as any)?.__mockPersonaAudios) {
-    audios = (supabase as any).__mockPersonaAudios;
+    audios = (supabase as any).__mockPersonaAudios.filter((audio: any) =>
+      String(audio.objective_id || audio.objectiveId || "") === objectiveId?.trim()
+    );
   }
 
   let sentAudioIds = new Set<string>();
@@ -5200,7 +5201,7 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro com o contexto recebido. Chame ferramentas apenas quando necessário:
-- cofre_search: quando você decidir consultar o Cofre, retorna todos os áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra resultados. Você decide se envia áudio e qual selecionar. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre lazer"}}
+- cofre_search: retorna somente áudios habilitados e ainda não enviados vinculados ao objective_id solicitado. O backend não faz seleção semântica; você decide se envia algum candidato. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"objective_id": "id_exato_do_objetivo"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "descoberta"}}
 - checklist_get_stage_state: consulta o checklist e estado dos objetivos da fase (alias). Ex: {"action": "call_tool", "tool": "checklist_get_stage_state", "parameters": {"stage": "descoberta"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
@@ -5299,7 +5300,7 @@ ${contextBlock}
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA
 Trabalhe primeiro apenas com o contexto recebido.
-- cofre_search: quando você decidir consultar o Cofre, retorna todos os áudios habilitados e ainda não enviados, com transcrições integrais. A query registra o motivo, não filtra resultados. Você decide se envia áudio e qual selecionar. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"query": "pergunta sobre rotina"}}
+- cofre_search: retorna somente áudios habilitados e ainda não enviados vinculados ao objective_id solicitado. O backend não faz seleção semântica; você decide se envia algum candidato. Ex: {"action": "call_tool", "tool": "cofre_search", "parameters": {"objective_id": "id_exato_do_objetivo"}}
 - stage_objectives_get: consulta o estado atual dos objetivos da fase (completed/pending). Ex: {"action": "call_tool", "tool": "stage_objectives_get", "parameters": {"stage": "${input.currentPhase}"}}
 - persona_get_fact: consulta fato específico sobre a Larissa (idade, cidade, bairro, curso, período acadêmico, formatura, comida favorita, prato favorito, cantora favorita, matéria mais difícil, matéria que não gosta). Ex: {"action": "call_tool", "tool": "persona_get_fact", "parameters": {"field": "education.current_period"}}
 - persona_search: busca aberta para perguntas narrativas, perrengues, motivos ou histórias da Larissa. Ex: {"action": "call_tool", "tool": "persona_search", "parameters": {"query": "estudos faculdade estágio"}}
@@ -7643,16 +7644,36 @@ export async function runBrainOrchestration(
       });
 
       try {
+        const brainProviderSessionId = lateProviderSessionId || (persistentAgentSessionEnabled ? persistentSessionId : null);
+        let manualSessionFacts: Array<{ id: string; question: string; fact: string }> = [];
+        if (brainProviderSessionId) {
+          const { data: brainSessionRow } = await supabase.from("brain_sessions")
+            .select("id")
+            .eq("conversation_id", conversationId)
+            .eq("provider_session_id", brainProviderSessionId)
+            .maybeSingle();
+          if (brainSessionRow?.id) {
+            const { data: factRows } = await supabase.from("brain_manual_facts")
+              .select("id, question, fact")
+              .eq("conversation_id", conversationId)
+              .eq("session_id", brainSessionRow.id)
+              .order("created_at", { ascending: true });
+            manualSessionFacts = Array.isArray(factRows) ? factRows : [];
+          }
+        }
         const openAiBrainTurn = await runOpenAiBrainTurn({
           supabase,
           conversationId,
-          sessionId: lateProviderSessionId || (persistentAgentSessionEnabled ? persistentSessionId : null),
+          sessionId: brainProviderSessionId,
           resumeTurnId: lateTurnForResume?.provider_turn_id || null,
+          resumeExistingTurnOnly: Boolean(lateTurnForResume?.provider_turn_id),
           manualResolutionAnswer: params.manualResolution ? {
             question: params.manualResolution.question,
             context: params.manualResolution.context,
             answer: params.manualResolution.answer,
+            factId: params.manualResolution.factId,
           } : undefined,
+          manualSessionFacts,
           pendingOutboundActions,
           persistentSessionEnabled: persistentAgentSessionEnabled,
           model: configuredAgentModel,
@@ -8299,7 +8320,7 @@ export async function runBrainOrchestration(
           .some((objective: any) => objective?.id === objectiveId && objective.enabled !== false),
       );
       const evidenceExists = evidence
-        ? await objectiveEvidenceExists(supabase, conversationId, evidence)
+      ? await objectiveEvidenceExists(supabase, conversationId, evidence, currentSessionId)
         : false;
       if (!objectiveExists || !evidenceExists) throw new Error("BRAIN_PLAN_INVALID_OBJECTIVE_EVIDENCE");
       workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, objectiveId])];
@@ -9183,9 +9204,8 @@ export async function runBrainOrchestration(
           markProcessedIds: [...claimedMessageIds, ...staleMessageIds],
         });
       } else {
-        // 1. Calcula progressão determinística usando ESTADO LOCAL/OVERLAY (cycleMemoryProvider)
-        // O overlay permite que a progressão enxergue os fatos do turno sem NENHUMA escrita no banco!
-        stageProgression = await processDeterministicStageProgression({
+        // 1. Valida a etapa escolhida pelo Brain e persiste a decisão explícita.
+        stageProgression = await validateAndApplyBrainStageDecision({
           supabase,
           conversationId,
           currentPhase,
@@ -9194,6 +9214,7 @@ export async function runBrainOrchestration(
           stageRules,
           orchState,
           currentCycle,
+          manualFactProviderSessionId: currentSessionId,
         });
         decision.nextPhase = stageProgression.nextPhase;
 

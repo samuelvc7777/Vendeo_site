@@ -2,16 +2,16 @@
  * test-already-satisfied-and-canonical-required.mjs
  * 
  * Validação rigorosa dos 6 requisitos canônicos:
- * 1. already_satisfied concluído no MESMO CICLO em processDeterministicStageProgression
+ * 1. already_satisfied concluído no MESMO CICLO em validateAndApplyBrainStageDecision
  * 2. Objetivos do tipo "fact" NUNCA recebem value: true (recebem null até enriquecimento pela memória)
  * 3. Enriquecimento de fatos consolidados com valor string real da ContactMemory
  * 4. Preservação estrita dos gates de evidência (claimedMessageIds)
  * 5. Regra Canônica: Todo objetivo ativo é obrigatório (required = true para todos os ativos)
- * 6. stageComplete só é atingido quando TODOS os ativos forem concluídos
+ * 6. Backend só muda de etapa quando decision.nextPhase explícito aponta para uma etapa válida
  */
 
 import {
-  processDeterministicStageProgression,
+  validateAndApplyBrainStageDecision,
   resolveStageChecklistGoals,
 } from '../supabase/functions/api/brain_orchestrator.ts';
 
@@ -74,24 +74,19 @@ async function runTests() {
 
   const mockSupabase = {
     from(table) {
+      const filters = {};
       return {
-        select() {
-          return {
-            order() {
-              if (table === "chat_stages") {
-                return Promise.resolve({ data: mockStages });
-              }
-              return Promise.resolve({ data: [] });
-            },
-            eq() {
-              return {
-                maybeSingle() {
-                  return Promise.resolve({ data: null });
-                }
-              };
-            }
-          };
-        }
+        select() { return this; },
+        eq(key, value) { filters[key] = value; return this; },
+        order() {
+          return Promise.resolve({ data: table === "chat_stages" ? mockStages : [] });
+        },
+        async maybeSingle() {
+          const row = table === "instagram_messages" && ["msg_inbound_101", "msg_inbound_102"].includes(filters.id) && filters.conversation_id === "conv_test_1"
+            ? { id: filters.id, conversation_id: "conv_test_1" }
+            : null;
+          return { data: row, error: null };
+        },
       };
     }
   };
@@ -112,7 +107,7 @@ async function runTests() {
   const activeGoals = resolution1.goals.filter(g => g.enabled !== false);
   assert("Objetivos ativos identificados corretamente (exclui enabled: false)", activeGoals.length === 2);
   assert("goal_city é obrigatório", activeGoals.find(g => g.id === "goal_city")?.required === true);
-  assert("goal_job (que era required: false legado) é tratado como OBRIGATÓRIO", activeGoals.find(g => g.id === "goal_job")?.required === true);
+  assert("goal_job preserva o valor required configurado", activeGoals.find(g => g.id === "goal_job")?.required === false);
   assert("Etapa não está completa com 0 concluídos", !activeGoals.every(g => g.status === "completed"));
 
   // ---------------------------------------------------------------------------
@@ -145,7 +140,7 @@ async function runTests() {
     objectiveCompletion: brainObjectiveCompletion,
   };
 
-  const stageProgression = await processDeterministicStageProgression({
+  const stageProgression = await validateAndApplyBrainStageDecision({
     supabase: mockSupabase,
     conversationId: "conv_test_1",
     currentPhase: "conexao_inicial",
@@ -186,7 +181,7 @@ async function runTests() {
     }
   };
 
-  const invalidProgression = await processDeterministicStageProgression({
+  const invalidProgression = await validateAndApplyBrainStageDecision({
     supabase: mockSupabase,
     conversationId: "conv_test_1",
     currentPhase: "conexao_inicial",
@@ -201,7 +196,7 @@ async function runTests() {
   });
 
   assert("goal_city com evidência alienígena NÃO foi concluído", !invalidProgression.updatedCompletedGoals.includes("goal_city"));
-  assert("Trace registra rejeição por invalid_evidence", fakeCycle.trace.includes("objective_completion_rejected_reason: invalid_evidence"));
+  assert("Trace registra rejeição de referência/evidência inválida", fakeCycle.trace.some((event) => event.includes("objective_update_rejected")));
 
   // ---------------------------------------------------------------------------
   // TESTE 5: PROGRESSÃO DETERMINÍSTICA EXIGE TODOS OS ATIVOS CONCLUÍDOS
@@ -212,14 +207,15 @@ async function runTests() {
   assert("nextStageId continua sendo stage_1_conexao", invalidProgression.nextStageId === "stage_1_conexao");
 
   // ---------------------------------------------------------------------------
-  // TESTE 6: AVANÇO DETERMINÍSTICO QUANDO TODOS OS ATIVOS SÃO CONCLUÍDOS
+  // TESTE 6: TRANSIÇÃO DE ETAPA SÓ QUANDO O BRAIN A SOLICITA
   // ---------------------------------------------------------------------------
-  console.log("\n--- 6. AVANÇO DETERMINÍSTICO QUANDO TODOS OS ATIVOS SÃO CONCLUÍDOS ---");
+  console.log("\n--- 6. ETAPA MUDA SOMENTE COM DECISÃO EXPLÍCITA DO BRAIN ---");
   const jobClaimedMessages = [
     { id: "msg_inbound_102", sender: "them", text: "sou engenheiro civil" }
   ];
   const allCompletedDecision = {
     ...decision,
+    nextPhase: "stage_2_descoberta",
     objectiveCompletion: {
       objectiveId: "goal_job",
       evidenceMessageId: "msg_inbound_102",
@@ -228,7 +224,7 @@ async function runTests() {
   };
 
   const advanceCycle = { trace: [] };
-  const fullProgression = await processDeterministicStageProgression({
+  const fullProgression = await validateAndApplyBrainStageDecision({
     supabase: mockSupabase,
     conversationId: "conv_test_1",
     currentPhase: "conexao_inicial",
@@ -245,9 +241,9 @@ async function runTests() {
   });
 
   assert("Ambos objetivos ativos estão concluídos", fullProgression.updatedCompletedGoals.includes("goal_city") && fullProgression.updatedCompletedGoals.includes("goal_job"));
-  assert("Etapa avançou deterministicamente", fullProgression.stageAdvanced === true);
-  assert("Avançou para stage_2_descoberta", fullProgression.nextStageId === "stage_2_descoberta");
-  assert("ResponsibleSubagentId expurgado do retorno da progressão determinística", fullProgression.responsibleSubagentId === undefined);
+  assert("Transição explícita do Brain foi aplicada", fullProgression.stageAdvanced === true);
+  assert("Avançou para a etapa solicitada pelo Brain", fullProgression.nextStageId === "stage_2_descoberta");
+  assert("Backend não escolhe subagente ao validar a etapa", fullProgression.responsibleSubagentId === undefined);
 
   // ---------------------------------------------------------------------------
   // RESULTADO FINAL

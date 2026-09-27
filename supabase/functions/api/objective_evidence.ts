@@ -29,16 +29,24 @@ export async function objectiveEvidenceExists(
   supabase: any,
   conversationId: string,
   evidence: ObjectiveEvidence,
+  providerSessionId?: string | null,
 ): Promise<boolean> {
   if (!conversationId.trim() || !evidence.id.trim()) return false;
   if (evidence.type === "manual_fact") {
-    const { data, error } = await supabase.from("persona_memory")
-      .select("key")
-      .eq("persona_id", "larissa")
-      .eq("category", "manual_resolution")
-      .eq("key", evidence.id)
+    if (!providerSessionId) return false;
+    const { data: session, error: sessionError } = await supabase.from("brain_sessions")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("provider_session_id", providerSessionId)
       .maybeSingle();
-    return !error && Boolean(data?.key);
+    if (sessionError || !session?.id) return false;
+    const { data, error } = await supabase.from("brain_manual_facts")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("session_id", session.id)
+      .eq("id", evidence.id)
+      .maybeSingle();
+    return !error && Boolean(data?.id);
   }
 
   const table = EVIDENCE_TABLES[evidence.type];

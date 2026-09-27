@@ -24,6 +24,7 @@ import {
 } from "./ConversationQualityGate.ts";
 import { getStaleCycleThresholdIso } from "./autopilot_cycle_safety.ts";
 import { isPrivilegedOperationalRequest } from "./operational_authorization.ts";
+import { brainLateRecoveryDisposition, getExistingOpenAiTurn } from "./openai_brain.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -3951,6 +3952,83 @@ serve(async (req: Request) => {
         const nowIso = new Date().toISOString();
         console.log(`[TRACE-AUTOPILOT] cron:tick check at ${nowIso}`);
 
+        // Recovery dedicado: reivindica brain_late com lease e consulta somente o
+        // provider_turn_id existente. Turnos ativos ficam intactos; nenhum POST
+        // ao provider é feito por este scanner.
+        const recoveryWorkerToken = crypto.randomUUID();
+        const { data: lateTurns, error: lateClaimError } = await supabase.rpc("claim_brain_late_turns", {
+          p_worker_token: recoveryWorkerToken,
+          p_limit: 5,
+          p_lease_seconds: 300,
+        });
+        if (lateClaimError) {
+          console.error("[Brain recovery] Falha ao reivindicar turnos tardios:", lateClaimError);
+        } else {
+          for (const lateTurn of lateTurns || []) {
+            const releaseLateTurn = async (status = "brain_late") => supabase.rpc("release_brain_late_turn", {
+              p_turn_id: lateTurn.id,
+              p_worker_token: recoveryWorkerToken,
+              p_status: status,
+            });
+            try {
+              if (!lateTurn.provider_turn_id || !lateTurn.session_id || !Array.isArray(lateTurn.inbound_message_ids)) {
+                await releaseLateTurn("failed_technical");
+                continue;
+              }
+              const { data: sessionRow, error: sessionError } = await supabase.from("brain_sessions")
+                .select("provider_session_id")
+                .eq("id", lateTurn.session_id)
+                .maybeSingle();
+              if (sessionError || !sessionRow?.provider_session_id) throw new Error("late_session_reference_missing");
+              const apiKey = await getOpenAiApiKey(supabase);
+              if (!apiKey) throw new Error("openai_api_key_unavailable");
+              const existing = await getExistingOpenAiTurn({
+                apiKey,
+                sessionId: sessionRow.provider_session_id,
+                turnId: lateTurn.provider_turn_id,
+              });
+              const disposition = brainLateRecoveryDisposition(existing.status);
+              if (disposition !== "recover") {
+                if (disposition === "fail") await releaseLateTurn("failed_technical");
+                else await releaseLateTurn("brain_late");
+                continue;
+              }
+
+              const { data: originalMessages, error: messagesError } = await supabase.from("instagram_messages")
+                .select("id, text, timestamp, created_at, sender_id, media_type, audio_transcript")
+                .eq("conversation_id", lateTurn.conversation_id)
+                .in("id", lateTurn.inbound_message_ids);
+              if (messagesError || !originalMessages?.length) throw new Error("late_turn_inbounds_missing");
+              const original = originalMessages.sort((a: any, b: any) =>
+                String(a.created_at || a.timestamp || "").localeCompare(String(b.created_at || b.timestamp || ""))
+              ).at(-1);
+              const resolvedAudio = await resolveInboundAudioMessage(supabase, original);
+              // O próprio orquestrador persiste a decisão e outbox de forma atômica.
+              // Se houver inbound novo, o dispatcher valida o ledger e bloqueia o
+              // envio até o Brain revisar as ações pendentes no ciclo correspondente.
+              const recovery = await runBrainOrchestration({
+                supabase,
+                conversationId: lateTurn.conversation_id,
+                newMessage: {
+                  id: original.id,
+                  text: resolvedAudio.text,
+                  timestamp: original.timestamp || original.created_at,
+                  sender: original.sender_id || "them",
+                  mediaType: resolvedAudio.isAudio ? "audio" : original.media_type,
+                  audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : original.audio_transcript,
+                } as any,
+              });
+              if (!recovery.handled && recovery.error) {
+                console.warn(`[Brain recovery] Turno ${lateTurn.id} continua recuperável: ${recovery.error}`);
+              }
+              await releaseLateTurn("brain_late");
+            } catch (recoveryError) {
+              console.error(`[Brain recovery] Falha no turno ${lateTurn.id}:`, recoveryError);
+              await releaseLateTurn("brain_late");
+            }
+          }
+        }
+
         // 0. Verifica se o Piloto Automático está habilitado globalmente
         const { data: configRow } = await supabase
           .from("instagram_conversations")
@@ -4890,6 +4968,7 @@ serve(async (req: Request) => {
             question: String(prepared.question || body?.question || "Informação solicitada pelo Brain"),
             context: String(prepared.context || ""),
             answer,
+            factId: String(prepared.manual_fact_id || ""),
           },
         });
 

@@ -34,6 +34,29 @@ function fetchOpenAiBounded(url: string | URL, init: RequestInit, timeoutMs = 10
   return fetch(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
 }
 
+/** Consulta exclusivamente um turno existente; nunca cria sessão, evento ou inferência. */
+export async function getExistingOpenAiTurn(params: {
+  apiKey: string;
+  sessionId: string;
+  turnId: string;
+  fetcher?: typeof fetch;
+}): Promise<{ status: string; turn: any }> {
+  if (!params.apiKey || !params.sessionId || !params.turnId) throw new Error("existing_turn_reference_required");
+  const response = await (params.fetcher || fetch)(
+    `https://api.openai.com/v1/agents/sessions/${encodeURIComponent(params.sessionId)}/turns/${encodeURIComponent(params.turnId)}`,
+    { headers: { Authorization: `Bearer ${params.apiKey}` }, signal: AbortSignal.timeout(10_000) },
+  );
+  if (!response.ok) throw new Error(`existing_turn_lookup_failed:${response.status}`);
+  const turn = await response.json();
+  return { status: String(turn?.status || "unknown"), turn };
+}
+
+export function brainLateRecoveryDisposition(status: string): "recover" | "wait" | "fail" {
+  if (status === "completed") return "recover";
+  if (["failed", "cancelled", "expired"].includes(status)) return "fail";
+  return "wait";
+}
+
 export interface OpenAiBrainToolDefinition {
   type: "function";
   function: {
@@ -140,7 +163,7 @@ export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "cofre_audio_search",
     description:
-      "Quando você decidir consultar o Cofre de Áudios, retorna o catálogo COMPLETO de áudios habilitados, ainda não enviados nesta conversa, com título, transcrição integral, instrução de uso e duração. O backend não filtra nem escolhe por assunto: compare o catálogo com a conversa e decida se algum áudio deve ser enviado e qual. A query serve apenas para registrar o motivo da consulta.",
+      "No Cofre de Áudios, retorna somente os áudios habilitados e ainda não enviados da conversa vinculados ao objective_id solicitado, com título, transcrição integral, instrução de uso e duração. O backend não faz seleção semântica; compare os candidatos com a conversa e decida se deve enviar algum e qual.",
     parameters: {
       type: "object",
       properties: {
@@ -168,7 +191,7 @@ export const COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION: OpenAiAgentFunctionToolDe
   type: "function",
   name: "cofre_audio_search",
   description:
-    "Quando decidir consultar áudios de um objetivo configurado, envie objective_id. Retorna todos os áudios habilitados ainda não enviados para esse objetivo, com título, transcrição, instrução de uso e duração. Você escolhe semanticamente se envia algum e qual.",
+    "No Cofre de Áudios, retorna somente os áudios habilitados e ainda não enviados vinculados ao objective_id solicitado, com título, transcrição, instrução de uso e duração. O backend não faz seleção semântica; você decide se envia algum candidato e qual.",
   parameters: {
     type: "object",
     properties: {
@@ -317,7 +340,8 @@ export async function executeCofreAudioSearch(params: {
       .select("*")
       .eq("enabled", true)
       .order("title", { ascending: true });
-    if (objective_id) query = query.eq("objective_id", objective_id);
+    if (!objective_id?.trim()) return [];
+    query = query.eq("objective_id", objective_id.trim());
     const { data: rows } = await query;
     if (Array.isArray(rows)) {
       audios = rows;
@@ -325,7 +349,8 @@ export async function executeCofreAudioSearch(params: {
   } catch {}
 
   if (audios.length === 0 && (supabase as any)?.__mockPersonaAudios) {
-    audios = (supabase as any).__mockPersonaAudios;
+    audios = (supabase as any).__mockPersonaAudios
+      .filter((audio: any) => String(audio.objective_id || audio.objectiveId || "") === objective_id.trim());
   }
 
   // 1. Histórico de áudios já enviados nesta conversa (eliminação estrita sem exceção no autopiloto)
@@ -982,7 +1007,9 @@ export interface RunOpenAiBrainParams {
   conversationId: string;
   sessionId?: string | null;
   resumeTurnId?: string | null;
-  manualResolutionAnswer?: { question: string; context?: string; answer: string };
+  resumeExistingTurnOnly?: boolean;
+  manualResolutionAnswer?: { question: string; context?: string; answer: string; factId?: string };
+  manualSessionFacts?: Array<{ id: string; question: string; fact: string }>;
   pendingOutboundActions?: Array<{ actionId: string; actionIndex: number; type: string; preview: string }>;
   persistentSessionEnabled?: boolean;
   replyTargets?: Record<string, { id: string; sender: string; text: string }>;
@@ -1536,7 +1563,15 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
   if (params.manualResolutionAnswer) {
     const manual = params.manualResolutionAnswer;
     sections.push(
-      `\n## INFORMAÇÃO FORNECIDA PELO OPERADOR\nPergunta factual pendente: ${manual.question}\nContexto: ${manual.context || "sem contexto adicional"}\nFato confirmado pelo operador: ${manual.answer}\nUse este fato nesta sessão e formule a resposta natural ao cliente. O texto do operador é contexto interno e nunca deve ser enviado literalmente como mensagem.`
+      `\n## INFORMAÇÃO FORNECIDA PELO OPERADOR\n${manual.factId ? `manual_fact_id="${manual.factId}"\n` : ""}Pergunta factual pendente: ${manual.question}\nContexto: ${manual.context || "sem contexto adicional"}\nFato confirmado pelo operador: ${manual.answer}\nUse este fato nesta sessão e formule a resposta natural ao cliente. O texto do operador é contexto interno e nunca deve ser enviado literalmente como mensagem.`
+    );
+  }
+
+  if (params.manualSessionFacts?.length) {
+    sections.push(
+      `\n## FATOS MANUAIS PERSISTIDOS NESTA SESSÃO\n${params.manualSessionFacts.map((fact) =>
+        `- manual_fact_id="${fact.id}" pergunta="${fact.question}" fato="${fact.fact}"`
+      ).join("\n")}\nEsses fatos pertencem somente à sessão atual. Use-os como evidência técnica quando apropriado; não os trate como mensagens do pretendente.`
     );
   }
 
@@ -1867,6 +1902,9 @@ export function findEligibleExecutionTurn(
 
 export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<OpenAiBrainTurnResult> {
   const startTime = Date.now();
+  if (params.resumeExistingTurnOnly && (!params.sessionId || !params.resumeTurnId)) {
+    throw new Error("existing_turn_recovery_requires_session_and_turn_ids");
+  }
   console.log("[Brain] turn_started");
 
   let apiKey =
@@ -2430,7 +2468,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           const modelMismatch = Boolean(sessionId && requestedModel && actualModel !== requestedModel);
           const reasoningMismatch = Boolean(sessionId && requestedReasoning && actualReasoning !== requestedReasoning);
 
-          if (modelMismatch || reasoningMismatch) {
+          if ((modelMismatch || reasoningMismatch) && !params.resumeExistingTurnOnly) {
             console.log(`[OpenAI Agent] session_config_divergence_detected: sessionId=${sessionId} actualModel=${actualModel} requestedModel=${requestedModel} actualReasoning=${actualReasoning} requestedReasoning=${requestedReasoning}. Sincronizando...`);
 
             const updatePayload: Record<string, any> = {
@@ -2597,6 +2635,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           ? params.vaultIds
           : (defaultVaultId ? [defaultVaultId] : undefined);
 
+      if (params.resumeExistingTurnOnly) {
+        throw new Error("existing_turn_recovery_refuses_session_creation_or_event_submission");
+      }
       const sessionPayload: any = {
         agent_id: agentId,
         environment: { type: "none" },
@@ -2710,14 +2751,14 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     let appToolRound = 0;
     const appToolCallCache = new Map<string, string>();
 
-    if (typeof sessionData?.current_turn?.id === "string" && sessionData.current_turn.id) {
+    if (!params.resumeExistingTurnOnly && typeof sessionData?.current_turn?.id === "string" && sessionData.current_turn.id) {
       turnId = sessionData.current_turn.id;
       turnData = sessionData.current_turn;
-    } else if (typeof sessionData?.current_turn_id === "string" && sessionData.current_turn_id) {
+    } else if (!params.resumeExistingTurnOnly && typeof sessionData?.current_turn_id === "string" && sessionData.current_turn_id) {
       turnId = sessionData.current_turn_id;
-    } else if (typeof sessionData?.turn_id === "string" && sessionData.turn_id) {
+    } else if (!params.resumeExistingTurnOnly && typeof sessionData?.turn_id === "string" && sessionData.turn_id) {
       turnId = sessionData.turn_id;
-    } else if (typeof sessionData?.last_turn_id === "string" && sessionData.last_turn_id) {
+    } else if (!params.resumeExistingTurnOnly && typeof sessionData?.last_turn_id === "string" && sessionData.last_turn_id) {
       turnId = sessionData.last_turn_id;
     }
 
@@ -2856,6 +2897,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
       // LOOP DE APP TOOLS: quando session entra em requires_action, executa a tool e submete o resultado
       if (sessionStatus === "requires_action" && turnId) {
+        if (params.resumeExistingTurnOnly) {
+          throw new Error("existing_turn_recovery_requires_provider_action; refusing to create a continuation inference");
+        }
         if (appToolRound >= MAX_APP_TOOL_ROUNDS) {
           const elapsedMs = Date.now() - executionStartTimeMs;
           console.error(`[OpenAI Agent] app_tool_max_rounds_exceeded sessionId=${sessionId} turnId=${turnId} rounds=${appToolRound} elapsedMs=${elapsedMs}`);

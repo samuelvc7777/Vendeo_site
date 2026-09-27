@@ -673,7 +673,9 @@ export function AutoPilotActivityIndicator({
   useEffect(() => {
     if (!targetId) return;
     let cancelled = false;
+    let pollTimer: number | undefined;
     const loadCanonicalEvents = async () => {
+      let nextDelay = 15000;
       try {
         const sessionResponse = await fetch("/api/operator/session", { cache: "no-store" });
         const session = await sessionResponse.json().catch(() => ({}));
@@ -689,7 +691,21 @@ export function AutoPilotActivityIndicator({
         if (!cancelled) setOperatorAuthenticated(true);
         const query = new URLSearchParams({ conversationId: targetId });
         const response = await fetch(`/api/operator/brain/events?${query.toString()}`, { cache: "no-store" });
-        const result = await response.json().catch(() => ({}));
+        const result = await response.json().catch(() => ({})) as {
+          success?: boolean;
+          events?: Array<{
+            id?: string | number;
+            turn_id?: string | null;
+            session_id?: string | null;
+            conversation_id?: string | null;
+            status?: string | null;
+            event_type?: string | null;
+            human_message?: string | null;
+            created_at?: string | null;
+            metadata?: Record<string, unknown> | null;
+          }>;
+          failedActions?: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
+        };
         if (response.status === 401) {
           if (!cancelled) {
             setOperatorAuthenticated(false);
@@ -699,24 +715,38 @@ export function AutoPilotActivityIndicator({
         }
         if (!response.ok || result?.success !== true || cancelled) return;
         setOperationsAccessDenied(false);
-        const events = Array.isArray(result.events) ? result.events : [];
-        setCanonicalEvents(events.map((event: any) => ({
+        const events = result.events || [];
+        setCanonicalEvents(events.map((event) => ({
           cycleId: event.turn_id || event.session_id || targetId,
           conversationId: event.conversation_id || targetId,
           sequence: Number(event.id) || 0,
-          phase: event.metadata?.phase || event.status || "observed",
+          phase: String(event.metadata?.phase || event.status || "observed"),
           event: event.event_type || "brain_event",
-          label: event.metadata?.label || event.event_type || "Evento do Brain",
+          label: String(event.metadata?.label || event.event_type || "Evento do Brain"),
           detail: event.human_message || undefined,
           timestamp: event.created_at || new Date().toISOString(),
           metadata: event.metadata || {},
         })));
         setFailedConfirmedActions(Array.isArray(result.failedActions) ? result.failedActions : []);
+        const latest = events[events.length - 1];
+        const latestEvent = latest?.event_type;
+        const latestStatus = latest?.status;
+        const activeEvents = new Set([
+          "brain_started", "agent_wait_started", "brain_late", "manual_resolution_received",
+          "decision_persisted", "action_sending", "action_sent", "action_cancelled",
+          "manual_delivery_authorized", "action_failed_retryable", "action_dispatch_uncertain",
+        ]);
+        const activeStatuses = new Set(["brain_running", "executing", "decision_persisted"]);
+        nextDelay = (latestEvent && activeEvents.has(latestEvent)) || (latestStatus && activeStatuses.has(latestStatus))
+          ? 1800
+          : 15000;
       } catch { /* A observabilidade não interrompe o atendimento. */ }
+      finally {
+        if (!cancelled) pollTimer = window.setTimeout(() => { void loadCanonicalEvents(); }, nextDelay);
+      }
     };
     void loadCanonicalEvents();
-    const interval = window.setInterval(loadCanonicalEvents, 15000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    return () => { cancelled = true; if (pollTimer) window.clearTimeout(pollTimer); };
   }, [targetId]);
 
   const handleManualFailedAction = async (actionId: string) => {
@@ -733,8 +763,8 @@ export function AutoPilotActivityIndicator({
       toast.success(result.queuedForBrainReview
         ? "Ação autorizada e aguardando o Brain revisar as mensagens novas."
         : "Envio confirmado. A mensagem foi registrada no histórico da conversa.");
-    } catch (error: any) {
-      toast.error(error?.message || "Não foi possível enviar a ação.");
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível enviar a ação.");
     } finally {
       setRetryingActionId(null);
     }
@@ -807,7 +837,7 @@ export function AutoPilotActivityIndicator({
     isFailed &&
     (state.lastError === "technical_retry_exhausted" ||
       copy.title.toLowerCase().includes("esgotadas") ||
-      Boolean(state.cycleEvents?.some((e) => e.event === "technical_retry_exhausted")) ||
+      Boolean(canonicalEvents.some((event) => event.event === "technical_retry_exhausted")) ||
       (activity?.phase === "failed" && Boolean(activity?.label?.toLowerCase().includes("esgotadas"))));
 
   // Pensamento/raciocínio único do Brain (com tolerância a chaves legadas preservadas no histórico)
@@ -1028,8 +1058,8 @@ export function AutoPilotActivityIndicator({
       if (!response.ok || !result.success) throw new Error(result.error || "Não foi possível retomar o Brain.");
       setManualResolutionAnswer("");
       toast.success(saveForFuture ? "Fato salvo para novas sessões. Brain retomou o turno." : "Brain retomou o turno com este fato apenas nesta sessão.");
-    } catch (error: any) {
-      toast.error(error?.message || "Erro ao enviar a informação ao Brain.");
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : "Erro ao enviar a informação ao Brain.");
     } finally {
       setIsSubmittingResolution(false);
     }
