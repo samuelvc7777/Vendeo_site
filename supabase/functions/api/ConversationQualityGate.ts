@@ -34,6 +34,7 @@ export interface TurnContract {
   avoidTopics?: string[];
   maxBalloons: number;
   preferNoEmoji: boolean;
+  freshGreetingExchange?: boolean;
 }
 
 export type ConversationQualityIssueCode =
@@ -46,6 +47,7 @@ export type ConversationQualityIssueCode =
   | "TOO_MANY_BALLOONS_FOR_SIMPLE_TURN"
   | "GENERIC_ASSISTANT_RESPONSE"
   | "MISSING_WELLBEING_QUESTION"
+  | "GREETING_REPEAT_GUARD"
   | "ACCEPTED_OUTING_INVITE"
   | "PHONE_NUMBER_LEAK"
   | "TEXT_DUPLICATES_AUDIO_TRANSCRIPT"
@@ -348,7 +350,7 @@ export function buildTurnContract(
   requested?: Partial<TurnContract> | null
 ): TurnContract {
   const inbound = inboundMessages.filter(Boolean).join("\n").trim();
-  const greeting = isGreetingOrWellbeing(inbound);
+  const greeting = isGreetingOrWellbeing(inbound) && requested?.freshGreetingExchange !== false;
   const explicitQuestions = extractQuestions(inbound);
   const detectedQuestions = explicitQuestions.length === 0 && isWellbeingQuestion(inbound) ? [inbound] : explicitQuestions;
   const requestedQuestions = Array.isArray(requested?.directQuestions) ? requested!.directQuestions! : [];
@@ -522,6 +524,8 @@ export function runConversationQualityGate(params: {
   inboundMessages: string[];
   candidateBalloons: string[];
   turnContract: TurnContract;
+  freshGreetingExchange?: boolean;
+  greetingRepeatBlocked?: boolean;
 }): ConversationQualityResult {
   const { inboundMessages, candidateBalloons, turnContract } = params;
   const inbound = inboundMessages.join(" ");
@@ -557,8 +561,11 @@ export function runConversationQualityGate(params: {
   if (candidateBalloons.length > turnContract.maxBalloons) {
     add("TOO_MANY_BALLOONS_FOR_SIMPLE_TURN", `Foram usados ${candidateBalloons.length} balões; o limite do turno é ${turnContract.maxBalloons}.`);
   }
-  if (isGreetingOrWellbeing(inbound) && questionCount === 0) {
-    add("MISSING_WELLBEING_QUESTION", "Toda saudação exige perguntar se o pretendente está bem ou devolver a pergunta reciprocamente.");
+  if ((params.freshGreetingExchange ?? true) && isGreetingOrWellbeing(inbound) && questionCount === 0) {
+    add("MISSING_WELLBEING_QUESTION", "Uma nova troca iniciada por saudação exige perguntar sobre bem-estar ou devolver essa pergunta reciprocamente.");
+  }
+  if (params.greetingRepeatBlocked) {
+    add("GREETING_REPEAT_GUARD", "Larissa já cumprimentou este pretendente nesta troca. Reescreva sem nova saudação, preservando o conteúdo substantivo e a intenção.");
   }
   if (isOutingInvite(inbound) && detectAcceptedOutingInvite(outbound)) {
     add("ACCEPTED_OUTING_INVITE", "Larissa nunca aceita convites para sair; deve desviar com gentileza usando sua rotina.");

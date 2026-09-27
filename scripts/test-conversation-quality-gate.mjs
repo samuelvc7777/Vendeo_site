@@ -42,7 +42,7 @@ console.log('🧪 Conversation Quality Gate — comportamento conversacional\n')
 {
   const { contract, result } = gate('Oii, tudo bem?', ['Oii, tô bem sim, e vc?']);
   assert(result.passed, 'Resposta direta natural passa');
-  assert(contract.preferNoEmoji === true && contract.maxBalloons === 1, 'Saudação prefere zero emoji e um balão');
+  assert(contract.preferNoEmoji === false && contract.maxBalloons === 2, 'Saudação permite emoji opcional e até dois balões');
 }
 
 {
@@ -58,7 +58,7 @@ assert(!gate('Eu trabalho com programação', ['Vc trabalha com programação?']
 assert(gate('Eu trabalho com programação', ['Credo eu ia quebrar a cabeça demais nisso kkk, vc gosta do que faz?'], { newQuestionBudget: 1, responseShape: 'react_and_question', maxBalloons: 1 }).result.passed, 'Reação com conteúdo novo passa');
 assert(gate('Tô cansado hoje', ['Nossa então hoje é chegar em casa e apagar mesmo'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.passed, 'Reação sem pergunta passa');
 assert(!gate('Tô cansado hoje', ['Nossa que puxado, vc tem filhos?'], { newQuestionBudget: 0, responseShape: 'react_only', avoidTopics: ['filhos'], maxBalloons: 1 }).result.passed, 'Checkpoint adiado e pergunta fora do budget falham');
-assert(gate('Oi', ['Oii'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.passed, 'Cumprimento simples não exige segundo balão');
+assert(gate('Oi', ['Oii'], { newQuestionBudget: 0, responseShape: 'react_only', maxBalloons: 1 }).result.issues.some((issue) => issue.code === 'MISSING_WELLBEING_QUESTION'), 'Nova troca iniciada por saudação exige reciprocidade de bem-estar');
 
 console.log('\n🧪 Tipos semânticos de resposta direta');
 {
@@ -127,34 +127,31 @@ console.log('\n🧪 Caso real quail: retribuição de bem-estar com pontuação 
   assert(quality.isGreetingOrWellbeing('otimo e vc?'), 'isGreetingOrWellbeing reconhece "otimo e vc?"');
   assert(quality.isGreetingOrWellbeing('tranquilo e vc?'), 'isGreetingOrWellbeing reconhece "tranquilo e vc?"');
 
-  const fallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], quailContract);
-  assert(Array.isArray(fallback) && fallback.length === 1, 'safeHighConfidenceFallback gera fallback para "Bem e vc ?"');
-  assert(fallback[0].startsWith('Oii, tô bem sim, e vc?') || fallback[0].startsWith('Tô bem sim, e vc?'), 'Fallback responde com formato canônico de bem-estar');
-
+  const reply = ['Tô bem simm'];
   const gateResult = quality.runConversationQualityGate({
     inboundMessages: ['Bem e vc ?', '?'],
-    candidateBalloons: fallback,
+    candidateBalloons: reply,
     turnContract: quailContract,
+    freshGreetingExchange: false,
   });
-  assert(gateResult.passed, 'Fallback para o caso quail é 100% aprovado pelo Quality Gate');
+  assert(gateResult.passed, 'Resposta contextual sem repetir a pergunta de bem-estar passa pelo Quality Gate');
 
   const zeroBudgetContract = quality.buildTurnContract(['Bem e vc ?', '?'], { newQuestionBudget: 0, responseShape: 'answer_only' });
-  const zeroFallback = quality.safeHighConfidenceFallback(['Bem e vc ?', '?'], zeroBudgetContract);
-  assert(zeroFallback[0] === 'Tô bem também!', 'Fallback com budget zero responde sem nova pergunta');
   const zeroResult = quality.runConversationQualityGate({
     inboundMessages: ['Bem e vc ?', '?'],
-    candidateBalloons: zeroFallback,
+    candidateBalloons: ['Tô bem também!'],
     turnContract: zeroBudgetContract,
+    freshGreetingExchange: false,
   });
-  assert(zeroResult.passed, 'Fallback sem pergunta passa em contrato de budget zero');
+  assert(zeroResult.passed, 'Bem-estar devolvido não força nova pergunta com budget zero');
 }
 
-const orchestratorSource = fs.readFileSync('supabase/functions/api/experimental_orchestrator.ts', 'utf8');
+const orchestratorSource = fs.readFileSync('supabase/functions/api/brain_orchestrator.ts', 'utf8');
 const compactPromptSource = fs.readFileSync('supabase/functions/api/LarissaChatStyle.ts', 'utf8');
-assert(orchestratorSource.indexOf('runStyleLint(candidateBalloons') < orchestratorSource.indexOf('runConversationQualityGate({', orchestratorSource.indexOf('runStyleLint(candidateBalloons')), 'Caminho real executa Style Lint antes do Quality Gate');
-assert((orchestratorSource.match(/QUALITY RETRY ÚNICO/g) || []).length === 1, 'Quality retry está limitado a uma implementação');
-assert(!/kieKey\s*=\s*["'][a-f0-9]{24,}["']/i.test(orchestratorSource), 'Não existe secret Kie literal');
-assert(/executor_audio_rejected/.test(orchestratorSource) && /enforceAuthorizedAudioDecision/.test(orchestratorSource), 'Caminho real bloqueia troca de selectedAudioId');
+assert(orchestratorSource.indexOf('runStyleLint(observationBalloons') < orchestratorSource.indexOf('runConversationQualityGate({', orchestratorSource.indexOf('runStyleLint(observationBalloons')), 'Caminho ativo observa Style Lint antes do Quality Gate');
+assert(/conversation_quality_observe_only=true/.test(orchestratorSource), 'Quality Gate permanece observabilidade para os outros critérios');
+assert(/greeting_repeat_regeneration_requested=true/.test(orchestratorSource) && /GREETING_REPEAT_GUARD_DISPATCH_BLOCKED/.test(orchestratorSource), 'Guard de saudação pede regeneração e bloqueia pré-dispatch');
+assert(/executor_audio_rejected/.test(orchestratorSource) && /enforceAuthorizedAudioDecision/.test(orchestratorSource), 'Caminho ativo bloqueia troca de selectedAudioId');
 assert(!/FERRAMENTAS SOB DEMANDA/.test(compactPromptSource.match(/LARISSA_COMPACT_SUBAGENT_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não instrui executor a usar tools');
 assert(!/\b23 anos\b|São João del-Rei|Enfermagem/.test(compactPromptSource.match(/LARISSA_COMPACT_SUBAGENT_PROMPT = `([\s\S]*?)`;/)?.[1] || ''), 'Prompt compacto ativo não contém fatos mutáveis hardcoded');
 

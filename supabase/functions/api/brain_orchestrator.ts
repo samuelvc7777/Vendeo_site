@@ -5,6 +5,12 @@
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
+import {
+  detectGreetingRepeat,
+  deriveRecentGreetingState,
+  shouldRequireGreetingReciprocity,
+  type RecentGreetingState,
+} from "./greeting_repeat_guard.ts";
 import { resolveCurrentStageId } from "../../../src/domain/entities/stageAuthority.ts";
 import {
   ACTIVE_CYCLE_TTL_SECONDS,
@@ -7791,24 +7797,49 @@ export async function runBrainOrchestration(
     if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
     // Estilo e orçamentos de emoji antecipados para alimentar o Agent Terra no turno único
     const recentLarissaOutbounds: string[] = [];
+    let recentGreetingState: RecentGreetingState = deriveRecentGreetingState({
+      confirmedOutbounds: [],
+      referenceAt: canonicalClaimed[canonicalClaimed.length - 1]?.timestamp || null,
+      inboundMessages: canonicalClaimed.map((message) => message.text).filter(Boolean),
+    });
     try {
       const { data: recentMsgs } = await supabase
         .from("instagram_messages")
-        .select("text, is_mine, sender_id, created_at")
+        .select("id, text, is_mine, sender_id, status, created_at, timestamp")
         .eq("conversation_id", conversationId)
         .or("is_mine.eq.true,sender_id.eq.me,sender_id.eq.larissa")
         .order("created_at", { ascending: false })
         .limit(5);
 
       if (recentMsgs && recentMsgs.length > 0) {
+        const confirmedIds = new Set(recentMsgs
+          .filter((message: any) => ["sent", "delivered"].includes(String(message.status || "").toLowerCase()))
+          .map((message: any) => String(message.id)));
+        const confirmedLastTurn = (baseContextPayload.lastLarissaTurn || [])
+          .filter((message: any) => confirmedIds.has(String(message.id)))
+          .map((message: any) => String(message.text || ""));
         for (const m of recentMsgs) {
           const txt = m.text || "";
-          if (txt && typeof txt === "string" && txt.trim()) {
+          if (txt && typeof txt === "string" && txt.trim()
+            && ["sent", "delivered"].includes(String(m.status || "").toLowerCase())) {
             recentLarissaOutbounds.push(txt.trim());
           }
         }
+        recentGreetingState = deriveRecentGreetingState({
+          confirmedOutbounds: recentMsgs.map((message: any) => ({
+            text: String(message.text || ""),
+            timestamp: String(message.timestamp || message.created_at || ""),
+            status: String(message.status || ""),
+          })),
+          referenceAt: canonicalClaimed[canonicalClaimed.length - 1]?.timestamp || null,
+          inboundMessages: canonicalClaimed.map((message) => message.text).filter(Boolean),
+          confirmedLastTurn,
+        });
       }
     } catch {}
+    currentCycle.trace.push(`greeting_state_already_greeted=${recentGreetingState.larissaAlreadyGreeted}`);
+    currentCycle.trace.push(`greeting_state_type=${recentGreetingState.greetingType || "none"}`);
+    currentCycle.trace.push(`greeting_state_age_minutes=${recentGreetingState.minutesAgo ?? "unknown"}`);
 
     const recentStyleState = extractRecentStyleState(recentLarissaOutbounds);
     const emojiBudgetInfo = computeDynamicEmojiBudget(recentLarissaOutbounds, {
@@ -7964,7 +7995,7 @@ export async function runBrainOrchestration(
             manualSessionFacts = Array.isArray(factRows) ? factRows : [];
           }
         }
-        const openAiBrainTurn = await runOpenAiBrainTurn({
+        const agentTurnParams: Parameters<typeof runOpenAiBrainTurn>[0] = {
           supabase,
           conversationId,
           sessionId: brainProviderSessionId,
@@ -8009,6 +8040,7 @@ export async function runBrainOrchestration(
           runtime,
           strictOpenAiPilot: isStrict,
           recentStyleStateSnippet: recentStyleSnippet,
+          recentGreetingState,
           memoryScopeId: currentMemoryScopeId,
           recentQuestionIntentsSnippet: persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
           searchCofreAudios: (p) => searchCofreAudios({
@@ -8039,7 +8071,68 @@ export async function runBrainOrchestration(
             mandatoryMessageIds: budgetedRecentContext.mandatoryMessageIds,
             replyTargetIds: budgetedRecentContext.replyTargetIds,
           },
-        });
+        };
+        let openAiBrainTurn = await runOpenAiBrainTurn(agentTurnParams);
+        const initialGreetingRepeat = openAiBrainTurn.success && openAiBrainTurn.plan
+          ? detectGreetingRepeat({
+              candidateBalloons: Array.isArray(openAiBrainTurn.plan.outboundActions) && openAiBrainTurn.plan.outboundActions.length > 0
+                ? openAiBrainTurn.plan.outboundActions.filter((action: any) => action.type === "text").map((action: any) => String(action.text || ""))
+                : (openAiBrainTurn.plan.responses || []).map(String),
+              state: recentGreetingState,
+            })
+          : { blocked: false, greetingType: null, code: null };
+        if (initialGreetingRepeat.blocked) {
+          currentCycle.trace.push("greeting_repeat_guard_triggered=true");
+          currentCycle.trace.push("greeting_repeat_regeneration_requested=true");
+          const rejectedAttempt = openAiBrainTurn;
+          const regeneratedAttempt = await runOpenAiBrainTurn({
+            ...agentTurnParams,
+            sessionId: openAiBrainTurn.telemetry.sessionId || agentTurnParams.sessionId,
+            resumeTurnId: null,
+            resumeExistingTurnOnly: false,
+            greetingRepeatFeedback: "GREETING_REPEAT_GUARD: Você já cumprimentou este pretendente nesta troca. Reescreva sem nova saudação no início. Preserve a cidade, as respostas diretas, os comentários, o áudio e o próximo gancho relevante do lote. Não remova nem parafraseie conteúdo substantivo; altere somente a abertura repetida quando necessário. Emita novamente a decisão JSON completa.",
+          });
+          regeneratedAttempt.telemetry.agentUsageSessions = [
+            ...(rejectedAttempt.telemetry.agentUsageSessions || []),
+            ...(regeneratedAttempt.telemetry.agentUsageSessions || []),
+          ];
+          regeneratedAttempt.telemetry.inputTokens += rejectedAttempt.telemetry.inputTokens || 0;
+          regeneratedAttempt.telemetry.outputTokens += rejectedAttempt.telemetry.outputTokens || 0;
+          regeneratedAttempt.telemetry.totalTokens += rejectedAttempt.telemetry.totalTokens || 0;
+          regeneratedAttempt.telemetry.modelGenerationCount =
+            (rejectedAttempt.telemetry.modelGenerationCount || 1)
+            + (regeneratedAttempt.telemetry.modelGenerationCount || 1);
+          for (const metric of ["turnInputTokens", "turnOutputTokens", "turnTotalTokens"] as const) {
+            const firstValue = rejectedAttempt.telemetry[metric];
+            const retryValue = regeneratedAttempt.telemetry[metric];
+            if (typeof firstValue === "number" || typeof retryValue === "number") {
+              regeneratedAttempt.telemetry[metric] = (typeof firstValue === "number" ? firstValue : 0)
+                + (typeof retryValue === "number" ? retryValue : 0);
+            }
+          }
+          openAiBrainTurn = regeneratedAttempt;
+          const regeneratedGreetingRepeat = openAiBrainTurn.success && openAiBrainTurn.plan
+            ? detectGreetingRepeat({
+                candidateBalloons: Array.isArray(openAiBrainTurn.plan.outboundActions) && openAiBrainTurn.plan.outboundActions.length > 0
+                  ? openAiBrainTurn.plan.outboundActions.filter((action: any) => action.type === "text").map((action: any) => String(action.text || ""))
+                  : (openAiBrainTurn.plan.responses || []).map(String),
+                state: recentGreetingState,
+              })
+            : { blocked: false, greetingType: null, code: null };
+          if (!openAiBrainTurn.success || !openAiBrainTurn.plan) {
+            currentCycle.trace.push("greeting_repeat_regeneration_failed=true");
+          } else if (regeneratedGreetingRepeat.blocked) {
+            currentCycle.trace.push("greeting_repeat_regeneration_still_blocked=true");
+            openAiBrainTurn = {
+              ...openAiBrainTurn,
+              success: false,
+              error: "GREETING_REPEAT_GUARD_REGENERATION_REJECTED",
+              plan: null,
+            };
+          } else {
+            currentCycle.trace.push("greeting_repeat_regeneration_passed=true");
+          }
+        }
 
         currentProviderTurnId = openAiBrainTurn.telemetry.turnId || null;
         currentSessionId = openAiBrainTurn.telemetry.sessionId || currentSessionId;
@@ -8926,6 +9019,9 @@ export async function runBrainOrchestration(
         inboundMessages: inboundTexts,
         candidateBalloons: observationBalloons,
         turnContract,
+        freshGreetingExchange: shouldRequireGreetingReciprocity(recentGreetingState)
+          && !recentGreetingState.lastConfirmedTurnAskedWellbeing,
+        greetingRepeatBlocked: detectGreetingRepeat({ candidateBalloons: observationBalloons, state: recentGreetingState }).blocked,
       });
       const antiRepeatObservation = observationBalloons.length > 0
         ? await validateAntiRepeatGate({ conversationId, candidateBalloons: observationBalloons, supabase })
@@ -9100,6 +9196,25 @@ export async function runBrainOrchestration(
         ? decision.responses
         : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []);
       canonicalOutboundActions = texts.map((t: string) => ({ type: "text" as const, text: t }));
+    }
+
+    const dispatchGreetingRepeat = detectGreetingRepeat({
+      candidateBalloons: canonicalOutboundActions
+        .filter((action): action is Extract<OutboundAction, { type: "text" }> => action.type === "text")
+        .map((action) => action.text),
+      state: recentGreetingState,
+    });
+    if (dispatchGreetingRepeat.blocked) {
+      currentCycle.trace.push("greeting_repeat_guard_triggered=true");
+      currentCycle.trace.push("greeting_repeat_dispatch_blocked=true");
+      currentCycle.status = "failed";
+      return {
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: "GREETING_REPEAT_GUARD_DISPATCH_BLOCKED",
+        trace: currentCycle.trace,
+      };
     }
 
     // Trava de autorização e resolução de áudio na sequência canônica

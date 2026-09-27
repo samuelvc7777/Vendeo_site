@@ -29,6 +29,7 @@ import {
   buildCanonicalAgentInstructions,
   QUESTION_INTENTS_CONTRACT_EXAMPLE,
 } from "./openai_agent_instructions.ts";
+import { formatRecentGreetingStateForPrompt, type RecentGreetingState } from "./greeting_repeat_guard.ts";
 
 function fetchOpenAiBounded(url: string | URL, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
@@ -1036,6 +1037,8 @@ export interface RunOpenAiBrainParams {
   candidateEvidence?: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }>;
   schemaRetryCount?: number;
   schemaFeedback?: string;
+  recentGreetingState?: RecentGreetingState;
+  greetingRepeatFeedback?: string;
   recentStyleStateSnippet?: string;
   memoryScopeId?: string;
   recentQuestionIntentsSnippet?: string;
@@ -1528,6 +1531,9 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
   if (params.temporalContext) {
     sections.push(`\n${params.temporalContext.trim()}`);
   }
+  if (params.recentGreetingState) {
+    sections.push(`\n${formatRecentGreetingStateForPrompt(params.recentGreetingState)}`);
+  }
 
   if (params.candidateEvidence && params.candidateEvidence.length > 0) {
     sections.push(
@@ -1627,6 +1633,9 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
 
   if (params.schemaFeedback) {
     sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou no schema: ${params.schemaFeedback}. Reenvie JSON válido.`);
+  }
+  if (params.greetingRepeatFeedback) {
+    sections.push(`\n## REGENERAÇÃO — GREETING_REPEAT_GUARD\n${params.greetingRepeatFeedback}`);
   }
 
   return sections.join("\n");
@@ -1755,6 +1764,9 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
   }
   if (params.temporalContext) {
     sections.push(`\n${params.temporalContext}`);
+  }
+  if (params.recentGreetingState) {
+    sections.push(`\n${formatRecentGreetingStateForPrompt(params.recentGreetingState)}`);
   }
   if (params.candidateEvidence?.length) {
     sections.push(`\n## EVIDÊNCIAS CANDIDATAS DE OBJETIVO (NÃO CONCLUEM NADA SOZINHAS)\n${params.candidateEvidence.map((e) => `- objetivo=${e.objectiveId}; mensagem=${e.evidenceMessageId}; evidência=${e.summary}`).join("\n")}`);
@@ -1896,6 +1908,7 @@ Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múlti
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
+  if (params.greetingRepeatFeedback) sections.push(`\n## REGENERAÇÃO — GREETING_REPEAT_GUARD\n${params.greetingRepeatFeedback}`);
   return { contextMessage: sections.join("\n"), contextWindow: recentWindow.telemetry };
 }
 

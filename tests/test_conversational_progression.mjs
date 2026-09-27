@@ -10,9 +10,9 @@ import {
   runOpenAiBrainTurn,
 } from "../supabase/functions/api/openai_brain.ts";
 
-test("CONTRATO 0: Metadados do DNA v1.5.7 e princípios de Progressão Oportunística", () => {
-  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.5.7");
-  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_5_7_9a31f8b4");
+test("CONTRATO 0: Metadados do DNA v1.5.8 e princípios de Progressão Oportunística", () => {
+  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.5.8");
+  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_5_8_c96e8291");
   assert.ok(LARISSA_INTERACTION_DNA.includes("Progressão Oportunística"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("CONVERSATIONAL MOMENTUM"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("CONVERSATIONAL MOMENTUM & FIM DO DEAD-END FÁTICO"));

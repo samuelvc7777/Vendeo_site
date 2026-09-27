@@ -301,9 +301,9 @@ test("a interface de operações lê eventos persistidos e expõe somente açõe
   assert.match(api, /from\("brain_turn_events"\)/);
   assert.match(api, /eq\("status", "failed_confirmed"\)/);
   assert.match(api, /retry-failed-action/);
-  assert.match(view, /\/api\/operator\/brain\/events\?/);
+  assert.match(view, /brainOperatorFetch\(`\/operator\/brain\/events\?/);
   assert.match(view, /Enviar manualmente/);
-  assert.match(view, /\/api\/operator\/brain\/retry-failed-action/);
+  assert.match(view, /brainOperatorFetch\("\/operator\/brain\/retry-failed-action/);
   const brain = await readFile(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
   assert.match(brain, /pendingInboundIds\.length > 0/);
   assert.match(brain, /lateTurnForResume\.inbound_message_ids/);
