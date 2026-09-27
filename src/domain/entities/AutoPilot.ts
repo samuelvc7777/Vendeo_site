@@ -65,10 +65,15 @@ export interface AutoPilotActivity {
 
 export interface AutoPilotCycleEvent {
   cycleId: string;
+  turnId?: string;
+  sessionId?: string;
+  actionId?: string;
+  decisionId?: string;
   conversationId: string;
   sequence: number;
   phase: AutoPilotActivityPhase | string;
   event: string;
+  status?: string;
   label: string;
   detail?: string;
   timestamp: string;

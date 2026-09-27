@@ -52,12 +52,12 @@ export default function BrainOperatorPage() {
         </div>
         <h1 className="text-lg font-semibold">Operações do Brain</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-400">
-          Acesso administrativo global à timeline e às ações manuais das conversas desta instância.
+          Acesso administrativo à linha do tempo e às ações manuais das conversas desta instância.
         </p>
 
         {isConfigured === false && (
           <div className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-            O operador ainda não foi configurado no servidor. Defina <code>BRAIN_OPERATOR_PASSWORD</code> e <code>BRAIN_OPERATOR_SESSION_SECRET</code> no ambiente privado da aplicação.
+            O acesso de operador ainda não foi configurado no servidor. Configure as credenciais administrativas no ambiente privado da aplicação.
           </div>
         )}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useReducer } from "react";
 import { autopilotApiFetch } from "@/infrastructure/http/autopilotApiFetch";
 import {
   AlertTriangle,
@@ -9,6 +9,7 @@ import {
   Loader2,
   Send,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Mic,
   MessageSquare,
@@ -26,6 +27,16 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { brainOperatorFetch, checkBrainOperatorSession } from "@/infrastructure/http/brainOperatorApi";
 import { AutoPilotActivityPhase, AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
+import {
+  brainTurnUiReducer,
+  formatBrainEvent,
+  formatBrainPhase,
+  formatBrainStatus,
+  groupBrainTurns,
+  initialBrainTurnUiState,
+  isTerminalBrainTurn,
+} from "./brain-turn-view-model";
+import type { BrainOperationalEvent } from "./brain-turn-view-model";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
 
@@ -131,9 +142,10 @@ function formatConsoleModel(model: string | null): string | null {
 
 function formatConsoleSetting(value: string | null): string | null {
   if (!value) return null;
-  if (value === "xhigh") return "XHigh";
-  if (value === "none") return "None";
-  if (value === "max") return "Max";
+  if (value === "xhigh") return "Máximo extra";
+  if (value === "none") return "Nenhum";
+  if (value === "max") return "Máximo";
+  if (value === "standard") return "Padrão";
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
@@ -165,30 +177,30 @@ function OpenAiUsagePanel({ metadata }: { metadata: Record<string, unknown> }) {
   const reasoningEffort = formatConsoleSetting(eventMetadataText(metadata, "reasoningEffort"));
   const fx = usageValue(usage, "usdBrlEstimate");
   const tokenRows = [
-    ["Input total", input], ["Cacheado", cached], ["Não cacheado", uncached],
-    ["Output", output], ["↳ Reasoning", reasoning], ["Total", total],
+    ["Entrada total", input], ["Em cache", cached], ["Fora do cache", uncached],
+    ["Saída", output], ["↳ Raciocínio", reasoning], ["Total", total],
   ] as const;
 
   return (
-    <section className="mt-3 rounded-lg border border-cyan-900/50 bg-cyan-950/10 p-2.5" aria-label="Uso OpenAI neste ciclo">
-      <div className="text-[9px] font-semibold uppercase tracking-wider text-cyan-300">Usage OpenAI</div>
+    <section className="mt-3 rounded-lg border border-cyan-900/50 bg-cyan-950/10 p-2.5" aria-label="Uso da OpenAI neste turno">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300">Uso da OpenAI</div>
       <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-[10px] text-zinc-300">
-        <span>{modelNames}{reasoningEffort ? ` · Reasoning ${reasoningEffort}` : ""}</span>
-        <span>{requests === null ? "Requests indisponíveis" : `${formatUsageTokens(requests)} requests`}</span>
+        <span>{modelNames}{reasoningEffort ? ` · raciocínio ${reasoningEffort}` : ""}</span>
+        <span>{requests === null ? "Solicitações indisponíveis" : `${formatUsageTokens(requests)} solicitações`}</span>
       </div>
       <div className="mt-2 space-y-1 border-t border-zinc-800 pt-2">
         {tokenRows.map(([label, value]) => <div key={label} className={`flex justify-between gap-3 text-[10px] ${label.startsWith("↳") ? "pl-2 text-zinc-500" : "text-zinc-300"}`}><span>{label}</span><span>{formatUsageTokens(value)}</span></div>)}
       </div>
       <div className="mt-2 flex flex-wrap justify-between gap-x-3 border-t border-zinc-800 pt-2 text-[10px] text-zinc-300">
-        <span>Cache hit</span><span>{cacheHitRate === null ? "Indisponível" : `${cacheHitRate.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}</span>
+        <span>Acerto de cache</span><span>{cacheHitRate === null ? "Indisponível" : `${cacheHitRate.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}</span>
       </div>
       <div className="mt-2 border-t border-zinc-800 pt-2">
-        <div className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">Custo estimado · tarifa Standard</div>
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Custo estimado · tarifa padrão</div>
         <div className="mt-0.5 text-[12px] font-medium text-zinc-100">{usd === null ? "Indisponível" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}</div>
         {brl !== null && <div className="text-[10px] text-zinc-400">≈ R$ {brl.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>}
         {fx !== null && <div className="mt-0.5 text-[9px] text-zinc-600">Câmbio estimado: R${fx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}/US$</div>}
-        {usage.cacheWriteTokens === null && <div className="mt-1 text-[9px] text-zinc-600">Cache write não informado pela API.</div>}
-        {typeof usage.serviceTier === "string" && <div className="mt-1 text-[9px] text-zinc-600">Tier: {usage.serviceTier}</div>}
+        {usage.cacheWriteTokens == null && <div className="mt-1 text-[10px] text-zinc-500">A gravação no cache não foi informada pela API.</div>}
+        {typeof usage.serviceTier === "string" && <div className="mt-1 text-[10px] text-zinc-500">Categoria: {formatConsoleSetting(usage.serviceTier) || "Padrão"}</div>}
       </div>
     </section>
   );
@@ -225,7 +237,7 @@ function ConsoleEventField({ label, children }: { label: string; children: React
   );
 }
 
-function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
+function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
   const metadata = event.metadata || {};
   const memoryToolResults = Array.isArray(metadata.memoryToolResults)
     ? metadata.memoryToolResults.filter((result): result is Record<string, unknown> => Boolean(result) && typeof result === "object").slice(0, 8)
@@ -274,8 +286,8 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
     <article className={`rounded-xl border p-3 ${isBrainDecision ? "border-purple-500/40 bg-purple-950/20" : isResponseReady ? "border-emerald-500/30 bg-emerald-950/15" : "border-zinc-800 bg-zinc-950/70"}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[10px] text-zinc-500">{new Date(event.timestamp).toLocaleTimeString("pt-BR")} · #{event.sequence} · {event.phase}</div>
-          <div className="mt-1 text-[11px] font-semibold text-zinc-100">{event.label}</div>
+          <div className="text-[10px] text-zinc-500">{new Date(event.timestamp).toLocaleTimeString("pt-BR")} · evento {event.sequence ?? "—"} · {formatBrainPhase(event.phase)}</div>
+          <div className="mt-1 text-[11px] font-semibold text-zinc-100">{formatBrainEvent(event.event)}</div>
         </div>
         {isBrainDecision && <BrainCircuit className="h-4 w-4 shrink-0 text-purple-300" />}
       </div>
@@ -285,26 +297,26 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
           <ConsoleEventField label="Modelo">
             {hasModelDivergence ? (
               <span>
-                <span className="text-amber-400">Cfg: {configuredModel}</span>
+                <span className="text-amber-400">Configurado: {configuredModel}</span>
                 <span className="mx-1 text-zinc-500">·</span>
-                <span className="text-emerald-400">Exec: {executedModel}</span>
+                <span className="text-emerald-400">Executado: {executedModel}</span>
               </span>
             ) : (
               executedModel || model
             )}
           </ConsoleEventField>
-          <ConsoleEventField label="Reasoning">
+          <ConsoleEventField label="Nível de raciocínio">
             {hasReasoningDivergence ? (
               <span>
-                <span className="text-amber-400">Cfg: {configuredReasoning}</span>
+                <span className="text-amber-400">Configurado: {configuredReasoning}</span>
                 <span className="mx-1 text-zinc-500">·</span>
-                <span className="text-emerald-400">Exec: {executedReasoning}</span>
+                <span className="text-emerald-400">Executado: {executedReasoning}</span>
               </span>
             ) : (
               executedReasoning || reasoningEffort
             )}
           </ConsoleEventField>
-          <ConsoleEventField label="Verbosity">{verbosity}</ConsoleEventField>
+          <ConsoleEventField label="Nível de detalhe">{verbosity}</ConsoleEventField>
           <ConsoleEventField label="Etapa">{eventMetadataText(metadata, "stageId")}</ConsoleEventField>
           <ConsoleEventField label="Objetivo atual">{eventMetadataText(metadata, "currentObjectiveLabel")}</ConsoleEventField>
           <ConsoleEventField label="Inbounds">{eventMetadataNumber(metadata, "inboundCount")}</ConsoleEventField>
@@ -343,7 +355,7 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
               <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <ConsoleEventField label="Mensagens candidatas">{eventMetadataNumber(contextWindow, "candidateCount")}</ConsoleEventField>
                 <ConsoleEventField label="Após deduplicação">{eventMetadataNumber(contextWindow, "deduplicatedCount")}</ConsoleEventField>
-                <ConsoleEventField label="Após budget">{eventMetadataNumber(contextWindow, "budgetedCount")}</ConsoleEventField>
+                <ConsoleEventField label="Após limite de contexto">{eventMetadataNumber(contextWindow, "budgetedCount")}</ConsoleEventField>
                 <ConsoleEventField label="Mensagens enviadas">{eventMetadataNumber(contextWindow, "includedCount")}</ConsoleEventField>
                 <ConsoleEventField label="Obrigatórias preservadas">{eventMetadataNumber(contextWindow, "mandatoryCount")}</ConsoleEventField>
                 <ConsoleEventField label="Última outbound da Larissa incluída">
@@ -357,9 +369,9 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
                 <ConsoleEventField label="Overflow obrigatório">{contextWindow.mandatoryContextOverflow === true ? "Sim" : "Não"}</ConsoleEventField>
                 <ConsoleEventField label="Duplicatas inbound removidas">{eventMetadataNumber(contextWindow, "currentInboundDuplicateCount")}</ConsoleEventField>
                 <ConsoleEventField label="Corte por limite de mensagens">{contextWindow.cutByMessageLimit === true || contextWindowCuts.messageLimit === true ? "Sim" : "Não"}</ConsoleEventField>
-                <ConsoleEventField label="Corte por token budget">{contextWindowCuts.tokenBudget === true ? "Sim" : "Não"}</ConsoleEventField>
+                <ConsoleEventField label="Corte por limite de tokens">{contextWindowCuts.tokenBudget === true ? "Sim" : "Não"}</ConsoleEventField>
                 <ConsoleEventField label="Corte por caracteres">{contextWindow.cutByCharLimit === true || contextWindowCuts.finalCharacters === true ? "Sim" : "Não"}</ConsoleEventField>
-                {contextWindowCuts.mandatoryTokenOverflow === true && <ConsoleEventField label="Observação de budget">Mensagens obrigatórias excederam o budget</ConsoleEventField>}
+                {contextWindowCuts.mandatoryTokenOverflow === true && <ConsoleEventField label="Observação de limite">As mensagens obrigatórias excederam o limite de contexto</ConsoleEventField>}
               </div>
               {contextWindowMessages.length > 0 && (
                 <details className="mt-2 border-t border-zinc-800 pt-2">
@@ -397,17 +409,17 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
               <div className="space-y-1">
                 <div>
                   <span className="font-semibold text-amber-400">Configurado:</span> {configuredModel || model || "Modelo não informado"}
-                  {(configuredReasoning || reasoningEffort) && <span className="text-zinc-500"> · Reasoning: {configuredReasoning || reasoningEffort}</span>}
+                  {(configuredReasoning || reasoningEffort) && <span className="text-zinc-500"> · raciocínio: {configuredReasoning || reasoningEffort}</span>}
                 </div>
                 <div>
                   <span className="font-semibold text-emerald-400">Executado:</span> {executedModel || model || "Modelo não informado"}
-                  {(executedReasoning || reasoningEffort) && <span className="text-zinc-500"> · Reasoning: {executedReasoning || reasoningEffort}</span>}
+                  {(executedReasoning || reasoningEffort) && <span className="text-zinc-500"> · raciocínio: {executedReasoning || reasoningEffort}</span>}
                 </div>
               </div>
             ) : (
               <>
                 {executedModel || model || "Modelo não informado"}
-                {(reasoningEffort || verbosity) && <span className="text-zinc-500"> · Reasoning: {reasoningEffort || "—"} · Verbosity: {verbosity || "—"}</span>}
+                {(reasoningEffort || verbosity) && <span className="text-zinc-500"> · raciocínio: {reasoningEffort || "—"} · nível de detalhe: {verbosity || "—"}</span>}
               </>
             )}
           </div>
@@ -498,6 +510,300 @@ function ConsoleCycleEventCard({ event }: { event: AutoPilotCycleEvent }) {
       {!isDiagnostic && event.detail && <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{event.detail}</div>}
       <OpenAiUsagePanel metadata={metadata} />
     </article>
+  );
+}
+
+function formatConsoleTime(value: string | undefined, withSeconds = false): string {
+  if (!value || !Number.isFinite(Date.parse(value))) return "Horário indisponível";
+  return new Date(value).toLocaleTimeString("pt-BR", withSeconds
+    ? { hour: "2-digit", minute: "2-digit", second: "2-digit" }
+    : { hour: "2-digit", minute: "2-digit" });
+}
+
+function eventMainDescription(event: BrainOperationalEvent): string | null {
+  const metadata = event.metadata || {};
+  if (event.event === "brain_decision") return eventMetadataText(metadata, "reasoningSummary");
+  if (event.event === "response_ready") {
+    const responses = eventMetadataStrings(metadata, "responses");
+    if (responses.length === 0) responses.push(...eventMetadataStrings(metadata, "proposedResponses"));
+    return responses.length ? responses.join(" · ") : eventMetadataText(metadata, "payloadType") === "audio" ? "Áudio preparado para envio." : null;
+  }
+  if (event.event === "manual_resolution_required") return event.detail || null;
+  if (["cycle_failed", "action_failed_confirmed", "failed_confirmed", "action_dispatch_uncertain", "dispatch_uncertain"].includes(event.event)) {
+    return event.event === "action_dispatch_uncertain" || event.event === "dispatch_uncertain"
+      ? "O provedor ainda não confirmou o resultado do envio."
+      : "O turno terminou antes de concluir uma ação.";
+  }
+  if (["turn_completed", "cycle_completed", "cycle_cancelled", "action_sent"].includes(event.event)) return event.detail || null;
+  return null;
+}
+
+function BrainTurnTimeline({
+  turn,
+  turnNumber,
+  expanded,
+  active,
+  failedActions,
+  retryingActionId,
+  onRetryAction,
+  onToggleTurn,
+  manualResolution,
+  onManualResolution,
+  onManualResolutionChange,
+}: {
+  turn: ReturnType<typeof groupBrainTurns>[number];
+  turnNumber: number;
+  expanded: boolean;
+  active: boolean;
+  failedActions: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
+  retryingActionId: string | null;
+  onRetryAction: (actionId: string) => void;
+  onToggleTurn: (turnId: string) => void;
+  manualResolution: { answer: string; question: string; submitting: boolean; authenticated: boolean };
+  onManualResolution: (saveForFuture: boolean) => void;
+  onManualResolutionChange: (value: string) => void;
+}) {
+  const decision = [...turn.events].reverse().find((event) => event.event === "brain_decision");
+  const decisionMetadata = decision?.metadata || {};
+  const decisionSummary = eventMetadataText(decisionMetadata, "reasoningSummary");
+  const objectiveLabel = eventMetadataText(decisionMetadata, "currentObjectiveLabel");
+  const objectiveDecision = eventMetadataText(decisionMetadata, "objectiveDecision");
+  const evidenceId = eventMetadataText(decisionMetadata, "evidenceMessageId");
+  const satisfiedObjectiveId = eventMetadataText(decisionMetadata, "satisfiedObjectiveId");
+  const objectiveStatus = satisfiedObjectiveId && evidenceId
+    ? "Concluído"
+    : objectiveDecision === "already_satisfied"
+    ? "Já estava concluído"
+    : objectiveDecision === "pursue"
+    ? "Em andamento"
+    : objectiveDecision === "none"
+    ? "Ignorado neste turno"
+    : null;
+  const plannedResponses = [...eventMetadataStrings(decisionMetadata, "proposedResponses")];
+  const modelEvent = [...turn.events].reverse().find((event) => event.event === "brain_started");
+  const model = formatConsoleModel(eventMetadataText(modelEvent?.metadata || {}, "executedModel") || eventMetadataText(modelEvent?.metadata || {}, "model"));
+  const statusTone = turn.status === "running"
+    ? "border-purple-400/30 bg-purple-400/10 text-purple-200"
+    : turn.status === "waiting_human"
+    ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+    : turn.status === "completed"
+    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+    : turn.status === "cancelled"
+    ? "border-zinc-600 bg-zinc-800/70 text-zinc-300"
+    : "border-rose-400/30 bg-rose-400/10 text-rose-200";
+  const turnEvents = turn.events;
+
+  return (
+    <article id={`brain-turn-${turnNumber}`} data-turn-id={turn.id} className={`overflow-hidden rounded-2xl border ${active ? "border-purple-400/35 bg-[#111018] shadow-lg shadow-purple-950/20" : "border-zinc-800 bg-zinc-900/50"}`}>
+      <div className="flex items-stretch">
+        <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 sm:px-4">
+          <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${statusTone}`}>
+            {turn.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : turn.status === "completed" ? <Check className="h-4 w-4" /> : turn.status === "failed" ? <AlertTriangle className="h-4 w-4" /> : turn.status === "cancelled" ? <StopCircle className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="text-sm font-semibold text-zinc-100">Turno {turnNumber}</h3>
+              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusTone}`}>{formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}</span>
+              {active && <span className="text-[11px] font-semibold uppercase tracking-wide text-purple-300">Agora</span>}
+            </div>
+            <p className="mt-1 text-xs leading-5 text-zinc-400">
+              {formatConsoleTime(turn.startedAt)}
+              {turn.summary.actionCount > 0 ? ` · ${turn.summary.sentCount} de ${turn.summary.actionCount} mensagens enviadas` : turn.status === "completed" ? " · Nenhuma mensagem enviada" : ""}
+              {model ? ` · ${model.replace(/^GPT-[^ ]+ /, "")}` : ""}
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label={`${expanded ? "Recolher" : "Abrir"} detalhes do Turno ${turnNumber}`}
+          aria-expanded={expanded}
+          onClick={() => onToggleTurn(turn.id)}
+          className="flex min-h-14 w-14 shrink-0 items-center justify-center border-l border-zinc-800 text-zinc-300 transition-colors hover:bg-zinc-800/70 active:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-purple-300"
+        >
+          {expanded ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-zinc-800 px-3 pb-4 pt-3 sm:px-4">
+          {decision && (
+            <section className="mb-4 rounded-xl border border-purple-400/20 bg-purple-400/[0.06] p-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-purple-200"><BrainCircuit className="h-4 w-4" />Decisão</div>
+              {decisionSummary && <p className="mt-2 line-clamp-3 text-sm leading-6 text-zinc-200">{decisionSummary}</p>}
+              {objectiveLabel && (
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-zinc-400">Objetivo deste turno</span><span className="rounded-full bg-zinc-800 px-2.5 py-1 text-zinc-200">{objectiveLabel}</span>
+                  {objectiveStatus && <span className={objectiveStatus === "Concluído" ? "text-emerald-300" : "text-zinc-400"}>{objectiveStatus === "Concluído" ? "✓ " : ""}{objectiveStatus}</span>}
+                </div>
+              )}
+              {plannedResponses.length > 0 && (
+                <details className="mt-3 text-sm text-zinc-300">
+                  <summary className="min-h-11 cursor-pointer py-2 font-medium text-emerald-200">Ver resposta planejada</summary>
+                  <ul className="space-y-2 pb-2">{plannedResponses.map((response, index) => <li key={`${index}-${response}`} className="rounded-lg bg-black/20 px-3 py-2 leading-5">{response}</li>)}</ul>
+                </details>
+              )}
+              {decisionSummary && <details className="mt-1 text-sm text-zinc-300"><summary className="min-h-11 cursor-pointer py-2 font-medium text-zinc-400">Ver detalhes do raciocínio</summary><p className="pb-2 leading-6">{decisionSummary}</p></details>}
+            </section>
+          )}
+
+          {turn.status === "waiting_human" && manualResolution.authenticated && (
+            <section className="mb-4 rounded-xl border border-amber-400/30 bg-amber-400/[0.07] p-3">
+              <h4 className="text-sm font-semibold text-amber-100">O Brain precisa de uma informação</h4>
+              <p className="mt-1 break-words text-sm leading-5 text-zinc-300">{manualResolution.question || "Uma informação factual para continuar."}</p>
+              <label className="mt-3 block text-xs font-medium text-zinc-300" htmlFor={`manual-resolution-${turn.id}`}>Sua resposta</label>
+              <textarea id={`manual-resolution-${turn.id}`} value={manualResolution.answer} onChange={(event) => onManualResolutionChange(event.target.value)} rows={2} maxLength={1000} placeholder="Digite a informação solicitada" className="mt-1.5 min-h-16 w-full resize-y rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 outline-none focus:border-amber-300" disabled={manualResolution.submitting} />
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-xs text-zinc-400">Salvar esta informação para próximas sessões?</span>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => onManualResolution(false)} disabled={manualResolution.submitting || !manualResolution.answer.trim()} className="min-h-11 flex-1 rounded-xl border border-zinc-700 px-4 text-sm text-zinc-200 disabled:opacity-50">{manualResolution.submitting ? "Retomando…" : "Usar só nesta sessão"}</button>
+                  <button type="button" onClick={() => onManualResolution(true)} disabled={manualResolution.submitting || !manualResolution.answer.trim()} className="min-h-11 flex-1 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{manualResolution.submitting ? "Retomando…" : "Salvar e retomar"}</button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {turn.status === "failed" && <p className="mb-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-3 text-sm leading-5 text-rose-100">O Brain terminou com um problema. Abra os detalhes técnicos do evento para consultar a causa registrada.</p>}
+          <ol className="space-y-0">
+            {turnEvents.map((event, index) => {
+              const isLast = index === turnEvents.length - 1;
+              const label = formatBrainEvent(event.event);
+              const description = eventMainDescription(event);
+              const linkedAction = event.actionId ? failedActions.find((action) => action.id === event.actionId) : undefined;
+              return (
+                <li key={`${turn.id}-${event.sequence}-${event.event}`} className="relative flex gap-3">
+                  {!isLast && <span aria-hidden="true" className="absolute bottom-0 left-[7px] top-4 w-px bg-zinc-800" />}
+                  <span className={`relative mt-1.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${event.event === "action_sent" || event.event === "turn_completed" || event.event === "cycle_completed" ? "border-emerald-300 bg-emerald-400" : event.event === "cycle_failed" || event.event.includes("failed") ? "border-rose-300 bg-rose-400" : event.event === "manual_resolution_required" ? "border-amber-300 bg-amber-400" : "border-cyan-300 bg-[#101016]"}`} />
+                  <div className={`min-w-0 flex-1 pb-4 ${isLast ? "pb-1" : ""}`}>
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-100">{label}</span></div>
+                    {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-300">{description}</p>}
+                    {linkedAction && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-2.5"><span className="text-sm text-rose-100">Ação {linkedAction.action_index + 1}: {linkedAction.action_type === "audio" ? "áudio" : "mensagem"} não enviada</span><button type="button" onClick={() => onRetryAction(linkedAction.id)} disabled={Boolean(retryingActionId)} className="min-h-11 rounded-lg bg-rose-300 px-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{retryingActionId === linkedAction.id ? "Enviando…" : "Enviar manualmente"}</button></div>}
+                    <details className="mt-1 text-xs text-zinc-400">
+                      <summary className="min-h-10 cursor-pointer py-2 font-medium">Ver detalhes técnicos</summary>
+                      <div className="space-y-2 rounded-xl border border-zinc-800 bg-black/30 p-3">
+                        <dl className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
+                          <div><dt className="text-zinc-500">ID do turno</dt><dd className="break-all font-mono text-zinc-300">{event.turnId || turn.turnId || "Não informado"}</dd></div>
+                          <div><dt className="text-zinc-500">ID da sessão</dt><dd className="break-all font-mono text-zinc-300">{event.sessionId || turn.sessionId || "Não informado"}</dd></div>
+                          <div><dt className="text-zinc-500">ID do ciclo</dt><dd className="break-all font-mono text-zinc-300">{event.cycleId || turn.cycleId || "Não informado"}</dd></div>
+                          {event.decisionId && <div><dt className="text-zinc-500">ID da decisão</dt><dd className="break-all font-mono text-zinc-300">{event.decisionId}</dd></div>}
+                          <div><dt className="text-zinc-500">Etapa registrada</dt><dd className="break-all font-mono text-zinc-300">{formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span></dd></div>
+                          <div><dt className="text-zinc-500">Estado registrado</dt><dd className="break-all font-mono text-zinc-300">{formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}</dd></div>
+                          {event.actionId && <div><dt className="text-zinc-500">ID da ação</dt><dd className="break-all font-mono text-zinc-300">{event.actionId}</dd></div>}
+                          <div className="sm:col-span-2"><dt className="text-zinc-500">Data e hora</dt><dd className="break-all font-mono text-zinc-300">{event.timestamp}</dd></div>
+                        </dl>
+                        <ConsoleCycleEventCard event={event} />
+                        {event.metadata && Object.keys(event.metadata).length > 0 && <details><summary className="min-h-10 cursor-pointer py-2">Dados completos do evento</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2 text-[11px] leading-5 text-zinc-300">{JSON.stringify(event.metadata, null, 2)}</pre></details>}
+                      </div>
+                    </details>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function BrainOperationalConsole({
+  open,
+  events,
+  failedActions,
+  operationsAccessDenied,
+  isRetryExhausted,
+  isRetryingManual,
+  retryingActionId,
+  onRetryAction,
+  onManualRetry,
+  onClose,
+  manualResolution,
+  onManualResolution,
+  onManualResolutionChange,
+}: {
+  open: boolean;
+  events: AutoPilotCycleEvent[];
+  failedActions: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
+  operationsAccessDenied: boolean;
+  isRetryExhausted: boolean;
+  isRetryingManual: boolean;
+  retryingActionId: string | null;
+  onRetryAction: (actionId: string) => void;
+  onManualRetry: () => void;
+  onClose: () => void;
+  manualResolution: { answer: string; question: string; submitting: boolean; authenticated: boolean };
+  onManualResolution: (saveForFuture: boolean) => void;
+  onManualResolutionChange: (value: string) => void;
+}) {
+  const turns = groupBrainTurns(events);
+  const activeTurn = turns.find((turn) => !isTerminalBrainTurn(turn));
+  const [uiState, dispatch] = useReducer(brainTurnUiReducer, initialBrainTurnUiState);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const followTailRef = useRef(true);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const turnStatusesRef = useRef(new Map<string, string>());
+  const collapseTimersRef = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    const nextActiveId = activeTurn?.id || null;
+    if (activeTurnIdRef.current !== nextActiveId) {
+      activeTurnIdRef.current = nextActiveId;
+      dispatch({ type: "activate", turnId: nextActiveId });
+      if (nextActiveId && followTailRef.current) {
+        window.requestAnimationFrame(() => document.querySelector(`[data-turn-id="${CSS.escape(nextActiveId)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+      }
+    }
+
+    const currentStatuses = new Map(turns.map((turn) => [turn.id, turn.status]));
+    for (const turn of turns) {
+      const previousStatus = turnStatusesRef.current.get(turn.id);
+      const existingTimer = collapseTimersRef.current.get(turn.id);
+      if (!isTerminalBrainTurn(turn) && existingTimer) {
+        window.clearTimeout(existingTimer);
+        collapseTimersRef.current.delete(turn.id);
+      }
+      if (isTerminalBrainTurn(turn) && previousStatus && !isTerminalBrainTurn({ status: previousStatus as typeof turn.status }) && !existingTimer) {
+        const timer = window.setTimeout(() => {
+          dispatch({ type: "collapse_finished", turnId: turn.id });
+          collapseTimersRef.current.delete(turn.id);
+        }, 1800);
+        collapseTimersRef.current.set(turn.id, timer);
+      }
+    }
+    turnStatusesRef.current = currentStatuses;
+  }, [activeTurn?.id, events, turns]);
+
+  useEffect(() => () => {
+    for (const timer of collapseTimersRef.current.values()) window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const activeId = activeTurn?.id;
+    if (!open || !activeId || !followTailRef.current) return;
+    window.requestAnimationFrame(() => {
+      const activeElement = scrollContainerRef.current?.querySelector(`[data-turn-id="${CSS.escape(activeId)}"]`);
+      activeElement?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }, [open, activeTurn?.id, events.length]);
+
+  const toggleTurn = (turnId: string) => dispatch({ type: "toggle", turnId });
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/80 p-2 backdrop-blur-sm sm:p-6" role="dialog" aria-modal="true" aria-label="Console operacional do Brain">
+      <div className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-[#0b0b0f] text-zinc-100 shadow-2xl">
+        <header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-purple-400/25 bg-purple-400/10 text-purple-200"><BrainCircuit className="h-5 w-5" /></span><div className="min-w-0"><h2 className="truncate text-base font-semibold">Console do Brain</h2><p className="text-xs text-zinc-400">Acompanhe o turno atual e consulte o histórico</p></div></div>
+          <button type="button" onClick={onClose} aria-label="Fechar console" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"><X className="h-5 w-5" /></button>
+        </header>
+        {operationsAccessDenied && <div className="border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-100">Entre como operador para carregar a linha do tempo e liberar ações autorizadas. <a href={`/operator?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="ml-1 font-semibold underline underline-offset-2">Entrar como operador</a></div>}
+        {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
+        <div ref={scrollContainerRef} onScroll={(event) => { const element = event.currentTarget; followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88; }} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5">
+          {activeTurn && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
+          {turns.some((turn) => turn !== activeTurn) && <section aria-label="Histórico de turnos"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">Histórico</h3><div className="space-y-2">{turns.filter((turn) => turn !== activeTurn).map((turn) => <BrainTurnTimeline key={turn.id} turn={turn} turnNumber={turns.length - turns.indexOf(turn)} expanded={uiState.expandedTurnIds.has(turn.id)} active={false} failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} />)}</div></section>}
+          {turns.length === 0 && !operationsAccessDenied && <div className="rounded-2xl border border-dashed border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -691,12 +997,14 @@ export function AutoPilotActivityIndicator({
         if (!cancelled) setOperatorAuthenticated(true);
         const query = new URLSearchParams({ conversationId: targetId });
         const response = await brainOperatorFetch(`/operator/brain/events?${query.toString()}`);
-        const result = await response.json().catch(() => ({})) as {
+      const result = await response.json().catch(() => ({})) as {
           success?: boolean;
           events?: Array<{
             id?: string | number;
             turn_id?: string | null;
             session_id?: string | null;
+            action_id?: string | null;
+            decision_id?: string | null;
             conversation_id?: string | null;
             status?: string | null;
             event_type?: string | null;
@@ -717,12 +1025,17 @@ export function AutoPilotActivityIndicator({
         setOperationsAccessDenied(false);
         const events = result.events || [];
         setCanonicalEvents(events.map((event) => ({
-          cycleId: event.turn_id || event.session_id || targetId,
+          cycleId: eventMetadataText(event.metadata || {}, "cycleId") || eventMetadataText(event.metadata || {}, "cycle_id") || event.turn_id || event.session_id || targetId,
+          turnId: event.turn_id || undefined,
+          sessionId: event.session_id || undefined,
+          actionId: event.action_id || undefined,
+          decisionId: event.decision_id || undefined,
           conversationId: event.conversation_id || targetId,
           sequence: Number(event.id) || 0,
           phase: String(event.metadata?.phase || event.status || "observed"),
+          status: event.status || undefined,
           event: event.event_type || "brain_event",
-          label: String(event.metadata?.label || event.event_type || "Evento do Brain"),
+          label: String(event.metadata?.label || formatBrainEvent(event.event_type)),
           detail: event.human_message || undefined,
           timestamp: event.created_at || new Date().toISOString(),
           metadata: event.metadata || {},
@@ -732,14 +1045,14 @@ export function AutoPilotActivityIndicator({
         const latestEvent = latest?.event_type;
         const latestStatus = latest?.status;
         const activeEvents = new Set([
-          "brain_started", "agent_wait_started", "brain_late", "manual_resolution_received",
+          "turn_started", "brain_started", "agent_wait_started", "context_loaded", "brain_context_loaded", "brain_late", "manual_resolution_received",
           "decision_persisted", "action_sending", "action_sent", "action_cancelled",
           "manual_delivery_authorized", "action_failed_retryable", "action_dispatch_uncertain",
         ]);
         const activeStatuses = new Set(["brain_running", "executing", "decision_persisted"]);
-        nextDelay = (latestEvent && activeEvents.has(latestEvent)) || (latestStatus && activeStatuses.has(latestStatus))
+        nextDelay = isConsoleOpen || (latestEvent && activeEvents.has(latestEvent)) || (latestStatus && activeStatuses.has(latestStatus))
           ? 1800
-          : 15000;
+          : 7000;
       } catch { /* A observabilidade não interrompe o atendimento. */ }
       finally {
         if (!cancelled) pollTimer = window.setTimeout(() => { void loadCanonicalEvents(); }, nextDelay);
@@ -747,7 +1060,7 @@ export function AutoPilotActivityIndicator({
     };
     void loadCanonicalEvents();
     return () => { cancelled = true; if (pollTimer) window.clearTimeout(pollTimer); };
-  }, [targetId]);
+  }, [targetId, isConsoleOpen]);
 
   const handleManualFailedAction = async (actionId: string) => {
     if (!targetId || !operatorAuthenticated || retryingActionId) return;
@@ -1248,27 +1561,6 @@ export function AutoPilotActivityIndicator({
           </div>
         </div>
 
-        {state.status === "waiting_human" && operatorAuthenticated && (
-          <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-            <p className="text-xs font-semibold text-amber-200">Brain parou porque precisa saber:</p>
-            <p className="mt-1 whitespace-pre-wrap text-[11px] text-zinc-300">{state.pauseReason || "Uma informação factual para continuar."}</p>
-            <textarea
-              value={manualResolutionAnswer}
-              onChange={(event) => setManualResolutionAnswer(event.target.value)}
-              rows={2}
-              maxLength={1000}
-              placeholder="Responda apenas o fato pedido pelo Brain..."
-              className="mt-2 w-full resize-y rounded-lg border border-zinc-700 bg-zinc-950/70 p-2 text-xs text-zinc-100 outline-none focus:border-amber-400"
-              disabled={isSubmittingResolution}
-            />
-            <p className="mt-2 text-[10px] text-zinc-400">Salvar essa informação para novas sessões?</p>
-            <div className="mt-2 flex justify-end gap-2">
-              <button type="button" onClick={() => handleSubmitManualResolution(false)} disabled={isSubmittingResolution || !manualResolutionAnswer.trim()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-[10px] text-zinc-200 disabled:opacity-50">{isSubmittingResolution ? "Retomando..." : "Não"}</button>
-              <button type="button" onClick={() => handleSubmitManualResolution(true)} disabled={isSubmittingResolution || !manualResolutionAnswer.trim()} className="rounded-lg bg-amber-400 px-3 py-1.5 text-[10px] font-semibold text-zinc-950 disabled:opacity-50">{isSubmittingResolution ? "Retomando..." : "Sim"}</button>
-            </div>
-          </div>
-        )}
-
         {/* Stepper Cognitivo do Brain - Fluxo Canônico Brain -> Envio */}
         {isWorking && (
           <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/50 rounded-xl border border-zinc-800/70 mt-2.5 text-[10px]">
@@ -1453,65 +1745,21 @@ export function AutoPilotActivityIndicator({
           </div>
         )}
       </div>
-      {isConsoleOpen && (
-        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm p-2 sm:p-6" role="dialog" aria-modal="true">
-          <div className="h-full w-full rounded-2xl border border-zinc-700 bg-[#0b0b0f] text-zinc-100 shadow-2xl flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
-              <div className="min-w-0"><div className="text-sm font-bold truncate">Brain • Console operacional</div><div className="text-[10px] text-zinc-500 font-mono">{(state.cycleId || state.activeCycleToken || "sem ciclo").slice(0, 28)} • {state.status}</div></div>
-              <button type="button" onClick={() => setIsConsoleOpen(false)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"><X className="h-4 w-4" /></button>
-            </div>
-            {isRetryExhausted && (
-              <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 flex items-center justify-between gap-3">
-                <div className="text-[11px] text-amber-200">
-                  <span className="font-semibold">Tentativas técnicas esgotadas:</span> Você pode autorizar uma única tentativa manual para este lote.
-                </div>
-                <button
-                  type="button"
-                  onClick={handleManualRetryOnce}
-                  disabled={isRetryingManual}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50 shrink-0"
-                >
-                  {isRetryingManual ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>Tentando novamente...</span>
-                    </>
-                  ) : (
-                    <>
-                      <FastForward className="h-3.5 w-3.5" />
-                      <span>Tentar mais uma vez</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
-            <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-[11px]">
-              {operationsAccessDenied && (
-                <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 font-sans text-xs text-amber-100">
-                  Esta instância usa uma sessão administrativa global de operador. <a href={`/operator?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="font-semibold underline underline-offset-2">Entrar como operador</a> para carregar a timeline e liberar ações autorizadas.
-                </div>
-              )}
-              {failedConfirmedActions.length > 0 && (
-                <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3">
-                  <div className="mb-2 text-xs font-semibold text-red-200">Falha confirmada pelo provedor</div>
-                  <div className="space-y-2">
-                    {failedConfirmedActions.map((action) => (
-                      <div key={action.id} className="flex items-center justify-between gap-3 rounded-lg bg-black/20 p-2">
-                        <span className="min-w-0 truncate text-zinc-200">{action.action_type === "audio" ? "Áudio" : "Mensagem de texto"} • ação {action.action_index + 1}</span>
-                        <button type="button" onClick={() => handleManualFailedAction(action.id)} disabled={Boolean(retryingActionId)} className="shrink-0 rounded-md bg-red-400 px-2.5 py-1.5 text-[10px] font-semibold text-zinc-950 disabled:opacity-50">
-                          {retryingActionId === action.id ? "Enviando…" : "Enviar manualmente"}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {canonicalEvents.map((event) => <ConsoleCycleEventCard key={`${event.cycleId}-${event.sequence}`} event={event} />)}
-              {canonicalEvents.length === 0 && <div className="text-zinc-500">Nenhum evento operacional persistido para esta conversa.</div>}
-            </div>
-          </div>
-        </div>
-      )}
+      <BrainOperationalConsole
+        open={isConsoleOpen}
+        events={canonicalEvents}
+        failedActions={failedConfirmedActions}
+        operationsAccessDenied={operationsAccessDenied}
+        isRetryExhausted={isRetryExhausted}
+        isRetryingManual={isRetryingManual}
+        retryingActionId={retryingActionId}
+        onRetryAction={handleManualFailedAction}
+        onManualRetry={handleManualRetryOnce}
+        onClose={() => setIsConsoleOpen(false)}
+        manualResolution={{ answer: manualResolutionAnswer, question: state.pauseReason || "", submitting: isSubmittingResolution, authenticated: operatorAuthenticated }}
+        onManualResolution={handleSubmitManualResolution}
+        onManualResolutionChange={setManualResolutionAnswer}
+      />
     </div>
   );
 }

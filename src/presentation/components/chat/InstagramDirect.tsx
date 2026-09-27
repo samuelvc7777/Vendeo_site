@@ -3949,7 +3949,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <div>
                       <h5 className="text-xs font-bold text-amber-200">A IA precisa da sua resposta</h5>
                       <p className="text-[11px] text-zinc-300 mt-0.5 leading-snug">
-                        {currentChatState.pauseReason || "A IA não respondeu com segurança. Responda manualmente; o Piloto ficará pausado até você retomá-lo."}
+                        {currentChatState.pauseReason || "O Brain aguarda esta informação. O mesmo turno será retomado depois da sua resposta."}
                       </p>
                     </div>
                   </div>

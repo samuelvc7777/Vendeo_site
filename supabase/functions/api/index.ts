@@ -12,6 +12,7 @@ import {
   runDurableOutboxDispatcher,
 } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
+import { enrichBrainTurnEventRows } from "./brain_event_enrichment.ts";
 import {
   getGroqApiKey,
   transcribeWithGroqCloud,
@@ -4920,7 +4921,15 @@ serve(async (req: Request) => {
       const { data: failedActions } = await supabase.from("brain_decision_actions")
         .select("id, decision_id, action_index, action_type, payload, status")
         .eq("conversation_id", conversationId).eq("status", "failed_confirmed").order("created_at", { ascending: true });
-      return new Response(JSON.stringify({ success: true, events: (events || []).reverse(), failedActions: failedActions || [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      let operationalEvents = (events || []).reverse();
+      const needsTurnMapping = operationalEvents.some((event: any) => !event.turn_id && typeof event.metadata?.cycleId === "string");
+      if (needsTurnMapping) {
+        const { data: decisions } = await supabase.from("brain_decisions")
+          .select("turn_id, session_id, payload, created_at")
+          .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(100);
+        if (Array.isArray(decisions)) operationalEvents = enrichBrainTurnEventRows(operationalEvents, decisions);
+      }
+      return new Response(JSON.stringify({ success: true, events: operationalEvents, failedActions: failedActions || [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     if ((path === "/autopilot/retry-failed-action" || path === "/api/autopilot/retry-failed-action") && req.method === "POST") {
