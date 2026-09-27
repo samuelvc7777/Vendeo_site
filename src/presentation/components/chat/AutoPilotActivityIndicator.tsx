@@ -32,7 +32,11 @@ import {
   formatBrainEvent,
   formatBrainPhase,
   formatBrainStatus,
+  formatVisibleBrainIdentity,
   groupBrainTurns,
+  getEffectiveBrainTurnEvent,
+  getVisibleBrainTurns,
+  selectActiveBrainTurn,
   initialBrainTurnUiState,
   isTerminalBrainTurn,
 } from "./brain-turn-view-model";
@@ -130,6 +134,7 @@ function eventMetadataNumber(metadata: Record<string, unknown>, key: string): nu
 
 function formatConsoleModel(model: string | null): string | null {
   if (!model) return null;
+  if (/atria/i.test(model)) return "Brain";
   const labels: Record<string, string> = {
     "gpt-6-luna": "GPT-6 Luna",
     "gpt-6-sol": "GPT-6 Sol",
@@ -507,7 +512,7 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
         </div>
       )}
 
-      {!isDiagnostic && event.detail && <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{event.detail}</div>}
+      {!isDiagnostic && event.detail && <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{formatVisibleBrainIdentity(event.detail)}</div>}
       <OpenAiUsagePanel metadata={metadata} />
     </article>
   );
@@ -522,19 +527,19 @@ function formatConsoleTime(value: string | undefined, withSeconds = false): stri
 
 function eventMainDescription(event: BrainOperationalEvent): string | null {
   const metadata = event.metadata || {};
-  if (event.event === "brain_decision") return eventMetadataText(metadata, "reasoningSummary");
+  if (event.event === "brain_decision") return formatVisibleBrainIdentity(eventMetadataText(metadata, "reasoningSummary"));
   if (event.event === "response_ready") {
     const responses = eventMetadataStrings(metadata, "responses");
     if (responses.length === 0) responses.push(...eventMetadataStrings(metadata, "proposedResponses"));
-    return responses.length ? responses.join(" · ") : eventMetadataText(metadata, "payloadType") === "audio" ? "Áudio preparado para envio." : null;
+    return responses.length ? formatVisibleBrainIdentity(responses.join(" · ")) : eventMetadataText(metadata, "payloadType") === "audio" ? "Áudio preparado para envio." : null;
   }
-  if (event.event === "manual_resolution_required") return event.detail || null;
+  if (event.event === "manual_resolution_required") return formatVisibleBrainIdentity(event.detail) || null;
   if (["cycle_failed", "action_failed_confirmed", "failed_confirmed", "action_dispatch_uncertain", "dispatch_uncertain"].includes(event.event)) {
     return event.event === "action_dispatch_uncertain" || event.event === "dispatch_uncertain"
       ? "O provedor ainda não confirmou o resultado do envio."
       : "O turno terminou antes de concluir uma ação.";
   }
-  if (["turn_completed", "cycle_completed", "cycle_cancelled", "action_sent"].includes(event.event)) return event.detail || null;
+  if (["turn_completed", "cycle_completed", "cycle_cancelled", "action_sent"].includes(event.event)) return formatVisibleBrainIdentity(event.detail) || null;
   return null;
 }
 
@@ -582,7 +587,9 @@ function BrainTurnTimeline({
   const plannedResponses = [...eventMetadataStrings(decisionMetadata, "proposedResponses")];
   const modelEvent = [...turn.events].reverse().find((event) => event.event === "brain_started");
   const model = formatConsoleModel(eventMetadataText(modelEvent?.metadata || {}, "executedModel") || eventMetadataText(modelEvent?.metadata || {}, "model"));
-  const statusTone = turn.status === "running"
+  const statusTone = turn.status === "stale"
+    ? "border-zinc-700 bg-zinc-800/50 text-zinc-400"
+    : turn.status === "running"
     ? "border-purple-400/30 bg-purple-400/10 text-purple-200"
     : turn.status === "waiting_human"
     ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
@@ -598,12 +605,12 @@ function BrainTurnTimeline({
       <div className="flex items-stretch">
         <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 sm:px-4">
           <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${statusTone}`}>
-            {turn.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : turn.status === "completed" ? <Check className="h-4 w-4" /> : turn.status === "failed" ? <AlertTriangle className="h-4 w-4" /> : turn.status === "cancelled" ? <StopCircle className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              {turn.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : turn.status === "completed" ? <Check className="h-4 w-4" /> : turn.status === "failed" ? <AlertTriangle className="h-4 w-4" /> : turn.status === "cancelled" ? <StopCircle className="h-4 w-4" /> : turn.status === "stale" ? <Clock3 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <h3 className="text-sm font-semibold text-zinc-100">Turno {turnNumber}</h3>
-              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusTone}`}>{formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}</span>
+              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusTone}`}>{turn.provisional && active ? "Iniciando" : formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}</span>
               {active && <span className="text-[11px] font-semibold uppercase tracking-wide text-purple-300">Agora</span>}
             </div>
             <p className="mt-1 text-xs leading-5 text-zinc-400">
@@ -691,7 +698,7 @@ function BrainTurnTimeline({
                           <div className="sm:col-span-2"><dt className="text-zinc-500">Data e hora</dt><dd className="break-all font-mono text-zinc-300">{event.timestamp}</dd></div>
                         </dl>
                         <ConsoleCycleEventCard event={event} />
-                        {event.metadata && Object.keys(event.metadata).length > 0 && <details><summary className="min-h-10 cursor-pointer py-2">Dados completos do evento</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2 text-[11px] leading-5 text-zinc-300">{JSON.stringify(event.metadata, null, 2)}</pre></details>}
+                        {event.metadata && Object.keys(event.metadata).length > 0 && <details><summary className="min-h-10 cursor-pointer py-2">Dados completos do evento</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2 text-[11px] leading-5 text-zinc-300">{formatVisibleBrainIdentity(JSON.stringify(event.metadata, null, 2))}</pre></details>}
                       </div>
                     </details>
                   </div>
@@ -708,6 +715,7 @@ function BrainTurnTimeline({
 function BrainOperationalConsole({
   open,
   events,
+  runtimeState,
   failedActions,
   operationsAccessDenied,
   isRetryExhausted,
@@ -722,6 +730,7 @@ function BrainOperationalConsole({
 }: {
   open: boolean;
   events: AutoPilotCycleEvent[];
+  runtimeState: { activeCycleToken?: string | null };
   failedActions: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
   operationsAccessDenied: boolean;
   isRetryExhausted: boolean;
@@ -734,8 +743,10 @@ function BrainOperationalConsole({
   onManualResolution: (saveForFuture: boolean) => void;
   onManualResolutionChange: (value: string) => void;
 }) {
-  const turns = groupBrainTurns(events);
-  const activeTurn = turns.find((turn) => !isTerminalBrainTurn(turn));
+  const groupedTurns = groupBrainTurns(events);
+  const selectorRuntime = { ...runtimeState, now: Date.now() };
+  const activeTurn = selectActiveBrainTurn(groupedTurns, selectorRuntime);
+  const turns = getVisibleBrainTurns(groupedTurns, selectorRuntime);
   const [uiState, dispatch] = useReducer(brainTurnUiReducer, initialBrainTurnUiState);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const followTailRef = useRef(true);
@@ -838,8 +849,8 @@ function getCopy(state: AutoPilotChatState) {
     : (updatedAtMs > 0 && Date.now() - updatedAtMs > 90_000);
   if (state.activity && !isStale) {
     return {
-      title: state.activity.label,
-      detail: state.activity.detail || "A IA está trabalhando nesta conversa.",
+      title: formatVisibleBrainIdentity(state.activity.label),
+      detail: formatVisibleBrainIdentity(state.activity.detail || "A IA está trabalhando nesta conversa."),
     };
   }
   if (state.status === "activation_wait") {
@@ -1024,8 +1035,9 @@ export function AutoPilotActivityIndicator({
         if (!response.ok || result?.success !== true || cancelled) return;
         setOperationsAccessDenied(false);
         const events = result.events || [];
-        setCanonicalEvents(events.map((event) => ({
-          cycleId: eventMetadataText(event.metadata || {}, "cycleId") || eventMetadataText(event.metadata || {}, "cycle_id") || event.turn_id || event.session_id || targetId,
+        const normalizedEvents = events.map((event) => ({
+          id: event.id,
+          cycleId: eventMetadataText(event.metadata || {}, "cycleId") || eventMetadataText(event.metadata || {}, "cycle_id") || undefined,
           turnId: event.turn_id || undefined,
           sessionId: event.session_id || undefined,
           actionId: event.action_id || undefined,
@@ -1035,22 +1047,18 @@ export function AutoPilotActivityIndicator({
           phase: String(event.metadata?.phase || event.status || "observed"),
           status: event.status || undefined,
           event: event.event_type || "brain_event",
-          label: String(event.metadata?.label || formatBrainEvent(event.event_type)),
-          detail: event.human_message || undefined,
+          label: formatVisibleBrainIdentity(String(event.metadata?.label || formatBrainEvent(event.event_type))),
+          detail: event.human_message ? formatVisibleBrainIdentity(event.human_message) : undefined,
           timestamp: event.created_at || new Date().toISOString(),
           metadata: event.metadata || {},
-        })));
+        }));
+        setCanonicalEvents(normalizedEvents);
         setFailedConfirmedActions(Array.isArray(result.failedActions) ? result.failedActions : []);
-        const latest = events[events.length - 1];
-        const latestEvent = latest?.event_type;
-        const latestStatus = latest?.status;
-        const activeEvents = new Set([
-          "turn_started", "brain_started", "agent_wait_started", "context_loaded", "brain_context_loaded", "brain_late", "manual_resolution_received",
-          "decision_persisted", "action_sending", "action_sent", "action_cancelled",
-          "manual_delivery_authorized", "action_failed_retryable", "action_dispatch_uncertain",
-        ]);
-        const activeStatuses = new Set(["brain_running", "executing", "decision_persisted"]);
-        nextDelay = isConsoleOpen || (latestEvent && activeEvents.has(latestEvent)) || (latestStatus && activeStatuses.has(latestStatus))
+        const activeTurn = selectActiveBrainTurn(groupBrainTurns(normalizedEvents), {
+          activeCycleToken: sourceState.activeCycleToken,
+          now: Date.now(),
+        });
+        nextDelay = isConsoleOpen || Boolean(activeTurn)
           ? 1800
           : 7000;
       } catch { /* A observabilidade não interrompe o atendimento. */ }
@@ -1083,7 +1091,16 @@ export function AutoPilotActivityIndicator({
     }
   };
 
-  const latestCanonicalEvent = canonicalEvents[canonicalEvents.length - 1];
+  const turnRuntimeState = { activeCycleToken: sourceState.activeCycleToken, now: Date.now() };
+  const groupedCanonicalTurns = groupBrainTurns(canonicalEvents);
+  const activeCanonicalTurn = selectActiveBrainTurn(groupedCanonicalTurns, turnRuntimeState);
+  const visibleCanonicalTurns = getVisibleBrainTurns(groupedCanonicalTurns, turnRuntimeState);
+  const latestDisplayTurn = activeCanonicalTurn
+    || visibleCanonicalTurns.find((turn) => Boolean(turn.turnId) && isTerminalBrainTurn(turn))
+    || visibleCanonicalTurns.find((turn) => turn.status === "waiting_human")
+    || visibleCanonicalTurns.find((turn) => Boolean(turn.turnId))
+    || visibleCanonicalTurns[0];
+  const latestCanonicalEvent = latestDisplayTurn ? getEffectiveBrainTurnEvent(latestDisplayTurn) : undefined;
   const canonicalEventToStatus: Record<string, { status: AutoPilotChatState["status"]; phase: AutoPilotActivityPhase }> = {
     brain_late: { status: "processing", phase: "brain" },
     manual_resolution_required: { status: "waiting_human", phase: "completed" },
@@ -1098,6 +1115,10 @@ export function AutoPilotActivityIndicator({
     action_dispatch_uncertain: { status: "failed", phase: "failed" },
     action_failed_confirmed: { status: "failed", phase: "failed" },
     cycle_completed: { status: "idle", phase: "completed" },
+    cycle_cancelled: { status: "idle", phase: "cancelled" },
+    cycle_failed: { status: "failed", phase: "failed" },
+    failed_confirmed: { status: "failed", phase: "failed" },
+    dispatch_uncertain: { status: "failed", phase: "failed" },
   };
   const validOperationalPhases: AutoPilotActivityPhase[] = [
     "waiting", "scheduled", "starting", "loading_context", "context", "search", "reanalyzing", "brain", "atria", "sol",
@@ -1121,15 +1142,15 @@ export function AutoPilotActivityIndicator({
   const canonicalProjection = latestCanonicalEvent
     ? canonicalEventToStatus[latestCanonicalEvent.event] || phaseProjection
     : undefined;
-  const state: AutoPilotChatState = canonicalProjection
+  const state: AutoPilotChatState = canonicalProjection && latestCanonicalEvent
     ? {
         ...sourceState,
         status: canonicalProjection.status,
         activity: {
           ...(sourceState.activity || {}),
           phase: canonicalProjection.phase,
-          label: latestCanonicalEvent.label,
-          detail: latestCanonicalEvent.detail,
+          label: formatVisibleBrainIdentity(latestCanonicalEvent.label),
+          detail: formatVisibleBrainIdentity(latestCanonicalEvent.detail),
           updatedAt: latestCanonicalEvent.timestamp,
         },
         pauseReason: latestCanonicalEvent.event === "manual_resolution_required"
@@ -1140,7 +1161,11 @@ export function AutoPilotActivityIndicator({
   const shouldRender = variant === "floating"
     ? state.isEnabled || state.status === "waiting_human" || state.status === "failed"
     : isAutoPilotWorking(state);
-  const copy = getCopy(state);
+  const rawCopy = getCopy(state);
+  const copy = {
+    title: formatVisibleBrainIdentity(rawCopy.title),
+    detail: formatVisibleBrainIdentity(rawCopy.detail),
+  };
   const activity = state.activity;
 
   // Fases e Stepper Cognitivo
@@ -1163,7 +1188,7 @@ export function AutoPilotActivityIndicator({
         state.lastThoughts?.atriaThought ||
         state.lastThoughts?.solThought
       : undefined);
-  const validBrainThought = getValidThought(rawBrainThought);
+  const validBrainThought = formatVisibleBrainIdentity(getValidThought(rawBrainThought));
   const hasThoughts = Boolean(validBrainThought);
   const isCompleted = phase === "completed" || (!isAutoPilotActivelyWorking(state) && hasThoughts);
 
@@ -1748,6 +1773,7 @@ export function AutoPilotActivityIndicator({
       <BrainOperationalConsole
         open={isConsoleOpen}
         events={canonicalEvents}
+        runtimeState={{ activeCycleToken: state.activeCycleToken }}
         failedActions={failedConfirmedActions}
         operationsAccessDenied={operationsAccessDenied}
         isRetryExhausted={isRetryExhausted}
@@ -1756,7 +1782,7 @@ export function AutoPilotActivityIndicator({
         onRetryAction={handleManualFailedAction}
         onManualRetry={handleManualRetryOnce}
         onClose={() => setIsConsoleOpen(false)}
-        manualResolution={{ answer: manualResolutionAnswer, question: state.pauseReason || "", submitting: isSubmittingResolution, authenticated: operatorAuthenticated }}
+        manualResolution={{ answer: manualResolutionAnswer, question: formatVisibleBrainIdentity(state.pauseReason), submitting: isSubmittingResolution, authenticated: operatorAuthenticated }}
         onManualResolution={handleSubmitManualResolution}
         onManualResolutionChange={setManualResolutionAnswer}
       />

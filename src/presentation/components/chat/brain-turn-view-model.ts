@@ -1,4 +1,5 @@
 export type BrainOperationalEvent = {
+  id?: string | number;
   turnId?: string;
   sessionId?: string;
   cycleId?: string;
@@ -15,13 +16,14 @@ export type BrainOperationalEvent = {
   metadata?: Record<string, unknown>;
 };
 
-export type BrainTurnStatus = "running" | "completed" | "waiting_human" | "failed" | "cancelled";
+export type BrainTurnStatus = "running" | "completed" | "waiting_human" | "failed" | "cancelled" | "stale";
 
 export type BrainTurnView = {
   id: string;
   turnId?: string;
   sessionId?: string;
   cycleId?: string;
+  provisional: boolean;
   startedAt: string;
   finishedAt?: string;
   status: BrainTurnStatus;
@@ -52,6 +54,9 @@ const EVENT_LABELS: Record<string, string> = {
   dispatch_uncertain: "Confirmação de envio pendente",
   turn_completed: "Turno concluído",
   cycle_completed: "Turno concluído",
+  fully_sent: "Todas as mensagens enviadas",
+  phase_scheduled: "Próxima análise agendada",
+  toggle_immediate_started: "Iniciando análise",
   cycle_cancelled: "Turno cancelado",
   cycle_failed: "Turno com erro",
   completed: "Turno concluído",
@@ -81,6 +86,7 @@ const STATUS_LABELS: Record<string, string> = {
   disabled: "IA desligada",
   collecting: "Carregando contexto",
   active: "Em andamento",
+  stale: "Atividade incompleta antiga",
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -92,7 +98,7 @@ const PHASE_LABELS: Record<string, string> = {
   search: "Consultando informações",
   reanalyzing: "Revisando a resposta",
   brain: "Brain processando",
-  atria: "Revisando a conversa",
+  atria: "Raciocinando",
   sol: "Preparando a resposta",
   checklist: "Conferindo a resposta",
   validating: "Validando a ação",
@@ -133,15 +139,15 @@ export function formatBrainPhase(phase: string | null | undefined): string {
   return PHASE_LABELS[phase] || "Etapa atualizada";
 }
 
-export function isTerminalBrainTurn(turn: Pick<BrainTurnView, "status">): boolean {
-  return turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled";
+export function formatVisibleBrainIdentity(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .replace(/\bAtria[- ]Dawn(?:[- ]Preview)?(?:\s*\(Atria-ASI\))?/gi, "Brain")
+    .replace(/\bAtria\b/gi, "Brain");
 }
 
-function eventGroupId(event: BrainOperationalEvent): string {
-  if (event.turnId) return `turn:${event.turnId}`;
-  if (event.sessionId) return `session:${event.sessionId}`;
-  if (event.cycleId) return `cycle:${event.cycleId}`;
-  return `conversation:${event.conversationId || "unknown"}`;
+export function isTerminalBrainTurn(turn: Pick<BrainTurnView, "status">): boolean {
+  return turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled";
 }
 
 function eventTime(event: BrainOperationalEvent): number {
@@ -149,22 +155,137 @@ function eventTime(event: BrainOperationalEvent): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const PROVISIONAL_EVENTS = new Set(["toggle_immediate_started", "starting"]);
+const PROGRESS_EVENTS = new Set([
+  "cycle_claimed", "turn_started", "brain_started", "agent_wait_started", "context_loaded",
+  "brain_context_loaded", "brain_late", "brain_memory", "brain_decision", "decision_persisted",
+  "response_ready", "manual_resolution_required", "manual_resolution_received", "action_sending",
+  "action_sent", "action_cancelled", "action_failed_retryable", "action_failed_confirmed",
+  "action_dispatch_uncertain", "manual_delivery_authorized", "cycle_completed", "turn_completed",
+  "cycle_failed", "cycle_cancelled",
+]);
+export const PROVISIONAL_BRAIN_TURN_TTL_MS = 20_000;
+export const ACTIVE_BRAIN_TURN_STALE_AFTER_MS = 90_000;
+
+export type BrainTurnRuntimeState = {
+  activeCycleToken?: string | null;
+  now?: number | string | Date;
+};
+
+function terminalStatusForEvent(event: BrainOperationalEvent): BrainTurnStatus | null {
+  const status = event.status || "";
+  if (CANCELLED_EVENTS.has(event.event) || status === "cancelled" || status === "cycle_cancelled") return "cancelled";
+  if (FAILED_EVENTS.has(event.event) || FAILED_EVENTS.has(status) || status === "failed" || status === "failed_technical") return "failed";
+  if (TERMINAL_EVENTS.has(event.event) || status === "completed" || status === "cycle_completed") return "completed";
+  return null;
+}
+
+function lastTerminalEvent(events: BrainOperationalEvent[]): BrainOperationalEvent | undefined {
+  return [...events].reverse().find((event) => terminalStatusForEvent(event) !== null);
+}
+
 function classifyTurn(events: BrainOperationalEvent[]): BrainTurnStatus {
+  const terminal = lastTerminalEvent(events);
+  if (terminal) return terminalStatusForEvent(terminal)!;
   const latest = events[events.length - 1];
   if (!latest) return "running";
-  const eventName = latest.event;
   const status = latest.status || "";
-  if (WAITING_EVENTS.has(eventName) || status === "waiting_human" || status === "manual_resolution_required") return "waiting_human";
-  if (CANCELLED_EVENTS.has(eventName) || status === "cancelled" || status === "cycle_cancelled") return "cancelled";
-  if (FAILED_EVENTS.has(eventName) || FAILED_EVENTS.has(status) || status === "failed" || status === "failed_technical") return "failed";
-  if (TERMINAL_EVENTS.has(eventName) || status === "completed" || status === "cycle_completed") return "completed";
+  if (WAITING_EVENTS.has(latest.event) || status === "waiting_human" || status === "manual_resolution_required") return "waiting_human";
   return "running";
 }
 
+export function getEffectiveBrainTurnEvent(turn: BrainTurnView): BrainOperationalEvent | undefined {
+  return lastTerminalEvent(turn.events) || turn.events[turn.events.length - 1];
+}
+
+function isProvisionalEvent(event: BrainOperationalEvent): boolean {
+  return PROVISIONAL_EVENTS.has(event.event) || event.phase === "starting";
+}
+
+function hasOperationalProgress(turn: BrainTurnView): boolean {
+  return turn.events.some((event) => PROGRESS_EVENTS.has(event.event)
+    || WAITING_EVENTS.has(event.event)
+    || event.status === "waiting_human");
+}
+
+function turnActivityTime(turn: BrainTurnView): number {
+  return Math.max(0, ...turn.events.map(eventTime));
+}
+
+function runtimeNow(runtime: BrainTurnRuntimeState): number {
+  const value = runtime.now instanceof Date ? runtime.now.getTime() : runtime.now;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function turnMatchesCycleToken(turn: BrainTurnView, token: string): boolean {
+  return turn.cycleId === token || turn.turnId === token || turn.events.some((event) => event.cycleId === token);
+}
+
+function isSupersededBrainTurn(turn: BrainTurnView, turns: BrainTurnView[]): boolean {
+  const startedAt = eventTime({ event: "", timestamp: turn.startedAt });
+  return turns.some((candidate) => candidate.id !== turn.id && candidate.turnId
+    && eventTime({ event: "", timestamp: candidate.startedAt }) > startedAt);
+}
+
+export function selectActiveBrainTurn(
+  turns: BrainTurnView[],
+  runtime: BrainTurnRuntimeState = {},
+): BrainTurnView | null {
+  const now = runtimeNow(runtime);
+  const token = runtime.activeCycleToken?.trim();
+  if (token) {
+    const canonical = turns.find((turn) => turnMatchesCycleToken(turn, token)
+      && !isTerminalBrainTurn(turn)
+      && (hasOperationalProgress(turn) || turn.provisional));
+    const canonicalAge = canonical ? now - turnActivityTime(canonical) : 0;
+    if (canonical && (!canonical.provisional || (canonicalAge >= 0 && canonicalAge <= PROVISIONAL_BRAIN_TURN_TTL_MS))) {
+      return canonical;
+    }
+  }
+
+  const candidates = turns.filter((turn) => {
+    if (isTerminalBrainTurn(turn) || isSupersededBrainTurn(turn, turns)) return false;
+    const age = now - turnActivityTime(turn);
+    if (turn.status === "waiting_human") return true;
+    if (turn.provisional && !hasOperationalProgress(turn)) return age >= 0 && age <= PROVISIONAL_BRAIN_TURN_TTL_MS;
+    return hasOperationalProgress(turn) && age >= 0 && age <= ACTIVE_BRAIN_TURN_STALE_AFTER_MS;
+  });
+  candidates.sort((left, right) => turnActivityTime(right) - turnActivityTime(left));
+  return candidates[0] || null;
+}
+
+export function getVisibleBrainTurns(
+  turns: BrainTurnView[],
+  runtime: BrainTurnRuntimeState = {},
+): BrainTurnView[] {
+  const active = selectActiveBrainTurn(turns, runtime);
+  return turns.flatMap((turn) => {
+    if (isTerminalBrainTurn(turn) || turn.id === active?.id) return [turn];
+    if (!turn.turnId) return [];
+    return [{ ...turn, status: "stale" as const }];
+  });
+}
+
 export function groupBrainTurns(events: BrainOperationalEvent[]): BrainTurnView[] {
-  const groups = new Map<string, BrainOperationalEvent[]>();
+  const turnByCycle = new Map<string, string>();
   for (const event of events) {
-    const id = eventGroupId(event);
+    if (event.turnId && event.cycleId && !turnByCycle.has(event.cycleId)) {
+      turnByCycle.set(event.cycleId, event.turnId);
+    }
+  }
+  const groups = new Map<string, BrainOperationalEvent[]>();
+  for (const [index, event] of events.entries()) {
+    const canonicalTurnId = event.turnId || (event.cycleId ? turnByCycle.get(event.cycleId) : undefined);
+    const fallbackId = event.id ?? (event.sequence && event.sequence !== 0
+      ? event.sequence
+      : `${event.timestamp}:${event.event}:${index}`);
+    const id = canonicalTurnId
+      ? `turn:${canonicalTurnId}`
+      : event.cycleId
+      ? `cycle:${event.cycleId}`
+      : `event:${event.conversationId || "unknown"}:${fallbackId}`;
     const list = groups.get(id) || [];
     list.push(event);
     groups.set(id, list);
@@ -172,8 +293,8 @@ export function groupBrainTurns(events: BrainOperationalEvent[]): BrainTurnView[
 
   return [...groups.entries()].map(([id, group]) => {
     const sorted = [...group].sort((a, b) => eventTime(a) - eventTime(b) || (a.sequence || 0) - (b.sequence || 0));
-    const latest = sorted[sorted.length - 1];
     const first = sorted[0];
+    const terminal = lastTerminalEvent(sorted);
     const actionEvents = sorted.filter((item) => ACTION_EVENTS.has(item.event));
     const actionKey = (item: BrainOperationalEvent) => item.actionId
       || String(item.metadata?.actionIndex ?? item.metadata?.action_index ?? `${item.sequence ?? item.timestamp}`);
@@ -182,11 +303,15 @@ export function groupBrainTurns(events: BrainOperationalEvent[]): BrainTurnView[
     const failedActions = new Map(actionEvents.filter((item) => FAILED_EVENTS.has(item.event) || FAILED_EVENTS.has(item.status || "")).map((item) => [actionKey(item), item]));
     return {
       id,
-      turnId: first.turnId,
-      sessionId: first.sessionId,
-      cycleId: first.cycleId,
+      turnId: sorted.find((item) => item.turnId)?.turnId
+        || (sorted.find((item) => item.cycleId)?.cycleId
+          ? turnByCycle.get(sorted.find((item) => item.cycleId)!.cycleId!)
+          : undefined),
+      sessionId: sorted.find((item) => item.sessionId)?.sessionId,
+      cycleId: sorted.find((item) => item.cycleId)?.cycleId,
+      provisional: sorted.every(isProvisionalEvent),
       startedAt: first.timestamp,
-      finishedAt: isTerminalBrainTurn({ status: classifyTurn(sorted) }) ? latest.timestamp : undefined,
+      finishedAt: terminal?.timestamp,
       status: classifyTurn(sorted),
       events: sorted,
       summary: { actionCount: uniqueActions.size, sentCount: sentActions.size, failedCount: failedActions.size },

@@ -4922,7 +4922,8 @@ serve(async (req: Request) => {
         .select("id, decision_id, action_index, action_type, payload, status")
         .eq("conversation_id", conversationId).eq("status", "failed_confirmed").order("created_at", { ascending: true });
       let operationalEvents = (events || []).reverse();
-      const needsTurnMapping = operationalEvents.some((event: any) => !event.turn_id && typeof event.metadata?.cycleId === "string");
+      const needsTurnMapping = operationalEvents.some((event: any) => !event.turn_id
+        && (typeof event.metadata?.cycleId === "string" || typeof event.metadata?.cycle_id === "string"));
       if (needsTurnMapping) {
         const { data: decisions } = await supabase.from("brain_decisions")
           .select("turn_id, session_id, payload, created_at")

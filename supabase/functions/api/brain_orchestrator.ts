@@ -9958,10 +9958,10 @@ export async function runBrainOrchestration(
             needsHumanReview
               ? "Aguardando sua resposta"
               : hasConfirmedDelivery
-              ? "Atria respondeu"
+              ? "Brain respondeu"
               : deliveryStatus === "dispatch_uncertain"
               ? "Entrega incerta"
-              : "Atria avaliou",
+              : "Brain avaliou",
             needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
             needsHumanReview
               ? { atriaThought: "Brain solicitou uma informação factual ao operador." }

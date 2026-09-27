@@ -6,11 +6,16 @@ import {
   formatBrainEvent,
   formatBrainPhase,
   formatBrainStatus,
+  formatVisibleBrainIdentity,
   groupBrainTurns,
+  selectActiveBrainTurn,
+  getVisibleBrainTurns,
   initialBrainTurnUiState,
 } from "../src/presentation/components/chat/brain-turn-view-model.ts";
 
 const uiSource = readFileSync(new URL("../src/presentation/components/chat/AutoPilotActivityIndicator.tsx", import.meta.url), "utf8");
+const assistantModalSource = readFileSync(new URL("../src/presentation/components/chat/AiAssistantModal.tsx", import.meta.url), "utf8");
+const orchestratorSource = readFileSync(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
 
 const event = (turnId, name, timestamp, extra = {}) => ({
   turnId,
@@ -73,6 +78,90 @@ test("F: waiting_human continua como o mesmo turno ativo", () => {
   assert.equal(turns[0].id, "turn:turn-15");
   assert.equal(turns[0].status, "waiting_human");
   assert.equal(turns[0].finishedAt, undefined);
+});
+
+test("Robson: a view conclui só com os eventos, sem inbound novo", () => {
+  const events = [
+    ["decision_persisted", "20:27:43", undefined],
+    ["response_ready", "20:27:44", undefined],
+    ["action_sent", "20:27:46", "action-1"],
+    ["action_sending", "20:27:48", "action-2"],
+    ["cycle_completed", "20:27:48", undefined],
+    ["action_sent", "20:27:49", "action-2"],
+    ["fully_sent", "20:27:49", undefined],
+    ["turn_completed", "20:27:49", undefined],
+    ["phase_scheduled", "20:28:44", undefined],
+  ].map(([name, time, actionId], index) => event(
+    "turn-robson",
+    name,
+    `2026-09-27T${time}Z`,
+    { sequence: index, actionId, phase: name === "phase_scheduled" ? "scheduled" : "brain" },
+  ));
+
+  const [turn] = groupBrainTurns(events);
+  assert.equal(turn.status, "completed");
+  assert.equal(turn.finishedAt, "2026-09-27T20:27:49Z");
+  assert.equal(turn.summary.sentCount, 2);
+  assert.equal(formatBrainStatus(turn.status), "Concluído");
+  assert.equal(selectActiveBrainTurn([turn], { now: "2026-09-27T20:28:45Z", activeCycleToken: null }), null);
+});
+
+test("ciclo provisório órfão é ocultado depois de turnos reais mais novos", () => {
+  const turns = groupBrainTurns([
+    { ...event(undefined, "toggle_immediate_started", "2026-09-27T01:22:31Z"), turnId: undefined, cycleId: "corr_toggle_imm_1790482950802_824hv0", sessionId: "shared-session" },
+    event("turn-3", "turn_completed", "2026-09-27T03:00:00Z"),
+    event("turn-4", "turn_completed", "2026-09-27T03:10:00Z"),
+  ]);
+  const runtime = { now: "2026-09-27T03:11:00Z", activeCycleToken: null };
+  assert.equal(selectActiveBrainTurn(turns, runtime), null);
+  assert.equal(getVisibleBrainTurns(turns, runtime).some((turn) => turn.cycleId === "corr_toggle_imm_1790482950802_824hv0"), false);
+});
+
+test("turno antigo com progresso é superado por um turno real posterior", () => {
+  const turns = groupBrainTurns([
+    { ...event(undefined, "brain_started", "2026-09-27T01:22:31Z"), turnId: undefined, cycleId: "cycle-orphan-progress", sessionId: "shared-session" },
+    event("turn-3", "turn_completed", "2026-09-27T03:00:00Z"),
+    event("turn-4", "turn_completed", "2026-09-27T03:10:00Z"),
+  ]);
+  const runtime = { now: "2026-09-27T03:11:00Z", activeCycleToken: null };
+  assert.equal(selectActiveBrainTurn(turns, runtime), null);
+  assert.equal(getVisibleBrainTurns(turns, runtime).some((turn) => turn.id === "cycle:cycle-orphan-progress"), false);
+});
+
+test("ciclo provisório recente pode aparecer como Iniciando, mas expira sem progressão", () => {
+  const turns = groupBrainTurns([
+    { ...event(undefined, "toggle_immediate_started", "2026-09-27T03:00:00Z"), turnId: undefined, cycleId: "cycle-provisional", sessionId: "shared-session" },
+  ]);
+  const active = selectActiveBrainTurn(turns, { now: "2026-09-27T03:00:05Z", activeCycleToken: null });
+  assert.equal(active?.cycleId, "cycle-provisional");
+  assert.equal(active?.provisional, true);
+  assert.equal(selectActiveBrainTurn(turns, { now: "2026-09-27T03:01:00Z", activeCycleToken: null }), null);
+});
+
+test("ciclos diferentes na mesma sessão mantêm identidades de turno distintas", () => {
+  const turns = groupBrainTurns([
+    { ...event(undefined, "brain_started", "2026-09-27T03:00:00Z"), turnId: undefined, cycleId: "cycle-a", sessionId: "shared-session" },
+    { ...event(undefined, "brain_started", "2026-09-27T03:01:00Z"), turnId: undefined, cycleId: "cycle-b", sessionId: "shared-session" },
+  ]);
+  assert.equal(turns.length, 2);
+  assert.deepEqual(new Set(turns.map((turn) => turn.cycleId)), new Set(["cycle-a", "cycle-b"]));
+});
+
+test("rótulos de compatibilidade Atria são apresentados como Brain", () => {
+  assert.doesNotMatch(orchestratorSource, /["']Atria (?:avaliou|respondeu)["']/);
+  assert.match(orchestratorSource, /["']Brain (?:avaliou|respondeu)["']/);
+  assert.doesNotMatch(assistantModalSource, /Atria(?: Dawn| elaborando| avaliou| respondeu| pensando|-ASI)/i);
+  assert.equal(formatVisibleBrainIdentity("Atria avaliou · Atria respondeu"), "Brain avaliou · Brain respondeu");
+  assert.equal(formatVisibleBrainIdentity("Atria-Dawn-Preview"), "Brain");
+  assert.equal(formatBrainPhase("atria"), "Raciocinando");
+  assert.match(uiSource, /formatVisibleBrainIdentity\(state\.activity\.label\)/);
+});
+
+test("estado legado atria e atriaThought permanece compatível sem vazar a identidade antiga", () => {
+  const legacy = { phase: "atria", atriaThought: "Atria respondeu e concluiu o turno." };
+  assert.equal(formatBrainPhase(legacy.phase), "Raciocinando");
+  assert.equal(formatVisibleBrainIdentity(legacy.atriaThought), "Brain respondeu e concluiu o turno.");
+  assert.match(uiSource, /activity\?\.atriaThought/);
 });
 
 test("G: status desconhecido usa texto seguro na camada principal", () => {

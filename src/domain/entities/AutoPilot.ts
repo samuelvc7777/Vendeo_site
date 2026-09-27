@@ -64,7 +64,7 @@ export interface AutoPilotActivity {
 }
 
 export interface AutoPilotCycleEvent {
-  cycleId: string;
+  cycleId?: string;
   turnId?: string;
   sessionId?: string;
   actionId?: string;

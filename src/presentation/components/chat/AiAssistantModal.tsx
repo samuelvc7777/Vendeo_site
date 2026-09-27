@@ -93,7 +93,7 @@ export function AiAssistantModal({
     const isPro = selectedModel.includes("pro");
     const isAtria = /atria/i.test(selectedModel);
     const modelLabel = isAtria
-      ? "Atria Dawn (Atria-ASI)"
+      ? "Brain"
       : isSol
       ? "ChatGPT Sol (Kie.ai)"
       : isTerra
@@ -128,20 +128,20 @@ export function AiAssistantModal({
         progress = Math.min(97, 89 + (1 - Math.exp(-extra / 3)) * 8);
         status = "Quase pronto, finalizando balões de mensagem...";
       }
-      // Atria é um reasoning model: a barra precisa respirar além dos 8s
+      // O modelo legado de raciocínio precisa de uma barra que respire além dos 8s.
       if (isAtria) {
         if (elapsed < 15) {
           progress = Math.max(progress, 72 + ((elapsed - 5) / 10) * 15);
           status = "Raciocinando sobre o histórico e a personalidade da Larissa...";
         } else if (elapsed < 30) {
           progress = Math.max(progress, 87 + ((elapsed - 15) / 15) * 7);
-          status = "Atria elaborando os balões no tom autêntico...";
+          status = "Brain elaborando os balões no tom autêntico...";
         } else if (elapsed < 60) {
           progress = Math.max(progress, 94 + ((elapsed - 30) / 30) * 3);
           status = "Finalizando a fala, quase aí...";
         } else {
           progress = Math.max(progress, 97);
-          status = "Recebendo os últimos balões da Atria...";
+          status = "Recebendo os últimos balões do Brain...";
         }
       }
 
@@ -394,7 +394,7 @@ export function AiAssistantModal({
         : (currentMessages || []).filter((m: any) => !m.isMine).map((m: any, i: number) => ({ index: i, text: m.text || "" }));
 
       const recentUsedEmojis = extractUsedEmojis(currentMessages);
-      // Atria (vLLM) pode devolver quebras de linha \r\n; normalizamos antes de sanitizar
+      // O provedor legado pode devolver quebras de linha CRLF; normalizamos antes de sanitizar.
       const rawResponses: string[] = Array.isArray(data.responses) ? data.responses : [];
       const normalizedResponses = rawResponses.map((r: string) =>
         typeof r === "string" ? r.replace(/\r\n/g, "\n").replace(/\r/g, "") : r
@@ -1165,7 +1165,7 @@ export function AiAssistantModal({
         {/* Abas de Navegação Estilo Segmented Control Moderno (Mobile-First) */}
         <div className="px-3 sm:px-4 py-2.5 border-b border-[#26262a] bg-[#141416] shrink-0">
           <div className="p-1 rounded-2xl bg-[#1c1c20] border border-white/5 flex gap-1.5 items-center">
-            {/* Aba 0: Responder de Cara (Geração Instantânea Atria) */}
+            {/* Aba 0: Responder de Cara (Geração Instantânea do Brain) */}
             <button
               type="button"
               onClick={() => setActiveTab("generate")}
@@ -1252,7 +1252,7 @@ export function AiAssistantModal({
                       <div className="flex items-center gap-1.5">
                         <span className="text-xs font-bold text-white tracking-wide">
                           {/atria/i.test(selectedModel)
-                            ? "Atria Dawn (Atria-ASI)"
+                            ? "Brain"
                             : selectedModel.includes("sol")
                             ? "ChatGPT Sol (Kie.ai)"
                             : selectedModel.includes("terra")
@@ -1282,7 +1282,7 @@ export function AiAssistantModal({
                       </div>
                       <p className="text-[10px] text-zinc-400">
                         {/atria/i.test(selectedModel)
-                          ? "Atria-Dawn-Preview • Motor de raciocínio autêntico, fala natural e humana"
+                          ? "Brain • Motor de raciocínio, fala natural e humana"
                           : selectedModel.includes("sol")
                           ? "Kie.ai gpt-5-6-sol • Personalidade humana autêntica, pausas inteligentes e funil"
                           : selectedModel.includes("terra")
@@ -1305,7 +1305,7 @@ export function AiAssistantModal({
                         )}
                       >
                         <Zap className="w-3 h-3 text-emerald-400" />
-                        Atria
+                        Brain
                       </button>
                       <button
                         type="button"
@@ -1382,7 +1382,7 @@ export function AiAssistantModal({
                     ) : (
                       <p className="text-xs text-zinc-400 mt-0.5">
                         {/atria/i.test(selectedModel)
-                          ? "Atria-Dawn-Preview • Raciocinando sobre o histórico e o estilo autêntico da Larissa"
+                          ? "Brain • Raciocinando sobre o histórico e o estilo autêntico da Larissa"
                           : selectedModel.includes("sol")
                           ? "ChatGPT Sol (Kie.ai) • Elaborando balões autênticos no estilo meigo da Larissa"
                           : selectedModel.includes("terra")
@@ -1474,7 +1474,7 @@ export function AiAssistantModal({
                       </div>
                       <div>
                         <h3 className="text-sm font-bold text-white">
-                          Resposta da Larissa ({/atria/i.test(selectedModel) ? "Atria Dawn" : selectedModel.includes("sol") ? "ChatGPT Sol" : selectedModel.includes("terra") ? "ChatGPT Terra" : "DeepSeek"})
+                          Resposta da Larissa ({/atria/i.test(selectedModel) ? "Brain" : selectedModel.includes("sol") ? "ChatGPT Sol" : selectedModel.includes("terra") ? "ChatGPT Terra" : "DeepSeek"})
                         </h3>
                         <p className="text-xs text-zinc-400">
                           {selectedTargetMessageId
