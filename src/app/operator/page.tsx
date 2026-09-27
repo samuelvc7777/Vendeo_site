@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LockKeyhole } from "lucide-react";
+import { checkBrainOperatorSession, loginBrainOperator, logoutBrainOperator } from "@/infrastructure/http/brainOperatorApi";
 
 export default function BrainOperatorPage() {
   const router = useRouter();
@@ -13,8 +14,7 @@ export default function BrainOperatorPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    void fetch("/api/operator/session", { cache: "no-store" })
-      .then((response) => response.json())
+    void checkBrainOperatorSession()
       .then((result) => {
         setIsConfigured(result.enabled === true);
         setIsAuthenticated(result.authenticated === true);
@@ -28,14 +28,7 @@ export default function BrainOperatorPage() {
     setIsSubmitting(true);
     setError("");
     try {
-      const response = await fetch("/api/operator/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-        cache: "no-store",
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "Não foi possível iniciar a sessão de operador.");
+      await loginBrainOperator(password);
       setPassword("");
       const returnTo = new URLSearchParams(window.location.search).get("returnTo") || "/";
       router.replace(returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/");
@@ -47,7 +40,7 @@ export default function BrainOperatorPage() {
   };
 
   const handleLogout = async () => {
-    await fetch("/api/operator/session", { method: "DELETE", cache: "no-store" });
+    await logoutBrainOperator();
     setIsAuthenticated(false);
   };
 

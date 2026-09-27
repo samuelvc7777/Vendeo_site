@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/build-static-export.mjs",
     "start": "next start",
     "lint": "eslint",
     "prompt:build": "node scripts/build-larissa-canonical-prompt.mjs",

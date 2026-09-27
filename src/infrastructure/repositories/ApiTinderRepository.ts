@@ -4,10 +4,11 @@ import {
   TinderMessageItem,
 } from "@/domain/repositories/ITinderRepository";
 import { TinderSession } from "@/domain/entities/Tinder";
+import { getApiUrl } from "@/infrastructure/http/network";
 
 export class ApiTinderRepository implements ITinderRepository {
   async connect(token: string): Promise<TinderSession> {
-    const res = await fetch("/api/tinder/auth", {
+    const res = await fetch(getApiUrl("/api/tinder/auth"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
@@ -27,12 +28,12 @@ export class ApiTinderRepository implements ITinderRepository {
   }
 
   async disconnect(): Promise<void> {
-    await fetch("/api/tinder/disconnect", { method: "POST" });
+    await fetch(getApiUrl("/api/tinder/disconnect"), { method: "POST" });
   }
 
   async getSession(): Promise<TinderSession | null> {
     try {
-      const res = await fetch("/api/tinder/status");
+      const res = await fetch(getApiUrl("/api/tinder/status"));
       if (!res.ok) return null;
       const data = await res.json();
       if (!data.isConnected) return null;
@@ -48,7 +49,7 @@ export class ApiTinderRepository implements ITinderRepository {
   }
 
   async getMatches(): Promise<TinderMatchItem[]> {
-    const res = await fetch("/api/tinder/matches");
+    const res = await fetch(getApiUrl("/api/tinder/matches"));
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || "Falha ao carregar matches.");
@@ -57,7 +58,7 @@ export class ApiTinderRepository implements ITinderRepository {
   }
 
   async getMessages(matchId: string): Promise<TinderMessageItem[]> {
-    const res = await fetch(`/api/tinder/messages/${matchId}`);
+    const res = await fetch(getApiUrl(`/api/tinder/messages/${matchId}`));
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || "Falha ao carregar mensagens.");
@@ -66,7 +67,7 @@ export class ApiTinderRepository implements ITinderRepository {
   }
 
   async sendMessage(matchId: string, text: string): Promise<TinderMessageItem> {
-    const res = await fetch(`/api/tinder/messages/${matchId}`, {
+    const res = await fetch(getApiUrl(`/api/tinder/messages/${matchId}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),

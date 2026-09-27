@@ -19,6 +19,9 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { InstagramAccount } from "@/domain/entities/Instagram";
+import { getApiUrl } from "@/infrastructure/http/network";
+
+const INSTAGRAM_WEBHOOK_URL = `${(process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "")}/functions/v1/api/instagram/webhook`;
 
 interface InstagramConnectModalProps {
   isOpen: boolean;
@@ -52,7 +55,7 @@ export function InstagramConnectModal({
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      setWebhookUrl(`${window.location.origin}/api/instagram/webhook`);
+      setWebhookUrl(INSTAGRAM_WEBHOOK_URL);
     }
   }, []);
 
@@ -60,7 +63,7 @@ export function InstagramConnectModal({
     setLoadingInitial(true);
     setErrorMessage("");
     try {
-      const res = await fetch("/api/instagram/config");
+      const res = await fetch(getApiUrl("/api/instagram/config"));
       if (res.ok) {
         const data = await res.json();
         setIsConnected(Boolean(data.isConnected));
@@ -94,7 +97,7 @@ export function InstagramConnectModal({
     setSuccessMessage("");
 
     try {
-      const res = await fetch("/api/instagram/config", {
+      const res = await fetch(getApiUrl("/api/instagram/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -128,7 +131,7 @@ export function InstagramConnectModal({
 
     setIsSubmitting(true);
     try {
-      await fetch("/api/instagram/config", { method: "DELETE" });
+      await fetch(getApiUrl("/api/instagram/config"), { method: "DELETE" });
       setIsConnected(false);
       setAccount(null);
       setSuccessMessage("Conta desconectada.");
@@ -232,7 +235,7 @@ export function InstagramConnectModal({
                   <div>
                     <span className="text-[10px] text-[#71717a] uppercase font-semibold">URL de Retorno de Chamada (Callback URL)</span>
                     <div className="flex items-center justify-between bg-black/60 border border-[#27272a] rounded-lg px-2.5 py-1.5 mt-1 font-mono text-[11px] text-zinc-300">
-                      <span className="truncate mr-2">{webhookUrl || "/api/instagram/webhook"}</span>
+                      <span className="truncate mr-2">{webhookUrl || INSTAGRAM_WEBHOOK_URL}</span>
                       <button
                         type="button"
                         onClick={() => copyToClipboard(webhookUrl, "url")}

@@ -4,10 +4,6 @@
     "cleanUrls": true,
     "rewrites": [
       {
-        "source": "/api/**",
-        "destination": "https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api/**"
-      },
-      {
         "source": "**",
         "destination": "/index.html"
       }

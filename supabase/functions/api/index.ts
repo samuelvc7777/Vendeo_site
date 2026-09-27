@@ -25,6 +25,15 @@ import {
 import { getStaleCycleThresholdIso } from "./autopilot_cycle_safety.ts";
 import { isPrivilegedOperationalRequest } from "./operational_authorization.ts";
 import { brainLateRecoveryDisposition, getExistingOpenAiTurn } from "./openai_brain.ts";
+import {
+  brainOperatorAllowedOrigin,
+  brainOperatorIsConfigured,
+  brainOperatorPasswordMatches,
+  createBrainOperatorToken,
+  hashBrainOperatorAddress,
+  isBrainOperatorRequest,
+  verifyBrainOperatorToken,
+} from "./brain_operator_auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -528,6 +537,14 @@ serve(async (req: Request) => {
     .replace(/^\/api/, "");
   if (!path.startsWith("/")) path = `/${path}`;
 
+  const operatorRouteAliases: Record<string, string> = {
+    "/operator/brain/events": "/autopilot/brain-events",
+    "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
+    "/operator/brain/manual-resolution": "/autopilot/manual-resolution",
+    "/operator/brain/retry-once": "/autopilot/retry-once",
+  };
+  path = operatorRouteAliases[path] || path;
+
   // Trata OPTIONS para CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -535,6 +552,81 @@ serve(async (req: Request) => {
 
   try {
     const supabase = getSupabaseClient();
+
+    if (path === "/operator/session" && req.method === "GET") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ enabled: brainOperatorIsConfigured(), authenticated: false }), {
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const authorization = req.headers.get("authorization") || "";
+      const authenticated = authorization.startsWith("Bearer ")
+        && await verifyBrainOperatorToken(authorization.slice(7));
+      return new Response(JSON.stringify({ enabled: brainOperatorIsConfigured(), authenticated }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    if (path === "/operator/session" && req.method === "POST") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ error: "Origem inválida." }), {
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!brainOperatorIsConfigured()) {
+        return new Response(JSON.stringify({ error: "Acesso de operador não foi configurado no servidor." }), {
+          status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const body = await req.json().catch(() => ({}));
+      const password = typeof body?.password === "string" ? body.password : "";
+      if (password.length > 1024) {
+        return new Response(JSON.stringify({ error: "Senha de operador inválida." }), {
+          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const keyHash = await hashBrainOperatorAddress(req);
+      const { data: rateLimit, error: rateLimitError } = await supabase.rpc("consume_brain_operator_login_attempt", {
+        p_key_hash: keyHash,
+      });
+      if (rateLimitError || !rateLimit) {
+        return new Response(JSON.stringify({ error: "Autenticação temporariamente indisponível." }), {
+          status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (rateLimit.allowed !== true) {
+        const retryAfter = Math.max(1, Number(rateLimit.retry_after_seconds) || 1);
+        return new Response(JSON.stringify({ error: "Muitas tentativas de acesso. Aguarde e tente novamente." }), {
+          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json", "Retry-After": String(retryAfter) },
+        });
+      }
+      if (!await brainOperatorPasswordMatches(password)) {
+        return new Response(JSON.stringify({ error: "Senha de operador inválida." }), {
+          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        await supabase.rpc("clear_brain_operator_login_attempts", { p_key_hash: keyHash });
+      } catch {
+        // A falha ao limpar o contador não deve bloquear uma autenticação válida.
+      }
+      const accessToken = await createBrainOperatorToken();
+      return new Response(JSON.stringify({ success: true, accessToken }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    if (path === "/operator/session" && req.method === "DELETE") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ error: "Origem inválida." }), {
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
 
     // ==========================================
     // 1. INSTAGRAM / META WEBHOOK (Handshake & Events)
@@ -4862,7 +4954,7 @@ serve(async (req: Request) => {
     // ==========================================
     // Retoma o turno persistido após o operador responder uma resolução manual.
     if ((path === "/autopilot/brain-events" || path === "/api/autopilot/brain-events") && req.method === "GET") {
-      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
         return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
       const conversationId = new URL(req.url).searchParams.get("conversationId") || "";
@@ -4878,7 +4970,7 @@ serve(async (req: Request) => {
     }
 
     if ((path === "/autopilot/retry-failed-action" || path === "/api/autopilot/retry-failed-action") && req.method === "POST") {
-      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
         return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
       try {
@@ -4899,7 +4991,7 @@ serve(async (req: Request) => {
     }
 
     if ((path === "/autopilot/manual-resolution" || path === "/api/autopilot/manual-resolution") && req.method === "POST") {
-      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
         return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
       try {
@@ -4988,7 +5080,7 @@ serve(async (req: Request) => {
     // Autoriza EXATAMENTE UMA tentativa manual do Brain quando technical_retry_exhausted
     // ==========================================
     if ((path === "/autopilot/retry-once" || path === "/api/autopilot/retry-once") && req.method === "POST") {
-      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))) {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
         return new Response(JSON.stringify({ error: "Acesso operacional exige a sessão autenticada do operador." }), {
           status: 401,
           headers: { ...corsHeaders, "Content-Type": "application/json" },

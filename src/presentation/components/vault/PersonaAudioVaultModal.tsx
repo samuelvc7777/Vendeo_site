@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import { PersonaAudioAsset, ChatStage } from "@/domain/entities/ChatStage";
 import { usePersonaAudios } from "@/presentation/hooks/usePersonaAudios";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
+import { getApiUrl } from "@/infrastructure/http/network";
 
 interface PersonaAudioVaultModalProps {
   isOpen: boolean;
@@ -215,7 +216,7 @@ export function PersonaAudioVaultModal({
       formData.append("file", file);
       formData.append("type", "audio");
 
-      const upRes = await fetch("/api/instagram/upload", {
+      const upRes = await fetch(getApiUrl("/api/instagram/upload"), {
         method: "POST",
         body: formData,
       });

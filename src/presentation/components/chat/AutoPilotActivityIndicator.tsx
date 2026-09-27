@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { brainOperatorFetch, checkBrainOperatorSession } from "@/infrastructure/http/brainOperatorApi";
 import { AutoPilotActivityPhase, AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
@@ -677,9 +678,8 @@ export function AutoPilotActivityIndicator({
     const loadCanonicalEvents = async () => {
       let nextDelay = 15000;
       try {
-        const sessionResponse = await fetch("/api/operator/session", { cache: "no-store" });
-        const session = await sessionResponse.json().catch(() => ({}));
-        if (!sessionResponse.ok || session.authenticated !== true) {
+        const session = await checkBrainOperatorSession();
+        if (session.authenticated !== true) {
           if (!cancelled) {
             setOperatorAuthenticated(false);
             setOperationsAccessDenied(true);
@@ -690,7 +690,7 @@ export function AutoPilotActivityIndicator({
         }
         if (!cancelled) setOperatorAuthenticated(true);
         const query = new URLSearchParams({ conversationId: targetId });
-        const response = await fetch(`/api/operator/brain/events?${query.toString()}`, { cache: "no-store" });
+        const response = await brainOperatorFetch(`/operator/brain/events?${query.toString()}`);
         const result = await response.json().catch(() => ({})) as {
           success?: boolean;
           events?: Array<{
@@ -753,7 +753,7 @@ export function AutoPilotActivityIndicator({
     if (!targetId || !operatorAuthenticated || retryingActionId) return;
     setRetryingActionId(actionId);
     try {
-      const response = await fetch("/api/operator/brain/retry-failed-action", {
+      const response = await brainOperatorFetch("/operator/brain/retry-failed-action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId, actionId }),
@@ -1022,7 +1022,7 @@ export function AutoPilotActivityIndicator({
     if (!targetId || !operatorAuthenticated || isRetryingManual) return;
     setIsRetryingManual(true);
     try {
-      const res = await fetch("/api/operator/brain/retry-once", {
+      const res = await brainOperatorFetch("/operator/brain/retry-once", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: targetId }),
@@ -1044,7 +1044,7 @@ export function AutoPilotActivityIndicator({
     if (!targetId || !operatorAuthenticated || !manualResolutionAnswer.trim() || isSubmittingResolution) return;
     setIsSubmittingResolution(true);
     try {
-      const response = await fetch("/api/operator/brain/manual-resolution", {
+      const response = await brainOperatorFetch("/operator/brain/manual-resolution", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
