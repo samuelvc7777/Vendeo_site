@@ -4,12 +4,8 @@ import React, { useCallback, useState, useEffect } from "react";
 import {
   Bot,
   Clock,
-  ShieldCheck,
-  AlertTriangle,
   Sparkles,
   Trophy,
-  Sliders,
-  Check,
   BellRing,
   Key,
   Info,
@@ -227,30 +223,16 @@ export function AutoPilotConfigManager() {
         </div>
       </div>
 
-      {/* Observação de Parada Graciosa */}
-      <div
-        className={`p-3 rounded-xl border text-[11px] leading-relaxed transition-all ${
-          config.isEnabledGlobally
-            ? "bg-emerald-950/20 border-emerald-500/30 text-zinc-300"
-            : "bg-amber-950/25 border-amber-500/40 text-amber-200/90"
-        }`}
-      >
-        <div className="flex items-start gap-2.5">
-          <Info className={`w-4 h-4 shrink-0 mt-0.5 ${config.isEnabledGlobally ? "text-emerald-400" : "text-amber-400"}`} />
-          <div className="space-y-1">
-            <span className="font-bold text-xs block text-white flex items-center gap-1.5 flex-wrap">
-              Observação sobre Desligamento & Parada
-              <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${config.isEnabledGlobally ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
-                {config.isEnabledGlobally ? "Monitoramento Ativo" : "Parada Segura"}
-              </span>
-            </span>
-            <p className="text-zinc-300 leading-snug">
-              Caso a IA seja desligada enquanto já estiver <strong>em processo de análise (pensamento)</strong> ou <strong>enviando mensagens</strong>, ela <strong>concluirá esse atendimento atual</strong> com segurança para não cortar frases pela metade.
-            </p>
-            <p className="text-zinc-400 leading-snug">
-              Todas as outras conversas que ainda estiverem aguardando o tempo de resposta são <strong>paradas imediatamente</strong>. Assim que a conversa que já estava em curso finalizar, o sistema para por completo de forma 100% automática.
-            </p>
-          </div>
+      <div className={`rounded-xl border px-3 py-2.5 text-[11px] leading-relaxed ${
+        config.isEnabledGlobally
+          ? "border-emerald-500/20 bg-emerald-500/5 text-zinc-400"
+          : "border-amber-500/25 bg-amber-500/5 text-zinc-400"
+      }`}>
+        <div className="flex items-start gap-2">
+          <Info className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${config.isEnabledGlobally ? "text-emerald-400" : "text-amber-400"}`} />
+          <p>
+            Ao desligar, chats parados são interrompidos na hora. Um ciclo que já estiver processando termina com segurança e desliga em seguida.
+          </p>
         </div>
       </div>
 
@@ -275,19 +257,19 @@ export function AutoPilotConfigManager() {
             <Key className="w-3 h-3 text-amber-400" />
             Chave da API OpenAI
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <input
               type="password"
               placeholder="sk-proj-..."
               value={openAiKey}
               onChange={(e) => setOpenAiKey(e.target.value)}
-              className="flex-1 bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500"
+              className="min-h-11 min-w-0 w-full flex-1 rounded-xl border border-white/10 bg-[#121214] px-3 py-2 text-xs text-white placeholder-zinc-600 outline-none transition focus:border-purple-500"
             />
             <button
               type="button"
               disabled={isSavingKey}
               onClick={handleSaveOpenAiConfig}
-              className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-xs font-bold text-white transition-all shrink-0 cursor-pointer shadow-sm"
+              className="min-h-11 w-full shrink-0 rounded-xl bg-purple-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-purple-500 disabled:opacity-40 sm:w-auto"
             >
               {isSavingKey ? "Salvando..." : "Salvar configuração"}
             </button>
@@ -338,7 +320,7 @@ export function AutoPilotConfigManager() {
       </div>
 
       {/* Card 0: Operação 100% Automática Direta */}
-      <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-white/5 flex items-center justify-between">
+      <div className="flex flex-col gap-3 rounded-xl border border-white/5 bg-[#1a1a1d] p-3.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-purple-500/20 flex items-center justify-center text-purple-400">
             <Sparkles className="w-4 h-4" />
@@ -352,21 +334,21 @@ export function AutoPilotConfigManager() {
             </span>
           </div>
         </div>
-        <span className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 shrink-0">
-          ⚡ 100% Autônomo
+        <span className="self-start shrink-0 rounded-lg border border-purple-500/30 bg-purple-500/20 px-2.5 py-1 text-[10px] font-bold text-purple-300 sm:self-auto">
+          100% Autônomo
         </span>
       </div>
 
-      {/* Card: Notificações Móveis e Push (Firebase Cloud Messaging) */}
-      <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-white/5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5 pr-2">
+      {/* Notificações móveis */}
+      <div className="space-y-3 rounded-xl border border-white/5 bg-[#1a1a1d] p-3.5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 space-y-0.5">
             <span className="text-xs font-semibold text-white flex items-center gap-1.5">
               <BellRing className="w-3.5 h-3.5 text-purple-400" />
-              Notificações Móveis no Celular (Push Notification)
+              Notificações no celular
             </span>
             <p className="text-[11px] text-zinc-400 leading-relaxed">
-              Receba alertas com som e vibração no smartphone mesmo com a tela bloqueada ou em outro app quando a IA gerar propostas ou chegarem mensagens.
+              Receba alertas quando chegarem mensagens ou quando o Brain precisar da sua atenção.
             </p>
           </div>
           <button
@@ -378,7 +360,7 @@ export function AutoPilotConfigManager() {
                 mobileNotifications.requestPermission();
               }
             }}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer shadow-sm ${
+            className={`min-h-11 w-full shrink-0 rounded-xl px-4 py-2 text-xs font-bold shadow-sm transition-all sm:w-auto ${
               mobileNotifications.permission === "granted"
                 ? "bg-emerald-600 hover:bg-emerald-500 text-white"
                 : "bg-purple-600 hover:bg-purple-500 text-white animate-pulse"
@@ -436,7 +418,7 @@ export function AutoPilotConfigManager() {
           <p className="text-[10px] text-zinc-500 leading-relaxed">
             Contado da primeira mensagem do lote. Ao atingir esse limite o Brain responde mesmo que continuem chegando novos balões.
           </p>
-          <div className="grid grid-cols-5 gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
             {MAX_BATCH_PRESETS.map((preset) => {
               const effectiveValue = Math.max(preset.value, config.responseDelayMinutes);
               const isSelected = config.maxDebounceWindowMinutes === effectiveValue;
@@ -459,8 +441,8 @@ export function AutoPilotConfigManager() {
 
       {/* Card 2: Parada Crítica da Rifa (Hand-off) */}
       <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-white/5 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5 pr-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-0.5">
             <span className="text-xs font-semibold text-white flex items-center gap-1.5">
               <Trophy className="w-3.5 h-3.5 text-amber-400" />
               Pausar e Notificar no Momento da Rifa
@@ -481,51 +463,7 @@ export function AutoPilotConfigManager() {
         </div>
       </div>
 
-      {/* Card 3: Guardrails de Segurança (Fotos & Conteúdo Sensível) */}
-      <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-white/5 space-y-3">
-        <span className="text-xs font-semibold text-white flex items-center gap-1.5">
-          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-          Guardrails de Segurança (Pausa para Permissão Humana):
-        </span>
 
-        <div className="space-y-2 pt-1">
-          <div className="flex items-center justify-between py-1 border-b border-white/5">
-            <div className="pr-2">
-              <span className="text-xs text-zinc-200">Pausar se receber Foto do Cliente</span>
-              <p className="text-[10px] text-zinc-400">
-                Pede aprovação antes de continuar caso o cliente envie imagens.
-              </p>
-            </div>
-            <label className="relative inline-flex items-center cursor-pointer shrink-0">
-              <input
-                type="checkbox"
-                checked={config.pauseOnPhotoReceived}
-                onChange={(e) => handleUpdate({ pauseOnPhotoReceived: e.target.checked })}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-            </label>
-          </div>
-
-          <div className="flex items-center justify-between py-1">
-            <div className="pr-2">
-              <span className="text-xs text-zinc-200">Pausar em Conteúdo Estranho / Explícito</span>
-              <p className="text-[10px] text-zinc-400">
-                Interrompe a IA se detectar palavras abusivas, cobranças ou assédio.
-              </p>
-            </div>
-            <label className="relative inline-flex items-center cursor-pointer shrink-0">
-              <input
-                type="checkbox"
-                checked={config.pauseOnSensitiveContent}
-                onChange={(e) => handleUpdate({ pauseOnSensitiveContent: e.target.checked })}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-            </label>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
