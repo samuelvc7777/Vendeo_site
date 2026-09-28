@@ -1260,7 +1260,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           const { data, error } = await supabase
             .from("instagram_conversations")
             .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
-            .not("id", "like", "\_\_%")
             .neq("status", "vault")
             .neq("status", "system")
             .order("last_message_at", { ascending: false, nullsFirst: false })

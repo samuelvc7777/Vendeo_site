@@ -342,11 +342,11 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     try {
       const { data: summaries, error: summaryError } = await client
         .from("instagram_conversations")
-        .select("id, current_stage_id, is_converted, updated_at")
-        .not("id", "like", "\_\_%");
+        .select("id, current_stage_id, is_converted, updated_at");
       if (!summaryError && summaries) {
         const configuredInitialStageId = (await this.getStages())[0]?.id || "";
         for (const row of summaries) {
+          if (!row.id || row.id.startsWith("__")) continue;
           result[row.id] = {
             conversationId: row.id,
             currentStageId: resolveCurrentStageId(row.current_stage_id, configuredInitialStageId),
@@ -366,9 +366,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     try {
       const { data, error } = await client
         .from("instagram_conversations")
-        .select("id, contact_id, current_stage_id, stage_completed_rules")
-        .not("id", "like", "\\_\\_%")
-        .not("contact_id", "like", "\\_\\_%");
+        .select("id, contact_id, current_stage_id, stage_completed_rules, updated_at");
 
       if (error || !data) return result;
       const configuredInitialStageId = (await this.getStages())[0]?.id || "";
