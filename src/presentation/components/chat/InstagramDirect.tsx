@@ -5272,7 +5272,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         ai.status === "failed" ? "text-red-400" :
                         ai.status === "uncertain" ? "text-orange-300" :
                         ai.status === "waiting_human" ? "text-violet-300" :
-                        ai.status === "waiting_delay" ? "text-amber-300" :
+                        ai.status === "waiting_delay" || ai.status === "queued" ? "text-amber-300" :
                         ai.status === "sending" ? "text-emerald-300" :
                         ai.status === "processing" ? "text-sky-300" :
                         ai.status === "completed" ? "text-emerald-400" :
@@ -5281,13 +5281,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         ai.status === "failed" ? "bg-red-400" :
                         ai.status === "uncertain" ? "bg-orange-300" :
                         ai.status === "waiting_human" ? "bg-violet-300" :
-                        ai.status === "waiting_delay" ? "bg-amber-300" :
+                        ai.status === "waiting_delay" || ai.status === "queued" ? "bg-amber-300" :
                         ai.status === "sending" ? "bg-emerald-300" :
                         ai.status === "processing" ? "bg-sky-300" :
                         ai.status === "completed" ? "bg-emerald-400" :
                         "bg-[#525252]";
+                      const objectiveIsCurrent =
+                        ai.status === "processing" ||
+                        ai.status === "sending" ||
+                        ai.status === "waiting_human";
                       const objectiveText = ai.objectiveLabel
-                        ? `${ai.active ? "Objetivo" : "Último"}: ${ai.objectiveLabel}`
+                        ? `${objectiveIsCurrent ? "Objetivo" : "Último"}: ${ai.objectiveLabel}`
                         : null;
                       const actionText = ai.actionTypes?.length
                         ? ai.actionTypes.map((type) => type === "audio" ? "áudio" : type === "text" ? "texto" : type).join(" + ")

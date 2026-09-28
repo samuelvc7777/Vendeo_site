@@ -4983,7 +4983,7 @@ serve(async (req: Request) => {
           .order("created_at", { ascending: false })
           .limit(Math.min(5000, conversationIds.length * 12)),
         supabase.from("instagram_conversations")
-          .select("id, ai_auto_respond, ai_debounce_until")
+          .select("id, ai_auto_respond, ai_debounce_until, stage_completed_rules")
           .in("id", conversationIds),
       ]);
       if (turnResult.error || actionResult.error || eventResult.error || conversationResult.error) {
@@ -5020,6 +5020,7 @@ serve(async (req: Request) => {
         id: string;
         ai_auto_respond: boolean | null;
         ai_debounce_until: string | null;
+        stage_completed_rules: Record<string, unknown> | null;
       };
       type BrainOverviewItem = {
         status: string;
@@ -5077,6 +5078,23 @@ serve(async (req: Request) => {
         const sentCount = latestDecisionActions.filter((action) => action.status === "sent").length;
         const totalCount = latestDecisionActions.length;
         const actionTypes = [...new Set(latestDecisionActions.map((action) => String(action.action_type || "")).filter(Boolean))];
+
+        const rules = conversation?.stage_completed_rules && typeof conversation.stage_completed_rules === "object"
+          ? conversation.stage_completed_rules as Record<string, any>
+          : {};
+        const orchestration = rules.orchestration && typeof rules.orchestration === "object"
+          ? rules.orchestration as Record<string, any>
+          : {};
+        const activeCycleToken = typeof rules.active_cycle_token === "string" && rules.active_cycle_token.trim()
+          ? rules.active_cycle_token.trim()
+          : null;
+        const messageLedger = orchestration.messageLedger && typeof orchestration.messageLedger === "object"
+          ? orchestration.messageLedger as Record<string, unknown>
+          : {};
+        const pendingInboundCount = Object.values(messageLedger).filter((value) => value === "pending").length;
+        const claimedInboundCount = Object.values(messageLedger).filter((value) => value === "claimed").length;
+        const hasAuthoritativeActiveCycle = Boolean(activeCycleToken);
+
         let status = "idle";
         let label = "IA pronta";
         let detail = "Aguardando nova mensagem.";
@@ -5093,10 +5111,24 @@ serve(async (req: Request) => {
           status = "sending"; label = totalCount > 0 ? `Enviando ${sentCount}/${totalCount}` : "Enviando resposta"; detail = "Há ação persistida aguardando conclusão da entrega."; active = true;
         } else if (turn?.status === "decision_persisted") {
           status = "sending"; label = totalCount > 0 ? `Resposta pronta · ${sentCount}/${totalCount}` : "Resposta pronta"; detail = "A decisão do Brain já foi persistida."; active = true;
-        } else if (turn?.status === "brain_running") {
-          status = "processing"; label = "Brain processando"; detail = "O turno canônico está em processamento."; active = true;
+        } else if (hasAuthoritativeActiveCycle) {
+          status = "processing";
+          label = turn?.status === "brain_running" ? "Brain processando" : "Brain iniciando";
+          detail = turn?.status === "brain_running"
+            ? "Existe lock ativo e o turno canônico está em processamento."
+            : "Existe lock ativo; o ciclo está sendo iniciado.";
+          active = true;
         } else if (conversation?.ai_debounce_until && Date.parse(conversation.ai_debounce_until) > now) {
           status = "waiting_delay"; label = "Aguardando quiet period"; detail = "A resposta está agendada pelo backend."; active = true;
+        } else if (pendingInboundCount > 0 || claimedInboundCount > 0) {
+          status = "queued";
+          label = pendingInboundCount > 0
+            ? `Mensagem pendente${pendingInboundCount > 1 ? ` · ${pendingInboundCount}` : ""}`
+            : "Mensagem aguardando retomada";
+          detail = pendingInboundCount > 0
+            ? "Há mensagem inbound no ledger aguardando um ciclo real do Brain."
+            : "Há mensagem reivindicada no ledger, mas nenhum lock ativo; o card não deve fingir que o Brain ainda está processando.";
+          active = true;
         } else if (totalCount > 0 && sentCount === totalCount && latestActionAt > 0 && now - latestActionAt <= 60_000) {
           status = "completed"; label = `Concluído ${sentCount}/${totalCount}`; detail = "Todas as ações foram confirmadas pelo provedor.";
         } else if (conversation?.ai_auto_respond !== true) {

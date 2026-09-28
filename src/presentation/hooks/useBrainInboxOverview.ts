@@ -5,6 +5,7 @@ export type BrainInboxOverviewItem = {
   status:
     | "idle"
     | "waiting_delay"
+    | "queued"
     | "processing"
     | "sending"
     | "waiting_human"
