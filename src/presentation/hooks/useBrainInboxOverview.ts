@@ -2,7 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 
 export type BrainInboxOverviewItem = {
-  status: "idle" | "waiting_delay" | "processing" | "sending" | "waiting_human" | "failed" | "uncertain";
+  status:
+    | "idle"
+    | "waiting_delay"
+    | "processing"
+    | "sending"
+    | "waiting_human"
+    | "failed"
+    | "uncertain"
+    | "completed"
+    | "disabled";
   label: string;
   detail: string;
   active: boolean;
@@ -10,6 +19,11 @@ export type BrainInboxOverviewItem = {
   updatedAt?: string | null;
   scheduledResponseAt?: string | null;
   isEnabled: boolean;
+  objectiveId?: string | null;
+  objectiveLabel?: string | null;
+  sentCount?: number;
+  totalCount?: number;
+  actionTypes?: string[];
 };
 
 type BrainInboxOverviewMap = Record<string, BrainInboxOverviewItem>;
@@ -32,8 +46,18 @@ export function useBrainInboxOverview(conversationIds: string[]) {
 
     let cancelled = false;
     let timer: number | undefined;
+    let inFlight = false;
+
+    const scheduleNext = (delay: number) => {
+      if (cancelled) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => { void load(); }, delay);
+    };
+
     const load = async () => {
-      let nextDelay = 10_000;
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      let nextDelay = 3_000;
       try {
         const response = await brainOperatorFetch("/operator/brain/overview", {
           method: "POST",
@@ -45,7 +69,7 @@ export function useBrainInboxOverview(conversationIds: string[]) {
             setAvailable(false);
             setOverview({});
           }
-          nextDelay = 15_000;
+          nextDelay = 10_000;
           return;
         }
         const result = await response.json().catch(() => ({}));
@@ -55,18 +79,30 @@ export function useBrainInboxOverview(conversationIds: string[]) {
           setOverview(nextOverview);
           setAvailable(true);
         }
-        nextDelay = Object.values(nextOverview).some((item) => item.active) ? 2_500 : 7_000;
+        nextDelay = Object.values(nextOverview).some((item) => item.active) ? 1_000 : 3_000;
       } catch {
-        nextDelay = 10_000;
+        nextDelay = 5_000;
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => { void load(); }, nextDelay);
+        inFlight = false;
+        scheduleNext(nextDelay);
       }
     };
 
+    const refreshNow = () => {
+      if (document.visibilityState !== "visible") return;
+      if (timer) window.clearTimeout(timer);
+      void load();
+    };
+
     void load();
+    window.addEventListener("focus", refreshNow);
+    document.addEventListener("visibilitychange", refreshNow);
+
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
+      window.removeEventListener("focus", refreshNow);
+      document.removeEventListener("visibilitychange", refreshNow);
     };
   }, [idsKey]);
 

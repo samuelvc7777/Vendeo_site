@@ -79,6 +79,7 @@ import {
   isAutoPilotActivelyWorking,
 } from "./AutoPilotActivityIndicator";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
+import { useBrainInboxOverview } from "@/presentation/hooks/useBrainInboxOverview";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 
 function InstagramIcon({ className = "w-4 h-4" }: { className?: string }) {
@@ -3626,6 +3627,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     }
     return timeB - timeA;
   });
+  const { overview: brainInboxOverview, available: brainInboxOverviewAvailable } = useBrainInboxOverview(
+    sortedConversations
+      .filter((conversation) => conversation.type === "instagram")
+      .map((conversation) => conversation.id),
+  );
 
   // 1. RENDERIZADOR DA TELA DE CONVERSA ABERTA (CHAT THREAD EM CAMADA SOBREPOSTA)
   const activeChatMessagesRaw = activeChat ? messages[activeChat.id] : undefined;
@@ -5257,6 +5263,60 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         );
                       })()}
                     </div>
+
+                    {conv.type === "instagram" && brainInboxOverviewAvailable && (() => {
+                      const ai = brainInboxOverview[conv.id];
+                      if (!ai) return null;
+
+                      const toneClass =
+                        ai.status === "failed" ? "text-red-400" :
+                        ai.status === "uncertain" ? "text-orange-300" :
+                        ai.status === "waiting_human" ? "text-violet-300" :
+                        ai.status === "waiting_delay" ? "text-amber-300" :
+                        ai.status === "sending" ? "text-emerald-300" :
+                        ai.status === "processing" ? "text-sky-300" :
+                        ai.status === "completed" ? "text-emerald-400" :
+                        "text-[#737373]";
+                      const dotClass =
+                        ai.status === "failed" ? "bg-red-400" :
+                        ai.status === "uncertain" ? "bg-orange-300" :
+                        ai.status === "waiting_human" ? "bg-violet-300" :
+                        ai.status === "waiting_delay" ? "bg-amber-300" :
+                        ai.status === "sending" ? "bg-emerald-300" :
+                        ai.status === "processing" ? "bg-sky-300" :
+                        ai.status === "completed" ? "bg-emerald-400" :
+                        "bg-[#525252]";
+                      const objectiveText = ai.objectiveLabel
+                        ? `${ai.active ? "Objetivo" : "Último"}: ${ai.objectiveLabel}`
+                        : null;
+                      const actionText = ai.actionTypes?.length
+                        ? ai.actionTypes.map((type) => type === "audio" ? "áudio" : type === "text" ? "texto" : type).join(" + ")
+                        : null;
+
+                      return (
+                        <div
+                          className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] leading-4"
+                          title={ai.detail || ai.label}
+                        >
+                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+                          <span className={`shrink-0 font-semibold ${toneClass}`}>IA</span>
+                          <span className="text-[#525252]">·</span>
+                          <span className={`truncate font-medium ${toneClass}`}>{ai.label}</span>
+                          {objectiveText && (
+                            <>
+                              <span className="text-[#525252]">·</span>
+                              <span className="truncate text-[#8e8e8e]">{objectiveText}</span>
+                            </>
+                          )}
+                          {actionText && (ai.status === "sending" || ai.status === "completed") && (
+                            <>
+                              <span className="text-[#525252]">·</span>
+                              <span className="truncate text-[#737373]">{actionText}</span>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 

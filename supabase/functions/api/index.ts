@@ -4963,8 +4963,8 @@ serve(async (req: Request) => {
         });
       }
 
-      const unresolvedActionStatuses = ["pending", "sending", "failed_retryable", "failed_confirmed", "dispatch_uncertain"];
-      const [turnResult, actionResult, conversationResult] = await Promise.all([
+      const visibleActionStatuses = ["pending", "sending", "failed_retryable", "failed_confirmed", "dispatch_uncertain", "sent"];
+      const [turnResult, actionResult, eventResult, conversationResult] = await Promise.all([
         supabase.from("brain_turns")
           .select("id, conversation_id, status, updated_at")
           .in("conversation_id", conversationIds)
@@ -4972,17 +4972,22 @@ serve(async (req: Request) => {
           .order("updated_at", { ascending: false })
           .limit(Math.min(2500, conversationIds.length * 6)),
         supabase.from("brain_decision_actions")
-          .select("id, conversation_id, status, not_before, updated_at")
+          .select("id, decision_id, conversation_id, action_index, action_type, status, not_before, updated_at")
           .in("conversation_id", conversationIds)
-          .in("status", unresolvedActionStatuses)
+          .in("status", visibleActionStatuses)
           .order("updated_at", { ascending: false })
-          .limit(Math.min(2500, conversationIds.length * 8)),
+          .limit(Math.min(4000, conversationIds.length * 10)),
+        supabase.from("brain_turn_events")
+          .select("conversation_id, event_type, status, metadata, created_at")
+          .in("conversation_id", conversationIds)
+          .order("created_at", { ascending: false })
+          .limit(Math.min(5000, conversationIds.length * 12)),
         supabase.from("instagram_conversations")
           .select("id, ai_auto_respond, ai_debounce_until")
           .in("id", conversationIds),
       ]);
-      if (turnResult.error || actionResult.error || conversationResult.error) {
-        const error = turnResult.error || actionResult.error || conversationResult.error;
+      if (turnResult.error || actionResult.error || eventResult.error || conversationResult.error) {
+        const error = turnResult.error || actionResult.error || eventResult.error || conversationResult.error;
         return new Response(JSON.stringify({ success: false, error: error?.message || "Falha ao carregar visão operacional." }), {
           status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -4996,10 +5001,20 @@ serve(async (req: Request) => {
       };
       type BrainOverviewActionRow = {
         id: string;
+        decision_id: string | null;
         conversation_id: string;
+        action_index: number | null;
+        action_type: string | null;
         status: string | null;
         not_before: string | null;
         updated_at: string | null;
+      };
+      type BrainOverviewEventRow = {
+        conversation_id: string;
+        event_type: string | null;
+        status: string | null;
+        metadata: Record<string, unknown> | null;
+        created_at: string | null;
       };
       type BrainOverviewConversationRow = {
         id: string;
@@ -5015,10 +5030,16 @@ serve(async (req: Request) => {
         updatedAt: string | null;
         scheduledResponseAt: string | null;
         isEnabled: boolean;
+        objectiveId: string | null;
+        objectiveLabel: string | null;
+        sentCount: number;
+        totalCount: number;
+        actionTypes: string[];
       };
 
       const turnRows = (turnResult.data || []) as BrainOverviewTurnRow[];
       const actionRows = (actionResult.data || []) as BrainOverviewActionRow[];
+      const eventRows = (eventResult.data || []) as BrainOverviewEventRow[];
       const conversationRows = (conversationResult.data || []) as BrainOverviewConversationRow[];
       const latestTurnByConversation = new Map<string, BrainOverviewTurnRow>();
       for (const turn of turnRows) {
@@ -5030,6 +5051,15 @@ serve(async (req: Request) => {
         list.push(action);
         actionsByConversation.set(action.conversation_id, list);
       }
+      const objectiveByConversation = new Map<string, { id: string | null; label: string | null; updatedAt: string | null }>();
+      for (const event of eventRows) {
+        if (objectiveByConversation.has(event.conversation_id)) continue;
+        const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
+        const id = typeof metadata.currentObjectiveId === "string" ? metadata.currentObjectiveId : null;
+        const label = typeof metadata.currentObjectiveLabel === "string" ? metadata.currentObjectiveLabel : null;
+        if (id || label) objectiveByConversation.set(event.conversation_id, { id, label, updatedAt: event.created_at });
+      }
+
       const conversationById = new Map(conversationRows.map((row) => [String(row.id), row]));
       const overview: Record<string, BrainOverviewItem> = {};
       const now = Date.now();
@@ -5038,34 +5068,52 @@ serve(async (req: Request) => {
         const turn = latestTurnByConversation.get(conversationId);
         const actions = actionsByConversation.get(conversationId) || [];
         const conversation = conversationById.get(conversationId);
-        const statuses = new Set(actions.map((action) => String(action.status || "")));
+        const objective = objectiveByConversation.get(conversationId);
+        const latestDecisionId = actions[0]?.decision_id || null;
+        const latestDecisionActions = latestDecisionId
+          ? actions.filter((action) => action.decision_id === latestDecisionId)
+          : [];
+        const statuses = new Set(latestDecisionActions.map((action) => String(action.status || "")));
+        const sentCount = latestDecisionActions.filter((action) => action.status === "sent").length;
+        const totalCount = latestDecisionActions.length;
+        const actionTypes = [...new Set(latestDecisionActions.map((action) => String(action.action_type || "")).filter(Boolean))];
         let status = "idle";
-        let label = "Aguardando nova mensagem";
-        let detail = "";
+        let label = "IA pronta";
+        let detail = "Aguardando nova mensagem.";
         let active = false;
+        const latestActionAt = actions[0]?.updated_at ? Date.parse(actions[0].updated_at) : 0;
 
         if (statuses.has("dispatch_uncertain")) {
           status = "uncertain"; label = "Envio sem confirmação"; detail = "A entrega precisa ser reconciliada antes de qualquer reenvio."; active = true;
         } else if (statuses.has("failed_confirmed")) {
-          status = "failed"; label = "Falha confirmada no envio"; detail = "A ação pode ser revisada pelo operador."; active = true;
+          status = "failed"; label = "Falha confirmada"; detail = "Há uma ação que pode ser revisada pelo operador."; active = true;
         } else if (turn?.status === "waiting_manual") {
-          status = "waiting_human"; label = "Brain precisa da sua resposta"; detail = "O mesmo turno será retomado depois da informação."; active = true;
+          status = "waiting_human"; label = "Precisa da sua resposta"; detail = "O mesmo turno será retomado depois da informação."; active = true;
         } else if (statuses.has("sending") || statuses.has("failed_retryable") || statuses.has("pending")) {
-          status = "sending"; label = "Enviando resposta"; detail = "Há ação persistida aguardando conclusão da entrega."; active = true;
+          status = "sending"; label = totalCount > 0 ? `Enviando ${sentCount}/${totalCount}` : "Enviando resposta"; detail = "Há ação persistida aguardando conclusão da entrega."; active = true;
         } else if (turn?.status === "decision_persisted") {
-          status = "sending"; label = "Resposta pronta"; detail = "A decisão do Brain já foi persistida."; active = true;
+          status = "sending"; label = totalCount > 0 ? `Resposta pronta · ${sentCount}/${totalCount}` : "Resposta pronta"; detail = "A decisão do Brain já foi persistida."; active = true;
         } else if (turn?.status === "brain_running") {
           status = "processing"; label = "Brain processando"; detail = "O turno canônico está em processamento."; active = true;
         } else if (conversation?.ai_debounce_until && Date.parse(conversation.ai_debounce_until) > now) {
           status = "waiting_delay"; label = "Aguardando quiet period"; detail = "A resposta está agendada pelo backend."; active = true;
+        } else if (totalCount > 0 && sentCount === totalCount && latestActionAt > 0 && now - latestActionAt <= 60_000) {
+          status = "completed"; label = `Concluído ${sentCount}/${totalCount}`; detail = "Todas as ações foram confirmadas pelo provedor.";
+        } else if (conversation?.ai_auto_respond !== true) {
+          status = "disabled"; label = "IA desligada"; detail = "O AutoPilot não está ativo nesta conversa.";
         }
 
         overview[conversationId] = {
           status, label, detail, active,
           turnId: turn?.id || null,
-          updatedAt: turn?.updated_at || actions[0]?.updated_at || null,
+          updatedAt: turn?.updated_at || actions[0]?.updated_at || objective?.updatedAt || null,
           scheduledResponseAt: conversation?.ai_debounce_until || null,
           isEnabled: conversation?.ai_auto_respond === true,
+          objectiveId: objective?.id || null,
+          objectiveLabel: objective?.label || null,
+          sentCount,
+          totalCount,
+          actionTypes,
         };
       }
 
