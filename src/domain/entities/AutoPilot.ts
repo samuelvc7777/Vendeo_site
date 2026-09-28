@@ -1,7 +1,8 @@
 export interface AutoPilotConfig {
   isEnabledGlobally: boolean;
   mode?: "automatic"; // 100% Automático direto (semiautomático removido)
-  responseDelayMinutes: number; // Padrão: 1 min para testes, 10 min produção
+  responseDelayMinutes: number; // Quiet period contado da última mensagem
+  maxDebounceWindowMinutes: number; // Teto absoluto contado da primeira mensagem do lote
   activationWaitMinutes: number; // Tempo de espera após ativar antes de começar (padrão: 1 min)
   pauseOnPhotoReceived: boolean; // Pausar se o cliente enviar foto
   pauseOnSensitiveContent: boolean; // Pausar se detectar conteúdo bizarro/ofensivo

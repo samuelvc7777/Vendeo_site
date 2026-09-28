@@ -1,41 +1,63 @@
-# Vendeo - Modelo de Dominio
+# Vendeo — Modelo de Domínio Canônico
 
-Vocabulario canonico do sistema de atendimento autonomo e vendas sociais do Vendeo.
+Vocabulário oficial do atendimento autônomo do Vendeo.
 
-## Linguagem Ubiqua
+## Princípio de autoridade
 
-**Orquestrador (Dispatcher / Controller IA)**:
-Camada autonoma de custo zero (executada via Groq / Llama-3.3) que inspeciona o historico, valida o cumprimento estrito do cronograma, calcula os delays humanos e emite a ordem de comando para o modelo de persona.
-_Evitar_: Bot, robo de site, macro.
+**Brain (OpenAI Agent persistente)**
+Única autoridade semântica da conversa. Interpreta o que o pretendente disse, decide se responde, espera, pede informação ao operador, persegue ou adia objetivos, escolhe áudio entre candidatos autorizados e propõe transição de etapa.
 
-**Cerebro de Persona (Larissa / OpenAI Sol)**:
-Modelo de inteligencia maxima que redige as mensagens com o DNA linguistico autentico da Larissa, aplicando a Regra do Bumerangue e gerando as conexoes para envio dos audios e mensagens do checklist.
-_Evitar_: Chatbot padrao, assistente generico, ChatGPT cru.
+**Backend determinístico**
+Não escreve fala, não escolhe objetivo, não escolhe áudio e não decide o rumo da conversa. Faz somente plumbing e invariantes: locks, freshness, autenticação, validação estrutural, persistência, idempotência, outbox, entrega, retries, recovery e observabilidade.
 
-**Cronograma do Checklist**:
-Sequencia obrigatoria e inegociavel de etapas e conteudos (audios gravados e mensagens-chave) que a IA deve cobrir na conversa.
-_Evitar_: Roteiro solto, script estatico, fluxo livre.
+**Session do Brain**
+Uma sessão persistente por conversa enquanto compatível com a versão atual. Uma session nova recebe bootstrap compacto de histórico recente e fatos manuais explicitamente salvos para sessões futuras.
 
-**Regra do Bumerangue**:
-Diretriz conversacional rigida onde a IA reage humanamente ao que o pretendente falou, mas obrigatoriamente fecha a mensagem conduzindo o gancho de volta ao proximo item do checklist.
-_Evitar_: Ignorar assunto do cliente, divagacao sem rumo.
+**Turno do Brain**
+Unidade canônica de decisão. Timeout local de espera não encerra o turno do provedor. Turnos tardios são recuperados pelo mesmo provider turn e nunca recriados semanticamente pelo backend.
 
-**Ponto de Parada da Rifa (Raffle Hand-off)**:
-Momento exato em que todos os audios pessoais sobre a historia da Larissa foram entregues. A IA cessa o envio autonomo, entra em Silencio de Fechamento e dispara o alerta para o operador.
-_Evitar_: Fechamento automatico da rifa, interrupcao cega.
+## Progresso da conversa
 
-**Silencio de Fechamento**:
-Estado incondicional em que a IA fica totalmente muda apos a entrega dos audios pessoais, garantindo que o fechamento do Pix seja feito com exclusividade pelo operador humano.
-_Evitar_: Resposta automatica pos-rifa, enrolacao de plantao.
+**Etapas e objetivos**
+São configuração manual do produto. Objetivos funcionam como checkpoints: concluídos não devem ser repetidos. O Brain decide o que perseguir e quando pedir mudança de etapa; o backend apenas valida IDs e evidências configuradas.
 
-**Alerta Visual de Oferta (Piscador de Entrada)**:
-Borda neon dourada pulsante no card da conversa na caixa de entrada, acompanhada do badge [PRONTO PARA RIFA], sinalizando a maturidade para venda manual.
-_Evitar_: Badge comum, mensagem nao lida.
+**Evidência de objetivo**
+Conclusão de fato exige evidência real associada à conversa/mensagem. Evidência inválida não pode avançar progresso.
 
-**Gatilho Hibrido (Webhook + Cron Watcher)**:
-Mecanismo no backend Supabase que agenda a resposta assincrona assim que a mensagem do cliente entra via webhook e mantem um cron de contingencia para tolerancia a falhas.
-_Evitar_: Polling puro, loop em aba do navegador.
+**Cofre de áudio**
+O backend oferece candidatos elegíveis limitados ao objetivo consultado. O Brain decide semanticamente usar ou rejeitar um candidato. IDs não autorizados, áudios repetidos ou concorrência de reserva são bloqueados deterministicamente.
 
-**Ativacao Individual por Conversa (Chat Whitelist)**:
-Regra em que a IA so atua nas conversas explicitamente ativadas pelo operador atraves do seletor individual no chat.
-_Evitar_: Piloto global indiscriminado, spam geral.
+## Execução e entrega
+
+**Decisão durável**
+Antes de qualquer dispatch, decisão, ações e outbox são persistidas atomicamente. O estado semântico não depende do sucesso imediato da Meta.
+
+**Outbox**
+Fonte durável da entrega. Mantém ordem por lote, `not_before`, idempotência, tentativas e confirmação do provider. `dispatch_uncertain` é fail-closed e nunca autoriza reenvio cego.
+
+**Cadência humana**
+O Brain define explicitamente a pausa depois de ações de texto. Quando a ação anterior é áudio, o backend usa a duração real do arquivo antes da próxima ação.
+
+**Debounce limitado**
+O quiet period é configurável e reinicia com novas mensagens, mas possui um teto absoluto contado da primeira mensagem do lote. Mensagens sucessivas não podem adiar a resposta indefinidamente.
+
+**Resolução manual**
+Quando falta um fato pessoal confiável, o Brain pausa o mesmo turno e pergunta ao operador. A resposta retoma o mesmo contexto. Fatos marcados para futuras sessions são promovidos para a memória da persona e só entram no bootstrap de novas sessions.
+
+## Observabilidade e interface
+
+**Eventos do Brain**
+`brain_turn_events`, `brain_turns`, `brain_decisions` e `brain_decision_actions` formam a fonte canônica operacional. UI não deve inferir “enviado” apenas porque o Brain concluiu.
+
+**Inbox / Card / Console**
+São projeções do mesmo estado canônico. Devem distinguir Brain processando, aguardando operador, ação pendente, envio parcial, falha confirmada, envio incerto e entrega totalmente confirmada.
+
+## Regras de segurança arquitetural
+
+- Não criar segundo cérebro, router semântico ou subagentes.
+- Não colocar regras de conteúdo conversacional no backend.
+- Não usar fallback que invente resposta quando a decisão canônica falhar.
+- Não transformar `cycle_completed` em prova de entrega.
+- Não atualizar memória/progresso a partir de ação não confirmada quando o contrato exigir entrega.
+- Realtime e cron são gatilhos/contingência; não podem criar loops de polling.
+- Ativação do AutoPilot é individual por conversa e independente de pausas operacionais temporárias.

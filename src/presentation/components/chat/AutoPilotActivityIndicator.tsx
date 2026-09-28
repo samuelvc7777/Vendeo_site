@@ -1216,6 +1216,9 @@ export function AutoPilotActivityIndicator({
     || deliveryProjection.status === "failed"
     || deliveryProjection.status === "uncertain";
   const latestCanonicalEvent = latestDisplayTurn ? getEffectiveBrainTurnEvent(latestDisplayTurn) : undefined;
+  const latestBrainDecisionEvent = latestDisplayTurn
+    ? [...latestDisplayTurn.events].reverse().find((event) => event.event === "brain_decision")
+    : undefined;
   const canonicalEventToStatus: Record<string, { status: AutoPilotChatState["status"]; phase: AutoPilotActivityPhase }> = {
     brain_late: { status: "processing", phase: "brain" },
     manual_resolution_required: { status: "waiting_human", phase: "completed" },
@@ -1330,6 +1333,31 @@ export function AutoPilotActivityIndicator({
 
   const isWorking = isAutoPilotWorking(state);
   const isActivelyThinking = isBrainActive || (phase as string) === "search";
+  const objectiveSourceEvent = latestDisplayTurn
+    ? [...latestDisplayTurn.events].reverse().find((event) => eventMetadataText(event.metadata || {}, "currentObjectiveLabel"))
+    : undefined;
+  const currentObjectiveLabel = eventMetadataText(objectiveSourceEvent?.metadata || {}, "currentObjectiveLabel");
+  const objectiveDecision = eventMetadataText(latestBrainDecisionEvent?.metadata || {}, "objectiveDecision");
+  const planLabel = ({
+    pursue: "Avançar objetivo",
+    defer: "Adiar objetivo",
+    already_satisfied: "Objetivo satisfeito",
+    none: "Sem avanço de objetivo",
+  } as Record<string, string>)[objectiveDecision || ""] || (latestBrainDecisionEvent ? "Decisão registrada" : "Em análise");
+  const nextOperationalAction = state.status === "waiting_human"
+    ? "Aguardar informação do operador"
+    : deliveryProjection.status === "uncertain"
+    ? "Reconciliar confirmação do envio"
+    : deliveryProjection.status === "failed"
+    ? "Revisar falha confirmada"
+    : hasUnresolvedDelivery
+    ? "Concluir envio das ações persistidas"
+    : isBrainActive
+    ? "Concluir decisão do Brain"
+    : isCompleted
+    ? "Aguardar nova mensagem"
+    : "Continuar processamento";
+  const showOperationalSummary = Boolean(latestDisplayTurn && (activeCanonicalTurn || latestBrainDecisionEvent || hasUnresolvedDelivery));
 
   // Auto-scroll suave para seguir o streaming ao vivo do raciocínio do Brain
   const brainThoughtRef = useRef<HTMLDivElement>(null);
@@ -1755,6 +1783,25 @@ export function AutoPilotActivityIndicator({
               {deliveryProjection.status === "partially_sent" && <AlertTriangle className="h-2.5 w-2.5 text-amber-300 shrink-0 ml-0.5" />}
             </div>
             {hasUnresolvedDelivery && deliveryProjection.actionCount > 0 && <p className={`col-span-2 px-1 text-center text-[9px] ${deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain" ? "text-rose-200" : "text-zinc-400"}`}>{deliveryProjection.label}</p>}
+          </div>
+        )}
+
+        {showOperationalSummary && (
+          <div className="mt-2.5 grid grid-cols-1 gap-1.5 text-[10px] sm:grid-cols-3">
+            <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Objetivo</div>
+              <div className="truncate font-medium text-zinc-200" title={currentObjectiveLabel || "Nenhum objetivo pendente"}>
+                {currentObjectiveLabel || "Nenhum pendente"}
+              </div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Plano</div>
+              <div className="truncate font-medium text-zinc-200" title={planLabel}>{planLabel}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Próxima ação</div>
+              <div className="truncate font-medium text-zinc-200" title={nextOperationalAction}>{nextOperationalAction}</div>
+            </div>
           </div>
         )}
 

@@ -29,6 +29,8 @@ test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por
       transcript: "faço faculdade de enfermagem e estágio em hospital",
       usageInstruction: "Quando perguntar sobre o que ela faz da vida ou faculdade",
       enabled: true,
+      objective_id: "goal_job",
+      objectiveId: "goal_job",
       duration: 25,
     },
     {
@@ -37,6 +39,8 @@ test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por
       transcript: "eu amo praia, acho uma delícia tomar sol de biquíni",
       usageInstruction: "Quando perguntar se gosta de praia",
       enabled: true,
+      objective_id: "goal_hobbies",
+      objectiveId: "goal_hobbies",
       duration: 18,
     }
   ];
@@ -74,6 +78,7 @@ test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por
     supabase: mockSupabase,
     conversationId: "conv_test_dedup",
     intent: "o que você faz da vida e onde estuda",
+    objectiveId: "goal_job",
   });
 
   // O audio_profissao_1 já foi enviado -> NUNCA deve aparecer
@@ -84,6 +89,7 @@ test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por
     supabase: mockSupabase,
     conversationId: "conv_test_dedup",
     query: "qual sua profissão?",
+    objective_id: "goal_job",
   });
 
   assert.equal(cofreHits.some((c) => c.audio_id === "audio_profissao_1"), false, "Áudio já enviado não pode aparecer em searchCofreAudios");
@@ -93,6 +99,7 @@ test("DEDUP ABSOLUTO DE ÁUDIOS: Áudio já enviado NUNCA deve ser retornado por
     supabase: mockSupabase,
     conversationId: "conv_test_dedup",
     intent: "você gosta de praia?",
+    objectiveId: "goal_hobbies",
   });
 
   assert.equal(praiaHits.some((a) => a.id === "audio_praia_2"), true, "Áudio não enviado deve continuar perfeitamente elegível");
@@ -180,7 +187,7 @@ test("QUALITY GATE: Larissa NUNCA pode passar número de telefone ou WhatsApp", 
   assert.equal(properResult.issues.some((i) => i.code === "PHONE_NUMBER_LEAK"), false, "Manter no direct não gera issue de vazamento");
 });
 
-test("FALLBACK DE SEGURANÇA: safeHighConfidenceFallback para convites e pedidos de telefone", () => {
+test("BACKEND NÃO ESCREVE FALA: convites e telefone não geram fallback semântico determinístico", () => {
   const defaultContract = {
     directQuestions: [],
     mustAnswerFirst: false,
@@ -191,15 +198,12 @@ test("FALLBACK DE SEGURANÇA: safeHighConfidenceFallback para convites e pedidos
     preferNoEmoji: false,
   };
 
-  // Fallback para convite de sair
+  // O backend pode detectar risco, mas não deve compor a resposta da Larissa.
   const outingFallback = safeHighConfidenceFallback(["vamos sair hoje?"], defaultContract);
-  assert.ok(outingFallback && outingFallback.length > 0, "Deve gerar fallback para convite de sair");
-  assert.equal(outingFallback[0].includes("não consigo sair") || outingFallback[0].includes("hospital"), true, "Fallback de convite deve ter desculpa meiga com rotina");
+  assert.equal(outingFallback, null, "Convite deve voltar ao Brain; backend não inventa desculpa");
 
-  // Fallback para telefone
   const phoneFallback = safeHighConfidenceFallback(["passa seu whatsapp"], defaultContract);
-  assert.ok(phoneFallback && phoneFallback.length > 0, "Deve gerar fallback para pedido de WhatsApp");
-  assert.equal(phoneFallback[0].includes("direct"), true, "Fallback de WhatsApp deve manter no direct com charme");
+  assert.equal(phoneFallback, null, "Pedido de WhatsApp deve voltar ao Brain; backend não escreve fala");
 });
 
 test("ANTI-DUPLICAÇÃO DE ÁUDIO & TEXTO: isTextRedundantWithAudioTranscript poda balão redundante e preserva acolhimento", () => {
@@ -295,7 +299,7 @@ test("PROIBIÇÃO DE APELIDOS ÍNTIMOS PRECOCES: detectInappropriateIntimacyLeak
   assert.equal(sanitizedMeuBem.includes("meu bem"), false, "Sanitização deve remover 'meu bem'");
 });
 
-test("PERGUNTAS DE NAMORO, FILHOS E CASAMENTO: isDatingQuestion, isChildrenOrMarriageQuestion e safeHighConfidenceFallback", () => {
+test("PERGUNTAS DE NAMORO, FILHOS E CASAMENTO: detectores existem, mas resposta pertence ao Brain", () => {
   assert.equal(isDatingQuestion("Namora bb?"), true, "Deve reconhecer 'Namora bb?' como pergunta de namoro");
   assert.equal(isDatingQuestion("vc tá solteira?"), true, "Deve reconhecer pergunta se tá solteira");
   assert.equal(isChildrenOrMarriageQuestion("vc tem filhos?"), true, "Deve reconhecer pergunta de filhos");
@@ -311,16 +315,11 @@ test("PERGUNTAS DE NAMORO, FILHOS E CASAMENTO: isDatingQuestion, isChildrenOrMar
     preferNoEmoji: false,
   };
 
-  // Resposta canônica a pergunta de namoro
   const datingFallback = safeHighConfidenceFallback(["Namora bb?"], defaultContract);
-  assert.ok(datingFallback && datingFallback.length > 0, "Deve gerar fallback para pergunta de namoro");
-  assert.equal(datingFallback[0], "namoro não kkk, tô solteira", "Primeiro balão deve ser 'namoro não kkk, tô solteira'");
+  assert.equal(datingFallback, null, "Backend não deve compor resposta de namoro");
 
-  // Resposta canônica a pergunta de filhos / casamento
   const childrenFallback = safeHighConfidenceFallback(["vc tem filhos ou já casou?"], defaultContract);
-  assert.ok(childrenFallback && childrenFallback.length > 0, "Deve gerar fallback para filhos/casamento");
-  assert.equal(childrenFallback[0], "nossa nunca kkkkk, não tenho filhos e nunca casei");
-  assert.equal(childrenFallback[1], "só namorei uma vez na vida e a experiência nem foi boa kkk");
+  assert.equal(childrenFallback, null, "Backend não deve compor resposta de filhos/casamento");
 });
 
 test("QUALITY GATE: ROBOTIC_META_LEAK e UNAUTHORIZED_INTIMACY_LEAK bloqueiam no Quality Gate", () => {

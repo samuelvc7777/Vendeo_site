@@ -46,6 +46,10 @@ test("CENÁRIO 2: Caso real de cidade (already_satisfied + evidenceMessageId vá
     evidenceMessageId: "1040376229029884",
     reasoning: "Pretendente informou espontaneamente que é de São João del-Rei",
     responses: ["Sérioo, eu sou de São João del-Rei tbm", "Olha que coincidência kkk"],
+    outboundActions: [
+      { type: "text", text: "Sérioo, eu sou de São João del-Rei tbm", delay_before_send: 0 },
+      { type: "text", text: "Olha que coincidência kkk", delay_before_send: 4 },
+    ],
     turnContract: {
       directQuestions: [],
       mustAnswerFirst: true,

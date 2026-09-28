@@ -80,6 +80,7 @@ import {
   isAutoPilotWorking,
 } from "./AutoPilotActivityIndicator";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
+import { useBrainInboxOverview } from "@/presentation/hooks/useBrainInboxOverview";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 
 function InstagramIcon({ className = "w-4 h-4" }: { className?: string }) {
@@ -3627,6 +3628,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     }
     return timeB - timeA;
   });
+  const { overview: brainInboxOverview, available: brainInboxOverviewAvailable } = useBrainInboxOverview(
+    sortedConversations.filter((conversation) => conversation.type === "instagram").map((conversation) => conversation.id),
+  );
 
   // 1. RENDERIZADOR DA TELA DE CONVERSA ABERTA (CHAT THREAD EM CAMADA SOBREPOSTA)
   const activeChatMessagesRaw = activeChat ? messages[activeChat.id] : undefined;
@@ -5228,8 +5232,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       {(() => {
                         const apState = autoPilot.chatStates[conv.id];
                         if (!apState) return null;
+                        const canonicalState = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : undefined;
+                        const effectiveEnabled = canonicalState ? canonicalState.isEnabled : apState.isEnabled;
 
-                        if (apState.status === "waiting_human") {
+                        if (canonicalState?.status === "waiting_human" || (!brainInboxOverviewAvailable && apState.status === "waiting_human")) {
                           return (
                             <span
                               title={apState.pauseReason || "A IA precisa de uma resposta manual."}
@@ -5237,6 +5243,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             >
                               <AlertTriangle className="w-2.5 h-2.5 text-amber-300" />
                               Responder
+                            </span>
+                          );
+                        }
+
+                        if (canonicalState?.status === "failed" || canonicalState?.status === "uncertain") {
+                          return (
+                            <span
+                              title={canonicalState.detail || canonicalState.label}
+                              className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1"
+                            >
+                              <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                              Envio
                             </span>
                           );
                         }
@@ -5277,7 +5295,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           );
                         }
 
-                        if (!apState.isEnabled) {
+                        if (!effectiveEnabled) {
                           return (
                             <span title="Piloto Automático desativado neste chat" className="text-[9px] bg-zinc-800/70 text-zinc-500 border border-zinc-700 font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
                               <Bot className="w-2.5 h-2.5 text-zinc-500" /> Piloto desativado
@@ -5298,6 +5316,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     </div>
                     <div className="flex items-center text-xs text-[#a8a8a8] mt-0.5 min-w-0">
                       {(() => {
+                        const canonicalState = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : undefined;
                         const isLastMessageSeen =
                           conv.lastSender === "me" &&
                           conv.lastStatus === "seen" &&
@@ -5310,7 +5329,20 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         return (
                           <>
                             <span className="flex min-w-0 flex-1 items-center">
-                              {isAutoPilotWorking(autoPilot.chatStates[conv.id]) ? (
+                              {canonicalState?.active ? (
+                                <span
+                                  className={`truncate font-semibold ${
+                                    canonicalState.status === "failed" || canonicalState.status === "uncertain"
+                                      ? "text-rose-300"
+                                      : canonicalState.status === "waiting_human"
+                                      ? "text-amber-300"
+                                      : "text-emerald-400"
+                                  }`}
+                                  title={canonicalState.detail || canonicalState.label}
+                                >
+                                  {canonicalState.label}
+                                </span>
+                              ) : !brainInboxOverviewAvailable && isAutoPilotWorking(autoPilot.chatStates[conv.id]) ? (
                                 <AutoPilotActivityIndicator state={autoPilot.chatStates[conv.id]} variant="inbox" />
                               ) : isLastMessageSeen ? (
                                 <span className="text-[#8e8e8e] font-normal truncate">Visto</span>

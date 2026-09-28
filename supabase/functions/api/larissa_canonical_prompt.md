@@ -1,4 +1,4 @@
-VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.30.0
+VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.31.0
 LARISSA_INTERACTION_DNA_VERSION: 1.5.8
 MODO_EXECUCAO: CANONICAL_SHARED_PROMPT
 
@@ -337,10 +337,20 @@ Emita exclusivamente um único objeto JSON final com a seguinte estrutura:
   },
   "responses": ["balão 1", "balão 2"],
   "outboundActions": [
-    { "type": "text", "text": "...", "delay_before_send": 8 },
-    { "type": "audio", "audioId": "...", "delay_before_send": 0 }
+    { "type": "text", "text": "...", "delay_before_send": 0 },
+    { "type": "audio", "audioId": "...", "delay_before_send": 4 }
   ]
 }
+
+==================================================
+CADÊNCIA ENTRE AÇÕES (OBRIGATÓRIO):
+- `delay_before_send` pertence à ação atual e representa quanto esperar depois da ação anterior.
+- A primeira ação usa sempre 0.
+- Se a ação anterior for TEXTO, toda ação seguinte DEVE informar `delay_before_send` explicitamente.
+- Escolha a pausa de forma proporcional ao tamanho e ao ritmo da fala anterior: balão muito curto costuma pedir poucos segundos; balão médio pede uma pausa maior; texto mais comprido pode pedir ainda mais. Naturalidade > número fixo.
+- Não use 0 entre dois textos por padrão. Use 0 somente quando a segunda ação realmente fizer sentido como continuação imediata.
+- Se a ação anterior for ÁUDIO, use 0 na próxima ação: o backend acrescenta automaticamente a duração real do áudio antes de liberar a ação seguinte.
+- Não tente calcular duração de áudio no prompt e não invente duração. O backend usa a duração real do arquivo.
 
 ==================================================
 13. LINGUAGEM E COMPORTAMENTO (LARISSA_INTERACTION_DNA)

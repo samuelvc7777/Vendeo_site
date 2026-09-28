@@ -823,7 +823,13 @@ export function validateConversationBrainPlan(
       if (delay !== undefined && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0 || delay > 7200)) {
         return { valid: false, error: `outboundActions[${i}].delay_before_send deve ser um número entre 0 e 7200 segundos` };
       }
-      if (delay !== undefined) act.delayBeforeSendSeconds = delay;
+      if (i === 0) {
+        act.delayBeforeSendSeconds = 0;
+      } else if (delay === undefined && plan.outboundActions[i - 1]?.type !== "audio") {
+        return { valid: false, error: `outboundActions[${i}].delay_before_send é obrigatório após uma ação de texto` };
+      } else {
+        act.delayBeforeSendSeconds = delay ?? 0;
+      }
     }
     // Normalização retrocompatível: popula responses com os textos se responses não veio
     if (!Array.isArray(plan.responses)) {
@@ -1359,6 +1365,7 @@ export interface OpenAiBrainTurnResult {
     agentSessionRecoveryTriggered?: boolean;
     agentSessionBootstrapInjected?: boolean;
     agentSessionBootstrapMessageCount?: number;
+    agentSessionBootstrapPersistentFactCount?: number;
     agentSessionBootstrapQueryFailed?: boolean;
     agentSessionBootstrapError?: string | null;
     manualRecentHistoryInjected?: boolean;
@@ -1379,111 +1386,169 @@ export interface OpenAiBrainTurnResult {
   };
 }
 
+type BootstrapQueryError = { message?: string; details?: string };
+type BootstrapQueryResult = { data?: unknown[] | null; error?: BootstrapQueryError | null };
+type BootstrapQueryBuilder = {
+  select: (columns: string) => BootstrapQueryBuilder;
+  eq: (column: string, value: unknown) => BootstrapQueryBuilder;
+  order: (column: string, options?: { ascending?: boolean }) => BootstrapQueryBuilder;
+  limit: (count: number) => PromiseLike<BootstrapQueryResult>;
+};
+type BootstrapSupabaseClient = { from: (table: string) => BootstrapQueryBuilder };
+
+function asBootstrapClient(value: unknown): BootstrapSupabaseClient | null {
+  if (!value || typeof value !== "object" || !("from" in value)) return null;
+  return typeof (value as { from?: unknown }).from === "function"
+    ? value as BootstrapSupabaseClient
+    : null;
+}
+
+export async function fetchPersistentManualResolutionBootstrap(
+  supabase: unknown,
+  limit = 24,
+): Promise<{ text: string; factCount: number; queryFailed: boolean; errorMessage: string | null }> {
+  const client = asBootstrapClient(supabase);
+  if (!client) return { text: "", factCount: 0, queryFailed: false, errorMessage: null };
+  try {
+    const { data, error } = await client
+      .from("persona_memory")
+      .select("key, value, updated_at")
+      .eq("persona_id", "larissa")
+      .eq("category", "manual_resolution")
+      .order("updated_at", { ascending: false })
+      .limit(Math.max(1, Math.min(limit, 50)));
+    if (error) {
+      return { text: "", factCount: 0, queryFailed: true, errorMessage: String(error.message || error).slice(0, 200) };
+    }
+    const facts = (Array.isArray(data) ? data : [])
+      .map((raw) => {
+        const row = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+        const value = row.value && typeof row.value === "object"
+          ? row.value as Record<string, unknown>
+          : {};
+        return {
+          key: String(row.key || ""),
+          question: String(value.question || "").replace(/\s+/g, " ").trim(),
+          fact: String(value.fact || "").replace(/\s+/g, " ").trim(),
+        };
+      })
+      .filter((row) => Boolean(row.fact));
+    if (facts.length === 0) return { text: "", factCount: 0, queryFailed: false, errorMessage: null };
+    const text = [
+      "## FATOS MANUAIS PERMANENTES PARA NOVAS SESSÕES",
+      "Use estes fatos como contexto interno confirmado da Larissa. Eles foram explicitamente salvos pelo operador para sessões futuras.",
+      ...facts.reverse().map((row) => `- memory_key="${row.key}"${row.question ? ` pergunta="${row.question}"` : ""} fato="${row.fact}"`),
+    ].join("\n");
+    return { text, factCount: facts.length, queryFailed: false, errorMessage: null };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { text: "", factCount: 0, queryFailed: true, errorMessage: message.slice(0, 200) };
+  }
+}
+
 /**
- * Bootstrap de uma NOVA session persistente.
- *
- * O histórico recente recompõe continuidade conversacional sem depender de MCP.
- * Fatos de resolução manual marcados como permanentes são promovidos para
- * persona_memory e entram SOMENTE na criação/recriação da session, evitando
- * custo por turno e sem retroalimentar sessions antigas.
+ * Recupera histórico recente de instagram_messages para o bootstrap de uma nova sessão
+ * e injeta, somente nessa criação, fatos manuais explicitamente promovidos para sessões futuras.
  */
 export async function fetchSessionRecoveryBootstrap(
-  supabase: any,
+  supabase: unknown,
   conversationId: string,
   excludeMessageIds: string[] = []
 ): Promise<{
   text: string;
   messageCount: number;
-  factCount?: number;
+  persistentFactCount: number;
   queryFailed?: boolean;
   errorMessage?: string | null;
 }> {
   if (!supabase || !conversationId) {
-    return { text: "", messageCount: 0, factCount: 0, queryFailed: false, errorMessage: null };
+    return { text: "", messageCount: 0, persistentFactCount: 0, queryFailed: false, errorMessage: null };
   }
 
-  let queryFailed = false;
-  const errors: string[] = [];
-  let rows: any[] = [];
-  let permanentFacts: any[] = [];
-
+  const persistentFacts = await fetchPersistentManualResolutionBootstrap(supabase);
+  const client = asBootstrapClient(supabase);
+  if (!client) {
+    return {
+      text: persistentFacts.text,
+      messageCount: 0,
+      persistentFactCount: persistentFacts.factCount,
+      queryFailed: persistentFacts.queryFailed,
+      errorMessage: persistentFacts.errorMessage,
+    };
+  }
   try {
-    const historyResult = await supabase
+    const { data: rows, error } = await client
       .from("instagram_messages")
       .select("id, sender_id, is_mine, text, created_at, timestamp")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
       .limit(35);
 
-    if (historyResult?.error) {
-      queryFailed = true;
-      const errMsg = historyResult.error.message || historyResult.error.details || String(historyResult.error);
-      errors.push(`history: ${errMsg}`);
-      console.error("[OpenAI Agent] agent_session_bootstrap_history_query_failed:", errMsg);
-    } else {
-      rows = Array.isArray(historyResult?.data) ? historyResult.data : [];
+    if (error) {
+      const errMsg = error.message || error.details || String(error);
+      console.error("[OpenAI Agent] agent_session_bootstrap_query_failed:", errMsg);
+      return {
+        text: persistentFacts.text,
+        messageCount: 0,
+        persistentFactCount: persistentFacts.factCount,
+        queryFailed: true,
+        errorMessage: errMsg.slice(0, 200),
+      };
     }
-  } catch (err: any) {
-    queryFailed = true;
-    const errMsg = err?.message || String(err);
-    errors.push(`history: ${errMsg}`);
-    console.error("[OpenAI Agent] agent_session_bootstrap_history_exception:", errMsg);
-  }
 
-  try {
-    const factsResult = await supabase
-      .from("persona_memory")
-      .select("key, value, updated_at")
-      .eq("persona_id", "larissa")
-      .eq("category", "manual_resolution")
-      .order("updated_at", { ascending: false })
-      .limit(50);
-
-    if (factsResult?.error) {
-      queryFailed = true;
-      const errMsg = factsResult.error.message || factsResult.error.details || String(factsResult.error);
-      errors.push(`permanent_facts: ${errMsg}`);
-      console.error("[OpenAI Agent] agent_session_bootstrap_persona_query_failed:", errMsg);
-    } else {
-      permanentFacts = Array.isArray(factsResult?.data) ? factsResult.data : [];
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return {
+        text: persistentFacts.text,
+        messageCount: 0,
+        persistentFactCount: persistentFacts.factCount,
+        queryFailed: persistentFacts.queryFailed,
+        errorMessage: persistentFacts.errorMessage,
+      };
     }
-  } catch (err: any) {
-    queryFailed = true;
-    const errMsg = err?.message || String(err);
-    errors.push(`permanent_facts: ${errMsg}`);
-    console.error("[OpenAI Agent] agent_session_bootstrap_persona_exception:", errMsg);
-  }
 
-  const excludeSet = new Set(excludeMessageIds.map((id) => String(id)));
-  const filteredRows = rows.filter((r: any) => {
-    const idStr = String(r.id || "");
-    if (idStr && excludeSet.has(idStr)) return false;
-    return Boolean(String(r.text || "").trim());
-  });
+    const typedRows = rows.map((raw) => {
+      const row = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      return {
+        id: row.id,
+        sender_id: row.sender_id,
+        is_mine: row.is_mine,
+        text: row.text,
+        created_at: row.created_at,
+        timestamp: row.timestamp,
+      };
+    });
+    const excludeSet = new Set(excludeMessageIds.map((id) => String(id)));
+    const filteredRows = typedRows.filter((row) => {
+      const idStr = String(row.id || "");
+      if (idStr && excludeSet.has(idStr)) return false;
+      const content = String(row.text || "").trim();
+      return Boolean(content);
+    });
 
-  const targetSlice = filteredRows.slice(0, 20);
-  targetSlice.sort((a: any, b: any) => {
-    const tA = new Date(a.created_at || a.timestamp || 0).getTime();
-    const tB = new Date(b.created_at || b.timestamp || 0).getTime();
-    return tA - tB;
-  });
+    if (filteredRows.length === 0) {
+      return {
+        text: persistentFacts.text,
+        messageCount: 0,
+        persistentFactCount: persistentFacts.factCount,
+        queryFailed: persistentFacts.queryFailed,
+        errorMessage: persistentFacts.errorMessage,
+      };
+    }
 
-  const normalizedFacts = permanentFacts
-    .map((row: any) => {
-      const fact = typeof row?.value?.fact === "string"
-        ? row.value.fact.trim()
-        : typeof row?.value === "string"
-        ? row.value.trim()
-        : "";
-      const question = typeof row?.value?.question === "string" ? row.value.question.trim() : "";
-      const key = String(row?.key || "").trim();
-      return fact ? { key, question, fact } : null;
-    })
-    .filter(Boolean) as Array<{ key: string; question: string; fact: string }>;
+    // Recupera entre 15 e 20 mensagens mais recentes (limite de 20)
+    const targetSlice = filteredRows.slice(0, 20);
 
-  const lines: string[] = [];
+    // Ordena cronologicamente (da mais antiga para a mais recente)
+    targetSlice.sort((a, b) => {
+      const tA = new Date(String(a.created_at || a.timestamp || 0)).getTime();
+      const tB = new Date(String(b.created_at || b.timestamp || 0)).getTime();
+      return tA - tB;
+    });
 
-  if (targetSlice.length > 0) {
+    const lines: string[] = [];
+    if (persistentFacts.text) {
+      lines.push(persistentFacts.text, "", "---", "");
+    }
     lines.push(
       "## RECUPERAÇÃO EXCEPCIONAL DE CONTEXTO",
       "",
@@ -1499,30 +1564,29 @@ export async function fetchSessionRecoveryBootstrap(
       const senderLabel = isLarissa ? "Larissa" : "Pretendente";
       const idPart = msg.id ? ` | id=${msg.id}` : "";
       const text = String(msg.text || "").trim();
-      lines.push("", `[${senderLabel}${idPart}]`, text);
+      lines.push("");
+      lines.push(`[${senderLabel}${idPart}]`);
+      lines.push(text);
     }
-  }
 
-  if (normalizedFacts.length > 0) {
-    if (lines.length) lines.push("", "---", "");
-    lines.push(
-      "## FATOS PERMANENTES CONFIRMADOS PELO OPERADOR",
-      "Estes fatos foram explicitamente salvos para novas sessions da Larissa. Use-os como contexto factual; nunca revele metadados internos.",
-    );
-    for (const item of normalizedFacts) {
-      lines.push(
-        `- ${item.key || "fato_manual"}: ${item.fact}${item.question ? ` (origem: resposta factual à pergunta "${item.question}")` : ""}`
-      );
-    }
+    return {
+      text: lines.join("\n"),
+      messageCount: targetSlice.length,
+      persistentFactCount: persistentFacts.factCount,
+      queryFailed: persistentFacts.queryFailed,
+      errorMessage: persistentFacts.errorMessage,
+    };
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[OpenAI Agent] agent_session_bootstrap_exception:", errMsg);
+    return {
+      text: persistentFacts.text,
+      messageCount: 0,
+      persistentFactCount: persistentFacts.factCount,
+      queryFailed: true,
+      errorMessage: errMsg.slice(0, 200),
+    };
   }
-
-  return {
-    text: lines.join("\n"),
-    messageCount: targetSlice.length,
-    factCount: normalizedFacts.length,
-    queryFailed,
-    errorMessage: errors.length ? errors.join(" | ").slice(0, 400) : null,
-  };
 }
 
 async function fetchAgentGenerationIds(
@@ -2296,6 +2360,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     agentSessionRecoveryTriggered: false,
     agentSessionBootstrapInjected: false,
     agentSessionBootstrapMessageCount: 0,
+    agentSessionBootstrapPersistentFactCount: 0,
     agentSessionBootstrapQueryFailed: false,
     agentSessionBootstrapError: null,
     agentInstructionChars: undefined,
@@ -2594,17 +2659,20 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             );
             telemetry.agentSessionBootstrapInjected = Boolean(bootstrap.text.trim());
             telemetry.agentSessionBootstrapMessageCount = bootstrap.messageCount;
+            telemetry.agentSessionBootstrapPersistentFactCount = bootstrap.persistentFactCount;
             telemetry.agentSessionBootstrapQueryFailed = Boolean(bootstrap.queryFailed);
             telemetry.agentSessionBootstrapError = bootstrap.errorMessage || null;
           } else {
             telemetry.agentSessionBootstrapInjected = false;
             telemetry.agentSessionBootstrapMessageCount = 0;
+            telemetry.agentSessionBootstrapPersistentFactCount = 0;
             telemetry.agentSessionBootstrapQueryFailed = false;
             telemetry.agentSessionBootstrapError = null;
           }
         } else {
           telemetry.agentSessionBootstrapInjected = false;
           telemetry.agentSessionBootstrapMessageCount = 0;
+          telemetry.agentSessionBootstrapPersistentFactCount = 0;
           telemetry.agentSessionBootstrapQueryFailed = false;
           telemetry.agentSessionBootstrapError = null;
         }
@@ -2918,6 +2986,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
             telemetry.agentSessionRecoveryTriggered = false;
             telemetry.agentSessionBootstrapInjected = false;
             telemetry.agentSessionBootstrapMessageCount = 0;
+            telemetry.agentSessionBootstrapPersistentFactCount = 0;
             console.log(`[OpenAI Agent] session_reused_success: sessionId=${sessionId}`);
 
             if (!sessionData) {
@@ -2976,10 +3045,12 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           initialInputText = `${bootstrapRes.text}\n\n---\n\n${contextMessage}`;
           telemetry.agentSessionBootstrapInjected = true;
           telemetry.agentSessionBootstrapMessageCount = bootstrapRes.messageCount;
-          console.log(`[OpenAI Agent] session_bootstrap_injected: count=${bootstrapRes.messageCount}, recovery=${telemetry.agentSessionRecoveryTriggered}`);
+          telemetry.agentSessionBootstrapPersistentFactCount = bootstrapRes.persistentFactCount;
+          console.log(`[OpenAI Agent] session_bootstrap_injected: messages=${bootstrapRes.messageCount}, permanent_facts=${bootstrapRes.persistentFactCount}, recovery=${telemetry.agentSessionRecoveryTriggered}`);
         } else {
           telemetry.agentSessionBootstrapInjected = false;
           telemetry.agentSessionBootstrapMessageCount = 0;
+          telemetry.agentSessionBootstrapPersistentFactCount = 0;
         }
       }
 

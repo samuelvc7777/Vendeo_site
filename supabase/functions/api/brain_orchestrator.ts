@@ -154,6 +154,7 @@ import {
   validateQuestionIntentsInvariant,
   type OutboundAction,
 } from "./openai_brain.ts";
+import { computeBoundedDebounce } from "./debounce_policy.ts";
 import {
   loadAndRevalidateRecoverableAudioToolState,
   persistRecoverableAudioToolState,
@@ -4936,7 +4937,7 @@ export async function validateAndApplyBrainStageDecision(params: {
 
 // Incrementar quando uma sessão persistente precisa ser recriada para adotar
 // instruções incompatíveis com as que já estão gravadas na sessão do Agent.
-export const PERSISTENT_AGENT_SESSION_VERSION = 2;
+export const PERSISTENT_AGENT_SESSION_VERSION = 3;
 
 export function isPersistentAgentSessionCompatible(params: {
   sessionId: string | null | undefined;
@@ -6804,6 +6805,7 @@ export interface RunOrchestrationParams {
   model?: string;
   memoryProvider?: MemoryProvider;
   responseDelayMinutes?: number;
+  maxDebounceWindowMinutes?: number;
   isManualRetry?: boolean;
   preClaimedCycleToken?: string;
   manualResolution?: { turnId: string; question: string; context?: string; answer: string };
@@ -6907,7 +6909,7 @@ export async function runBrainOrchestration(
   // 1. Carrega o estado atual da conversa
   const { data: convRow, error: convErr } = await supabase
     .from("instagram_conversations")
-    .select("stage_completed_rules, current_stage_id, is_restricted")
+    .select("stage_completed_rules, current_stage_id, is_restricted, ai_debounce_started_at")
     .eq("id", conversationId)
     .maybeSingle();
 
@@ -6922,9 +6924,31 @@ export async function runBrainOrchestration(
   const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
     ? params.responseDelayMinutes
     : Number(stageRules?.responseDelayMinutes ?? 1);
-  const quietPeriodMs = Math.max(responseDelayMinutes, 0) * 60 * 1000;
-  const computedDebounceUntil = quietPeriodMs > 0
-    ? new Date(Date.now() + quietPeriodMs).toISOString()
+  let maxDebounceWindowMinutes = typeof params.maxDebounceWindowMinutes === "number"
+    ? Math.max(Number(params.maxDebounceWindowMinutes), responseDelayMinutes)
+    : Math.max(Number(stageRules?.orchestration?.maxDebounceWindowMinutes ?? 3), responseDelayMinutes);
+  if (typeof params.maxDebounceWindowMinutes !== "number" && responseDelayMinutes > 0) {
+    try {
+      const { data: globalAutoPilotConfig } = await supabase
+        .from("instagram_conversations")
+        .select("stage_completed_rules")
+        .eq("id", "__autopilot_config__")
+        .maybeSingle();
+      const configuredMax = Number(globalAutoPilotConfig?.stage_completed_rules?.config?.maxDebounceWindowMinutes);
+      if (Number.isFinite(configuredMax) && configuredMax >= 0) {
+        maxDebounceWindowMinutes = Math.max(configuredMax, responseDelayMinutes);
+      }
+    } catch {
+      // Falha de telemetria/config não pode quebrar o ciclo; usa o teto determinístico já resolvido.
+    }
+  }
+  const boundedDebounce = computeBoundedDebounce({
+    responseDelayMinutes,
+    maxDebounceWindowMinutes,
+    batchStartedAt: convRow?.ai_debounce_started_at || null,
+  });
+  const computedDebounceUntil = responseDelayMinutes > 0
+    ? boundedDebounce.scheduledAt
     : new Date(Date.now() + 2500).toISOString();
   let orchState: ConversationOrchestrationState = stageRules.orchestration || {
     version: 1,
@@ -9323,7 +9347,11 @@ export async function runBrainOrchestration(
     const audioAction = canonicalOutboundActions.find((a) => a.type === "audio") as { type: "audio"; audioId: string } | undefined;
     if (audioAction && audioAction.audioId) {
       // 1. Resolução do asset do áudio
-      const allAudios = await listEligiblePersonaAudios({ supabase, conversationId });
+      const allAudios = await listEligiblePersonaAudios({
+        supabase,
+        conversationId,
+        objectiveId: stageChecklistForRouter.currentObjective?.id,
+      });
       resolvedAudio = allAudios.find((a) => a.id === audioAction.audioId);
 
       // 2. Trava de autorização: deve existir, estar habilitado e possuir URL HTTP pública válida (não blob / não data)

@@ -930,8 +930,8 @@ test("8.12. Partial dispatch TEXT + AUDIO: textos enviados não são repetidos s
   const initialPlan = createValidTestPlan({
     action: "reply",
     outboundActions: [
-      { type: "text", text: "nossa, eu amo café também!" },
-      { type: "audio", audioId: "aud_hobbies" },
+      { type: "text", text: "nossa, eu amo café também!", delay_before_send: 0 },
+      { type: "audio", audioId: "aud_hobbies", delay_before_send: 4 },
     ],
   });
 
@@ -948,8 +948,8 @@ test("9. TEXT + AUDIO preservados em ordem", () => {
   const plan = createValidTestPlan({
     action: "reply",
     outboundActions: [
-      { type: "text", text: "academia eu admiro muito quem tem disposição kkk" },
-      { type: "audio", audioId: "aud_hobbies" },
+      { type: "text", text: "academia eu admiro muito quem tem disposição kkk", delay_before_send: 0 },
+      { type: "audio", audioId: "aud_hobbies", delay_before_send: 4 },
     ],
     reasoning: "Responde academia em texto e hobbies em áudio.",
   });
@@ -966,9 +966,9 @@ test("10. TEXT + TEXT + AUDIO preservados em ordem", () => {
   const plan = createValidTestPlan({
     action: "reply",
     outboundActions: [
-      { type: "text", text: "mineração deve ter uma rotina bem intensa" },
-      { type: "text", text: "já moto eu tenho um certo receio kkkk" },
-      { type: "audio", audioId: "aud_hobbies" },
+      { type: "text", text: "mineração deve ter uma rotina bem intensa", delay_before_send: 0 },
+      { type: "text", text: "já moto eu tenho um certo receio kkkk", delay_before_send: 4 },
+      { type: "audio", audioId: "aud_hobbies", delay_before_send: 4 },
     ],
     reasoning: "Responde aos dois fatos em texto e a pergunta em áudio.",
   });
@@ -1216,8 +1216,8 @@ test("22. Inbound 'gosto de academia' + 'e vc gosta de fazer oq?' permite TEXT +
   const plan = createValidTestPlan({
     action: "reply",
     outboundActions: [
-      { type: "text", text: "academia eu admiro muito quem tem esse foco todo kkkk" },
-      { type: "audio", audioId: "aud_hobbies" },
+      { type: "text", text: "academia eu admiro muito quem tem esse foco todo kkkk", delay_before_send: 0 },
+      { type: "audio", audioId: "aud_hobbies", delay_before_send: 4 },
     ],
     coveredHooks: ["ele gosta de academia", "ele perguntou o que Larissa faz"],
     reasoning: "Responde ao hook da academia em texto e à pergunta de hobbies com o áudio correspondente.",
@@ -1234,9 +1234,9 @@ test("23. Inbound 'trabalho com mineração' + 'gosto de moto' + 'e vc?' preserv
   const plan = createValidTestPlan({
     action: "reply",
     outboundActions: [
-      { type: "text", text: "mineração deve ser uma rotina bem intensa e diferente da minha" },
-      { type: "text", text: "já moto eu tenho um medo danado kkkkk" },
-      { type: "audio", audioId: "aud_hobbies" },
+      { type: "text", text: "mineração deve ser uma rotina bem intensa e diferente da minha", delay_before_send: 0 },
+      { type: "text", text: "já moto eu tenho um medo danado kkkkk", delay_before_send: 4 },
+      { type: "audio", audioId: "aud_hobbies", delay_before_send: 4 },
     ],
     coveredHooks: ["trabalho mineração", "gosto de moto", "pergunta recíproca o que ela faz"],
     reasoning: "Cobre os 3 fatos trazidos pelo pretendente sem descartar texto por causa do áudio.",

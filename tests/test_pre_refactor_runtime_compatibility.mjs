@@ -68,27 +68,27 @@ test("ciclo com 300s ou mais pode ser considerado stale", () => {
 
 test("resultado do Agent mantém authority antes do TTL e superseded continua fail-closed", () => {
   const firstAuthorityGate = brainSource.indexOf("if (!(await checkCycleAuthority(supabase, conversationId, correlationId)))");
-  const outboxPersistence = brainSource.indexOf("const persistBatchRes = await persistDurableOutboxBatchAtomic");
+  const canonicalPersistence = brainSource.indexOf("const decisionPersisted = await persistCanonicalBrainDecision", firstAuthorityGate);
   assert.ok(firstAuthorityGate >= 0, "o gate de authority deve existir depois do Agent");
-  assert.ok(outboxPersistence > firstAuthorityGate, "a outbox vem depois da validação de ownership");
+  assert.ok(canonicalPersistence > firstAuthorityGate, "decisão + ações + outbox só persistem depois da validação de ownership");
   assert.match(brainSource, /late_agent_result_discarded/);
   assert.match(brainSource, /blockLegacyFallback: true/);
 });
 
 test("nenhuma outbox é criada por ciclo sem ownership", () => {
   const authorityGate = brainSource.indexOf("if (!(await checkCycleAuthority(supabase, conversationId, correlationId)))");
-  const outboxCall = brainSource.indexOf("const persistBatchRes = await persistDurableOutboxBatchAtomic");
-  const discardedReturn = brainSource.indexOf('error: "late_agent_result_discarded"');
+  const discardedReturn = brainSource.indexOf('error: "late_agent_result_discarded"', authorityGate);
+  const outboxCreation = brainSource.indexOf("const outboxBatch = createBrainOutboxBatch", authorityGate);
   assert.ok(authorityGate >= 0);
-  assert.ok(outboxCall > authorityGate);
-  assert.ok(discardedReturn > authorityGate && discardedReturn < outboxCall);
+  assert.ok(discardedReturn > authorityGate);
+  assert.ok(outboxCreation > discardedReturn, "ciclo sem ownership retorna antes de criar a outbox");
 });
 
-test("ciclo com ownership persiste durable outbox antes do dispatcher", () => {
-  assert.match(brainSource, /persistDurableOutboxBatchAtomic/);
-  assert.match(brainSource, /persist_durable_outbox_batch/);
-  const persistence = brainSource.indexOf("const persistBatchRes = await persistDurableOutboxBatchAtomic");
-  const dispatcher = brainSource.indexOf("const dispatchResult = await runDurableOutboxDispatcher");
+test("ciclo com ownership persiste decisão + outbox atomicamente antes do dispatcher", () => {
+  assert.match(brainSource, /persistCanonicalBrainDecision/);
+  assert.match(brainSource, /persist_brain_decision_with_outbox/);
+  const persistence = brainSource.indexOf("const decisionPersisted = await persistCanonicalBrainDecision");
+  const dispatcher = brainSource.indexOf("const dispatchResult = await runDurableOutboxDispatcher", persistence);
   assert.ok(persistence >= 0 && dispatcher > persistence);
 });
 

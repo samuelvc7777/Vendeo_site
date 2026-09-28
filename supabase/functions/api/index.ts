@@ -36,6 +36,7 @@ import {
   verifyBrainOperatorToken,
 } from "./brain_operator_auth.ts";
 import { handleOperatorChatProgress } from "./operator_chat_progress.ts";
+import { computeBoundedDebounce } from "./debounce_policy.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -541,6 +542,7 @@ serve(async (req: Request) => {
 
   const operatorRouteAliases: Record<string, string> = {
     "/operator/brain/events": "/autopilot/brain-events",
+    "/operator/brain/overview": "/autopilot/brain-overview",
     "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
     "/operator/brain/manual-resolution": "/autopilot/manual-resolution",
     "/operator/brain/retry-once": "/autopilot/retry-once",
@@ -1109,7 +1111,7 @@ serve(async (req: Request) => {
                 // 2. Busca estado da conversa para checar pausas e restrições
                 const { data: convRow } = await supabase
                   .from("instagram_conversations")
-                  .select("status, is_restricted, stage_completed_rules, ai_debounce_until, ai_auto_respond")
+                  .select("status, is_restricted, stage_completed_rules, ai_debounce_until, ai_debounce_started_at, ai_auto_respond")
                   .eq("id", conversationId)
                   .maybeSingle();
 
@@ -1172,10 +1174,20 @@ serve(async (req: Request) => {
                     new Date(convRules.orchestration.activeCycle.expiresAt).getTime() > Date.now()
                   );
 
-                  const quietPeriodMs = Math.round(delayMinutes * 60 * 1000);
+                  const maxDebounceWindowMinutes =
+                    typeof apConfig?.maxDebounceWindowMinutes === "number"
+                      ? apConfig.maxDebounceWindowMinutes
+                      : Math.max(delayMinutes, 3);
+                  const boundedDebounce = computeBoundedDebounce({
+                    responseDelayMinutes: delayMinutes,
+                    maxDebounceWindowMinutes,
+                    batchStartedAt: convRow?.ai_debounce_started_at || null,
+                  });
 
                   if (hasActiveCycle) {
-                    const newDebounceUntil = new Date(Date.now() + (quietPeriodMs || 2500)).toISOString();
+                    const newDebounceUntil = delayMinutes > 0
+                      ? boundedDebounce.scheduledAt
+                      : new Date(Date.now() + 2500).toISOString();
                     console.log(
                       `[Brain] Concorrência/Ciclo ativo detectado em ${conversationId}. Sinalizando preempção atômica e novo debounce de ${delayMinutes}m (${newDebounceUntil}).`
                     );
@@ -1198,8 +1210,8 @@ serve(async (req: Request) => {
                       ),
                       scheduledResponseAt: newDebounceUntil,
                     });
-                  } else if (delayMinutes > 0) {
-                    const scheduledUntil = new Date(Date.now() + quietPeriodMs).toISOString();
+                  } else if (delayMinutes > 0 && !boundedDebounce.dueNow) {
+                    const scheduledUntil = boundedDebounce.scheduledAt;
                     console.log(
                       `[Brain] Inbound recebida em ${conversationId}. Agendando quiet period de ${delayMinutes}m (ai_debounce_until = ${scheduledUntil}).`
                     );
@@ -4904,6 +4916,135 @@ serve(async (req: Request) => {
 
     // ==========================================
     // Retoma o turno persistido após o operador responder uma resolução manual.
+    if ((path === "/autopilot/brain-overview" || path === "/api/autopilot/brain-overview") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
+        return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige a sessão autenticada do operador." }), {
+          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const body = await req.json().catch(() => ({}));
+      const conversationIds = [...new Set(
+        (Array.isArray(body?.conversationIds) ? body.conversationIds : [])
+          .map((value: unknown) => String(value || "").trim())
+          .filter(Boolean),
+      )].slice(0, 500);
+      if (conversationIds.length === 0) {
+        return new Response(JSON.stringify({ success: true, overview: {} }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+
+      const unresolvedActionStatuses = ["pending", "sending", "failed_retryable", "failed_confirmed", "dispatch_uncertain"];
+      const [turnResult, actionResult, conversationResult] = await Promise.all([
+        supabase.from("brain_turns")
+          .select("id, conversation_id, status, updated_at")
+          .in("conversation_id", conversationIds)
+          .in("status", ["brain_running", "decision_persisted", "waiting_manual"])
+          .order("updated_at", { ascending: false })
+          .limit(Math.min(2500, conversationIds.length * 6)),
+        supabase.from("brain_decision_actions")
+          .select("id, conversation_id, status, not_before, updated_at")
+          .in("conversation_id", conversationIds)
+          .in("status", unresolvedActionStatuses)
+          .order("updated_at", { ascending: false })
+          .limit(Math.min(2500, conversationIds.length * 8)),
+        supabase.from("instagram_conversations")
+          .select("id, ai_auto_respond, ai_debounce_until")
+          .in("id", conversationIds),
+      ]);
+      if (turnResult.error || actionResult.error || conversationResult.error) {
+        const error = turnResult.error || actionResult.error || conversationResult.error;
+        return new Response(JSON.stringify({ success: false, error: error?.message || "Falha ao carregar visão operacional." }), {
+          status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      type BrainOverviewTurnRow = {
+        id: string;
+        conversation_id: string;
+        status: string | null;
+        updated_at: string | null;
+      };
+      type BrainOverviewActionRow = {
+        id: string;
+        conversation_id: string;
+        status: string | null;
+        not_before: string | null;
+        updated_at: string | null;
+      };
+      type BrainOverviewConversationRow = {
+        id: string;
+        ai_auto_respond: boolean | null;
+        ai_debounce_until: string | null;
+      };
+      type BrainOverviewItem = {
+        status: string;
+        label: string;
+        detail: string;
+        active: boolean;
+        turnId: string | null;
+        updatedAt: string | null;
+        scheduledResponseAt: string | null;
+        isEnabled: boolean;
+      };
+
+      const turnRows = (turnResult.data || []) as BrainOverviewTurnRow[];
+      const actionRows = (actionResult.data || []) as BrainOverviewActionRow[];
+      const conversationRows = (conversationResult.data || []) as BrainOverviewConversationRow[];
+      const latestTurnByConversation = new Map<string, BrainOverviewTurnRow>();
+      for (const turn of turnRows) {
+        if (!latestTurnByConversation.has(turn.conversation_id)) latestTurnByConversation.set(turn.conversation_id, turn);
+      }
+      const actionsByConversation = new Map<string, BrainOverviewActionRow[]>();
+      for (const action of actionRows) {
+        const list = actionsByConversation.get(action.conversation_id) || [];
+        list.push(action);
+        actionsByConversation.set(action.conversation_id, list);
+      }
+      const conversationById = new Map(conversationRows.map((row) => [String(row.id), row]));
+      const overview: Record<string, BrainOverviewItem> = {};
+      const now = Date.now();
+
+      for (const conversationId of conversationIds) {
+        const turn = latestTurnByConversation.get(conversationId);
+        const actions = actionsByConversation.get(conversationId) || [];
+        const conversation = conversationById.get(conversationId);
+        const statuses = new Set(actions.map((action) => String(action.status || "")));
+        let status = "idle";
+        let label = "Aguardando nova mensagem";
+        let detail = "";
+        let active = false;
+
+        if (statuses.has("dispatch_uncertain")) {
+          status = "uncertain"; label = "Envio sem confirmação"; detail = "A entrega precisa ser reconciliada antes de qualquer reenvio."; active = true;
+        } else if (statuses.has("failed_confirmed")) {
+          status = "failed"; label = "Falha confirmada no envio"; detail = "A ação pode ser revisada pelo operador."; active = true;
+        } else if (turn?.status === "waiting_manual") {
+          status = "waiting_human"; label = "Brain precisa da sua resposta"; detail = "O mesmo turno será retomado depois da informação."; active = true;
+        } else if (statuses.has("sending") || statuses.has("failed_retryable") || statuses.has("pending")) {
+          status = "sending"; label = "Enviando resposta"; detail = "Há ação persistida aguardando conclusão da entrega."; active = true;
+        } else if (turn?.status === "decision_persisted") {
+          status = "sending"; label = "Resposta pronta"; detail = "A decisão do Brain já foi persistida."; active = true;
+        } else if (turn?.status === "brain_running") {
+          status = "processing"; label = "Brain processando"; detail = "O turno canônico está em processamento."; active = true;
+        } else if (conversation?.ai_debounce_until && Date.parse(conversation.ai_debounce_until) > now) {
+          status = "waiting_delay"; label = "Aguardando quiet period"; detail = "A resposta está agendada pelo backend."; active = true;
+        }
+
+        overview[conversationId] = {
+          status, label, detail, active,
+          turnId: turn?.id || null,
+          updatedAt: turn?.updated_at || actions[0]?.updated_at || null,
+          scheduledResponseAt: conversation?.ai_debounce_until || null,
+          isEnabled: conversation?.ai_auto_respond === true,
+        };
+      }
+
+      return new Response(JSON.stringify({ success: true, overview }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
     if ((path === "/autopilot/brain-events" || path === "/api/autopilot/brain-events") && req.method === "GET") {
       if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
         return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });

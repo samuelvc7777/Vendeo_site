@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const migration = await readFile(new URL("../supabase/migrations/20260927112607_separate_autopilot_runtime_pause_and_projection_patch.sql", import.meta.url), "utf8");
+const migration = await readFile(new URL("../supabase/migrations/20260927113736_separate_autopilot_runtime_pause_and_projection_patch.sql", import.meta.url), "utf8");
 const api = await readFile(new URL("../supabase/functions/api/index.ts", import.meta.url), "utf8");
 const brain = await readFile(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
 const manualSql = migration.slice(migration.indexOf("CREATE OR REPLACE FUNCTION public.prepare_brain_manual_resolution("));

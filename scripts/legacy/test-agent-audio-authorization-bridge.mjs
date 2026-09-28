@@ -23,6 +23,20 @@ import {
 
 function createMockSupabase(params = {}) {
   const { conversationRecord, personaAudios = [], deliveryHistory = [], newerMessages = [] } = params;
+  const chatStages = params.chatStages || [{
+    id: "stage_1_conexao",
+    name: "Conexão Inicial",
+    stage_order: 0,
+    goals: [{
+      id: "goal_job",
+      title: "Profissão / trabalho",
+      label: "Profissão / trabalho",
+      kind: "fact",
+      enabled: true,
+      required: true,
+      order: 0,
+    }],
+  }];
   const rpcCalls = [];
   const audioHistory = [...deliveryHistory];
   const broadcasts = [];
@@ -47,6 +61,8 @@ function createMockSupabase(params = {}) {
           ? newerMessages
           : table === "audio_delivery_history"
           ? audioHistory
+          : table === "chat_stages"
+          ? chatStages
           : [];
 
       const queryResult = {
@@ -132,6 +148,16 @@ function createMockSupabase(params = {}) {
             claimed_count: 1,
             claimed_ids: ["msg_inbound_test"],
             inbound_revision: 1,
+          },
+          error: null,
+        };
+      }
+      if (fnName === "persist_brain_decision_with_outbox") {
+        return {
+          data: {
+            success: true,
+            semantic_state_committed: true,
+            decision_id: args?.p_decision?.id,
           },
           error: null,
         };
@@ -248,6 +274,8 @@ const mockPersonaAudios = [
     usage_instruction: "Usar quando ele perguntar sobre a rotina da Larissa ou dia a dia.",
     when_to_use: "Usar quando ele perguntar sobre a rotina da Larissa ou dia a dia.",
     enabled: true,
+    objective_id: "goal_job",
+    objectiveId: "goal_job",
   },
 ];
 
@@ -335,7 +363,7 @@ test("CENÁRIO A — áudio escolhido está autorizado (∈ candidatos do mesmo 
   });
 
   if (!result.sentToMeta) {
-    console.error("DIAGNOSTICO CENARIO A TRACE:", result.trace);
+    console.error("DIAGNOSTICO CENARIO A:", { error: result.error, traceTail: result.trace?.slice(-15) });
   }
   // Validações determinísticas
   assert.equal(result.handled, true, "Ciclo deve ser completado com sucesso");

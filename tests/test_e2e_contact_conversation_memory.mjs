@@ -36,13 +36,15 @@ function computeFingerprint(input) {
   return crypto.createHash('sha256').update(String(input).trim().toLowerCase()).digest('hex').slice(0, 32);
 }
 
-async function callMcpTool(name, args) {
+async function callMcpTool(name, args, memoryScope = null) {
+  const headers = {
+    Authorization: `Bearer ${MCP_TOKEN}`,
+    'Content-Type': 'application/json',
+  };
+  if (memoryScope) headers['x-vendeo-memory-scope'] = memoryScope;
   const res = await fetch(MCP_ENDPOINT, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${MCP_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: Date.now(),
@@ -105,14 +107,13 @@ async function runTests() {
   try {
     console.log('\n[TESTE 2] Chamando contact_memory_search com scope INVÁLIDO...');
     const fakeScopeRes = await callMcpTool('contact_memory_search', {
-      scope: 'scope_totalmente_falso_999',
       query: 'onde mora',
-    });
+    }, 'scope_totalmente_falso_999');
 
     const isError = fakeScopeRes.error || (fakeScopeRes.result?.isError === true);
     const text = fakeScopeRes.result?.content?.[0]?.text || fakeScopeRes.error?.message || '';
 
-    if (isError && (text.includes('FAIL_CLOSED') || text.includes('Invalid') || text.includes('unauthorized'))) {
+    if (isError && (text.includes('memory_scope_invalid') || text.includes('memory_scope_missing'))) {
       console.log(`✅ TESTE 2 PASSOU: MCP rejeitou com FAIL-CLOSED: "${text.slice(0, 80)}..."`);
       passed++;
     } else {
@@ -129,9 +130,8 @@ async function runTests() {
   try {
     console.log('\n[TESTE 3] Chamando contact_memory_search com scope VÁLIDO...');
     const validRes = await callMcpTool('contact_memory_search', {
-      scope: activeScopeId,
       query: 'cidade',
-    });
+    }, activeScopeId);
 
     const isError = validRes.error || (validRes.result?.isError === true);
     if (isError) throw new Error(`MCP retornou erro para scope válido: ${JSON.stringify(validRes)}`);
@@ -315,9 +315,8 @@ async function runTests() {
   try {
     console.log('\n[TESTE 6] Buscando fatos via MCP com scope ativo...');
     const searchRes = await callMcpTool('contact_memory_search', {
-      scope: activeScopeId,
       query: 'arquiteto profissão trabalho',
-    });
+    }, activeScopeId);
 
     const rawData = JSON.parse(searchRes.result?.content?.[0]?.text || '{}');
     const jobs = rawData.results?.filter((f) => f.field === 'job') || [];
@@ -347,14 +346,13 @@ async function runTests() {
       .eq('scope_id', activeScopeId);
 
     const callAfterRevoke = await callMcpTool('contact_memory_search', {
-      scope: activeScopeId,
       query: 'qualquer busca',
-    });
+    }, activeScopeId);
 
     const isError = callAfterRevoke.error || (callAfterRevoke.result?.isError === true);
     const text = callAfterRevoke.result?.content?.[0]?.text || callAfterRevoke.error?.message || '';
 
-    if (isError && (text.includes('FAIL_CLOSED') || text.includes('Invalid') || text.includes('unauthorized'))) {
+    if (isError && (text.includes('memory_scope_invalid') || text.includes('memory_scope_missing'))) {
       console.log(`✅ TESTE 7 PASSOU: Scope revogado resultou em FAIL-CLOSED imediato.`);
       passed++;
     } else {

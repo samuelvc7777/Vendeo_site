@@ -9,7 +9,8 @@ const LOCAL_STORAGE_STATES_KEY = "vendeo_autopilot_states_v1";
 const DEFAULT_CONFIG: AutoPilotConfig = {
   isEnabledGlobally: true,
   mode: "automatic", // 100% Automático direto (semiautomático removido)
-  responseDelayMinutes: 1, // Padrão de 1 minuto para testes imediatos (configurável até 10+ min)
+  responseDelayMinutes: 1, // Quiet period da última mensagem
+  maxDebounceWindowMinutes: 3, // Impede que novas mensagens adiem o Brain indefinidamente
   activationWaitMinutes: 1,
   pauseOnPhotoReceived: true,
   pauseOnSensitiveContent: true,

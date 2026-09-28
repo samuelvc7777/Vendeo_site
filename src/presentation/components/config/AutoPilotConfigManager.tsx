@@ -30,6 +30,14 @@ const PRESET_DELAYS = [
   { label: "15 min", value: 15 },
 ];
 
+const MAX_BATCH_PRESETS = [
+  { label: "3 min", value: 3 },
+  { label: "5 min", value: 5 },
+  { label: "10 min", value: 10 },
+  { label: "15 min", value: 15 },
+  { label: "30 min", value: 30 },
+];
+
 export function AutoPilotConfigManager() {
   const [config, setConfig] = useState<AutoPilotConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -139,11 +147,24 @@ export function AutoPilotConfigManager() {
 
   const handleUpdate = async (partial: Partial<AutoPilotConfig>) => {
     if (!config) return;
-    const next = { ...config, ...partial };
+    const normalizedPartial = { ...partial };
+    if (
+      typeof normalizedPartial.responseDelayMinutes === "number" &&
+      normalizedPartial.responseDelayMinutes > config.maxDebounceWindowMinutes
+    ) {
+      normalizedPartial.maxDebounceWindowMinutes = normalizedPartial.responseDelayMinutes;
+    }
+    if (
+      typeof normalizedPartial.maxDebounceWindowMinutes === "number" &&
+      normalizedPartial.maxDebounceWindowMinutes < (normalizedPartial.responseDelayMinutes ?? config.responseDelayMinutes)
+    ) {
+      normalizedPartial.maxDebounceWindowMinutes = normalizedPartial.responseDelayMinutes ?? config.responseDelayMinutes;
+    }
+    const next = { ...config, ...normalizedPartial };
     setConfig(next);
     setIsSaving(true);
     try {
-      await autoPilotRepo.saveConfig(partial);
+      await autoPilotRepo.saveConfig(normalizedPartial);
       toast.success("Configuração do Piloto salva com sucesso!");
     } catch {
       toast.error("Erro ao salvar configuração.");
@@ -381,7 +402,7 @@ export function AutoPilotConfigManager() {
         </div>
 
         <p className="text-[11px] text-zinc-400 leading-relaxed">
-          A IA aguarda este intervalo contado a partir da <strong>última mensagem</strong> recebida de cada cliente. Se o cliente enviar outra mensagem enquanto o cronômetro estiver correndo, o tempo reseta para ele automaticamente.
+          A IA aguarda este intervalo contado a partir da <strong>última mensagem</strong>. Novas mensagens podem reiniciar o quiet period, mas nunca passam do teto absoluto do lote configurado abaixo.
         </p>
 
         {/* Botões Rápidos de Delay */}
@@ -405,6 +426,34 @@ export function AutoPilotConfigManager() {
               </button>
             );
           })}
+        </div>
+
+        <div className="pt-2 border-t border-white/5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-white">Teto máximo do lote</span>
+            <span className="text-[11px] font-bold text-amber-300">{config.maxDebounceWindowMinutes} min</span>
+          </div>
+          <p className="text-[10px] text-zinc-500 leading-relaxed">
+            Contado da primeira mensagem do lote. Ao atingir esse limite o Brain responde mesmo que continuem chegando novos balões.
+          </p>
+          <div className="grid grid-cols-5 gap-1.5">
+            {MAX_BATCH_PRESETS.map((preset) => {
+              const effectiveValue = Math.max(preset.value, config.responseDelayMinutes);
+              const isSelected = config.maxDebounceWindowMinutes === effectiveValue;
+              return (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() => handleUpdate({ maxDebounceWindowMinutes: effectiveValue })}
+                  className={`px-2 py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                    isSelected ? "bg-amber-500/20 text-amber-200 border border-amber-500/40" : "bg-[#121214] text-zinc-400 border border-white/5"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
