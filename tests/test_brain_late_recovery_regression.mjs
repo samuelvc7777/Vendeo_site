@@ -159,3 +159,15 @@ test("scanner de recovery libera lease sem ressuscitar turno concluído", () => 
   assert.match(source, /else \{\s*await finishRecoveredTurnLease\(false\)/s);
   assert.doesNotMatch(source, /if \(!recovery\.handled && recovery\.error\)[\s\S]*await releaseLateTurn\("brain_late"\)/s);
 });
+
+test("cron drena outbox durável antes de bloquear novas inferências pelo toggle global", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/index.ts", import.meta.url),
+    "utf8",
+  );
+  const dispatcherIndex = source.indexOf("cron:tick despachando outbox pendente madura");
+  const globalGateIndex = source.indexOf("if (!isEnabledGlobally)");
+  assert.ok(dispatcherIndex >= 0);
+  assert.ok(globalGateIndex > dispatcherIndex);
+  assert.match(source.slice(dispatcherIndex, globalGateIndex), /runDurableOutboxDispatcher/);
+});

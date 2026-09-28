@@ -4152,6 +4152,46 @@ serve(async (req: Request) => {
         }
 
         // 0. Verifica se o Piloto Automático está habilitado globalmente
+        // Entrega autorizada e independente da criacao de novas inferencias.
+        // Decisoes ja persistidas continuam drenando a outbox mesmo quando
+        // o toggle global bloqueia novos ciclos do Brain.
+        // 2. DISPATCHER DURAVEL INDEPENDENTE DO TOGGLE GLOBAL (P0): Despacha ações de outbox pendentes que já maturaram (not_before <= now)
+        try {
+          const { data: outboxConvs } = await supabase
+            .from("instagram_conversations")
+            .select("id, stage_completed_rules")
+            .eq("ai_auto_respond", true)
+            .not("stage_completed_rules->orchestration->outbox", "is", null)
+            .limit(30);
+
+          if (outboxConvs && outboxConvs.length > 0) {
+            for (const oc of outboxConvs) {
+              const outbox = oc.stage_completed_rules?.orchestration?.outbox || {};
+              const entries = Object.values(outbox) as any[];
+              const hasMaturePending = entries.some(
+                (e: any) => e && e.status === "pending" && (!e.notBefore || e.notBefore <= nowIso)
+              );
+
+              if (hasMaturePending) {
+                console.log(`[Cloud AutoPilot] cron:tick despachando outbox pendente madura para conv=${oc.id}`);
+                const dispatchPromise = runDurableOutboxDispatcher({
+                  supabase,
+                  conversationId: oc.id,
+                });
+
+                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                  (globalThis as any).EdgeRuntime.waitUntil(dispatchPromise);
+                } else {
+                  void dispatchPromise;
+                }
+              }
+            }
+          }
+        } catch (outboxTickErr: any) {
+          console.warn(`[Cloud AutoPilot] cron:tick erro ao verificar outbox pendente:`, outboxTickErr?.message || outboxTickErr);
+        }
+
+        // 1. Só depois da entrega durável, o toggle global decide se NOVAS inferências podem rodar.
         const { data: configRow } = await supabase
           .from("instagram_conversations")
           .select("stage_completed_rules")
@@ -4301,42 +4341,6 @@ serve(async (req: Request) => {
                 .eq("id", conv.id);
             }
           }
-        }
-
-        // 2. DISPATCHER DESACOPLADO (P0): Despacha ações de outbox pendentes que já maturaram (not_before <= now)
-        try {
-          const { data: outboxConvs } = await supabase
-            .from("instagram_conversations")
-            .select("id, stage_completed_rules")
-            .eq("ai_auto_respond", true)
-            .not("stage_completed_rules->orchestration->outbox", "is", null)
-            .limit(30);
-
-          if (outboxConvs && outboxConvs.length > 0) {
-            for (const oc of outboxConvs) {
-              const outbox = oc.stage_completed_rules?.orchestration?.outbox || {};
-              const entries = Object.values(outbox) as any[];
-              const hasMaturePending = entries.some(
-                (e: any) => e && e.status === "pending" && (!e.notBefore || e.notBefore <= nowIso)
-              );
-
-              if (hasMaturePending) {
-                console.log(`[Cloud AutoPilot] cron:tick despachando outbox pendente madura para conv=${oc.id}`);
-                const dispatchPromise = runDurableOutboxDispatcher({
-                  supabase,
-                  conversationId: oc.id,
-                });
-
-                if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                  (globalThis as any).EdgeRuntime.waitUntil(dispatchPromise);
-                } else {
-                  void dispatchPromise;
-                }
-              }
-            }
-          }
-        } catch (outboxTickErr: any) {
-          console.warn(`[Cloud AutoPilot] cron:tick erro ao verificar outbox pendente:`, outboxTickErr?.message || outboxTickErr);
         }
 
         return new Response(JSON.stringify({ success: true, processedCount: processed.length, processed }), {
