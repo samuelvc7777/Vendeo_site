@@ -1660,12 +1660,12 @@ export function AutoPilotActivityIndicator({
   const shouldShowReasoningSection = Boolean(hasThoughts || isBrainActive || validBrainThought);
 
   return (
-    <div className="w-full select-none animate-in fade-in slide-in-from-bottom-2 duration-200">
-      <div className="rounded-2xl border border-zinc-800/90 bg-[#0d0d11]/95 shadow-2xl shadow-black/90 backdrop-blur-2xl p-3 text-zinc-100 transition-all duration-300">
+    <div className="w-full min-w-0 select-none animate-in fade-in slide-in-from-bottom-2 duration-200">
+      <div className="min-w-0 overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0d0d11]/95 p-3 text-zinc-100 shadow-2xl shadow-black/90 backdrop-blur-2xl transition-all duration-300">
         
         {/* Cabeçalho do HUD Flutuante */}
-        <div className="flex items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
             <span
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border transition-all duration-300",
@@ -1694,7 +1694,7 @@ export function AutoPilotActivityIndicator({
           </div>
 
           {/* Badges de Contagem & Controles Rápidos */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex min-w-0 w-full flex-wrap items-center gap-1.5 border-t border-zinc-800/70 pt-2">
             {isEditing ? (
               <span className="font-mono text-[10px] font-bold text-cyan-300 bg-cyan-500/20 px-2 py-0.5 rounded-full border border-cyan-500/40 animate-pulse flex items-center gap-1">
                 <Pause className="h-2.5 w-2.5" />
@@ -1729,7 +1729,7 @@ export function AutoPilotActivityIndicator({
                 ) : (
                   <>
                     <FastForward className="h-3 w-3" />
-                    <span className="hidden sm:inline">Tentar mais uma vez</span>
+                    <span className="whitespace-nowrap">Tentar mais uma vez</span>
                   </>
                 )}
               </button>
@@ -1749,7 +1749,7 @@ export function AutoPilotActivityIndicator({
                 title="Ignorar o tempo de espera e responder agora"
               >
                 <FastForward className="h-3 w-3" />
-                <span className="hidden sm:inline">Responder Já</span>
+                <span className="whitespace-nowrap">Responder Já</span>
               </button>
             )}
 
@@ -1763,13 +1763,13 @@ export function AutoPilotActivityIndicator({
                 title="Cancelar apenas o ciclo atual; a IA continuará ligada para próximas mensagens"
               >
                 <StopCircle className="h-3 w-3" />
-                <span className="hidden sm:inline">{isCancelling ? "Cancelando..." : "Cancelar ação"}</span>
+                <span className="whitespace-nowrap">{isCancelling ? "Cancelando..." : "Cancelar ação"}</span>
               </button>
             )}
 
             <button type="button" onClick={() => setIsConsoleOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-700 text-zinc-300 text-[10px] hover:bg-zinc-800" title="Abrir console operacional">
               <Maximize2 className="h-3 w-3" />
-              <span className="hidden sm:inline">Abrir console</span>
+              <span className="whitespace-nowrap">Abrir console</span>
             </button>
 
             {/* Botão Alternar Raciocínio (Estilo Antigravity) */}
@@ -1786,7 +1786,7 @@ export function AutoPilotActivityIndicator({
                 title="Alternar visão de raciocínio do Brain"
               >
                 <BrainCircuit className="h-3 w-3 text-purple-400" />
-                <span>{isThinkingExpanded ? "Recolher" : "Raciocínio"}</span>
+                <span className="whitespace-nowrap">{isThinkingExpanded ? "Recolher" : "Raciocínio"}</span>
                 {isThinkingExpanded ? (
                   <ChevronUp className="h-2.5 w-2.5 ml-0.5" />
                 ) : (
@@ -1847,20 +1847,20 @@ export function AutoPilotActivityIndicator({
         )}
 
         {showOperationalSummary && (
-          <div className="mt-2.5 grid grid-cols-1 gap-1.5 text-[10px] sm:grid-cols-3">
+          <div className="mt-2.5 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-1.5 text-[10px]">
             <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500">Objetivo</div>
-              <div className="truncate font-medium text-zinc-200" title={currentObjectiveLabel || "Nenhum objetivo pendente"}>
+              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-200" title={currentObjectiveLabel || "Nenhum objetivo pendente"}>
                 {currentObjectiveLabel || "Nenhum pendente"}
               </div>
             </div>
             <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500">Plano</div>
-              <div className="truncate font-medium text-zinc-200" title={planLabel}>{planLabel}</div>
+              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-200" title={planLabel}>{planLabel}</div>
             </div>
             <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500">Próxima ação</div>
-              <div className="truncate font-medium text-zinc-200" title={nextOperationalAction}>{nextOperationalAction}</div>
+              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-200" title={nextOperationalAction}>{nextOperationalAction}</div>
             </div>
           </div>
         )}
