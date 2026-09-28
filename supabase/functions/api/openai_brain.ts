@@ -1474,6 +1474,7 @@ export interface OpenAiBrainTurnResult {
     modelGenerationCount?: number;
     agentToolCallCount?: number;
     toolNamesUsed?: string[];
+    questionIntentsValidationWarning?: string;
   };
 }
 
@@ -3888,15 +3889,22 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
     const responseGenValidation = validateResponseGenerationInvariant(parsedPlan);
     const questionIntentsValidation = validateQuestionIntentsInvariant(parsedPlan);
+    if (!questionIntentsValidation.valid && parsedPlan && typeof parsedPlan === "object") {
+      // questionIntents é metadado auxiliar do ledger anti-repetição. Um erro
+      // estrutural nesse metadado nunca deve descartar uma resposta final válida
+      // nem provocar Session Eviction / nova inferência. Falha apenas o ledger.
+      telemetry.questionIntentsValidationWarning = questionIntentsValidation.error || "invalid_question_intents";
+      parsedPlan.questionIntents = [];
+      parsedPlan.resolvedQuestionIntentIds = [];
+      console.warn(`[OpenAI Agent] question_intents_metadata_dropped: ${questionIntentsValidation.error || "invalid"}`);
+    }
     const validation = !basicValidation.valid
       ? basicValidation
       : !manualResolutionContinuationValidation.valid
       ? manualResolutionContinuationValidation
       : !invariantValidation.valid
       ? invariantValidation
-      : !responseGenValidation.valid
-      ? responseGenValidation
-      : questionIntentsValidation;
+      : responseGenValidation;
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {

@@ -11,7 +11,7 @@ import {
   shouldRequireGreetingReciprocity,
   type RecentGreetingState,
 } from "./greeting_repeat_guard.ts";
-import { resolveCurrentStageId } from "../../../src/domain/entities/stageAuthority.ts";
+import { resolveCurrentStageId } from "../_shared/stage_authority.ts";
 import {
   ACTIVE_CYCLE_TTL_SECONDS,
   AGENT_LOCAL_WAIT_MS,

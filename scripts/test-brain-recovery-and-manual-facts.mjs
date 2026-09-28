@@ -97,6 +97,17 @@ test("endpoint de resolução manual responde rápido e continua o Brain em back
   assert.doesNotMatch(endpoint, /const result = await runBrainOrchestration/);
 });
 
+test("questionIntents inválido não descarta resposta nem abre nova inferência", () => {
+  assert.match(openAiBrain, /question_intents_metadata_dropped/);
+  assert.match(openAiBrain, /parsedPlan\.questionIntents = \[\]/);
+  assert.match(openAiBrain, /parsedPlan\.resolvedQuestionIntentIds = \[\]/);
+  const validationBlock = openAiBrain.slice(
+    openAiBrain.indexOf("const questionIntentsValidation = validateQuestionIntentsInvariant"),
+    openAiBrain.indexOf("if (params.strictOpenAiPilot)", openAiBrain.indexOf("const questionIntentsValidation = validateQuestionIntentsInvariant")),
+  );
+  assert.doesNotMatch(validationBlock, /: questionIntentsValidation/);
+});
+
 test("manual_fact só valida dentro da conversa e da sessão durável", async () => {
   const db = {
     from(table) {
