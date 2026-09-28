@@ -24,7 +24,7 @@ export async function patchAutoPilotProjectionState(
   if (error || data?.success !== true) {
     throw new Error(error?.message || data?.reason || "autopilot_projection_patch_failed");
   }
-  return data as { success: true; applied: boolean; isEnabled: boolean; stateUpdatedAt?: string };
+  return data as { success: true; applied: boolean; isEnabled: boolean; stateUpdatedAt?: string; stateRevision?: number; state?: Record<string, any>; previousState?: Record<string, any> };
 }
 
 export async function publishAutoPilotState(
@@ -33,101 +33,65 @@ export async function publishAutoPilotState(
   patch: Record<string, any>,
 ) {
   try {
-    const stateUpdatedAt = new Date().toISOString();
-    const { cycleEvent, appendEvent, eventMetadata, ...statePatch } = patch;
-    const { data: row } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", "__autopilot_states__")
-      .maybeSingle();
-    const states = row?.stage_completed_rules?.states || {};
-    const current = states[conversationId] || {
-      conversationId,
-      isEnabled: true,
-      status: "idle",
-    };
-    const updated = {
-      ...current,
-      ...statePatch,
-      isEnabled:
-        statePatch.isEnabled !== undefined
-          ? statePatch.isEnabled
-          : current.isEnabled !== undefined
-          ? current.isEnabled
-          : true,
-      conversationId,
-      stateUpdatedAt,
-    };
-    const cycleId = statePatch.cycleId || statePatch.activity?.cycleId || current.cycleId || null;
-    if (cycleId) {
-      const isNewCycle = current.cycleId !== cycleId;
-      updated.cycleId = cycleId;
-      const previousEvents = !isNewCycle && Array.isArray(current.cycleEvents)
-        ? current.cycleEvents
-        : [];
-      updated.cycleEvents = previousEvents;
+    const requestedAt = new Date().toISOString();
+    const { cycleEvent, appendEvent, eventMetadata, event: legacyPatchEvent, ...statePatch } = patch;
+    const projectionResult = await patchAutoPilotProjectionState(
+      supabase, conversationId, { ...statePatch, stateUpdatedAt: requestedAt }
+    );
+    if (!projectionResult.applied) return;
 
-      const legacyEvent = statePatch.event || statePatch.activity?.event;
-      const statusChanged = statePatch.status !== undefined && statePatch.status !== current.status;
-      const phaseChanged = statePatch.activity?.phase !== undefined && statePatch.activity.phase !== current.activity?.phase;
-      const shouldAppendEvent = Boolean(
-        (appendEvent !== false && (cycleEvent || legacyEvent || appendEvent === true)) || statusChanged || phaseChanged
-      );
-      if (shouldAppendEvent) {
-        const eventData = cycleEvent || {};
-        const event = eventData.event || legacyEvent || statePatch.activity?.event ||
-          (phaseChanged ? `phase_${statePatch.activity?.phase}` : statusChanged ? `status_${statePatch.status}` : statePatch.activity?.label);
-        if (event) {
-          const lastSequence = previousEvents[previousEvents.length - 1]?.sequence || 0;
-          updated.cycleEvents = [
-            ...previousEvents,
-            {
+    let updated = projectionResult.state as Record<string, any> | undefined;
+    const previous = projectionResult.previousState || {};
+
+    // Compatibilidade curta de rollout com a RPC antiga.
+    if (!updated) {
+      const { data: legacyRow } = await supabase.from("instagram_conversations")
+        .select("stage_completed_rules").eq("id", "__autopilot_states__").maybeSingle();
+      updated = legacyRow?.stage_completed_rules?.states?.[conversationId] || {
+        ...statePatch, conversationId, isEnabled: projectionResult.isEnabled,
+        stateUpdatedAt: projectionResult.stateUpdatedAt || requestedAt,
+      };
+    }
+
+    const cycleId = statePatch.cycleId || statePatch.activity?.cycleId || updated?.cycleId || null;
+    const legacyEvent = legacyPatchEvent || statePatch.activity?.event;
+    const statusChanged = statePatch.status !== undefined && statePatch.status !== previous.status;
+    const phaseChanged = statePatch.activity?.phase !== undefined && statePatch.activity?.phase !== previous.activity?.phase;
+    const shouldAppendEvent = Boolean(
+      (appendEvent !== false && (cycleEvent || legacyEvent || appendEvent === true)) || statusChanged || phaseChanged
+    );
+
+    if (cycleId && shouldAppendEvent) {
+      const eventData = cycleEvent || {};
+      const event = eventData.event || legacyEvent ||
+        (phaseChanged ? `phase_${statePatch.activity?.phase}` : statusChanged ? `status_${statePatch.status}` : statePatch.activity?.label);
+      if (event) {
+        try {
+          await supabase.from("brain_turn_events").insert({
+            conversation_id: conversationId,
+            event_type: String(event),
+            status: String(statePatch.status || eventData.phase || "observed"),
+            human_message: String(eventData.detail || eventData.label || statePatch.activity?.detail || event).slice(0, 1000),
+            metadata: {
               cycleId,
-              conversationId,
-              sequence: lastSequence + 1,
-              phase: eventData.phase || statePatch.activity?.phase || statePatch.status || "idle",
-              event,
-              label: eventData.label || statePatch.activity?.label || event,
-              detail: eventData.detail ?? statePatch.activity?.detail,
-              timestamp: stateUpdatedAt,
-              metadata: eventData.metadata ?? eventMetadata ?? undefined,
+              phase: eventData.phase || statePatch.activity?.phase || null,
+              label: eventData.label || statePatch.activity?.label || String(event),
+              ...(eventData.metadata && typeof eventData.metadata === "object" ? eventData.metadata : {}),
+              ...(eventMetadata && typeof eventMetadata === "object" ? eventMetadata : {}),
             },
-          ].slice(-100);
-
-          try {
-            await supabase.from("brain_turn_events").insert({
-              conversation_id: conversationId,
-              event_type: String(event),
-              status: String(statePatch.status || eventData.phase || "observed"),
-              human_message: String(eventData.detail || eventData.label || statePatch.activity?.detail || event).slice(0, 1000),
-              metadata: {
-                cycleId,
-                phase: eventData.phase || statePatch.activity?.phase || null,
-                label: eventData.label || statePatch.activity?.label || String(event),
-                ...(eventData.metadata && typeof eventData.metadata === "object" ? eventData.metadata : {}),
-              },
-            });
-          } catch (eventError) {
-            console.warn("[AutoPilot State] Falha ao gravar evento canônico do Brain:", eventError);
-          }
+          });
+        } catch (eventError) {
+          console.warn("[AutoPilot State] Falha ao gravar evento can?nico do Brain:", eventError);
         }
       }
     }
-    states[conversationId] = updated;
-    const projectionResult = await patchAutoPilotProjectionState(supabase, conversationId, updated, current.stateUpdatedAt);
-    if (!projectionResult.applied) return;
-    updated.isEnabled = projectionResult.isEnabled;
-    if (projectionResult.stateUpdatedAt) updated.stateUpdatedAt = projectionResult.stateUpdatedAt;
-    if (!updated.isEnabled && updated.status !== "disabled") updated.status = "disabled";
 
     const realtimeChannel = supabase.channel("vendeo_realtime_chat");
     await realtimeChannel.send({
-      type: "broadcast",
-      event: "autopilot_state_update",
-      payload: { ...updated, timestamp: stateUpdatedAt },
+      type: "broadcast", event: "autopilot_state_update",
+      payload: { ...updated, timestamp: updated.stateUpdatedAt || requestedAt },
     });
   } catch (error) {
-    // O indicador é observabilidade: uma falha visual nunca deve interromper o atendimento.
     console.warn("[AutoPilot State] Falha ao publicar estado visual:", error);
   }
 }

@@ -116,8 +116,9 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
         .select(
           "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at"
         )
-        .neq("id", "__vault_data__")
+        .not("id", "like", "\_\_%")
         .neq("status", "vault")
+        .neq("status", "system")
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(limit);
 
@@ -213,7 +214,7 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
       const { data, error } = await client
         .from("instagram_messages")
         .select("id, conversation_id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript")
-        .or(`conversation_id.eq.${conversationId},contact_id.eq.${conversationId}`)
+        .eq("conversation_id", conversationId)
         .order("timestamp", { ascending: false })
         .limit(limit);
 

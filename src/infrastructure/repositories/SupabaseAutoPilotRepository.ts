@@ -100,33 +100,49 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     if (!client) return;
 
     try {
-      client
-        .channel("vendeo_autopilot_sync")
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "instagram_conversations",
-            filter: "id=in.(__autopilot_config__,__autopilot_states__)",
-          },
-          (payload: any) => {
-            const row = payload?.new;
-            if (row?.id === "__autopilot_config__" && row?.stage_completed_rules?.config) {
-              this.cachedConfig = row.stage_completed_rules.config;
-              this.saveLocalConfig(this.cachedConfig!);
-            } else if (row?.id === "__autopilot_states__" && row?.stage_completed_rules?.states) {
-              this.cachedStates = this.mergeStatesMonotonic(this.cachedStates || this.getLocalStates(), row.stage_completed_rules.states);
-              this.saveLocalStates(this.cachedStates!);
-            }
+      client.channel("vendeo_autopilot_config_sync")
+        .on("postgres_changes", {
+          event: "*", schema: "public", table: "instagram_conversations",
+          filter: "id=eq.__autopilot_config__",
+        }, (payload: any) => {
+          const row = payload?.new;
+          if (row?.stage_completed_rules?.config) {
+            const nextConfig: AutoPilotConfig = { ...DEFAULT_CONFIG, ...row.stage_completed_rules.config };
+            this.cachedConfig = nextConfig;
+            this.saveLocalConfig(nextConfig);
           }
-        )
-        .subscribe();
+        }).subscribe();
+
+      client.channel("vendeo_autopilot_state_rows")
+        .on("postgres_changes", {
+          event: "*", schema: "public", table: "autopilot_chat_states",
+        }, (payload: any) => {
+          const row = payload?.new;
+          if (!row?.conversation_id || !row?.state) return;
+          const next = this.mapStateRow(row);
+          this.cachedStates = this.mergeStatesMonotonic(
+            this.cachedStates || this.getLocalStates(),
+            { [next.conversationId]: next }
+          );
+          this.saveLocalStates(this.cachedStates);
+        }).subscribe();
 
       this.realtimeSubscribed = true;
     } catch (err) {
-      console.warn("Aviso ao assinar realtime do Piloto Automático:", err);
+      console.warn("Aviso ao assinar realtime do Piloto Autom?tico:", err);
     }
+  }
+
+  private mapStateRow(row: any): AutoPilotChatState {
+    const state = row?.state && typeof row.state === "object" ? row.state : {};
+    return {
+      ...state,
+      conversationId: String(row.conversation_id || state.conversationId || ""),
+      isEnabled: row.is_enabled ?? state.isEnabled === true,
+      status: (row.status || state.status || (row.is_enabled ? "idle" : "disabled")) as AutoPilotChatState["status"],
+      stateUpdatedAt: row.state_updated_at || state.stateUpdatedAt,
+      stateRevision: Number(row.state_revision ?? state.stateRevision ?? 0),
+    };
   }
 
   async getConfig(force = false): Promise<AutoPilotConfig> {
@@ -221,19 +237,37 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
   async getAllChatStates(force = false): Promise<Record<string, AutoPilotChatState>> {
     this.initRealtimeSubscription();
     const now = Date.now();
-    if (!force && this.cachedStates && now - this.lastFetchStatesTime < this.cacheDurationMs) {
-      return this.cachedStates;
-    }
-
+    if (!force && this.cachedStates && now - this.lastFetchStatesTime < this.cacheDurationMs) return this.cachedStates;
     const client = this.getClient();
     if (client) {
       try {
-        const { data, error } = await client
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_states__")
-          .maybeSingle();
+        const rows: any[] = [];
+        const pageSize = 500;
+        for (let from = 0; ; from += pageSize) {
+          const { data, error } = await client.from("autopilot_chat_states")
+            .select("conversation_id, is_enabled, status, state, state_updated_at, state_revision")
+            .order("conversation_id", { ascending: true }).range(from, from + pageSize - 1);
+          if (error) throw error;
+          rows.push(...(data || []));
+          if (!data || data.length < pageSize) break;
+        }
+        if (rows.length > 0) {
+          const nextStates = Object.fromEntries(rows.map((row: any) => {
+            const state = this.mapStateRow(row);
+            return [state.conversationId, state];
+          })) as Record<string, AutoPilotChatState>;
+          this.cachedStates = this.mergeStatesMonotonic(this.cachedStates || {}, nextStates);
+          this.saveLocalStates(this.cachedStates);
+          this.lastFetchStatesTime = now;
+          return this.cachedStates;
+        }
+      } catch {
+        // Rollout compat?vel: tenta a proje??o global antiga.
+      }
 
+      try {
+        const { data, error } = await client.from("instagram_conversations")
+          .select("stage_completed_rules").eq("id", "__autopilot_states__").maybeSingle();
         if (!error && data?.stage_completed_rules) {
           const rules = data.stage_completed_rules as StoredStatesPayload;
           if (rules.states && typeof rules.states === "object") {
@@ -241,10 +275,8 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
             const conversationIds = Object.keys(projectionStates);
             let canonicalEnabled: Record<string, boolean> = {};
             if (conversationIds.length) {
-              const { data: conversations, error: canonicalError } = await client
-                .from("instagram_conversations")
-                .select("id, ai_auto_respond")
-                .in("id", conversationIds);
+              const { data: conversations, error: canonicalError } = await client.from("instagram_conversations")
+                .select("id, ai_auto_respond").in("id", conversationIds);
               if (canonicalError) throw canonicalError;
               canonicalEnabled = Object.fromEntries((conversations || []).map((row: any) => [row.id, row.ai_auto_respond === true]));
             }
@@ -258,11 +290,8 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
             return this.cachedStates;
           }
         }
-      } catch (err) {
-        console.warn("Aviso ao carregar estados do Piloto Automático do Supabase:", err);
-      }
+      } catch (err) { console.warn("Aviso ao carregar estados do Piloto Autom?tico:", err); }
     }
-
     const local = this.getLocalStates();
     this.cachedStates = local;
     this.lastFetchStatesTime = now;
@@ -307,12 +336,21 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
         }
       }
 
-      const { error } = await (client as any).rpc("patch_autopilot_projection_state_atomic", {
+      const { data, error } = await (client as any).rpc("patch_autopilot_projection_state_atomic", {
         p_conversation_id: item.conversationId,
         p_state_patch: item,
         ...(expectedStateUpdatedAt ? { p_expected_state_updated_at: expectedStateUpdatedAt } : {}),
       });
-      if (error) throw error;
+      if (error || data?.success === false) throw error || new Error(data?.reason || "autopilot_projection_patch_failed");
+      if (data?.state && typeof data.state === "object") {
+        const canonical = {
+          ...data.state,
+          stateRevision: Number(data.stateRevision ?? data.state.stateRevision ?? 0),
+          stateUpdatedAt: data.stateUpdatedAt || data.state.stateUpdatedAt,
+        } as AutoPilotChatState;
+        this.cachedStates = { ...(this.cachedStates || {}), [item.conversationId]: canonical };
+        this.saveLocalStates(this.cachedStates);
+      }
     } catch (err) {
       console.warn("Aviso ao persistir estado visual do Piloto Automático no Supabase:", err);
     }
@@ -321,14 +359,34 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
   private mergeStatesMonotonic(current: Record<string, AutoPilotChatState>, incoming: Record<string, AutoPilotChatState>) {
     const merged = { ...current };
     for (const [id, next] of Object.entries(incoming)) {
+      const oldRevision = Number(merged[id]?.stateRevision || 0);
+      const nextRevision = Number(next?.stateRevision || 0);
       const oldVersion = Date.parse(merged[id]?.stateUpdatedAt || "") || 0;
       const nextVersion = Date.parse(next?.stateUpdatedAt || "") || 0;
-      if (!merged[id] || nextVersion >= oldVersion) merged[id] = next;
+      const isNewer = nextRevision > 0 || oldRevision > 0
+        ? nextRevision >= oldRevision
+        : nextVersion >= oldVersion;
+      if (!merged[id] || isNewer) merged[id] = next;
     }
     return merged;
   }
 
   async getChatState(conversationId: string): Promise<AutoPilotChatState | null> {
+    const cached = this.cachedStates?.[conversationId];
+    if (cached) return cached;
+    const client = this.getClient();
+    if (client) {
+      try {
+        const { data, error } = await client.from("autopilot_chat_states")
+          .select("conversation_id, is_enabled, status, state, state_updated_at, state_revision")
+          .eq("conversation_id", conversationId).maybeSingle();
+        if (!error && data) {
+          const state = this.mapStateRow(data);
+          this.cachedStates = { ...(this.cachedStates || {}), [conversationId]: state };
+          return state;
+        }
+      } catch {}
+    }
     const all = await this.getAllChatStates();
     return all[conversationId] || null;
   }
@@ -337,8 +395,7 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     conversationId: string,
     state: Partial<AutoPilotChatState>
   ): Promise<AutoPilotChatState> {
-    const all = await this.getAllChatStates();
-    const existing = all[conversationId] || {
+    const existing = (await this.getChatState(conversationId)) || {
       conversationId,
       isEnabled: false,
       status: "idle" as const,
@@ -350,7 +407,7 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
       stateUpdatedAt: new Date().toISOString(),
     };
 
-    all[conversationId] = updated;
+    this.cachedStates = { ...(this.cachedStates || {}), [conversationId]: updated };
     await this.persistStateToCloud(updated, existing.stateUpdatedAt);
     return updated;
   }
@@ -360,8 +417,7 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     lastMessageTimestamp?: string
   ): Promise<AutoPilotChatState> {
     const config = await this.getConfig();
-    const all = await this.getAllChatStates();
-    const current = all[conversationId];
+    const current = await this.getChatState(conversationId);
 
     if (!current || !current.isEnabled || current.status === "paused_handoff" || current.status === "paused_guardrail") {
       return current || { conversationId, isEnabled: false, status: "idle" };
@@ -382,7 +438,7 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
       stateUpdatedAt: new Date().toISOString(),
     };
 
-    all[conversationId] = updated;
+    this.cachedStates = { ...(this.cachedStates || {}), [conversationId]: updated };
     await this.persistStateToCloud(updated, current.stateUpdatedAt);
     return updated;
   }

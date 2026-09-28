@@ -135,6 +135,7 @@ export interface AutoPilotChatState {
   pendingOutboundMessages?: AutoPilotPendingOutboundMessage[];
   lastError?: string;
   stateUpdatedAt?: string;
+  stateRevision?: number;
 }
 
 export interface AutoPilotQueueItem {

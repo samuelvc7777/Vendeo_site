@@ -4264,8 +4264,8 @@ serve(async (req: Request) => {
 
         // 1. Busca conversas prontas para serem respondidas cujo tempo de espera já venceu
         const { data: readyConvs, error: queryErr } = await supabase.rpc(
-          "list_autopilot_due_conversations",
-          { p_now: nowIso, p_limit: 20 },
+          "list_autopilot_due_work",
+          { p_now: nowIso, p_limit: 40 },
         );
 
         if (queryErr) {
@@ -4280,9 +4280,9 @@ serve(async (req: Request) => {
         const validConvs = (readyConvs || []).filter((c: any) => typeof c.id === "string" && !c.id.startsWith("__"));
         console.log(`[TRACE-AUTOPILOT] cron:tick found ${validConvs.length} valid conversations ready.`);
 
-        // Limite de concorrência por tick: processa até 3 conversas por ciclo para
-        // evitar pico simultâneo de tokens (rate_limit_exceeded) na OpenAI Agents API.
-        const batchConvs = validConvs.slice(0, 3);
+        // O semaforo global dentro do Brain limita a execucao cara. O tick apenas
+        // alimenta a fila em pequenos lotes para manter os slots ocupados.
+        const batchConvs = validConvs.slice(0, 8);
         const processed: string[] = [];
 
         if (batchConvs.length > 0) {

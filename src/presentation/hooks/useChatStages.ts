@@ -85,8 +85,13 @@ export function useChatStages(activeConversationId?: string) {
   }, [fetchStages, fetchAllProgresses, fetchChatDetail, activeConversationId]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    let cancelled = false;
+    setIsLoading(true);
+    void Promise.all([fetchStages(), fetchAllProgresses()]).finally(() => {
+      if (!cancelled) setIsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [fetchStages, fetchAllProgresses]);
 
   useEffect(() => {
     if (!activeConversationId) {

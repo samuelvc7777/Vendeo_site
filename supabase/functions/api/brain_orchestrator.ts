@@ -6891,6 +6891,8 @@ export async function runBrainOrchestration(
     params.correlationId || `corr_${startTime}_${Math.random().toString(36).slice(2, 7)}`;
   const cycleOpenAiUsage = new OpenAiCycleUsageAccumulator(correlationId, configuredUsdBrlEstimate());
   let usageTerminalEventPublished = false;
+  let globalExecutionLeaseToken: string | null = null;
+  let globalExecutionSlotNo: number | null = null;
   const cycleUsageMetadata = () => {
     const usage = cycleOpenAiUsage.snapshot();
     return usage ? { usage } : {};
@@ -7062,6 +7064,57 @@ export async function runBrainOrchestration(
       },
     });
   }
+
+  // Semaforo global: centenas de chats podem estar ligados, mas somente uma
+  // quantidade limitada de ciclos caros executa simultaneamente.
+  const queueRetryAt = new Date(Date.now() + 15_000).toISOString();
+  const { data: executionSlot, error: executionSlotError } = await supabase.rpc(
+    "claim_brain_execution_slot",
+    {
+      p_conversation_id: conversationId,
+      p_cycle_token: correlationId,
+      p_lease_seconds: 600,
+    },
+  );
+
+  if (executionSlotError || executionSlot?.success !== true || executionSlot?.acquired !== true) {
+    await releaseExperimentalCycleAtomic({
+      supabase,
+      conversationId,
+      cycleToken: correlationId,
+      processingStatus: "idle",
+      debounceUntil: queueRetryAt,
+    });
+
+    await publishAutoPilotState(supabase, conversationId, {
+      cycleId: correlationId,
+      status: "in_queue",
+      activity: activity(
+        "waiting",
+        "Aguardando vaga no Brain...",
+        "A conversa esta pronta e entra assim que houver capacidade de processamento.",
+        { scheduledAt: queueRetryAt },
+      ),
+      scheduledResponseAt: queueRetryAt,
+    });
+
+    if (executionSlotError) {
+      console.error(`[Brain Capacity] Falha ao reivindicar slot conv=${conversationId}:`, executionSlotError);
+    } else {
+      console.log(`[Brain Capacity] Capacidade ocupada conv=${conversationId} active=${executionSlot?.active ?? "?"}/${executionSlot?.capacity ?? "?"}.`);
+    }
+
+    return {
+      handled: false,
+      sentToMeta: false,
+      blockLegacyFallback: true,
+      error: executionSlotError ? "brain_capacity_unavailable" : "global_capacity_busy",
+    };
+  }
+
+  globalExecutionLeaseToken = String(executionSlot.leaseToken);
+  globalExecutionSlotNo = Number(executionSlot.slotNo);
+  console.log(`[Brain Capacity] slot=${globalExecutionSlotNo} adquirido conv=${conversationId} cycle=${correlationId}`);
 
   let claimedMessageIds: string[] = [];
   let staleMessageIds: string[] = [];
@@ -10509,6 +10562,19 @@ export async function runBrainOrchestration(
         cycleToken: correlationId,
       });
     } catch (_fErr) {}
+
+    if (globalExecutionLeaseToken) {
+      try {
+        await supabase.rpc("release_brain_execution_slot", {
+          p_lease_token: globalExecutionLeaseToken,
+          p_cycle_token: correlationId,
+        });
+        console.log(`[Brain Capacity] slot=${globalExecutionSlotNo ?? "?"} liberado conv=${conversationId} cycle=${correlationId}`);
+      } catch (slotReleaseError) {
+        console.warn(`[Brain Capacity] Falha ao liberar slot; o lease expirara automaticamente cycle=${correlationId}:`, slotReleaseError);
+      }
+      globalExecutionLeaseToken = null;
+    }
 
     // Se o operador desligou o AutoPilot global enquanto este ciclo já estava
     // em andamento, o ciclo pôde terminar normalmente. Só agora o chat é

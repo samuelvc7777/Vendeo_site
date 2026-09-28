@@ -1248,6 +1248,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         const { data, error } = await supabase
           .from("instagram_conversations")
           .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
+          .not("id", "like", "\_\_%")
+          .neq("status", "vault")
+          .neq("status", "system")
           .order("last_message_at", { ascending: false, nullsFirst: false })
           .limit(300);
 
@@ -1991,7 +1994,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               const { data: dbRows } = await supabase
                 .from("instagram_messages")
                 .select("id, reply_to_message_id, audio_transcript, timestamp")
-                .or(`conversation_id.eq.${activeChat.id},contact_id.eq.${activeChat.id}`)
+                .eq("conversation_id", activeChat.id)
                 .gte("created_at", cutoff)
                 .limit(150);
 

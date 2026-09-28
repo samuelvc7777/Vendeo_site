@@ -244,7 +244,23 @@ export function useChatRealtime({
           callbacksRef.current.onAutoPilotStateUpdate?.(payload);
         }
       )
-      // B. POSTGRES CHANGES (Camada de contingência caso disponível)
+      // B. POSTGRES CHANGES (fallback de banco)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "autopilot_chat_states" },
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row?.conversation_id || !row?.state) return;
+          callbacksRef.current.onAutoPilotStateUpdate?.({
+            ...row.state,
+            conversationId: String(row.conversation_id),
+            isEnabled: Boolean(row.is_enabled),
+            status: row.status || row.state.status,
+            stateUpdatedAt: row.state_updated_at || row.state.stateUpdatedAt,
+            stateRevision: Number(row.state_revision || row.state.stateRevision || 0),
+          });
+        }
+      )
       .on(
         "postgres_changes",
         {

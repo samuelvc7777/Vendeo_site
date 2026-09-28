@@ -338,6 +338,31 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     const result: Record<string, ChatProgress> = {};
     if (!client) return result;
 
+    // Caminho leve para lista/filtros: evita baixar stage_completed_rules de centenas de chats.
+    try {
+      const { data: summaries, error: summaryError } = await client
+        .from("instagram_conversations")
+        .select("id, current_stage_id, is_converted, updated_at")
+        .not("id", "like", "\_\_%");
+      if (!summaryError && summaries) {
+        const configuredInitialStageId = (await this.getStages())[0]?.id || "";
+        for (const row of summaries) {
+          result[row.id] = {
+            conversationId: row.id,
+            currentStageId: resolveCurrentStageId(row.current_stage_id, configuredInitialStageId),
+            completedItemIds: [],
+            completedGoalIds: [],
+            objectiveProgress: {},
+            isConverted: Boolean(row.is_converted),
+            updatedAt: row.updated_at || new Date(0).toISOString(),
+          };
+        }
+        return result;
+      }
+    } catch {
+      // Rollout compativel: a coluna normalizada ainda pode nao existir.
+    }
+
     try {
       const { data, error } = await client
         .from("instagram_conversations")

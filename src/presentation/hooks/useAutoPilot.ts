@@ -45,14 +45,14 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
       const merged = { ...previous };
       for (const [conversationId, next] of Object.entries(incoming)) {
       const current = merged[conversationId];
+      const currentRevision = Number(current?.stateRevision || 0);
+      const nextRevision = Number(next?.stateRevision || 0);
       const currentVersion = current?.stateUpdatedAt ? Date.parse(current.stateUpdatedAt) : 0;
       const nextVersion = next?.stateUpdatedAt ? Date.parse(next.stateUpdatedAt) : 0;
-      if (current?.cycleId && next?.cycleId === current.cycleId && Array.isArray(current.cycleEvents) && Array.isArray(next.cycleEvents)) {
-        const currentSequence = current.cycleEvents[current.cycleEvents.length - 1]?.sequence || 0;
-        const nextSequence = next.cycleEvents[next.cycleEvents.length - 1]?.sequence || 0;
-        if (nextSequence < currentSequence) continue;
-      }
-        if (!current || nextVersion >= currentVersion) merged[conversationId] = next;
+      const isNewer = nextRevision > 0 || currentRevision > 0
+        ? nextRevision >= currentRevision
+        : nextVersion >= currentVersion;
+      if (!current || isNewer) merged[conversationId] = next;
       }
       return merged;
     });
@@ -81,19 +81,8 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     return () => window.clearInterval(timer);
   }, [mergeStatesMonotonic]);
 
-  // Heartbeat proativo do AutoPilot: a cada 35s, se a aba estiver visível e o piloto estiver ativo,
-  // aciona o cron-tick na nuvem como contingência para contornar eventuais timeouts do pg_cron do Supabase.
-  useEffect(() => {
-    const heartbeatTimer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      if (config && !config.isEnabledGlobally) return;
-      void autoPilotRepo.triggerCronTick().catch(() => {});
-    }, 35000);
-    return () => window.clearInterval(heartbeatTimer);
-  }, [config]);
-
-
-
+  // O scheduler e 100% backend. A UI nao chama cron-tick:
+  // multiplas abas nao podem multiplicar workers nem pressionar o banco.
   const applyRemoteStateUpdate = useCallback((payload: Partial<AutoPilotChatState> & { conversationId: string; timestamp?: string }) => {
     setChatStates((previous) => {
       const existing = previous[payload.conversationId] || {
@@ -101,15 +90,16 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
         isEnabled: true,
         status: "idle" as const,
       };
+      const currentRevision = Number(existing.stateRevision || 0);
+      const incomingRevision = Number(payload.stateRevision || 0);
       const currentVersion = existing.stateUpdatedAt ? Date.parse(existing.stateUpdatedAt) : 0;
       const incomingVersion = payload.stateUpdatedAt
         ? Date.parse(payload.stateUpdatedAt)
         : payload.timestamp ? Date.parse(payload.timestamp) : Date.now();
-      if (currentVersion > incomingVersion) return previous;
-      if (existing.cycleId && payload.cycleId === existing.cycleId && Array.isArray(existing.cycleEvents) && Array.isArray((payload as any).cycleEvents)) {
-        const currentSequence = existing.cycleEvents[existing.cycleEvents.length - 1]?.sequence || 0;
-        const incomingSequence = (payload as any).cycleEvents[(payload as any).cycleEvents.length - 1]?.sequence || 0;
-        if (incomingSequence < currentSequence) return previous;
+      if (incomingRevision > 0 || currentRevision > 0) {
+        if (incomingRevision < currentRevision) return previous;
+      } else if (currentVersion > incomingVersion) {
+        return previous;
       }
       const mergedActivity = payload.activity === null
         ? undefined
