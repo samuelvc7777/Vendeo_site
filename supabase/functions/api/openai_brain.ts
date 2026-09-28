@@ -1293,6 +1293,7 @@ export interface RunOpenAiBrainParams {
   supabase: any;
   conversationId: string;
   sessionId?: string | null;
+  localTurnId?: string | null;
   resumeTurnId?: string | null;
   resumeExistingTurnOnly?: boolean;
   manualResolutionAnswer?: { question: string; context?: string; answer: string; factId?: string };
@@ -1308,13 +1309,21 @@ export interface RunOpenAiBrainParams {
   currentObjectiveRequired?: boolean;
   currentObjectiveKind?: string | null;
   inboundMessages: string[];
-  currentInboundMessages?: Array<{ id: string; text: string; createdAt?: string }>;
+  currentInboundMessages?: Array<{
+    id: string;
+    text: string;
+    createdAt?: string;
+    mediaType?: string | null;
+    audioTranscript?: string | null;
+  }>;
   recentMessages: Array<{ id?: string; sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;
   landmarksSummary?: string;
   liveStateContext?: string;
   agentId?: string;
   apiKey?: string;
+  model?: string;
+  reasoningEffort?: string;
   signal?: AbortSignal;
   runtime?: any;
   strictOpenAiPilot?: boolean;
@@ -1388,8 +1397,15 @@ export interface OpenAiBrainTurnResult {
   error?: string;
   telemetry: {
     agentId: string;
+    runtimeKind?: "legacy_agents" | "agents_sdk_conversation";
     sessionId?: string;
     turnId?: string;
+    openAiConversationId?: string;
+    providerResponseId?: string;
+    executionKey?: string;
+    executionAttempt?: number;
+    executionRecovered?: boolean;
+    recoveredConversationItemId?: string;
     status?: string;
     sessionStatus?: string;
     turnStatus?: string;
@@ -2401,6 +2417,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
   const telemetry: OpenAiBrainTurnResult["telemetry"] = {
     agentId,
+    runtimeKind: "legacy_agents",
     toolsRequested: [],
     toolExecutionsCount: 0,
     memoryToolResults: [],
@@ -4025,7 +4042,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
   }
 }
 
-function extractJsonFromText(raw: string): any {
+export function extractJsonFromText(raw: string): any {
   if (!raw) return null;
   const trimmed = raw.trim();
   try {

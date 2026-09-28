@@ -964,7 +964,7 @@ function getCopy(state: AutoPilotChatState) {
       detail: "Tempo programado concluído. Processando resposta.",
     };
   }
-  if (state.lastThoughts?.atriaThought || state.lastThoughts?.solThought) {
+  if (state.lastThoughts?.brainThought) {
     return {
       title: "Última resposta enviada",
       detail: "Aguardando nova mensagem do cliente para iniciar novo raciocínio.",
@@ -984,7 +984,7 @@ function ActivityIcon({ state, className }: { state: AutoPilotChatState; classNa
   const phase = state.activity?.phase;
   if (phase === "completed") return <Check className={className} />;
   if (phase === "waiting" || phase === "scheduled" || !phase) return <Clock3 className={className} />;
-  if (phase === "brain" || phase === "atria" || phase === "context") return <BrainCircuit className={`${className} animate-pulse text-purple-400`} />;
+  if (phase === "brain" || phase === "context") return <BrainCircuit className={`${className} animate-pulse text-purple-400`} />;
   if (phase === "sending" || phase === "typing") return <Send className={`${className} animate-pulse text-emerald-400`} />;
   return <Loader2 className={`${className} animate-spin`} />;
 }
@@ -1247,7 +1247,7 @@ export function AutoPilotActivityIndicator({
     dispatch_uncertain: { status: "failed", phase: "failed" },
   };
   const validOperationalPhases: AutoPilotActivityPhase[] = [
-    "waiting", "scheduled", "starting", "loading_context", "context", "search", "reanalyzing", "brain", "atria", "sol",
+    "waiting", "scheduled", "starting", "loading_context", "context", "search", "reanalyzing", "brain",
     "checklist", "validating", "typing", "recording_audio", "sending", "completed", "cancelled", "idle", "failed",
   ];
   const latestOperationalPhase = validOperationalPhases.includes(latestCanonicalEvent?.phase as AutoPilotActivityPhase)
@@ -1322,25 +1322,16 @@ export function AutoPilotActivityIndicator({
       Boolean(canonicalEvents.some((event) => event.event === "technical_retry_exhausted")) ||
       (activity?.phase === "failed" && Boolean(activity?.label?.toLowerCase().includes("esgotadas"))));
 
-  // Pensamento/raciocínio único do Brain (com tolerância a chaves legadas preservadas no histórico)
   const rawBrainThought =
     activity?.brainThought ||
-    activity?.atriaThought ||
-    activity?.solThought ||
-    (!isFailed
-      ? state.lastThoughts?.brainThought ||
-        state.lastThoughts?.atriaThought ||
-        state.lastThoughts?.solThought
-      : undefined);
+    (!isFailed ? state.lastThoughts?.brainThought : undefined);
   const validBrainThought = formatVisibleBrainIdentity(getValidThought(rawBrainThought));
   const hasThoughts = Boolean(validBrainThought);
   const isCompleted = phase === "completed" || (!isAutoPilotActivelyWorking(state) && hasThoughts);
 
   const isBrainActive =
     phase === "brain" ||
-    phase === "atria" ||
     phase === "context" ||
-    phase === "sol" ||
     (phase as string) === "search" ||
     (phase as string) === "analyzing" ||
     (phase as string) === "reanalyzing";

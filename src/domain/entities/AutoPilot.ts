@@ -15,7 +15,7 @@ export type AutoPilotChatStatus =
   | "idle" // Aguardando mensagem do cliente
   | "activation_wait" // Aguardando 1 minuto inicial após ativação
   | "waiting_delay" // Cliente mandou mensagem, aguardando expirar tempo de espera (debounce)
-  | "scheduled" // Estado legado/canônico de espera publicado pelo backend
+  | "scheduled" // Estado de espera publicado pelo backend
   | "waiting_debounce" // Alias semântico para waiting_delay
   | "in_queue" // Tempo expirou, está na fila sequencial global aguardando a vez
   | "processing" // Sendo respondido agora pela IA (simulando digitação)
@@ -34,8 +34,6 @@ export type AutoPilotActivityPhase =
   | "search"
   | "reanalyzing"
   | "brain"
-  | "atria"
-  | "sol"
   | "checklist"
   | "validating"
   | "typing"
@@ -54,8 +52,6 @@ export interface AutoPilotActivity {
   totalBalloons?: number;
   updatedAt: string;
   brainThought?: string;
-  atriaThought?: string;
-  solThought?: string;
   previewResponses?: string[];
   currentResponsePreview?: string;
   countdownSeconds?: number;
@@ -83,8 +79,6 @@ export interface AutoPilotCycleEvent {
 
 export interface AutoPilotLastThoughts {
   brainThought?: string;
-  atriaThought?: string;
-  solThought?: string;
   previewResponses?: string[];
   sentAt?: string;
 }

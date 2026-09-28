@@ -34,36 +34,27 @@ export async function publishAutoPilotState(
 ) {
   try {
     const requestedAt = new Date().toISOString();
-    const { cycleEvent, appendEvent, eventMetadata, event: legacyPatchEvent, ...statePatch } = patch;
+    const { cycleEvent, appendEvent, eventMetadata, event: patchEvent, ...statePatch } = patch;
     const projectionResult = await patchAutoPilotProjectionState(
       supabase, conversationId, { ...statePatch, stateUpdatedAt: requestedAt }
     );
     if (!projectionResult.applied) return;
 
-    let updated = projectionResult.state as Record<string, any> | undefined;
+    const updated = projectionResult.state as Record<string, any>;
+    if (!updated) throw new Error("canonical_projection_state_missing");
     const previous = projectionResult.previousState || {};
 
-    // Compatibilidade curta de rollout com a RPC antiga.
-    if (!updated) {
-      const { data: legacyRow } = await supabase.from("instagram_conversations")
-        .select("stage_completed_rules").eq("id", "__autopilot_states__").maybeSingle();
-      updated = legacyRow?.stage_completed_rules?.states?.[conversationId] || {
-        ...statePatch, conversationId, isEnabled: projectionResult.isEnabled,
-        stateUpdatedAt: projectionResult.stateUpdatedAt || requestedAt,
-      };
-    }
-
     const cycleId = statePatch.cycleId || statePatch.activity?.cycleId || updated?.cycleId || null;
-    const legacyEvent = legacyPatchEvent || statePatch.activity?.event;
+    const patchEventName = patchEvent || statePatch.activity?.event;
     const statusChanged = statePatch.status !== undefined && statePatch.status !== previous.status;
     const phaseChanged = statePatch.activity?.phase !== undefined && statePatch.activity?.phase !== previous.activity?.phase;
     const shouldAppendEvent = Boolean(
-      (appendEvent !== false && (cycleEvent || legacyEvent || appendEvent === true)) || statusChanged || phaseChanged
+      (appendEvent !== false && (cycleEvent || patchEventName || appendEvent === true)) || statusChanged || phaseChanged
     );
 
     if (cycleId && shouldAppendEvent) {
       const eventData = cycleEvent || {};
-      const event = eventData.event || legacyEvent ||
+      const event = eventData.event || patchEventName ||
         (phaseChanged ? `phase_${statePatch.activity?.phase}` : statusChanged ? `status_${statePatch.status}` : statePatch.activity?.label);
       if (event) {
         try {

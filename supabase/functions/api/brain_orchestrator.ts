@@ -154,6 +154,8 @@ import {
   validateQuestionIntentsInvariant,
   type OutboundAction,
 } from "./openai_brain.ts";
+import { runOpenAiSdkBrainTurn } from "./openai_sdk_brain.ts";
+import { persistConfirmedOutboundToOpenAiConversation } from "./openai_conversation_runtime.ts";
 import { computeBoundedDebounce } from "./debounce_policy.ts";
 import {
   loadAndRevalidateRecoverableAudioToolState,
@@ -212,11 +214,10 @@ export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel
   try {
     const { data } = await supabase.from("instagram_config").select("app_secret").eq("id", "openai_brain_model").maybeSingle();
     if (data?.app_secret && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
-    if (data?.app_secret && (LEGACY_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
   } catch {}
   const envModel = typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL;
   if (envModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel)) return envModel;
-  return envModel && (LEGACY_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel) ? envModel : OPENAI_BRAIN_DEFAULT_MODEL;
+  return OPENAI_BRAIN_DEFAULT_MODEL;
 }
 
 export function estimateTextTokens(text: string): number {
@@ -884,7 +885,7 @@ export interface ConversationOrchestrationState {
   liveState?: ConversationLiveState;
   recentQuestionIntents?: RecentQuestionIntentEntry[];
   openai_session_id?: string | null;
-  openai_session_kind?: "persistent" | "legacy" | null;
+  openai_session_kind?: "persistent" | "legacy" | "conversation" | null;
   persistent_session_version?: number | null;
 }
 
@@ -1524,6 +1525,7 @@ export interface BuildContextParams {
   supabase: any;
   knownFacts?: Record<string, string>;
   recentQuestionIntents?: RecentQuestionIntentEntry[];
+  skipHistoricalTurnLookup?: boolean;
 }
 
 export async function buildConversationContextForCycle(
@@ -1532,13 +1534,25 @@ export async function buildConversationContextForCycle(
   payload: ConversationContextPayload;
   trace: string[];
 }> {
-  const { conversationId, currentPhase, checkpoint, claimedMessages, supabase, knownFacts, recentQuestionIntents } = params;
+  const {
+    conversationId,
+    currentPhase,
+    checkpoint,
+    claimedMessages,
+    supabase,
+    knownFacts,
+    recentQuestionIntents,
+    skipHistoricalTurnLookup = false,
+  } = params;
   const trace: string[] = [];
 
-  // 0. Busca o último bloco CONTÍGUO de mensagens outbound enviadas pela Larissa (sem limites arbitrários)
+  // 0. No runtime Conversations, a OpenAI já é a fonte do histórico.
+  // O scan abaixo existe somente para compatibilidade com o runtime legado.
   let lastLarissaMessage: StructuredConversationMessage | null = null;
   let lastLarissaTurn: StructuredConversationMessage[] = [];
-  try {
+  if (skipHistoricalTurnLookup) {
+    trace.push("last_larissa_turn_db_scan_skipped=true");
+  } else try {
     const pendingIds = new Set(claimedMessages.map((m) => String(m.id)));
     const collectedLarissa: StructuredConversationMessage[] = [];
     const batchSize = 50;
@@ -2285,6 +2299,7 @@ export async function persistCanonicalBrainDecision(params: {
   supabase: any;
   conversationId: string;
   sessionId: string;
+  provider?: "openai" | "openai_conversation";
   providerTurnId: string | null;
   turnId: string;
   decisionId: string;
@@ -2303,7 +2318,7 @@ export async function persistCanonicalBrainDecision(params: {
       p_session: {
         id: `bs_${params.sessionId}`,
         conversation_id: params.conversationId,
-        provider: "openai",
+        provider: params.provider || "openai",
         provider_session_id: params.sessionId,
         context_version: 1,
         status: "active",
@@ -2448,6 +2463,29 @@ async function projectConfirmedBrainAction(params: {
   const { data: decision, error: decisionError } = await params.supabase.from("brain_decisions")
     .select("id, turn_id, payload").eq("id", action.decision_id).maybeSingle();
   if (decisionError || !decision) return;
+  if (decision.payload?.runtime === "agents_sdk_conversation") {
+    const providerMessageId = String(
+      action.provider_message_id
+        || action.payload?.deliveryProjectionId
+        || `out_action_${action.id}`,
+    );
+    try {
+      await persistConfirmedOutboundToOpenAiConversation({
+        supabase: params.supabase,
+        conversationId: params.conversationId,
+        providerMessageId,
+        text: action.action_type === "text" ? String(action.payload?.text || "") : null,
+        audioId: action.action_type === "audio" ? String(action.payload?.audioId || "") || null : null,
+        sentAt: new Date().toISOString(),
+      });
+    } catch (syncError) {
+      console.warn(
+        `[OpenAI Conversation] Falha fail-safe ao projetar outbound confirmado: conv=${params.conversationId} action=${action.id}`,
+        syncError,
+      );
+    }
+    return;
+  }
 
   const { data: conversation } = await params.supabase.from("instagram_conversations")
     .select("stage_completed_rules").eq("id", params.conversationId).maybeSingle();
@@ -6472,55 +6510,8 @@ export async function executeMemoryWriter(params: {
 // ----------------------------------------------------------------------------
 // 8. Helper de Invocação de Modelo (Runtime Mock ou Kie.ai Sol / Terra)
 // ----------------------------------------------------------------------------
-
-function extractKieResponseText(rawTextOrPayload: any): string {
-  if (!rawTextOrPayload) return "";
-  if (typeof rawTextOrPayload === "object") {
-    if (typeof rawTextOrPayload.output_text === "string") return rawTextOrPayload.output_text;
-    if (Array.isArray(rawTextOrPayload.output)) {
-      return rawTextOrPayload.output
-        .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-        .map((content: any) => (typeof content?.text === "string" ? content.text : ""))
-        .filter(Boolean)
-        .join("\n");
-    }
-  }
-
-  if (typeof rawTextOrPayload === "string") {
-    try {
-      const parsed = JSON.parse(rawTextOrPayload);
-      const res = extractKieResponseText(parsed);
-      if (res) return res;
-    } catch {}
-
-    const lines = rawTextOrPayload.split("\n");
-    let accumulatedDelta = "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const dataStr = line.slice(6).trim();
-      if (!dataStr || dataStr === "[DONE]") continue;
-      try {
-        const data = JSON.parse(dataStr);
-        if (data.type === "response.output_text.done" && typeof data.text === "string") {
-          return data.text;
-        }
-        if (data.type === "response.output_item.done" && Array.isArray(data.item?.content)) {
-          const joined = data.item.content
-            .map((c: any) => c.text || "")
-            .filter(Boolean)
-            .join("\n");
-          if (joined) return joined;
-        }
-        if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
-          accumulatedDelta += data.delta;
-        }
-      } catch {}
-    }
-    if (accumulatedDelta.trim()) return accumulatedDelta.trim();
-  }
-
-  return "";
-}
+// 8. Invoca??o can?nica do modelo OpenAI
+// ----------------------------------------------------------------------------
 
 export interface ModelCallOptions {
   runtime?: { callModel?: (prompt: string) => Promise<{ content: string; tokens?: number; inputTokens?: number; outputTokens?: number }> };
@@ -6578,7 +6569,6 @@ async function callModelOrOpenAi(
       };
       const isReasoningModel =
         currentModel.includes("luna") ||
-        currentModel.includes("terra") ||
         currentModel.startsWith("gpt-5") ||
         currentModel.startsWith("gpt-6") ||
         currentModel.startsWith("o1") ||
@@ -6785,7 +6775,6 @@ export function checkOutboundActionDispatchPayload(
   const check = validateFinalTextDispatchPayload(balloonText);
   return { isAudio: false, valid: check.valid, error: check.error };
 }
-const callModelOrKie = callModelOrOpenAi;
 const callModelOrAtria = callModelOrOpenAi;
 
 // ----------------------------------------------------------------------------
@@ -6931,11 +6920,11 @@ export async function runBrainOrchestration(
   if (typeof params.maxDebounceWindowMinutes !== "number" && responseDelayMinutes > 0) {
     try {
       const { data: globalAutoPilotConfig } = await supabase
-        .from("instagram_conversations")
-        .select("stage_completed_rules")
-        .eq("id", "__autopilot_config__")
-        .maybeSingle();
-      const configuredMax = Number(globalAutoPilotConfig?.stage_completed_rules?.config?.maxDebounceWindowMinutes);
+        .from("autopilot_settings")
+        .select("config")
+        .eq("id", "global")
+        .single();
+      const configuredMax = Number(globalAutoPilotConfig?.config?.maxDebounceWindowMinutes);
       if (Number.isFinite(configuredMax) && configuredMax >= 0) {
         maxDebounceWindowMinutes = Math.max(configuredMax, responseDelayMinutes);
       }
@@ -7122,6 +7111,8 @@ export async function runBrainOrchestration(
   let possibleSend = false;
   let currentCycle: ProcessingCycle | null = null;
   let currentProviderTurnId: string | null = null;
+  let currentOpenAiConversationId: string | null = null;
+  let currentProviderResponseId: string | null = null;
   let currentLocalBrainTurnId: string | null = params.manualResolution?.turnId || null;
   let currentMemoryScopeId: string | undefined;
   let configuredAgentModel = OPENAI_BRAIN_DEFAULT_MODEL;
@@ -7654,14 +7645,27 @@ export async function runBrainOrchestration(
       };
     }
 
-    const currentRecentQuestionIntents: RecentQuestionIntentEntry[] =
-      Array.isArray(orchState.recentQuestionIntents)
-        ? [...orchState.recentQuestionIntents]
-        : Array.isArray(stageRules.orchestration?.recentQuestionIntents)
-        ? [...stageRules.orchestration.recentQuestionIntents]
-        : [];
-
     const currentCheckpoint = orchState.checkpoint || "";
+
+    const configuredOpenAiRuntime =
+      (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_RUNTIME") : process.env.OPENAI_BRAIN_RUNTIME)
+      || "agents_sdk_conversation";
+    // Recovery de turnos antigos continua no runtime legado. Em novos turnos,
+    // a Conversation da OpenAI é a fonte autoritativa do histórico conversacional.
+    const useSdkConversationRuntime =
+      configuredOpenAiRuntime !== "legacy_agents" && !lateTurnForResume;
+    currentCycle.trace.push(`openai_brain_runtime=${useSdkConversationRuntime ? "agents_sdk_conversation" : "legacy_agents"}`);
+
+    const currentRecentQuestionIntents: RecentQuestionIntentEntry[] = useSdkConversationRuntime
+      ? []
+      : Array.isArray(orchState.recentQuestionIntents)
+      ? [...orchState.recentQuestionIntents]
+      : Array.isArray(stageRules.orchestration?.recentQuestionIntents)
+      ? [...stageRules.orchestration.recentQuestionIntents]
+      : [];
+    if (useSdkConversationRuntime) {
+      currentCycle.trace.push("recent_question_intents_state_skipped=true");
+    }
 
     // 6. CONTEXT BUILDER: Projeção Mínima & Lookup Pontual de Replies
     const { payload: baseContextPayload, trace: contextTrace } =
@@ -7673,6 +7677,7 @@ export async function runBrainOrchestration(
         supabase,
         knownFacts: stageRules.known_facts || {},
         recentQuestionIntents: currentRecentQuestionIntents,
+        skipHistoricalTurnLookup: useSdkConversationRuntime,
       });
 
     currentCycle.trace.push(...contextTrace);
@@ -7782,43 +7787,63 @@ export async function runBrainOrchestration(
       );
     }
 
-    let currentSessionId: string | null = persistentSessionId;
+    // Agent Session existe apenas no runtime legado. O SDK novo usa
+    // OpenAI Conversation e nunca deve herdar/persistir um sessionId legado.
+    let currentSessionId: string | null = useSdkConversationRuntime ? null : persistentSessionId;
+    const canonicalBrainProvider: "openai" | "openai_conversation" =
+      useSdkConversationRuntime ? "openai_conversation" : "openai";
+    const resolveCanonicalDecisionSessionId = (): string | null => {
+      if (!useSdkConversationRuntime) return currentSessionId;
+      return currentOpenAiConversationId
+        ? `conversation:${currentOpenAiConversationId}`
+        : `conversation-local:${conversationId}`;
+    };
 
-    // NÍVEL 0: LiveState
-    let currentLiveState: ConversationLiveState = orchState.liveState
+    // LiveState é memória semântica legada. No runtime Conversations,
+    // o Brain reconstrói o estado diretamente do histórico real.
+    let currentLiveState: ConversationLiveState = !useSdkConversationRuntime && orchState.liveState
       ? { ...orchState.liveState }
       : getDefaultConversationLiveState(conversationId);
-    // NÍVEL 1: Mensagens Recentes com Orçamento Estrito (12 msgs / 1500 tokens)
+    if (useSdkConversationRuntime) {
+      currentCycle.trace.push("live_state_memory_skipped=true");
+    }
+
+    // NÍVEL 1: no runtime novo, somente o delta atual vem do banco.
     const recentMessageLimit = BRAIN_ORCHESTRATION_BUDGETS.recent_message_limit;
     const tokenBudget = BRAIN_ORCHESTRATION_BUDGETS.recent_context_token_budget;
     const canonicalClaimed = claimedMessages.map((m: any) => normalizeToCanonicalMessage(m, conversationId));
     const allRecentCandidates = [...canonicalClaimed];
 
-    // Carrega mensagens cronológicas recentes respeitando orçamento e invariantes
-    try {
-      const { data: recentDbRows } = await supabase
-        .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: false })
-        .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);
+    if (!useSdkConversationRuntime) {
+      // Runtime legado ainda reconstrói a janela recente pelo Supabase.
+      try {
+        const { data: recentDbRows } = await supabase
+          .from("instagram_messages")
+          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+          .eq("conversation_id", conversationId)
+          .order("created_at", { ascending: false })
+          .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);
 
-      if (recentDbRows && Array.isArray(recentDbRows)) {
-        const claimedSet = new Set(claimedMessageIds);
-        for (const row of recentDbRows) {
-          if (!claimedSet.has(row.id)) {
-            allRecentCandidates.unshift(normalizeToCanonicalMessage(row, conversationId));
+        if (recentDbRows && Array.isArray(recentDbRows)) {
+          const claimedSet = new Set(claimedMessageIds);
+          for (const row of recentDbRows) {
+            if (!claimedSet.has(row.id)) {
+              allRecentCandidates.unshift(normalizeToCanonicalMessage(row, conversationId));
+            }
           }
         }
-      }
-    } catch {}
+      } catch {}
 
-    // Contextos obrigatórios são buscados explicitamente e não dependem do LIMIT de recentes.
-    allRecentCandidates.push(...await loadMandatoryBrainContextCandidates({
-      supabase,
-      conversationId,
-      claimedMessages: canonicalClaimed,
-    }));
+      // Contextos obrigatórios do legado continuam sendo carregados explicitamente.
+      allRecentCandidates.push(...await loadMandatoryBrainContextCandidates({
+        supabase,
+        conversationId,
+        claimedMessages: canonicalClaimed,
+      }));
+    } else {
+      currentCycle.trace.push("openai_conversation_history_authoritative=true");
+      currentCycle.trace.push("supabase_recent_history_query_skipped=true");
+    }
 
     const deduplicatedRecentCandidates = Array.from(
       new Map(allRecentCandidates.map((message) => [String(message.id), message])).values()
@@ -7851,51 +7876,59 @@ export async function runBrainOrchestration(
     }
     currentCycle.trace.push(`brain_recent_context_estimated_tokens: ${budgetedRecentContext.estimatedTokens}`);
     currentCycle.trace.push(`brain_budget_overflow_required: ${budgetedRecentContext.budgetOverflowRequired}`);
-    // NÍVEL 2: ContactMemory (fatos conhecidos sobre o pretendente)
+    // Memórias semânticas paralelas pertencem somente ao runtime legado.
+    // No runtime Conversations, o Brain lê o histórico real diretamente da OpenAI.
     let contactFacts: Record<string, any> = {};
-    try {
-      const selfFacts = await cycleMemoryProvider.listEntityFacts(conversationId, "self");
-      if (selfFacts && typeof selfFacts === "object") {
-        for (const [k, f] of Object.entries(selfFacts)) {
-          if (f && (f as any).value !== undefined && (f as any).value !== null && (f as any).value !== "") {
-            contactFacts[k] = (f as any).value;
-          }
-        }
-      }
-    } catch {}
-    if (stageRules?.known_facts && typeof stageRules.known_facts === "object") {
-      contactFacts = { ...stageRules.known_facts, ...contactFacts };
-    }
-    const contactMemorySummary = Object.entries(contactFacts)
-      .map(([k, v]) => `• ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
-      .join("\n");
-    // NÍVEL 3 & 4: Landmarks e Speech Acts da Memória Episódica
-    const inboundsText = (claimedMessages || [])
-      .map((m: any) => m.text || m.content || "")
-      .filter(Boolean)
-      .join(" ");
-
+    let contactMemorySummary = "";
     let landmarksSummary = "";
     let speechActsSummary = "";
-    try {
-      const landmarkHits = await searchConversationEpisodicMemory({
-        supabase,
-        conversationId,
-        query: inboundsText || "geral",
-        memoryClass: "landmark",
-        limit: 5,
-      });
-      landmarksSummary = landmarkHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
 
-      const speechActHits = await searchConversationEpisodicMemory({
-        supabase,
-        conversationId,
-        query: inboundsText || "geral",
-        memoryClass: "speech_act",
-        limit: 5,
-      });
-      speechActsSummary = speechActHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
-    } catch {}
+    if (useSdkConversationRuntime) {
+      currentCycle.trace.push("contact_memory_lookup_skipped=true");
+      currentCycle.trace.push("episodic_memory_lookup_skipped=true");
+    } else {
+      try {
+        const selfFacts = await cycleMemoryProvider.listEntityFacts(conversationId, "self");
+        if (selfFacts && typeof selfFacts === "object") {
+          for (const [k, f] of Object.entries(selfFacts)) {
+            if (f && (f as any).value !== undefined && (f as any).value !== null && (f as any).value !== "") {
+              contactFacts[k] = (f as any).value;
+            }
+          }
+        }
+      } catch {}
+      if (stageRules?.known_facts && typeof stageRules.known_facts === "object") {
+        contactFacts = { ...stageRules.known_facts, ...contactFacts };
+      }
+      contactMemorySummary = Object.entries(contactFacts)
+        .map(([k, v]) => `• ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
+        .join("\n");
+
+      const inboundsText = (claimedMessages || [])
+        .map((m: any) => m.text || m.content || "")
+        .filter(Boolean)
+        .join(" ");
+
+      try {
+        const landmarkHits = await searchConversationEpisodicMemory({
+          supabase,
+          conversationId,
+          query: inboundsText || "geral",
+          memoryClass: "landmark",
+          limit: 5,
+        });
+        landmarksSummary = landmarkHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
+
+        const speechActHits = await searchConversationEpisodicMemory({
+          supabase,
+          conversationId,
+          query: inboundsText || "geral",
+          memoryClass: "speech_act",
+          limit: 5,
+        });
+        speechActsSummary = speechActHits.map((h) => `• [${h.actor}] ${h.summary}`).join("\n");
+      } catch {}
+    }
 
     // Determinação do Provedor do Brain: OpenAI Agent único oficial
     const configuredBrainProvider: "internal" | "openai_agent" = "openai_agent";
@@ -7945,41 +7978,49 @@ export async function runBrainOrchestration(
       referenceAt: canonicalClaimed[canonicalClaimed.length - 1]?.timestamp || null,
       inboundMessages: canonicalClaimed.map((message) => message.text).filter(Boolean),
     });
-    try {
-      const { data: recentMsgs } = await supabase
-        .from("instagram_messages")
-        .select("id, text, is_mine, sender_id, status, created_at, timestamp")
-        .eq("conversation_id", conversationId)
-        .or("is_mine.eq.true,sender_id.eq.me,sender_id.eq.larissa")
-        .order("created_at", { ascending: false })
-        .limit(5);
+    if (useSdkConversationRuntime) {
+      // Repetição semântica (saudação, pergunta, assunto, emoji) pertence ao Brain,
+      // que já possui a Conversation completa da OpenAI. O backend cuida somente
+      // de idempotência técnica de mensagens, ciclos e outbox.
+      currentCycle.trace.push("semantic_repeat_authority=openai_conversation_brain");
+      currentCycle.trace.push("supabase_recent_outbound_query_skipped=true");
+    } else {
+      try {
+        const { data: recentMsgs } = await supabase
+          .from("instagram_messages")
+          .select("id, text, is_mine, sender_id, status, created_at, timestamp")
+          .eq("conversation_id", conversationId)
+          .or("is_mine.eq.true,sender_id.eq.me,sender_id.eq.larissa")
+          .order("created_at", { ascending: false })
+          .limit(5);
 
-      if (recentMsgs && recentMsgs.length > 0) {
-        const confirmedIds = new Set(recentMsgs
-          .filter((message: any) => ["sent", "delivered"].includes(String(message.status || "").toLowerCase()))
-          .map((message: any) => String(message.id)));
-        const confirmedLastTurn = (baseContextPayload.lastLarissaTurn || [])
-          .filter((message: any) => confirmedIds.has(String(message.id)))
-          .map((message: any) => String(message.text || ""));
-        for (const m of recentMsgs) {
-          const txt = m.text || "";
-          if (txt && typeof txt === "string" && txt.trim()
-            && ["sent", "delivered"].includes(String(m.status || "").toLowerCase())) {
-            recentLarissaOutbounds.push(txt.trim());
+        if (recentMsgs && recentMsgs.length > 0) {
+          const confirmedIds = new Set(recentMsgs
+            .filter((message: any) => ["sent", "delivered"].includes(String(message.status || "").toLowerCase()))
+            .map((message: any) => String(message.id)));
+          const confirmedLastTurn = (baseContextPayload.lastLarissaTurn || [])
+            .filter((message: any) => confirmedIds.has(String(message.id)))
+            .map((message: any) => String(message.text || ""));
+          for (const m of recentMsgs) {
+            const txt = m.text || "";
+            if (txt && typeof txt === "string" && txt.trim()
+              && ["sent", "delivered"].includes(String(m.status || "").toLowerCase())) {
+              recentLarissaOutbounds.push(txt.trim());
+            }
           }
+          recentGreetingState = deriveRecentGreetingState({
+            confirmedOutbounds: recentMsgs.map((message: any) => ({
+              text: String(message.text || ""),
+              timestamp: String(message.timestamp || message.created_at || ""),
+              status: String(message.status || ""),
+            })),
+            referenceAt: canonicalClaimed[canonicalClaimed.length - 1]?.timestamp || null,
+            inboundMessages: canonicalClaimed.map((message) => message.text).filter(Boolean),
+            confirmedLastTurn,
+          });
         }
-        recentGreetingState = deriveRecentGreetingState({
-          confirmedOutbounds: recentMsgs.map((message: any) => ({
-            text: String(message.text || ""),
-            timestamp: String(message.timestamp || message.created_at || ""),
-            status: String(message.status || ""),
-          })),
-          referenceAt: canonicalClaimed[canonicalClaimed.length - 1]?.timestamp || null,
-          inboundMessages: canonicalClaimed.map((message) => message.text).filter(Boolean),
-          confirmedLastTurn,
-        });
-      }
-    } catch {}
+      } catch {}
+    }
     currentCycle.trace.push(`greeting_state_already_greeted=${recentGreetingState.larissaAlreadyGreeted}`);
     currentCycle.trace.push(`greeting_state_type=${recentGreetingState.greetingType || "none"}`);
     currentCycle.trace.push(`greeting_state_age_minutes=${recentGreetingState.minutesAgo ?? "unknown"}`);
@@ -8157,10 +8198,17 @@ export async function runBrainOrchestration(
             console.warn("[Brain] Falha ao recuperar candidatos de áudio; o Brain continuará sem o estado anterior.", recoveryError);
           }
         }
+        // Turnos antigos ainda marcados como brain_late terminam no runtime legado.
+        // Novos turnos usam Agents SDK + Conversations por padrão.
+        const runOpenAiBrainProvider = useSdkConversationRuntime
+          ? runOpenAiSdkBrainTurn
+          : runOpenAiBrainTurn;
+
         const agentTurnParams: Parameters<typeof runOpenAiBrainTurn>[0] = {
           supabase,
           conversationId,
           sessionId: brainProviderSessionId,
+          localTurnId: currentLocalBrainTurnId,
           resumeTurnId: lateTurnForResume?.provider_turn_id || null,
           resumeExistingTurnOnly: Boolean(lateTurnForResume?.provider_turn_id),
           manualResolutionAnswer: params.manualResolution ? {
@@ -8183,7 +8231,13 @@ export async function runBrainOrchestration(
           currentObjectiveKind: stageChecklistForRouter.currentObjective?.kind,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
           currentInboundMessages: claimedMessages
-            .map((m: any) => ({ id: String(m.id || ""), text: String(m.text || ""), createdAt: m.createdAt || m.created_at || m.timestamp }))
+            .map((m: any) => ({
+              id: String(m.id || ""),
+              text: String(m.text || ""),
+              createdAt: m.createdAt || m.created_at || m.timestamp,
+              mediaType: m.type || m.mediaType || m.media_type || null,
+              audioTranscript: m.audioTranscript || m.audio_transcript || null,
+            }))
             .filter((m: any) => m.id && m.text),
           recentMessages: persistentAgentSessionEnabled
             ? []
@@ -8195,7 +8249,9 @@ export async function runBrainOrchestration(
               })),
           contactMemorySummary: persistentAgentSessionEnabled ? "" : contactMemorySummary,
           landmarksSummary: persistentAgentSessionEnabled ? "" : landmarksSummary,
-          liveStateContext: persistentAgentSessionEnabled ? "" : JSON.stringify(currentLiveState),
+          liveStateContext: useSdkConversationRuntime
+            ? ""
+            : (persistentAgentSessionEnabled ? "" : JSON.stringify(currentLiveState)),
           temporalContext,
           candidateEvidence: candidateObjectiveEvidence,
           agentId,
@@ -8205,7 +8261,9 @@ export async function runBrainOrchestration(
           recentGreetingState,
           recoveredAudioToolState,
           memoryScopeId: currentMemoryScopeId,
-          recentQuestionIntentsSnippet: persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
+          recentQuestionIntentsSnippet: useSdkConversationRuntime
+            ? ""
+            : (persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents)),
           searchCofreAudios: (p) => searchCofreAudios({
             supabase,
             conversationId: p.conversationId,
@@ -8235,8 +8293,8 @@ export async function runBrainOrchestration(
             replyTargetIds: budgetedRecentContext.replyTargetIds,
           },
         };
-        let openAiBrainTurn = await runOpenAiBrainTurn(agentTurnParams);
-        const initialGreetingRepeat = openAiBrainTurn.success && openAiBrainTurn.plan
+        let openAiBrainTurn = await runOpenAiBrainProvider(agentTurnParams);
+        const initialGreetingRepeat = !useSdkConversationRuntime && openAiBrainTurn.success && openAiBrainTurn.plan
           ? detectGreetingRepeat({
               candidateBalloons: Array.isArray(openAiBrainTurn.plan.outboundActions) && openAiBrainTurn.plan.outboundActions.length > 0
                 ? openAiBrainTurn.plan.outboundActions.filter((action: any) => action.type === "text").map((action: any) => String(action.text || ""))
@@ -8248,7 +8306,7 @@ export async function runBrainOrchestration(
           currentCycle.trace.push("greeting_repeat_guard_triggered=true");
           currentCycle.trace.push("greeting_repeat_regeneration_requested=true");
           const rejectedAttempt = openAiBrainTurn;
-          const regeneratedAttempt = await runOpenAiBrainTurn({
+          const regeneratedAttempt = await runOpenAiBrainProvider({
             ...agentTurnParams,
             sessionId: openAiBrainTurn.telemetry.sessionId || agentTurnParams.sessionId,
             resumeTurnId: null,
@@ -8274,7 +8332,7 @@ export async function runBrainOrchestration(
             }
           }
           openAiBrainTurn = regeneratedAttempt;
-          const regeneratedGreetingRepeat = openAiBrainTurn.success && openAiBrainTurn.plan
+          const regeneratedGreetingRepeat = !useSdkConversationRuntime && openAiBrainTurn.success && openAiBrainTurn.plan
             ? detectGreetingRepeat({
                 candidateBalloons: Array.isArray(openAiBrainTurn.plan.outboundActions) && openAiBrainTurn.plan.outboundActions.length > 0
                   ? openAiBrainTurn.plan.outboundActions.filter((action: any) => action.type === "text").map((action: any) => String(action.text || ""))
@@ -8297,8 +8355,15 @@ export async function runBrainOrchestration(
           }
         }
 
-        currentProviderTurnId = openAiBrainTurn.telemetry.turnId || null;
-        currentSessionId = openAiBrainTurn.telemetry.sessionId || currentSessionId;
+        if (useSdkConversationRuntime) {
+          currentProviderTurnId = null;
+          currentSessionId = null;
+          currentOpenAiConversationId = openAiBrainTurn.telemetry.openAiConversationId || currentOpenAiConversationId;
+          currentProviderResponseId = openAiBrainTurn.telemetry.providerResponseId || currentProviderResponseId;
+        } else {
+          currentProviderTurnId = openAiBrainTurn.telemetry.turnId || null;
+          currentSessionId = openAiBrainTurn.telemetry.sessionId || currentSessionId;
+        }
         if (!(await checkCycleAuthority(supabase, conversationId, correlationId))) {
           currentCycle.status = "superseded";
           currentCycle.trace.push("late_agent_result_discarded");
@@ -8443,8 +8508,8 @@ export async function runBrainOrchestration(
             },
           });
 
-          // Processamento determinístico das resoluções semânticas decididas pelo Brain
-          if (Array.isArray(brainPlan.resolvedQuestionIntentIds)) {
+          // Resoluções de question intents são estado semântico legado.
+          if (!useSdkConversationRuntime && Array.isArray(brainPlan.resolvedQuestionIntentIds)) {
             for (const rId of brainPlan.resolvedQuestionIntentIds) {
               for (const item of currentRecentQuestionIntents) {
                 if (item.intentKey === rId && item.status === "asked") {
@@ -8543,29 +8608,56 @@ export async function runBrainOrchestration(
           for (const s of openAiBrainTurn.telemetry.sourcesUsed) {
             brainMemorySourcesUsed.add(s);
           }
-          if (openAiBrainTurn.telemetry.sessionId) {
+          if (useSdkConversationRuntime) {
+            if (openAiBrainTurn.telemetry.openAiConversationId) {
+              currentOpenAiConversationId = openAiBrainTurn.telemetry.openAiConversationId;
+              currentCycle.trace.push(`openai_conversation_id=${openAiBrainTurn.telemetry.openAiConversationId}`);
+            }
+            if (openAiBrainTurn.telemetry.providerResponseId) {
+              currentProviderResponseId = openAiBrainTurn.telemetry.providerResponseId;
+              currentCycle.trace.push(`openai_response_id=${openAiBrainTurn.telemetry.providerResponseId}`);
+            }
+            if (openAiBrainTurn.telemetry.executionKey) {
+              currentLocalBrainTurnId = currentLocalBrainTurnId
+                || `brain_turn_${openAiBrainTurn.telemetry.executionKey}`;
+              currentCycle.trace.push(`openai_execution_key=${openAiBrainTurn.telemetry.executionKey}`);
+              currentCycle.trace.push(`brain_turn_id=${currentLocalBrainTurnId}`);
+            }
+            if (typeof openAiBrainTurn.telemetry.executionAttempt === "number") {
+              currentCycle.trace.push(`openai_execution_attempt=${openAiBrainTurn.telemetry.executionAttempt}`);
+            }
+            currentCycle.trace.push(`openai_execution_recovered=${Boolean(openAiBrainTurn.telemetry.executionRecovered)}`);
+            if (openAiBrainTurn.telemetry.recoveredConversationItemId) {
+              currentCycle.trace.push(`openai_recovered_item_id=${openAiBrainTurn.telemetry.recoveredConversationItemId}`);
+            }
+            currentCycle.trace.push("openai_runtime_identity=conversation_response");
+          } else if (openAiBrainTurn.telemetry.sessionId) {
             currentSessionId = openAiBrainTurn.telemetry.sessionId;
             currentCycle.trace.push(`openai_agent_session_created: ${openAiBrainTurn.telemetry.sessionId}`);
             currentCycle.trace.push("openai_agent_turn_started");
             currentCycle.trace.push("openai_agent_turn_completed");
           }
-          currentCycle.trace.push(`persistent_agent_session_enabled=${persistentAgentSessionEnabled}`);
-          if (openAiBrainTurn.telemetry.agentSessionReused) {
-            currentCycle.trace.push("agent_session_reused=true");
-          } else if (openAiBrainTurn.telemetry.agentSessionCreated) {
-            currentCycle.trace.push("agent_session_created=true");
-          }
-          if (openAiBrainTurn.telemetry.sessionId) {
-            currentCycle.trace.push(`agent_session_id=${openAiBrainTurn.telemetry.sessionId}`);
-          }
-          currentCycle.trace.push(`agent_session_recovery_triggered=${Boolean(openAiBrainTurn.telemetry.agentSessionRecoveryTriggered)}`);
-          currentCycle.trace.push(`agent_session_bootstrap_injected=${Boolean(openAiBrainTurn.telemetry.agentSessionBootstrapInjected)}`);
-          currentCycle.trace.push(`agent_session_bootstrap_message_count=${openAiBrainTurn.telemetry.agentSessionBootstrapMessageCount || 0}`);
-          if (openAiBrainTurn.telemetry.agentSessionBootstrapQueryFailed) {
-            currentCycle.trace.push("agent_session_bootstrap_query_failed=true");
-            if (openAiBrainTurn.telemetry.agentSessionBootstrapError) {
-              currentCycle.trace.push(`agent_session_bootstrap_error=${openAiBrainTurn.telemetry.agentSessionBootstrapError}`);
+          if (!useSdkConversationRuntime) {
+            currentCycle.trace.push(`persistent_agent_session_enabled=${persistentAgentSessionEnabled}`);
+            if (openAiBrainTurn.telemetry.agentSessionReused) {
+              currentCycle.trace.push("agent_session_reused=true");
+            } else if (openAiBrainTurn.telemetry.agentSessionCreated) {
+              currentCycle.trace.push("agent_session_created=true");
             }
+            if (openAiBrainTurn.telemetry.sessionId) {
+              currentCycle.trace.push(`agent_session_id=${openAiBrainTurn.telemetry.sessionId}`);
+            }
+            currentCycle.trace.push(`agent_session_recovery_triggered=${Boolean(openAiBrainTurn.telemetry.agentSessionRecoveryTriggered)}`);
+            currentCycle.trace.push(`agent_session_bootstrap_injected=${Boolean(openAiBrainTurn.telemetry.agentSessionBootstrapInjected)}`);
+            currentCycle.trace.push(`agent_session_bootstrap_message_count=${openAiBrainTurn.telemetry.agentSessionBootstrapMessageCount || 0}`);
+            if (openAiBrainTurn.telemetry.agentSessionBootstrapQueryFailed) {
+              currentCycle.trace.push("agent_session_bootstrap_query_failed=true");
+              if (openAiBrainTurn.telemetry.agentSessionBootstrapError) {
+                currentCycle.trace.push(`agent_session_bootstrap_error=${openAiBrainTurn.telemetry.agentSessionBootstrapError}`);
+              }
+            }
+          } else {
+            currentCycle.trace.push("agent_session_telemetry_skipped_for_conversation_runtime=true");
           }
           currentCycle.trace.push(`manual_recent_history_injected=${openAiBrainTurn.telemetry.manualRecentHistoryInjected}`);
           currentCycle.trace.push(`contact_memory_injected=${openAiBrainTurn.telemetry.contactMemoryInjected}`);
@@ -8619,6 +8711,7 @@ export async function runBrainOrchestration(
           );
         } else {
           if (
+            !useSdkConversationRuntime &&
             openAiBrainTurn.telemetry.status === "local_wait_timeout" &&
             openAiBrainTurn.telemetry.sessionId &&
             openAiBrainTurn.telemetry.turnId
@@ -8692,6 +8785,7 @@ export async function runBrainOrchestration(
           const recoverableToolLoopFailure = openAiBrainTurn.error?.includes("agent_app_tool_max_rounds_exceeded")
             || openAiBrainTurn.error?.includes("agent_app_tool_duplicate_request_loop");
           if (
+            !useSdkConversationRuntime &&
             recoverableToolLoopFailure &&
             recoverableAudioCandidates.length > 0 &&
             openAiBrainTurn.telemetry.sessionId &&
@@ -8894,8 +8988,10 @@ export async function runBrainOrchestration(
 
     if (!brainPlan) throw new Error("OPENAI_AGENT_FAILED: plano oficial ausente");
 
-    // Atualiza o LiveState com o patch do Brain (com poda estrita de coleções)
-    currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
+    // LiveState só é mantido pelo runtime legado.
+    if (!useSdkConversationRuntime) {
+      currentLiveState = applyLiveStatePatch(currentLiveState, brainPlan.liveStatePatch);
+    }
     const relevantPersonaFacts = brainPlan.missionPackage?.relevantPersonaFacts || [];
     if (relevantPersonaFacts.length) {
       currentCycle.trace.push(`brain_persona_facts_relevant=${relevantPersonaFacts.length}`);
@@ -8922,7 +9018,12 @@ export async function runBrainOrchestration(
           .some((objective: any) => objective?.id === objectiveId && objective.enabled !== false),
       );
       const evidenceExists = evidence
-      ? await objectiveEvidenceExists(supabase, conversationId, evidence, currentSessionId)
+        ? await objectiveEvidenceExists(
+            supabase,
+            conversationId,
+            evidence,
+            resolveCanonicalDecisionSessionId(),
+          )
         : false;
       if (!objectiveExists || !evidenceExists) {
         currentCycle.trace.push(`brain_objective_reference_rejected: ${objectiveId || "missing_objective"}`);
@@ -9430,12 +9531,14 @@ export async function runBrainOrchestration(
       canonicalOutboundActions = texts.map((t: string) => ({ type: "text" as const, text: t }));
     }
 
-    const dispatchGreetingRepeat = detectGreetingRepeat({
-      candidateBalloons: canonicalOutboundActions
-        .filter((action): action is Extract<OutboundAction, { type: "text" }> => action.type === "text")
-        .map((action) => action.text),
-      state: recentGreetingState,
-    });
+    const dispatchGreetingRepeat = useSdkConversationRuntime
+      ? { blocked: false, greetingType: null, code: null }
+      : detectGreetingRepeat({
+          candidateBalloons: canonicalOutboundActions
+            .filter((action): action is Extract<OutboundAction, { type: "text" }> => action.type === "text")
+            .map((action) => action.text),
+          state: recentGreetingState,
+        });
     if (dispatchGreetingRepeat.blocked) {
       currentCycle.trace.push("greeting_repeat_guard_triggered=true");
       currentCycle.trace.push("greeting_repeat_dispatch_blocked=true");
@@ -9554,7 +9657,7 @@ export async function runBrainOrchestration(
       stageRules,
       orchState,
       currentCycle,
-      manualFactProviderSessionId: currentSessionId,
+      manualFactProviderSessionId: resolveCanonicalDecisionSessionId(),
     });
     decision.nextPhase = stageProgression.nextPhase;
     possibleSend = false;
@@ -9578,8 +9681,8 @@ export async function runBrainOrchestration(
       currentCycle.outboxEntryId = outboxBatch[0]?.id;
       currentCycle.trace.push(`outbox_created: ${outboxBatch[0]?.id}`);
 
-      const providerSessionId = currentSessionId;
-      const providerTurnId = currentProviderTurnId;
+      const providerSessionId = resolveCanonicalDecisionSessionId();
+      const providerTurnId = useSdkConversationRuntime ? null : currentProviderTurnId;
       if (providerSessionId) {
         const decisionId = `brain_decision_${correlationId}`;
         const brainTurnId = currentLocalBrainTurnId || `brain_turn_${providerTurnId || correlationId}`;
@@ -9587,6 +9690,7 @@ export async function runBrainOrchestration(
           supabase,
           conversationId,
           sessionId: providerSessionId,
+          provider: canonicalBrainProvider,
           providerTurnId,
           turnId: brainTurnId,
           decisionId,
@@ -9603,6 +9707,18 @@ export async function runBrainOrchestration(
               : "Brain preparou ações de saída.",
             objectiveUpdates: brainPlan?.objectiveUpdates || (brainPlan?.objectiveCompletion ? [brainPlan.objectiveCompletion] : []),
             stageTransition: brainPlan?.stageTransition || null,
+            runtime: useSdkConversationRuntime ? "agents_sdk_conversation" : "legacy_agents",
+            providerIdentity: useSdkConversationRuntime
+              ? {
+                  kind: "openai_conversation_response",
+                  conversationId: currentOpenAiConversationId,
+                  responseId: currentProviderResponseId,
+                }
+              : {
+                  kind: "openai_agent_session_turn",
+                  sessionId: currentSessionId,
+                  turnId: currentProviderTurnId,
+                },
             semanticState: {
               cycleToken: correlationId,
               expectedCurrentStageId: convRow?.current_stage_id || null,
@@ -9615,7 +9731,9 @@ export async function runBrainOrchestration(
             },
             responses: canonicalOutboundActions.filter((action) => action.type === "text").map((action: any) => action.text),
             questionIntents: Array.isArray(brainPlan?.questionIntents) ? brainPlan.questionIntents : [],
-            memoryWrites: brainPlan?.memoryWrites && typeof brainPlan.memoryWrites === "object" ? brainPlan.memoryWrites : null,
+            memoryWrites: useSdkConversationRuntime
+              ? null
+              : (brainPlan?.memoryWrites && typeof brainPlan.memoryWrites === "object" ? brainPlan.memoryWrites : null),
           },
           outboxEntries: outboxBatch,
           actions: outboxBatch.map((entry, actionIndex) => ({
@@ -9786,14 +9904,17 @@ export async function runBrainOrchestration(
       }
     } else {
         // O Brain controla WAIT; o backend persiste apenas o resultado e libera o ciclo.
-        if (currentSessionId) {
+        const waitingSessionId = resolveCanonicalDecisionSessionId();
+        if (waitingSessionId) {
           const decisionId = `brain_decision_${correlationId}`;
-          const brainTurnId = currentLocalBrainTurnId || `brain_turn_${currentProviderTurnId || correlationId}`;
+          const waitingProviderTurnId = useSdkConversationRuntime ? null : currentProviderTurnId;
+          const brainTurnId = currentLocalBrainTurnId || `brain_turn_${waitingProviderTurnId || correlationId}`;
           const waitingDecision = await persistCanonicalBrainDecision({
             supabase,
             conversationId,
-            sessionId: currentSessionId,
-            providerTurnId: currentProviderTurnId,
+            sessionId: waitingSessionId,
+            provider: canonicalBrainProvider,
+            providerTurnId: waitingProviderTurnId,
             turnId: brainTurnId,
             decisionId,
             inboundMessageIds: claimedMessageIds,
@@ -9802,6 +9923,18 @@ export async function runBrainOrchestration(
               action: decision.action,
               manualResolution: decision.manualResolution || null,
               pendingActionResolution: decision.pendingActionResolution || { cancelActionIds: [] },
+              runtime: useSdkConversationRuntime ? "agents_sdk_conversation" : "legacy_agents",
+              providerIdentity: useSdkConversationRuntime
+                ? {
+                    kind: "openai_conversation_response",
+                    conversationId: currentOpenAiConversationId,
+                    responseId: currentProviderResponseId,
+                  }
+                : {
+                    kind: "openai_agent_session_turn",
+                    sessionId: currentSessionId,
+                    turnId: currentProviderTurnId,
+                  },
               reasoningSummary: decision.action === "manual_resolution"
                 ? "Brain solicitou um fato ao operador."
                 : "Brain decidiu aguardar sem enviar mensagem.",
@@ -9907,9 +10040,12 @@ export async function runBrainOrchestration(
           markProcessedIds: [...claimedMessageIds, ...staleMessageIds],
         });
       } else {
-        // Fatos inferidos da mensagem outbound só entram na memória após confirmação real de envio.
+        if (useSdkConversationRuntime) {
+          currentCycle.trace.push("semantic_memory_writes_skipped=true");
+        }
+        // Runtime legado ainda mantém as projeções semânticas antigas.
         try {
-          if (hasConfirmedDelivery) {
+          if (hasConfirmedDelivery && !useSdkConversationRuntime) {
             await executeMemoryWriter({
               conversationId,
               claimedMessages: claimedMessages,
@@ -9928,7 +10064,9 @@ export async function runBrainOrchestration(
         }
 
         // 3. Obtém todos os fatos confirmados do turno gravados no overlay em RAM
-        const pendingFacts = hasConfirmedDelivery ? cycleMemoryProvider.getPendingFacts() : [];
+        const pendingFacts = hasConfirmedDelivery && !useSdkConversationRuntime
+          ? cycleMemoryProvider.getPendingFacts()
+          : [];
 
         // 4. Leitura snapshot para preservação estrita de fatos já existentes no banco
         const { data: preCommitData } = await supabase
@@ -9964,7 +10102,7 @@ export async function runBrainOrchestration(
         }
 
         // Integração de memoryCandidates validados do subagente com evidência comprovada
-        for (const cand of hasConfirmedDelivery ? validatedMemoryCandidates : []) {
+        for (const cand of hasConfirmedDelivery && !useSdkConversationRuntime ? validatedMemoryCandidates : []) {
           const normEnt = (cand.entity || "self").toLowerCase().trim();
           const normFld = (cand.key || "").toLowerCase().trim();
           if (!confirmedTurnEntities[normEnt]) confirmedTurnEntities[normEnt] = {};
@@ -10005,7 +10143,7 @@ export async function runBrainOrchestration(
         const snippetsToMerge = [
           ...(latestMemoryFromDb?.snippets || orchState.memory?.snippets || []),
         ];
-        for (const cand of hasConfirmedDelivery ? validatedMemoryCandidates : []) {
+        for (const cand of hasConfirmedDelivery && !useSdkConversationRuntime ? validatedMemoryCandidates : []) {
           const snipText = cand.summary || `${cand.key}: ${cand.value}`;
           if (snipText && !snippetsToMerge.some((s: any) => s.snippet === snipText)) {
             snippetsToMerge.push({
@@ -10048,16 +10186,26 @@ export async function runBrainOrchestration(
           outbox: outboxMap,
           messageLedger: ledger,
           memory: mergedMemory,
-          liveState: currentLiveState,
-          recentQuestionIntents: mergeRecentQuestionIntents(
-            currentRecentQuestionIntents,
-            Array.isArray(freshRules?.orchestration?.recentQuestionIntents)
-              ? freshRules.orchestration.recentQuestionIntents
-              : [],
-          ),
-          openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || orchState.openai_session_id) : null),
-          openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
-          persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
+          ...(!useSdkConversationRuntime
+            ? {
+                liveState: currentLiveState,
+                recentQuestionIntents: mergeRecentQuestionIntents(
+                  currentRecentQuestionIntents,
+                  Array.isArray(freshRules?.orchestration?.recentQuestionIntents)
+                    ? freshRules.orchestration.recentQuestionIntents
+                    : [],
+                ),
+              }
+            : {}),
+          openai_session_id: useSdkConversationRuntime
+            ? null
+            : (currentSessionId || (isPersistentSessionValid ? (persistentSessionId || orchState.openai_session_id) : null)),
+          openai_session_kind: useSdkConversationRuntime
+            ? "conversation"
+            : (persistentAgentSessionEnabled ? "persistent" : "legacy"),
+          persistent_session_version: useSdkConversationRuntime
+            ? null
+            : (persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null),
           technicalRetryCount: 0,
           technicalRetryExhaustedAt: null,
           manualRetryAttempt: null,
@@ -10098,9 +10246,15 @@ export async function runBrainOrchestration(
           active_cycle_token: null,
           active_cycle_at: null,
           preempt_requested: false,
-          openai_session_id: currentSessionId || (isPersistentSessionValid ? (persistentSessionId || freshRules.openai_session_id) : null),
-          openai_session_kind: persistentAgentSessionEnabled ? "persistent" : "legacy",
-          persistent_session_version: persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null,
+          openai_session_id: useSdkConversationRuntime
+            ? null
+            : (currentSessionId || (isPersistentSessionValid ? (persistentSessionId || freshRules.openai_session_id) : null)),
+          openai_session_kind: useSdkConversationRuntime
+            ? "conversation"
+            : (persistentAgentSessionEnabled ? "persistent" : "legacy"),
+          persistent_session_version: useSdkConversationRuntime
+            ? null
+            : (persistentAgentSessionEnabled ? PERSISTENT_AGENT_SESSION_VERSION : null),
           orchestration: updatedState,
         };
 
@@ -10186,8 +10340,9 @@ export async function runBrainOrchestration(
               }
             : { status: "idle" }),
           lastThoughts: {
-            atriaThought: needsHumanReview ? "Brain solicitou uma informação factual ao operador." : "",
-            solThought: needsHumanReview ? "" : decision.suggestedResponse,
+            brainThought: needsHumanReview
+              ? "Brain solicitou uma informação factual ao operador."
+              : "Turno do Brain concluído.",
             previewResponses: needsHumanReview ? [] : [decision.suggestedResponse],
           },
           activity: activity(
@@ -10201,10 +10356,9 @@ export async function runBrainOrchestration(
               : "Brain avaliou",
             needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
             needsHumanReview
-              ? { atriaThought: "Brain solicitou uma informação factual ao operador." }
+              ? { brainThought: "Brain solicitou uma informação factual ao operador." }
               : {
-                  atriaThought: "Turno do Brain concluído.",
-                  solThought: decision.suggestedResponse,
+                  brainThought: "Turno do Brain concluído.",
                   currentResponsePreview: decision.suggestedResponse,
                   previewResponses: [decision.suggestedResponse],
                 },
@@ -10243,9 +10397,9 @@ export async function runBrainOrchestration(
         });
         usageTerminalEventPublished = Boolean(completedUsage.usage);
 
-        // Gravação determinística de episódios da conversa (Memória Episódica / Anti-repetição)
-        // Executa UMA ÚNICA VEZ por ciclo normal confirmado, após o commit oficial
-        if (hasConfirmedDelivery) {
+        // Memória semântica paralela é legado. No runtime Conversations,
+        // o histórico real já está na OpenAI e não geramos episódios/resumos duplicados.
+        if (hasConfirmedDelivery && !useSdkConversationRuntime) {
           try {
             await executeEpisodeWriter({
               conversationId,

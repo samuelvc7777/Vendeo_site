@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useImperativeHandle, forwardRef, memo } from "react";
-import { MessageSquareText, Paperclip, Sparkles, Loader2, Mic } from "lucide-react";
+import { MessageSquareText, Paperclip, Loader2, Mic } from "lucide-react";
 
 export interface InstagramChatComposerRef {
   appendText: (text: string) => void;
@@ -19,7 +19,6 @@ export interface InstagramChatComposerProps {
   onSelectMediaFile: (file: File) => void;
   onStartRecording: () => void;
   onOpenVault: () => void;
-  onOpenAiAssistant: () => void;
 }
 
 export const InstagramChatComposer = memo(
@@ -33,7 +32,6 @@ export const InstagramChatComposer = memo(
       onSelectMediaFile,
       onStartRecording,
       onOpenVault,
-      onOpenAiAssistant,
     },
     ref
   ) {
@@ -138,16 +136,6 @@ export const InstagramChatComposer = memo(
             disabled={isUploadingMedia}
             className="flex-1 bg-transparent text-sm text-white placeholder-[#737373] focus:outline-none disabled:opacity-50"
           />
-
-          {/* Assistente de IA Contextual */}
-          <button
-            type="button"
-            onClick={onOpenAiAssistant}
-            title="Abrir Assistente de IA Contextual"
-            className="text-amber-300 hover:text-amber-200 active:scale-90 transition-colors p-0.5 cursor-pointer"
-          >
-            <Sparkles className="w-5 h-5 stroke-[1.8] text-amber-300" />
-          </button>
 
           {/* Spinner de Upload quando estiver enviando mídia */}
           {isUploadingMedia && (

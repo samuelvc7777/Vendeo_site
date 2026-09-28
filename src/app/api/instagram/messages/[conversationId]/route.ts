@@ -5,10 +5,8 @@ import { RealtimeBroadcaster } from "@/infrastructure/supabase/RealtimeBroadcast
 import { formatMessageTime } from "@/lib/utils";
 
 
-export const dynamic = "force-static";
-export function generateStaticParams() {
-  return [{ conversationId: "default" }];
-}
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 interface RouteParams {
   params: Promise<{

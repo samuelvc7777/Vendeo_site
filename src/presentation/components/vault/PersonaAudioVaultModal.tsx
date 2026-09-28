@@ -19,7 +19,6 @@ import {
   Mic,
   Tag,
   Filter,
-  FolderArchive,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
@@ -37,7 +36,6 @@ interface PersonaAudioVaultModalProps {
     username: string;
   } | null;
   onSendAudioToChat?: (audio: PersonaAudioAsset) => Promise<void>;
-  onOpenLegacyVault?: () => void;
 }
 
 export function PersonaAudioVaultModal({
@@ -45,7 +43,6 @@ export function PersonaAudioVaultModal({
   onClose,
   activeChat,
   onSendAudioToChat,
-  onOpenLegacyVault,
 }: PersonaAudioVaultModalProps) {
   const { stages } = useChatStages(undefined, { loadAllProgresses: false });
   const {
@@ -330,17 +327,6 @@ export function PersonaAudioVaultModal({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {onOpenLegacyVault && (
-              <button
-                type="button"
-                onClick={onOpenLegacyVault}
-                title="Abrir arquivos e mídias do cofre antigo"
-                className="px-2.5 py-1.5 rounded-xl border border-zinc-700 bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 font-medium text-xs flex items-center gap-1.5 transition-colors"
-              >
-                <FolderArchive className="w-3.5 h-3.5 text-zinc-400" />
-                <span className="hidden sm:inline">Cofre Antigo</span>
-              </button>
-            )}
             <button
               type="button"
               onClick={openCreateModal}

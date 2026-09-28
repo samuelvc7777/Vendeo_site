@@ -13,6 +13,7 @@
     "prompt:check": "node scripts/build-larissa-canonical-prompt.mjs --check"
   },
   "dependencies": {
+    "@openai/agents": "^0.18.0",
     "@supabase/supabase-js": "^2.116.0",
     "clsx": "^2.1.1",
     "firebase": "^12.19.0",
@@ -23,7 +24,8 @@
     "react-dom": "19.2.8",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.6.0",
-    "vaul": "^1.1.2"
+    "vaul": "^1.1.2",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

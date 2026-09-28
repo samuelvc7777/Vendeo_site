@@ -3,9 +3,6 @@ import { AutoPilotConfig, AutoPilotChatState } from "@/domain/entities/AutoPilot
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
 
-const LOCAL_STORAGE_CONFIG_KEY = "vendeo_autopilot_config_v1";
-const LOCAL_STORAGE_STATES_KEY = "vendeo_autopilot_states_v1";
-
 const DEFAULT_CONFIG: AutoPilotConfig = {
   isEnabledGlobally: true,
   mode: "automatic", // 100% Automático direto (semiautomático removido)
@@ -18,16 +15,6 @@ const DEFAULT_CONFIG: AutoPilotConfig = {
   typingDelaySecondsPerBalloon: 4,
   updatedAt: new Date().toISOString(),
 };
-
-interface StoredConfigPayload {
-  config: AutoPilotConfig;
-  updated_at: string;
-}
-
-interface StoredStatesPayload {
-  states: Record<string, AutoPilotChatState>;
-  updated_at: string;
-}
 
 export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
   private cachedConfig: AutoPilotConfig | null = null;
@@ -44,91 +31,37 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     return getSupabaseServerClient();
   }
 
-  private getLocalConfig(): AutoPilotConfig {
-    if (typeof window === "undefined") return DEFAULT_CONFIG;
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          return { ...DEFAULT_CONFIG, ...parsed };
-        }
-      }
-    } catch (e) {
-      console.warn("Erro ao ler config do Piloto Automático local:", e);
-    }
-    return DEFAULT_CONFIG;
-  }
-
-  private saveLocalConfig(config: AutoPilotConfig) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_CONFIG_KEY, JSON.stringify(config));
-    } catch (e) {
-      console.warn("Erro ao salvar config do Piloto Automático local:", e);
-    }
-  }
-
-  private getLocalStates(): Record<string, AutoPilotChatState> {
-    if (typeof window === "undefined") return {};
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_STATES_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.warn("Erro ao ler estados do Piloto Automático local:", e);
-    }
-    return {};
-  }
-
-  private saveLocalStates(states: Record<string, AutoPilotChatState>) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_STATES_KEY, JSON.stringify(states));
-    } catch (e) {
-      console.warn("Erro ao salvar estados do Piloto Automático local:", e);
-    }
-  }
-
   private initRealtimeSubscription() {
     if (this.realtimeSubscribed || typeof window === "undefined") return;
     const client = this.getClient();
     if (!client) return;
 
+    // Marca antes de subscribe para impedir corrida entre chamadas simult?neas.
+    this.realtimeSubscribed = true;
     try {
-      client.channel("vendeo_autopilot_config_sync")
+      client.channel("vendeo_autopilot_settings_sync_v2")
         .on("postgres_changes", {
-          event: "*", schema: "public", table: "instagram_conversations",
-          filter: "id=eq.__autopilot_config__",
+          event: "*", schema: "public", table: "autopilot_settings", filter: "id=eq.global",
         }, (payload: any) => {
           const row = payload?.new;
-          if (row?.stage_completed_rules?.config) {
-            const nextConfig: AutoPilotConfig = { ...DEFAULT_CONFIG, ...row.stage_completed_rules.config };
-            this.cachedConfig = nextConfig;
-            this.saveLocalConfig(nextConfig);
+          if (row?.config && typeof row.config === "object") {
+            this.cachedConfig = { ...DEFAULT_CONFIG, ...row.config };
+            this.lastFetchConfigTime = Date.now();
           }
         }).subscribe();
 
-      client.channel("vendeo_autopilot_state_rows")
+      client.channel("vendeo_autopilot_state_rows_v2")
         .on("postgres_changes", {
           event: "*", schema: "public", table: "autopilot_chat_states",
         }, (payload: any) => {
           const row = payload?.new;
           if (!row?.conversation_id || !row?.state) return;
           const next = this.mapStateRow(row);
-          this.cachedStates = this.mergeStatesMonotonic(
-            this.cachedStates || this.getLocalStates(),
-            { [next.conversationId]: next }
-          );
-          this.saveLocalStates(this.cachedStates);
+          this.cachedStates = this.mergeStatesMonotonic(this.cachedStates || {}, { [next.conversationId]: next });
+          this.lastFetchStatesTime = Date.now();
         }).subscribe();
-
-      this.realtimeSubscribed = true;
     } catch (err) {
+      this.realtimeSubscribed = false;
       console.warn("Aviso ao assinar realtime do Piloto Autom?tico:", err);
     }
   }
@@ -148,37 +81,22 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
   async getConfig(force = false): Promise<AutoPilotConfig> {
     this.initRealtimeSubscription();
     const now = Date.now();
-    if (!force && this.cachedConfig && now - this.lastFetchConfigTime < this.cacheDurationMs) {
-      return this.cachedConfig;
-    }
+    if (!force && this.cachedConfig && now - this.lastFetchConfigTime < this.cacheDurationMs) return this.cachedConfig;
 
     const client = this.getClient();
-    if (client) {
-      try {
-        const { data, error } = await client
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_config__")
-          .maybeSingle();
+    if (!client) return this.cachedConfig || DEFAULT_CONFIG;
 
-        if (!error && data?.stage_completed_rules) {
-          const rules = data.stage_completed_rules as StoredConfigPayload;
-          if (rules.config && typeof rules.config === "object") {
-            this.cachedConfig = { ...DEFAULT_CONFIG, ...rules.config };
-            this.saveLocalConfig(this.cachedConfig);
-            this.lastFetchConfigTime = now;
-            return this.cachedConfig;
-          }
-        }
-      } catch (err) {
-        console.warn("Aviso ao carregar config do Piloto Automático do Supabase:", err);
-      }
-    }
+    const { data, error } = await client
+      .from("autopilot_settings")
+      .select("config, updated_at")
+      .eq("id", "global")
+      .single();
+    if (error) throw error;
 
-    const local = this.getLocalConfig();
-    this.cachedConfig = local;
+    const resolvedConfig: AutoPilotConfig = { ...DEFAULT_CONFIG, ...(data?.config || {}) };
+    this.cachedConfig = resolvedConfig;
     this.lastFetchConfigTime = now;
-    return local;
+    return resolvedConfig;
   }
 
   async saveConfig(config: Partial<AutoPilotConfig>): Promise<AutoPilotConfig> {
@@ -190,29 +108,17 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     };
 
     this.cachedConfig = updated;
-    this.saveLocalConfig(updated);
     this.lastFetchConfigTime = Date.now();
 
     const client = this.getClient();
     if (client) {
       try {
-        const payload: StoredConfigPayload = {
-          config: updated,
+        const { error } = await client.from("autopilot_settings").upsert({
+          id: "global",
+          config: updated as any,
           updated_at: updated.updatedAt,
-        };
-
-        await client.from("instagram_conversations").upsert({
-          id: "__autopilot_config__",
-          username: "system_autopilot_config",
-          full_name: "Configurações do Piloto Automático",
-          status: "system",
-          unread: false,
-          last_message: `Delay: ${updated.responseDelayMinutes}m | Global: ${updated.isEnabledGlobally ? "ON" : "OFF"}`,
-          last_message_at: new Date().toISOString(),
-          is_restricted: false,
-          stage_completed_rules: payload as any,
-          updated_at: new Date().toISOString(),
         });
+        if (error) throw error;
 
         if (config.isEnabledGlobally !== undefined) {
           try {
@@ -239,69 +145,31 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     const now = Date.now();
     if (!force && this.cachedStates && now - this.lastFetchStatesTime < this.cacheDurationMs) return this.cachedStates;
     const client = this.getClient();
-    if (client) {
-      try {
-        const rows: any[] = [];
-        const pageSize = 500;
-        for (let from = 0; ; from += pageSize) {
-          const { data, error } = await client.from("autopilot_chat_states")
-            .select("conversation_id, is_enabled, status, state, state_updated_at, state_revision")
-            .order("conversation_id", { ascending: true }).range(from, from + pageSize - 1);
-          if (error) throw error;
-          rows.push(...(data || []));
-          if (!data || data.length < pageSize) break;
-        }
-        if (rows.length > 0) {
-          const nextStates = Object.fromEntries(rows.map((row: any) => {
-            const state = this.mapStateRow(row);
-            return [state.conversationId, state];
-          })) as Record<string, AutoPilotChatState>;
-          this.cachedStates = this.mergeStatesMonotonic(this.cachedStates || {}, nextStates);
-          this.saveLocalStates(this.cachedStates);
-          this.lastFetchStatesTime = now;
-          return this.cachedStates;
-        }
-      } catch {
-        // Rollout compat?vel: tenta a proje??o global antiga.
-      }
+    if (!client) return this.cachedStates || {};
 
-      try {
-        const { data, error } = await client.from("instagram_conversations")
-          .select("stage_completed_rules").eq("id", "__autopilot_states__").maybeSingle();
-        if (!error && data?.stage_completed_rules) {
-          const rules = data.stage_completed_rules as StoredStatesPayload;
-          if (rules.states && typeof rules.states === "object") {
-            const projectionStates = rules.states as Record<string, AutoPilotChatState>;
-            const conversationIds = Object.keys(projectionStates);
-            let canonicalEnabled: Record<string, boolean> = {};
-            if (conversationIds.length) {
-              const { data: conversations, error: canonicalError } = await client.from("instagram_conversations")
-                .select("id, ai_auto_respond").in("id", conversationIds);
-              if (canonicalError) throw canonicalError;
-              canonicalEnabled = Object.fromEntries((conversations || []).map((row: any) => [row.id, row.ai_auto_respond === true]));
-            }
-            const canonicalStates = Object.fromEntries(Object.entries(projectionStates).map(([id, state]) => {
-              const isEnabled = canonicalEnabled[id] ?? state.isEnabled === true;
-              return [id, { ...state, isEnabled, status: !isEnabled ? "disabled" : state.status === "disabled" ? "idle" : state.status }];
-            })) as Record<string, AutoPilotChatState>;
-            this.cachedStates = this.mergeStatesMonotonic(this.cachedStates || {}, canonicalStates);
-            this.saveLocalStates(this.cachedStates);
-            this.lastFetchStatesTime = now;
-            return this.cachedStates;
-          }
-        }
-      } catch (err) { console.warn("Aviso ao carregar estados do Piloto Autom?tico:", err); }
+    const rows: any[] = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await client.from("autopilot_chat_states")
+        .select("conversation_id, is_enabled, status, state, state_updated_at, state_revision")
+        .order("conversation_id", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
     }
-    const local = this.getLocalStates();
-    this.cachedStates = local;
+
+    const nextStates = Object.fromEntries(rows.map((row: any) => {
+      const state = this.mapStateRow(row);
+      return [state.conversationId, state];
+    })) as Record<string, AutoPilotChatState>;
+    this.cachedStates = this.mergeStatesMonotonic(this.cachedStates || {}, nextStates);
     this.lastFetchStatesTime = now;
-    return local;
+    return this.cachedStates;
   }
 
   private async persistStateToCloud(state: AutoPilotChatState, expectedStateUpdatedAt?: string): Promise<void> {
-    const states = { ...(this.cachedStates || this.getLocalStates()), [state.conversationId]: state };
-    this.cachedStates = states;
-    this.saveLocalStates(states);
+    this.cachedStates = { ...(this.cachedStates || {}), [state.conversationId]: state };
     this.lastFetchStatesTime = Date.now();
 
     const client = this.getClient();
@@ -309,33 +177,6 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
 
     try {
       const item = { ...state } as AutoPilotChatState;
-      const now = Date.now();
-      const sendingStartedMs = item.sendingStartedAt ? Date.parse(item.sendingStartedAt) : 0;
-      if (item.isSending && (sendingStartedMs === 0 || now - sendingStartedMs > 25000)) {
-        item.isSending = false;
-        item.sendingStartedAt = null;
-        item.sendingCycleToken = null;
-      }
-      if (item.activity && item.activity.phase !== "completed") {
-        const actUpdateMs = item.activity.updatedAt ? Date.parse(item.activity.updatedAt) : 0;
-        if (actUpdateMs > 0 && now - actUpdateMs > 45000) {
-          if (item.lastThoughts?.atriaThought || item.lastThoughts?.solThought) {
-            item.activity = {
-              phase: "completed",
-              label: "Última resposta enviada",
-              detail: "Aguardando nova mensagem do cliente para iniciar novo raciocínio.",
-              updatedAt: new Date().toISOString(),
-              atriaThought: item.lastThoughts.atriaThought,
-              solThought: item.lastThoughts.solThought,
-              previewResponses: item.lastThoughts.previewResponses,
-            };
-          } else {
-            item.activity = null;
-          }
-          if (item.status === "processing" || item.status === "waiting_delay") item.status = "idle";
-        }
-      }
-
       const { data, error } = await (client as any).rpc("patch_autopilot_projection_state_atomic", {
         p_conversation_id: item.conversationId,
         p_state_patch: item,
@@ -349,7 +190,6 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
           stateUpdatedAt: data.stateUpdatedAt || data.state.stateUpdatedAt,
         } as AutoPilotChatState;
         this.cachedStates = { ...(this.cachedStates || {}), [item.conversationId]: canonical };
-        this.saveLocalStates(this.cachedStates);
       }
     } catch (err) {
       console.warn("Aviso ao persistir estado visual do Piloto Automático no Supabase:", err);

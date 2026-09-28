@@ -2,8 +2,6 @@
 // Deno TypeScript Runtime
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
-import { buildTinderAiPromptForBackend } from "./tinder_ai.ts";
-import { GenerateAiPromptUseCase } from "./instagram_ai.ts";
 import {
   runBrainOrchestration,
   requestBrainCyclePreemptionAtomic,
@@ -37,6 +35,10 @@ import {
 } from "./brain_operator_auth.ts";
 import { handleOperatorChatProgress } from "./operator_chat_progress.ts";
 import { computeBoundedDebounce } from "./debounce_policy.ts";
+import {
+  enqueueOpenAiConversationMessageSync,
+  processOpenAiConversationSyncQueue,
+} from "./openai_conversation_runtime.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -73,66 +75,6 @@ function getSupabaseClient() {
 }
 
 
-async function getBaiApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("BAI_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "bai_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("sk-")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da b.ai no Supabase:", err);
-  }
-  return null;
-}
-
-async function getNvidiaApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("NVIDIA_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "nvidia_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("nvapi-")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da NVIDIA no Supabase:", err);
-  }
-  return null;
-}
-
-async function getTokenHarborApiKey(supabase: any): Promise<string | null> {
-  const envKey = (Deno.env.get("TOKENHARBOR_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "tokenharbor_api_key")
-      .maybeSingle();
-
-    if (data?.app_secret?.startsWith("thk_")) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave do TokenHarbor no Supabase:", err);
-  }
-  return null;
-}
-
 async function getOpenAiApiKey(supabase: any): Promise<string | null> {
   const envKey = (Deno.env.get("OPENAI_API_KEY") || "").trim();
   if (envKey) return envKey;
@@ -152,235 +94,6 @@ async function getOpenAiApiKey(supabase: any): Promise<string | null> {
   }
   return null;
 }
-
-async function getKieApiKey(supabase: any): Promise<string | null> {
-  // 1. Prioridade máxima: chave persistida na tabela instagram_config (configurada na UI)
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "kie_api_key")
-      .maybeSingle();
-
-    if (typeof data?.app_secret === "string" && data.app_secret.trim()) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da Kie.ai no Supabase:", err);
-  }
-
-  // 2. Variável de ambiente na Edge Function
-  const envKey = (Deno.env.get("KIE_API_KEY") || "").trim();
-  if (envKey) return envKey;
-
-  // 3. Fallback via variável de ambiente
-  return (Deno.env.get("KIE_API_FALLBACK_KEY") || "").trim();
-}
-
-/**
- * Resolve a chave da API da Atria (Atria-Dawn-Preview / api.atria-asi.ai).
- * Ordem: variável de ambiente da Edge ➔ instagram_config (atria_api_key).
- */
-async function getAtriaApiKey(supabase: any): Promise<string | null> {
-  const envKeys = [
-    (Deno.env.get("ATRIA_API_KEY") || "").trim(),
-    (Deno.env.get("HERMES_CUSTOM_ATRIA_DAWN_PREVIEW_API_KEY") || "").trim(),
-  ];
-  for (const key of envKeys) {
-    if (key) return key;
-  }
-
-  try {
-    const { data } = await supabase
-      .from("instagram_config")
-      .select("app_secret")
-      .eq("id", "atria_api_key")
-      .maybeSingle();
-
-    if (typeof data?.app_secret === "string" && data.app_secret.trim()) {
-      return data.app_secret.trim();
-    }
-  } catch (err) {
-    console.warn("Aviso ao buscar chave da Atria no Supabase:", err);
-  }
-  return null;
-}
-
-function extractKieResponseText(rawTextOrPayload: any): string {
-  if (!rawTextOrPayload) return "";
-  if (typeof rawTextOrPayload === "object") {
-    if (typeof rawTextOrPayload.output_text === "string") return rawTextOrPayload.output_text;
-    if (typeof rawTextOrPayload.response?.output_text === "string") return rawTextOrPayload.response.output_text;
-    if (Array.isArray(rawTextOrPayload.candidates)) {
-      const parts = rawTextOrPayload.candidates
-        .flatMap((cand: any) => Array.isArray(cand?.content?.parts) ? cand.content.parts : [])
-        .map((p: any) => typeof p?.text === "string" ? p.text : "")
-        .filter(Boolean)
-        .join("");
-      if (parts) return parts;
-    }
-    const outputArr = Array.isArray(rawTextOrPayload.output)
-      ? rawTextOrPayload.output
-      : Array.isArray(rawTextOrPayload.response?.output)
-      ? rawTextOrPayload.response.output
-      : null;
-    if (outputArr) {
-      const text = outputArr
-        .flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
-        .map((content: any) => typeof content?.text === "string" ? content.text : "")
-        .filter(Boolean)
-        .join("\n");
-      if (text) return text;
-    }
-  }
-
-  if (typeof rawTextOrPayload === "string") {
-    try {
-      const parsed = JSON.parse(rawTextOrPayload);
-      const res = extractKieResponseText(parsed);
-      if (res) return res;
-    } catch {}
-
-    const lines = rawTextOrPayload.split("\n");
-    let accumulatedDelta = "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const dataStr = line.slice(6).trim();
-      if (!dataStr || dataStr === "[DONE]") continue;
-      try {
-        const data = JSON.parse(dataStr);
-        // Suporte ao stream do Gemini (SSE: data: {"candidates": [{"content": {"parts": [{"text": "..."}]}}]})
-        if (Array.isArray(data.candidates)) {
-          for (const cand of data.candidates) {
-            if (Array.isArray(cand?.content?.parts)) {
-              for (const part of cand.content.parts) {
-                if (typeof part?.text === "string") {
-                  accumulatedDelta += part.text;
-                }
-              }
-            }
-          }
-        }
-        if (data.type === "response.completed" && Array.isArray(data.response?.output)) {
-          for (const item of data.response.output) {
-            if (Array.isArray(item?.content)) {
-              const joined = item.content.map((c: any) => c.text || "").filter(Boolean).join("\n");
-              if (joined) return joined;
-            }
-          }
-        }
-        if (data.type === "response.output_text.done" && typeof data.text === "string") {
-          return data.text;
-        }
-        if (data.type === "response.output_item.done" && Array.isArray(data.item?.content)) {
-          const joined = data.item.content
-            .map((c: any) => c.text || "")
-            .filter(Boolean)
-            .join("\n");
-          if (joined) return joined;
-        }
-        if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
-          accumulatedDelta += data.delta;
-        }
-        if (data.delta && typeof data.delta.text === "string") {
-          accumulatedDelta += data.delta.text;
-        }
-      } catch {}
-    }
-    if (accumulatedDelta.trim()) return accumulatedDelta.trim();
-  }
-
-  return "";
-}
-
-/**
- * Substitui todos os pontos (.) por vírgulas (,), mantendo estritamente os pontos de interrogação (?)
- * para simular a digitação jovem, fluida e informal do Instagram Direct / WhatsApp.
- */
-function replaceDotsWithCommas(text: string): string {
-  if (!text || typeof text !== "string") return text;
-  if (text.startsWith("[audio:") || text.startsWith("[image:") || text.startsWith("[video:")) return text;
-
-  // Substitui ponto seguido de espaço e letra por vírgula + espaço + letra minúscula
-  let res = text.replace(/\s*\.\s*([A-Za-zÀ-ÖØ-öø-ÿ])/g, (_, letter) => `, ${letter.toLowerCase()}`);
-
-  // Substitui qualquer outro ponto restante por vírgula
-  res = res.replace(/\.+/g, ",");
-
-  // Remove espaços antes de vírgula
-  res = res.replace(/\s+,/g, ",");
-
-  // Remove vírgulas coladas ou próximas de ponto de interrogação (ex: "né,?" ou "né?," -> "né?")
-  res = res.replace(/,+\s*\?+/g, "?");
-  res = res.replace(/\?+\s*,+/g, "?");
-
-  // Remove vírgulas duplicadas (ex: ",," -> ",")
-  res = res.replace(/,+/g, ",");
-
-  return res.trim();
-}
-
-const EMOJI_REGEX = /[\p{Extended_Pictographic}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
-
-function extractUsedEmojis(messages?: { sender?: string; isMine?: boolean; text?: string }[]): string[] {
-  if (!Array.isArray(messages)) return [];
-  const myMessages = messages
-    .filter((m) => m.isMine === true || m.sender === "me")
-    .slice(-2);
-
-  const used: string[] = [];
-  for (const m of myMessages) {
-    const text = m.text || "";
-    const matches = text.match(EMOJI_REGEX);
-    if (matches) {
-      for (const em of matches) {
-        if (!used.includes(em)) used.push(em);
-      }
-    }
-  }
-  return used;
-}
-
-function deduplicateAndCleanEmojis(
-  responses: string[],
-  bannedEmojis: string[] = []
-): string[] {
-  if (!Array.isArray(responses)) return [];
-  const banned = new Set(bannedEmojis);
-  let batchAlreadyHasEmoji = false;
-
-  return responses.map((text) => {
-    if (!text || typeof text !== "string") return text;
-    if (text.startsWith("[audio:") || text.startsWith("[image:") || text.startsWith("[video:")) return text;
-
-    let modified = text.replace(EMOJI_REGEX, (match) => {
-      if (banned.has(match) || batchAlreadyHasEmoji) {
-        return "";
-      }
-      batchAlreadyHasEmoji = true;
-      return match;
-    });
-
-    // Limpa vírgula solta colada imediatamente antes do emoji (ex: "uai, 🥰" -> "uai 🥰")
-    modified = modified.replace(/,\s*([\p{Extended_Pictographic}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}])/gu, " $1");
-
-    // Limpa espaços duplicados e pontuações residuais
-    modified = modified
-      .replace(/\s+/g, " ")
-      .replace(/\s+,/g, ",")
-      .replace(/\s+\?/g, "?")
-      .trim();
-
-    return modified;
-  });
-}
-
-function sanitizeResponses(responses: string[], bannedEmojis: string[] = []): string[] {
-  if (!Array.isArray(responses)) return [];
-  const cleanedEmojis = deduplicateAndCleanEmojis(responses, bannedEmojis);
-  return cleanedEmojis.map((r) => replaceDotsWithCommas(r)).filter(Boolean);
-}
-
 
 /**
  * Extrai o ID oficial da thread do Instagram diretamente do message ID (mid) da Meta.
@@ -542,8 +255,7 @@ serve(async (req: Request) => {
 
   const operatorRouteAliases: Record<string, string> = {
     "/operator/brain/events": "/autopilot/brain-events",
-    "/operator/brain/overview": "/autopilot/brain-overview",
-    "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
+      "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
     "/operator/brain/manual-resolution": "/autopilot/manual-resolution",
     "/operator/brain/retry-once": "/autopilot/retry-once",
   };
@@ -958,7 +670,20 @@ serve(async (req: Request) => {
 
             let audioTranscript: string | null = null;
             let audioTranscriptionError: string | null = null;
-            if (isAudioMsg && !isEcho && audioUrl) {
+            let shouldTranscribeAudio = true;
+            if (isEcho && isAudioMsg) {
+              try {
+                const { data: existingOpenAiReceipt } = await supabase
+                  .from("openai_message_receipts")
+                  .select("openai_item_id, synced_at")
+                  .eq("provider_message_id", messageId)
+                  .maybeSingle();
+                shouldTranscribeAudio = !(existingOpenAiReceipt?.openai_item_id && existingOpenAiReceipt?.synced_at);
+              } catch {
+                shouldTranscribeAudio = true;
+              }
+            }
+            if (isAudioMsg && audioUrl && shouldTranscribeAudio) {
               try {
                 const resolved = await resolveInboundAudioMessage(supabase, {
                   id: messageId,
@@ -1095,16 +820,51 @@ serve(async (req: Request) => {
               console.error("Aviso broadcast:", bErr);
             }
 
+            // A view já recebeu o broadcast. Daqui em diante apenas enfileiramos
+            // a cópia para a OpenAI; nenhuma chamada externa da OpenAI bloqueia a inbox.
+            let openAiSyncQueued = false;
+            try {
+              const queued = await enqueueOpenAiConversationMessageSync({
+                supabase,
+                conversationId,
+                providerMessageId: messageId,
+                direction: isEcho ? "outbound" : "inbound",
+                receivedAt: timestamp,
+              });
+              openAiSyncQueued = queued.queued;
+            } catch (queueErr) {
+              console.warn(
+                `[OpenAI Sync Queue] Falha ao enfileirar msg=${messageId} conv=${conversationId}`,
+                queueErr,
+              );
+            }
+
+            if (isEcho && openAiSyncQueued) {
+              const syncPromise = processOpenAiConversationSyncQueue({
+                supabase,
+                conversationId,
+                providerMessageIds: [messageId],
+                limit: 1,
+              }).catch((syncErr) => {
+                console.warn(`[OpenAI Sync Queue] Fast-path outbound falhou msg=${messageId}:`, syncErr);
+              });
+              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                (globalThis as any).EdgeRuntime.waitUntil(syncPromise);
+              } else {
+                void syncPromise;
+              }
+            }
+
             // AutoPilot Inteligente: Agendamento assíncrono de Debounce (Sem timeout na nuvem)
             if (!isEcho) {
               try {
                 // 1. Busca configuração global do piloto automático
                 const { data: configRow } = await supabase
-                  .from("instagram_conversations")
-                  .select("stage_completed_rules")
-                  .eq("id", "__autopilot_config__")
-                  .maybeSingle();
-                const apConfig = configRow?.stage_completed_rules?.config;
+                  .from("autopilot_settings")
+                  .select("config")
+                  .eq("id", "global")
+                  .single();
+                const apConfig = configRow?.config || {};
                 const isEnabledGlobally = apConfig?.isEnabledGlobally !== false;
                 const isManual = apConfig?.mode === "manual";
 
@@ -1115,22 +875,21 @@ serve(async (req: Request) => {
                   .eq("id", conversationId)
                   .maybeSingle();
 
-                // 2.1 Também checa no __autopilot_states__ para garantir que desativações no chat sejam honradas
-                const { data: statesRow } = await supabase
-                  .from("instagram_conversations")
-                  .select("stage_completed_rules")
-                  .eq("id", "__autopilot_states__")
+                // 2.1 Estado canônico por conversa. Nenhuma leitura de projeção global antiga.
+                const { data: stateRow } = await supabase
+                  .from("autopilot_chat_states")
+                  .select("is_enabled, status")
+                  .eq("conversation_id", conversationId)
                   .maybeSingle();
-                const chatStateInCloud = statesRow?.stage_completed_rules?.states?.[conversationId];
                 const convRules = convRow?.stage_completed_rules || {};
+                const canonicalStatus = stateRow?.status || null;
                 const isPaused =
-                  convRow?.ai_auto_respond === false ||
+                  convRow?.ai_auto_respond !== true ||
+                  stateRow?.is_enabled === false ||
                   convRow?.is_restricted === true ||
-                  chatStateInCloud?.status === "waiting_human" ||
-                  convRules.status === "waiting_human" ||
-                  convRules.status === "paused_handoff" ||
-                  convRules.status === "paused_guardrail" ||
-                  (convRow?.ai_auto_respond !== true && (convRules.status === "paused_manual" || convRules.status === "disabled"));
+                  canonicalStatus === "waiting_human" ||
+                  canonicalStatus === "paused_handoff" ||
+                  canonicalStatus === "paused_guardrail";
 
                 const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
                 const isConversationAiEnabled = convRow?.ai_auto_respond === true;
@@ -1139,6 +898,34 @@ serve(async (req: Request) => {
                   mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
                   audioTranscript,
                 });
+                const shouldRunBrain =
+                  isConversationAiEnabled &&
+                  !isPaused &&
+                  isEnabledGlobally &&
+                  !isManual &&
+                  isEligibleByWatermark &&
+                  isActionable;
+
+                const scheduleInboundOpenAiSync = () => {
+                  if (!openAiSyncQueued) return;
+                  const syncPromise = processOpenAiConversationSyncQueue({
+                    supabase,
+                    conversationId,
+                    providerMessageIds: [messageId],
+                    limit: 1,
+                  }).catch((syncErr) => {
+                    console.warn(`[OpenAI Sync Queue] Fast-path inbound falhou msg=${messageId}:`, syncErr);
+                  });
+                  if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                    (globalThis as any).EdgeRuntime.waitUntil(syncPromise);
+                  } else {
+                    void syncPromise;
+                  }
+                };
+
+                if (!shouldRunBrain) {
+                  scheduleInboundOpenAiSync();
+                }
 
                 if (isPaused) {
                   console.log(
@@ -1161,14 +948,7 @@ serve(async (req: Request) => {
                 }
 
                 // BRAIN: Único orquestrador oficial de produção (fail-closed)
-                if (
-                  isConversationAiEnabled &&
-                  !isPaused &&
-                  isEnabledGlobally &&
-                  !isManual &&
-                  isEligibleByWatermark &&
-                  isActionable
-                ) {
+                if (shouldRunBrain) {
                   const delayMinutes =
                     typeof apConfig?.responseDelayMinutes === "number"
                       ? apConfig.responseDelayMinutes
@@ -1191,6 +971,11 @@ serve(async (req: Request) => {
                     maxDebounceWindowMinutes,
                     batchStartedAt: convRow?.ai_debounce_started_at || null,
                   });
+
+                  // Se o Brain não vai começar agora, a Conversation não espera o debounce.
+                  if (hasActiveCycle || (delayMinutes > 0 && !boundedDebounce.dueNow)) {
+                    scheduleInboundOpenAiSync();
+                  }
 
                   if (hasActiveCycle) {
                     const newDebounceUntil = delayMinutes > 0
@@ -3848,68 +3633,11 @@ serve(async (req: Request) => {
     // ==========================================
     // 8.5.1. GERENCIAMENTO DA CHAVE KIE.AI (SOL) (/ai/kie-status)
     // ==========================================
-    if (path === "/ai/kie-status") {
-      if (req.method === "GET") {
-        const key = await getKieApiKey(supabase);
-        const isConfigured = Boolean(key && key.trim().length >= 10);
-        const maskedKey = isConfigured && key ? `${key.slice(0, 4)}...${key.slice(-4)}` : null;
-        return new Response(
-          JSON.stringify({
-            configured: isConfigured,
-            model: "gemini-3-8-flash",
-            provider: "Kie.ai (Gemini 3.8 Flash)",
-            maskedKey,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (req.method === "PUT") {
-        const body = await req.json().catch(() => ({}));
-        const apiKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
-
-        if (!apiKey || apiKey.length < 10) {
-          return new Response(
-            JSON.stringify({ error: "Chave inválida. Informe a chave completa da Kie.ai." }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const { error } = await supabase.from("instagram_config").upsert({
-          id: "kie_api_key",
-          app_secret: apiKey,
-          updated_at: new Date().toISOString(),
-        });
-
-        if (error) {
-          return new Response(
-            JSON.stringify({ error: "Falha ao salvar chave Kie no Supabase." }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            message: "Chave Kie.ai (Sol) configurada com sucesso!",
-            maskedKey: `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // ==========================================
     // 8.5.2. CONFIGURAÇÃO DO OPENAI BRAIN (/ai/openai-config)
     // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
     // ==========================================
     if (path === "/ai/openai-config") {
       const allowedModels = ["gpt-6-luna", "gpt-6-sol"] as const;
-      const legacyModelLabels: Record<string, string> = {
-        "gpt-5.6-luna": "GPT-5.6 Luna (legado)",
-        "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
-        "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
-      };
       // Valores suportados pelos modelos GPT-6 do Brain; `max` é o teto de esforço.
       const allowedReasoningEfforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
       const allowedVerbosityLevels = ["low", "medium", "high"] as const;
@@ -4027,6 +3755,20 @@ serve(async (req: Request) => {
       try {
         const nowIso = new Date().toISOString();
         console.log(`[TRACE-AUTOPILOT] cron:tick check at ${nowIso}`);
+
+        // Drena a fila durável de sincronização com OpenAI Conversation.
+        // Independente do toggle global e sem bloquear as outras rotinas do cron.
+        const openAiSyncPromise = processOpenAiConversationSyncQueue({
+          supabase,
+          limit: 50,
+        }).catch((syncErr) => {
+          console.warn("[OpenAI Sync Queue] cron:tick falhou:", syncErr);
+        });
+        if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+          (globalThis as any).EdgeRuntime.waitUntil(openAiSyncPromise);
+        } else {
+          void openAiSyncPromise;
+        }
 
         // Recovery dedicado: reivindica brain_late com lease e consulta somente o
         // provider_turn_id existente. Turnos ativos ficam intactos; nenhum POST
@@ -4172,11 +3914,11 @@ serve(async (req: Request) => {
 
         // 1. Só depois da entrega durável, o toggle global decide se NOVAS inferências podem rodar.
         const { data: configRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_config__")
-          .maybeSingle();
-        const apConfig = configRow?.stage_completed_rules?.config;
+          .from("autopilot_settings")
+          .select("config")
+          .eq("id", "global")
+          .single();
+        const apConfig = configRow?.config || {};
         const isEnabledGlobally = apConfig?.isEnabledGlobally !== false;
 
         if (!isEnabledGlobally) {
@@ -4472,41 +4214,16 @@ serve(async (req: Request) => {
           });
         }
 
-        // Se a última mensagem for nossa, a IA fica armada em espera sem falar sozinha
-        try {
-          const { data: statesRow } = await supabase
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", "__autopilot_states__")
-            .maybeSingle();
-          const states = statesRow?.stage_completed_rules?.states || {};
-          const current = states[conversationId] || { conversationId, isEnabled: true, status: "idle" };
-          const updatedState = {
-            ...current,
-            isEnabled: true,
-            status: "idle",
-            activity: {
-              phase: "waiting",
-              label: "IA esperando responder",
-              detail: "Aguardando o cliente responder para a IA agir.",
-              updatedAt: new Date().toISOString(),
-            },
-            updatedAt: new Date().toISOString(),
-          };
-          states[conversationId] = updatedState;
-          await supabase.from("instagram_conversations").upsert({
-            id: "__autopilot_states__",
-            username: "system_autopilot_states",
-            stage_completed_rules: { states, updated_at: new Date().toISOString() },
-            updated_at: new Date().toISOString(),
-          });
-          const rtChan = supabase.channel("vendeo_realtime_chat");
-          await rtChan.send({
-            type: "broadcast",
-            event: "autopilot_state_update",
-            payload: { ...updatedState, timestamp: new Date().toISOString() },
-          });
-        } catch (_pubErr) {}
+        // Se a última mensagem for nossa, mantém apenas a projeção canônica em espera.
+        await publishAutoPilotState(supabase, conversationId, {
+          status: "idle",
+          activity: activity(
+            "waiting",
+            "IA esperando responder",
+            "Aguardando o cliente responder para a IA agir.",
+          ),
+          scheduledResponseAt: null,
+        });
 
         return new Response(JSON.stringify({
           triggered: false,
@@ -4951,71 +4668,6 @@ serve(async (req: Request) => {
 
     // ==========================================
     // Retoma o turno persistido após o operador responder uma resolução manual.
-    if ((path === "/autopilot/brain-overview" || path === "/api/autopilot/brain-overview") && req.method === "POST") {
-      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
-        return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige a sess?o autenticada do operador." }), {
-          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      const body = await req.json().catch(() => ({}));
-      const conversationIds = [...new Set(
-        (Array.isArray(body?.conversationIds) ? body.conversationIds : [])
-          .map((value: unknown) => String(value || "").trim())
-          .filter(Boolean),
-      )].slice(0, 500);
-
-      if (conversationIds.length === 0) {
-        return new Response(JSON.stringify({ success: true, overview: {} }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
-        });
-      }
-
-      // Compatibilidade barata para clientes antigos: usa somente a proje??o Realtime.
-      // O frontend atual n?o depende mais desta rota e hist?rico detalhado fica em /brain-events.
-      const { data: rows, error } = await supabase
-        .from("autopilot_chat_states")
-        .select("conversation_id, is_enabled, status, state, state_updated_at")
-        .in("conversation_id", conversationIds);
-
-      if (error) {
-        return new Response(JSON.stringify({ success: false, error: error.message }), {
-          status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      const byId = new Map((rows || []).map((row: any) => [String(row.conversation_id), row]));
-      const overview: Record<string, any> = {};
-
-      for (const conversationId of conversationIds) {
-        const row: any = byId.get(conversationId);
-        const state = row?.state && typeof row.state === "object" ? row.state : {};
-        const activity = state.activity && typeof state.activity === "object" ? state.activity : {};
-        const status = String(row?.status || state.status || (row?.is_enabled ? "idle" : "disabled"));
-        const isEnabled = Boolean(row?.is_enabled ?? state.isEnabled);
-        const active = !["idle", "disabled", "completed", "cancelled"].includes(status);
-        overview[conversationId] = {
-          status,
-          label: String(activity.label || (isEnabled ? "IA pronta" : "IA desligada")),
-          detail: String(activity.detail || (isEnabled ? "Aguardando nova mensagem." : "O AutoPilot n?o est? ativo nesta conversa.")),
-          active,
-          turnId: null,
-          updatedAt: row?.state_updated_at || state.stateUpdatedAt || null,
-          scheduledResponseAt: state.scheduledResponseAt || null,
-          isEnabled,
-          objectiveId: state.currentObjectiveId || null,
-          objectiveLabel: state.currentObjectiveLabel || null,
-          sentCount: Number(state.sentCount || 0),
-          totalCount: Number(state.totalCount || 0),
-          actionTypes: Array.isArray(state.actionTypes) ? state.actionTypes : [],
-        };
-      }
-
-      return new Response(JSON.stringify({ success: true, overview }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
-      });
-    }
-
     if ((path === "/autopilot/brain-events" || path === "/api/autopilot/brain-events") && req.method === "GET") {
       if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
         return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de serviço privilegiada; não há identidade de operador configurada neste app." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -5315,38 +4967,28 @@ serve(async (req: Request) => {
         const { isEnabledGlobally } = body || {};
         const isEnabled = Boolean(isEnabledGlobally);
 
-        // 1. Atualiza __autopilot_config__
-        const { data: cfgRow } = await supabase
-          .from("instagram_conversations")
-          .select("stage_completed_rules")
-          .eq("id", "__autopilot_config__")
-          .maybeSingle();
-        const currentRules = cfgRow?.stage_completed_rules || {};
-        const currentConfig = currentRules.config || {};
+        // 1. Atualiza a configuração global canônica.
+        const { data: cfgRow, error: cfgReadError } = await supabase
+          .from("autopilot_settings")
+          .select("config")
+          .eq("id", "global")
+          .single();
+        if (cfgReadError) throw cfgReadError;
+
         const updatedConfig = {
-          ...currentConfig,
+          ...(cfgRow?.config || {}),
           isEnabledGlobally: isEnabled,
           updatedAt: new Date().toISOString(),
         };
 
-        await supabase
-          .from("instagram_conversations")
+        const { error: cfgWriteError } = await supabase
+          .from("autopilot_settings")
           .upsert({
-            id: "__autopilot_config__",
-            username: "system_autopilot_config",
-            full_name: "Configurações do Piloto Automático",
-            status: "system",
-            unread: false,
-            last_message: `Delay: ${updatedConfig.responseDelayMinutes || 1}m | Global: ${isEnabled ? "ON" : "OFF"}`,
-            last_message_at: new Date().toISOString(),
-            is_restricted: false,
-            stage_completed_rules: {
-              ...currentRules,
-              config: updatedConfig,
-              updated_at: new Date().toISOString(),
-            },
-            updated_at: new Date().toISOString(),
+            id: "global",
+            config: updatedConfig,
+            updated_at: updatedConfig.updatedAt,
           });
+        if (cfgWriteError) throw cfgWriteError;
 
         // 2. OFF global = drenagem graciosa:
         // - chats sem ciclo ativo desligam imediatamente;
@@ -5448,879 +5090,6 @@ serve(async (req: Request) => {
         );
       }
     }
-
-    // 8.7. MOTOR DE IA GENERATIVA GROQ (/ai/generate)
-    // ==========================================
-    if (path === "/ai/generate") {
-      if (req.method === "GET") {
-        return new Response(
-          JSON.stringify({
-            status: "online",
-            service: "Vendeo AI Chat Generator (Edge Function)",
-            defaultModel: "deepseek-v4.1-flash:free",
-            providers: ["atria", "tokenharbor", "nvidia", "groq", "b.ai", "kie"],
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (req.method === "POST") {
-        const body = await req.json().catch(() => ({}));
-        const model = body?.model || "deepseek-v4.1-flash:free";
-        const temperature = typeof body?.temperature === "number" ? body.temperature : (model.includes("deepseek") ? 0.68 : 0.65);
-        const convId = body?.conversationId || "default";
-        const platform = (body?.platform || "instagram").toLowerCase();
-
-        // 0. Busca referências canônicas e ativas de persona da Larissa no Supabase
-        let personaReferences: any[] = [];
-        try {
-          const { data: personaData } = await supabase
-            .from("ai_persona_references")
-            .select("category, them_message, larissa_response, notes")
-            .eq("is_active", true)
-            .limit(20);
-          if (personaData && Array.isArray(personaData)) {
-            personaReferences = personaData;
-          }
-        } catch (pErr) {
-          console.warn("Aviso ao buscar ai_persona_references em /ai/generate:", pErr);
-        }
-
-        // 1. Constrói o prompt contextualizado
-        let promptText = "";
-        // DNA da persona (identidade + regras + few-shot). Viaja como mensagem
-        // de "system" para o motor: sem ele a IA alucina uma vida genérica
-        // (ex: "nutrição", "social media") em vez da Larissa real (Enfermagem).
-        let formattedHistory: any[] = [];
-        let targetMessagesToRespond: any[] | undefined = undefined;
-        let usedEmojisFromHistory: string[] = [];
-
-        if (platform === "tinder") {
-          const { data: matchData } = await supabase
-            .from("tinder_conversations")
-            .select("*")
-            .eq("match_id", convId)
-            .maybeSingle();
-
-          let name = matchData?.name || body?.conversationName || "Pretendente";
-          if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-            formattedHistory = body.currentMessages.map((m: any) => ({
-              id: m.id || String(Date.now()),
-              sender: (m.isMine || m.is_mine || m.senderId === "me" || m.sender_id === "me" || m.sender === "me" ? "me" : "them") as "me" | "them",
-              text: m.text || "",
-              timestamp: m.timestamp || "Recente",
-              audioTranscript: m.audioTranscript,
-            }));
-          } else {
-            const { data: dbMsgs } = await supabase
-              .from("tinder_messages")
-              .select("*")
-              .eq("match_id", convId)
-              .order("sent_date", { ascending: false })
-              .limit(50);
-
-            const chronDb = dbMsgs ? [...dbMsgs].reverse() : [];
-            formattedHistory = chronDb.map((m: any) => ({
-              id: m.id,
-              sender: (m.sender_id === "me" ? "me" : "them") as "me" | "them",
-              text: m.message || "",
-              timestamp: m.sent_date || "Recente",
-            }));
-          }
-
-          if (Array.isArray(body?.messagesToRespond) && body.messagesToRespond.length > 0) {
-            targetMessagesToRespond = body.messagesToRespond;
-          } else if (body?.targetMessageId) {
-            const target = formattedHistory.find((m: any) => String(m.id) === String(body.targetMessageId));
-            if (target) {
-              targetMessagesToRespond = [target];
-            }
-          }
-
-          const igUseCase = new GenerateAiPromptUseCase();
-          const igRes = igUseCase.execute({
-            pretendente: {
-              id: convId,
-              name,
-              platform: "tinder",
-              bio: matchData?.bio || "sem bio",
-            },
-            tinderHistory: formattedHistory,
-            messagesToRespond: targetMessagesToRespond,
-            personaReferences,
-            mode: "direct_api",
-          });
-          promptText = igRes.prompt;
-          usedEmojisFromHistory = igRes.usedEmojis || [];
-        } else {
-          // Instagram
-          const { data: convData } = await supabase
-            .from("instagram_conversations")
-            .select("*")
-            .eq("id", convId)
-            .maybeSingle();
-
-          let parsedName = convData?.full_name || convData?.username || body?.conversationName || "Pretendente";
-          let parsedAge: number | undefined;
-          const ageMatch = parsedName.match(/^(.*?)(?:,\s*(\d+))?$/);
-          if (ageMatch) {
-            if (ageMatch[1]?.trim()) parsedName = ageMatch[1].trim();
-            if (ageMatch[2]) parsedAge = parseInt(ageMatch[2], 10);
-          }
-
-          const pretendente = {
-            id: convId,
-            name: parsedName,
-            age: parsedAge,
-            city: body?.city || "não informada",
-            bio: body?.bio || "sem bio",
-            platform: "instagram" as const,
-            username: convData?.username || body?.contactUsername || parsedName.toLowerCase().replace(/\s+/g, "_"),
-          };
-
-          if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-            formattedHistory = body.currentMessages.map((m: any) => ({
-              id: m.id || String(Date.now()),
-              sender: (m.isMine || m.is_mine || m.senderId === "me" || m.sender_id === "me" || m.sender === "me" ? "me" : "them") as "me" | "them",
-              text: m.text || "",
-              timestamp: m.timestamp || "Recente",
-              audioTranscript: m.audioTranscript,
-            }));
-          } else {
-            const { data: dbMsgs } = await supabase
-              .from("instagram_messages")
-              .select("*")
-              .eq("conversation_id", convId)
-              .order("timestamp", { ascending: false })
-              .limit(50);
-
-            const chronDb = dbMsgs ? [...dbMsgs].reverse() : [];
-            formattedHistory = chronDb.map((m: any) => ({
-              id: m.id,
-              sender: (m.is_mine || m.sender_id === "me" ? "me" : "them") as "me" | "them",
-              text: m.text || "",
-              timestamp: m.timestamp || "Recente",
-              audioTranscript: m.audio_transcript,
-            }));
-          }
-
-          if (Array.isArray(body?.messagesToRespond) && body.messagesToRespond.length > 0) {
-            targetMessagesToRespond = body.messagesToRespond;
-          } else if (body?.targetMessageId) {
-            const target = formattedHistory.find((m: any) => String(m.id) === String(body.targetMessageId));
-            if (target) {
-              targetMessagesToRespond = [target];
-            }
-          }
-
-          const igUseCase = new GenerateAiPromptUseCase();
-          const igRes = igUseCase.execute({
-            pretendente,
-            instagramHistory: formattedHistory,
-            messagesToRespond: targetMessagesToRespond,
-            personaReferences,
-            mode: "direct_api",
-            stageContext: body?.stageContext,
-          });
-          promptText = igRes.prompt;
-          usedEmojisFromHistory = igRes.usedEmojis || [];
-        }
-
-        // 2. Dispara requisição para IA (NVIDIA Kimi K3, b.ai ou Groq)
-        const startTime = Date.now();
-        let chosenModel = model;
-        let rawContent = "";
-        let lastError = "";
-
-        const isDeepseekModel = model.includes("deepseek");
-        const isDeepseekPro = model.includes("pro");
-        const isNvidiaModel =
-          model.includes("kimi") ||
-          model === "moonshotai/kimi-k3" ||
-          isDeepseekModel ||
-          model.includes("nvidia");
-        const isBaiModel =
-          model.includes("flash") && !isDeepseekModel ||
-          model.includes("b.ai") ||
-          model === "qwen3.8-flash" ||
-          model === "qwen3.8-max";
-
-        // Tentativa 0: OpenAI (Apenas se o modelo for explicitamente OpenAI / GPT-4o)
-        const openAiKey = await getOpenAiApiKey(supabase);
-        if (openAiKey && (model.includes("openai") || model.includes("gpt-4o") || model.startsWith("gpt-4"))) {
-          try {
-            const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${openAiKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                model: model.includes("gpt-4o") ? model : "gpt-4o-mini",
-                messages: [{ role: "user", content: promptText }],
-                temperature,
-                max_tokens: 800,
-                response_format: { type: "json_object" },
-              }),
-              signal: AbortSignal.timeout(9000),
-            });
-
-            if (oaiRes.ok) {
-              const oaiData = await oaiRes.json();
-              rawContent = oaiData?.choices?.[0]?.message?.content || "";
-              if (rawContent.trim()) {
-                chosenModel = "ChatGPT Sol (OpenAI)";
-              }
-            } else {
-              lastError = await oaiRes.text();
-              console.warn("[Edge /ai/generate] Falha OpenAI:", lastError);
-            }
-          } catch (oaiErr: any) {
-            lastError = oaiErr?.message || String(oaiErr);
-            console.warn("[Edge /ai/generate] Erro de rede OpenAI:", oaiErr);
-          }
-        }
-
-        // Tentativa 0.1: Se o modelo solicitado for DeepSeek, prioridade máxima para TokenHarbor / NVIDIA Flash
-        if (!rawContent.trim() && isDeepseekModel) {
-          const thApiKey = await getTokenHarborApiKey(supabase);
-          if (thApiKey) {
-            try {
-              const thRes = await fetch("https://tokenharbor.ai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${thApiKey}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Vendeo-Ai-Edge/1.0",
-                },
-                body: JSON.stringify({
-                  model: "deepseek-v4.1-flash:free",
-                  messages: [{ role: "user", content: promptText }],
-                  temperature,
-                  max_tokens: 1000,
-                }),
-                signal: AbortSignal.timeout(20000),
-              });
-
-              if (thRes.ok) {
-                const thData = await thRes.json();
-                rawContent = thData?.choices?.[0]?.message?.content || "";
-                if (rawContent.trim()) {
-                  chosenModel = "deepseek-v4.1-flash:free (TokenHarbor)";
-                }
-              } else {
-                lastError = await thRes.text();
-                console.warn("[Edge /ai/generate] Falha no TokenHarbor:", lastError);
-              }
-            } catch (thErr: any) {
-              lastError = thErr?.message || String(thErr);
-              console.warn("[Edge /ai/generate] Erro de rede TokenHarbor:", thErr);
-            }
-          }
-
-          // Fallback DeepSeek na NVIDIA Flash caso TokenHarbor oscile
-          if (!rawContent.trim()) {
-            const nvApiKey = await getNvidiaApiKey(supabase);
-            if (nvApiKey) {
-              try {
-                const nvRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${nvApiKey}`,
-                    "Content-Type": "application/json",
-                    Accept: "application/json",
-                    "User-Agent": "Vendeo-Ai-Edge/1.0",
-                  },
-                  body: JSON.stringify({
-                    model: "deepseek-ai/deepseek-v4-flash-0731",
-                    messages: [{ role: "user", content: promptText }],
-                    temperature,
-                    max_tokens: 1000,
-                    stream: false,
-                  }),
-                  signal: AbortSignal.timeout(12000),
-                });
-                if (nvRes.ok) {
-                  const nvData = await nvRes.json();
-                  const msgObj = nvData?.choices?.[0]?.message;
-                  rawContent = msgObj?.content || msgObj?.reasoning_content || "";
-                  if (rawContent.trim()) {
-                    chosenModel = "deepseek-ai/deepseek-v4-flash-0731 (NVIDIA)";
-                  }
-                }
-              } catch (nvErr) {
-                console.warn("[Edge /ai/generate] Erro de rede NVIDIA Flash:", nvErr);
-              }
-            }
-          }
-        }
-
-        // Tentativa 0.5: Kie.ai (gemini-3-8-flash - Provedor Oficial Prioritário para Sol / Fallback)
-        if (!rawContent.trim()) {
-          const kieKey = await getKieApiKey(supabase);
-          if (kieKey) {
-            try {
-              const kieRes = await fetch("https://api.kie.ai/gemini/v1/models/gemini-3-8-flash:streamGenerateContent", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${kieKey}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  stream: true,
-                  contents: [{
-                    role: "user",
-                    parts: [{ text: promptText }],
-                  }],
-                  generationConfig: {
-                    temperature: 0.7,
-                  },
-                }),
-                signal: AbortSignal.timeout(45000),
-              });
-
-              if (kieRes.ok) {
-                const sseText = await kieRes.text();
-                rawContent = extractKieResponseText(sseText);
-                if (rawContent.trim()) {
-                  chosenModel = "Kie.ai (gemini-3-8-flash)";
-                }
-              } else {
-                lastError = await kieRes.text();
-                console.warn("[Edge /ai/generate] Falha Kie.ai Gemini:", lastError);
-              }
-            } catch (kieErr: any) {
-              lastError = kieErr?.message || String(kieErr);
-              console.warn("[Edge /ai/generate] Erro de rede Kie.ai Gemini:", kieErr);
-            }
-          }
-        }
-
-
-        // Tentativa 3: b.ai (se o modelo for b.ai ou se Flash)
-        if (!rawContent.trim() && isBaiModel) {
-          const baiApiKey = await getBaiApiKey(supabase);
-          if (baiApiKey) {
-            const targetBaiModel = model.replace(/^bai:/, "") || "qwen3.8-flash";
-            try {
-              const baiRes = await fetch("https://api.b.ai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${baiApiKey}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Vendeo-Ai-Edge/1.0",
-                },
-                body: JSON.stringify({
-                  model: targetBaiModel,
-                  messages: [{ role: "user", content: promptText }],
-                  temperature,
-                  max_tokens: 400,
-                  enable_thinking: false,
-                  stream: false,
-                }),
-              });
-
-              if (baiRes.ok) {
-                const baiData = await baiRes.json();
-                rawContent = baiData?.choices?.[0]?.message?.content || "";
-                chosenModel = targetBaiModel;
-              } else {
-                lastError = await baiRes.text();
-                console.warn("[Edge /ai/generate] Falha na b.ai:", lastError);
-              }
-            } catch (bErr: any) {
-              lastError = bErr?.message || String(bErr);
-              console.warn("[Edge /ai/generate] Erro de rede b.ai:", bErr);
-            }
-          }
-        }
-
-        // Tentativa 4: Groq Cloud (Prioriza 120B para Pro, ou 27b para Flash)
-        if (!rawContent.trim()) {
-          const apiKey = await getGroqApiKey(supabase);
-          if (apiKey) {
-            const candidateModels = isDeepseekPro
-              ? ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
-              : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"];
-
-            for (const currentCandidate of candidateModels) {
-              chosenModel = currentCandidate;
-              const payloadBody: Record<string, any> = {
-                model: currentCandidate,
-                messages: [{ role: "user", content: promptText }],
-                temperature,
-                max_tokens: 600,
-                response_format: { type: "json_object" },
-              };
-
-              let groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Vendeo-Ai-Edge/1.0",
-                },
-                body: JSON.stringify(payloadBody),
-              });
-
-              if (!groqRes.ok && payloadBody.response_format) {
-                delete payloadBody.response_format;
-                groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    "Content-Type": "application/json",
-                    "User-Agent": "Vendeo-Ai-Edge/1.0",
-                  },
-                  body: JSON.stringify(payloadBody),
-                });
-              }
-
-              if (groqRes.ok) {
-                const groqData = await groqRes.json();
-                rawContent = groqData?.choices?.[0]?.message?.content || "";
-                if (rawContent.trim()) {
-                  break;
-                }
-              } else {
-                lastError = await groqRes.text();
-                console.warn(`[Edge /ai/generate] Falha no modelo Groq ${currentCandidate}:`, lastError);
-              }
-            }
-          }
-        }
-
-        if (!rawContent.trim()) {
-          return new Response(
-            JSON.stringify({ success: false, error: `Erro na geração de IA: ${lastError || "Sem resposta"}` }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        const latencyMs = Date.now() - startTime;
-
-        function normalizeAiIndices(
-          respList: string[],
-          rawIdx: any,
-          clientMsgsList?: { text?: string; index?: number }[]
-        ): number[][] {
-          if (!Array.isArray(respList) || respList.length === 0) return [];
-
-          const allClientIndices = Array.isArray(clientMsgsList) && clientMsgsList.length > 0
-            ? clientMsgsList.map((m, i) => (typeof m.index === "number" ? m.index : i))
-            : [0];
-
-          const validClientIndices = new Set(allClientIndices);
-          const hasPerResponseIndices = Array.isArray(rawIdx) && rawIdx.some((group: any) => Array.isArray(group));
-
-          return respList.map((_, responseIndex) => {
-            const rawGroup = hasPerResponseIndices && Array.isArray(rawIdx[responseIndex])
-              ? rawIdx[responseIndex]
-              : [];
-            const group = Array.from(new Set(
-              rawGroup
-                .map((n: any) => Number(n))
-                .filter((n: number) => Number.isInteger(n) && validClientIndices.has(n))
-            )).sort((a, b) => a - b);
-
-            if (group.length > 0) return group;
-            if (allClientIndices.length === 1) return [allClientIndices[0]];
-            return [allClientIndices[Math.min(responseIndex, allClientIndices.length - 1)]];
-          });
-        }
-
-        function sanitizeAiAnalysis(value: unknown): string | null {
-          if (typeof value !== "string") return null;
-          const cleaned = value
-            .replace(/:contentReference\[[^\]]*\]\{[^}]*\}/gi, "")
-            .replace(/\[oaicite[^\]]*\]/gi, "")
-            .replace(/\s{2,}/g, " ")
-            .trim();
-          return cleaned || null;
-        }
-
-        // Limpeza e parse
-        let clean = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "").trim();
-        const markdownMatch = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-        if (markdownMatch && markdownMatch[1]) {
-          clean = markdownMatch[1].trim();
-        } else {
-          const firstBrace = clean.indexOf("{");
-          const lastBrace = clean.lastIndexOf("}");
-          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-            clean = clean.slice(firstBrace, lastBrace + 1);
-          }
-        }
-
-        let parsed: any = { responses: [], indices: [] };
-        try {
-          parsed = JSON.parse(clean);
-        } catch {
-          // Resgata o campo responses e analise_do_pretendente se houver erro de sintaxe no JSON
-          const respMatch = clean.match(/"responses"\s*:\s*\[([\s\S]*?)\]/);
-          if (respMatch && respMatch[1]) {
-            const extracted = Array.from(respMatch[1].matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)).map((m) => m[1]);
-            if (extracted.length > 0) {
-              parsed.responses = extracted;
-            }
-          }
-          const analiseMatch = clean.match(/"analise_do_pretendente"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
-          if (analiseMatch && analiseMatch[1]) {
-            parsed.analise_do_pretendente = analiseMatch[1];
-          }
-
-          // Se ainda não conseguiu extrair e clean for um JSON bruto incompleto, resgata as strings internas ou usa fallback limpo
-          if (!parsed.responses || parsed.responses.length === 0) {
-            const anyQuotes = Array.from(clean.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g))
-              .map((m) => m[1])
-              .filter((s) => !["analise_do_pretendente", "responses", "indices"].includes(s) && s.length > 5);
-            if (anyQuotes.length > 0) {
-              parsed.responses = [anyQuotes[anyQuotes.length - 1]];
-            } else {
-              parsed = { responses: ["Opa, bom demais uai kkk"], indices: [[0]] };
-            }
-          }
-        }
-
-        const bannedEmojis = Array.from(
-          new Set([...usedEmojisFromHistory, ...extractUsedEmojis(formattedHistory)])
-        );
-        let responses: string[] = Array.isArray(parsed.responses) ? parsed.responses : [clean];
-        responses = sanitizeResponses(responses, bannedEmojis);
-
-        const clientMsgsForIndices = (
-          targetMessagesToRespond || (formattedHistory || []).filter((m: any) => m.sender !== "me")
-        ).map((m: any, i: number) => ({ index: i, text: m.text || "" }));
-
-        const finalIndices = normalizeAiIndices(responses, parsed.indices, clientMsgsForIndices);
-
-        const completedChecklistIds: string[] = Array.isArray(parsed.completed_checklist_ids)
-          ? parsed.completed_checklist_ids
-          : Array.isArray(parsed.completedChecklistIds)
-          ? parsed.completedChecklistIds
-          : [];
-        const isRaffleStepReached: boolean = Boolean(parsed.is_raffle_step_reached || parsed.isRaffleStepReached);
-
-        const analiseDoPretendente = sanitizeAiAnalysis(
-          parsed.analise_do_pretendente || parsed.analise || (nvidiaReasoning ? nvidiaReasoning.trim() : null)
-        );
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            analise_do_pretendente: analiseDoPretendente,
-            responses,
-            indices: finalIndices,
-            completedChecklistIds,
-            isRaffleStepReached,
-            modelUsed: chosenModel,
-            latencyMs,
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // ==========================================
-    // 9. IA PROMPT ASSISTANT (Larissa Contextual)
-    // ==========================================
-    const aiMatch = path.match(/^\/ai\/prompt\/([^/]+)/);
-    if (aiMatch) {
-      const convId = aiMatch[1];
-      let body: any = {};
-      if (req.method === "POST") {
-        body = await req.json().catch(() => ({}));
-      }
-
-      const platformParam = (body?.platform || url.searchParams.get("platform") || "").toLowerCase();
-
-      // Determina a plataforma (instagram ou tinder)
-      let platform = platformParam;
-      if (!platform) {
-        // Se não foi informada explicitamente, detecta se o convId pertence ao Instagram
-        const { data: instaCheck } = await supabase
-          .from("instagram_conversations")
-          .select("id")
-          .eq("id", convId)
-          .maybeSingle();
-        platform = instaCheck ? "instagram" : "tinder";
-      }
-
-      if (platform === "instagram") {
-        // -------------------------------------------------------------
-        // GERAÇÃO OFICIAL LARISSA INSTAGRAM DIRECT (GenerateAiPromptUseCase)
-        // -------------------------------------------------------------
-        const { data: convData } = await supabase
-          .from("instagram_conversations")
-          .select("*")
-          .eq("id", convId)
-          .maybeSingle();
-
-        let parsedName = convData?.full_name || convData?.username || body?.conversationName || "Pretendente";
-        let parsedAge: number | undefined;
-
-        const ageMatch = parsedName.match(/^(.*?)(?:,\s*(\d+))?$/);
-        if (ageMatch) {
-          if (ageMatch[1]?.trim()) parsedName = ageMatch[1].trim();
-          if (ageMatch[2]) parsedAge = parseInt(ageMatch[2], 10);
-        }
-
-        const pretendente = {
-          id: convId,
-          name: parsedName,
-          age: parsedAge,
-          city: body?.city || "não informada",
-          bio: body?.bio || "sem bio",
-          platform: "instagram" as const,
-          username: convData?.username || parsedName.toLowerCase().replace(/\s+/g, "_"),
-        };
-
-        // Carrega histórico real do Instagram (até 500 mensagens mais recentes em ordem cronológica)
-        const { data: igMessagesData } = await supabase
-          .from("instagram_messages")
-          .select("*")
-          .eq("conversation_id", convId)
-          .order("created_at", { ascending: false })
-          .limit(500);
-
-        let instagramHistory: any[] = [];
-        if (igMessagesData && igMessagesData.length > 0) {
-          const chronIg = [...igMessagesData].reverse();
-          instagramHistory = await Promise.all(
-            chronIg.map(async (m: any) => {
-              let text = m.text || "";
-              let transcript = m.audio_transcript || "";
-
-              const clientMsg = Array.isArray(body?.currentMessages)
-                ? body.currentMessages.find((cm: any) => cm.id === m.id)
-                : null;
-
-              if (!transcript && clientMsg?.audioTranscript) {
-                transcript = clientMsg.audioTranscript;
-              }
-
-              const isAudio =
-                m.media_type === "audio" ||
-                clientMsg?.mediaType === "audio" ||
-                (typeof m.text === "string" && m.text.includes("[audio:")) ||
-                (typeof clientMsg?.text === "string" && clientMsg.text.includes("[audio:"));
-
-              if (isAudio && !transcript) {
-                const audioUrl =
-                  m.media_url ||
-                  clientMsg?.mediaUrl ||
-                  clientMsg?.audioUrl ||
-                  (m.text?.match(/\[audio:(.*?)\]/)?.[1]) ||
-                  (clientMsg?.text?.match(/\[audio:(.*?)\]/)?.[1]);
-
-                if (audioUrl) {
-                  try {
-                    const groqText = await transcribeWithGroqCloud(supabase, audioUrl);
-                    if (groqText) {
-                      transcript = groqText;
-                      // Salva no banco de dados para caching permanente (0ms nas próximas chamadas)
-                      await supabase
-                        .from("instagram_messages")
-                        .update({
-                          audio_transcript: groqText,
-                          audio_transcribed_at: new Date().toISOString(),
-                        })
-                        .eq("id", m.id);
-                    }
-                  } catch (tErr) {
-                    console.warn("Aviso ao transcrever áudio com Groq Cloud na Edge Function:", tErr);
-                  }
-                }
-              }
-
-              if (transcript) {
-                text = `[áudio transcrito: "${transcript}"]`;
-              } else if (isAudio) {
-                text = "[áudio recebido]";
-              } else if (!text && (m.media_type === "image" || clientMsg?.mediaType === "image")) {
-                text = "📷 Foto";
-              }
-
-              const rawTimestamp = m.timestamp || m.created_at || new Date().toISOString();
-
-              return {
-                id: m.id,
-                sender: m.is_mine || m.sender_id === "me" ? "me" : "them",
-                text,
-                timestamp: rawTimestamp,
-                sentDate: rawTimestamp,
-              };
-            })
-          );
-        }
-
-        // Se houver mensagens em body.currentMessages que ainda não estão no banco (ex: recém-chegadas), anexa ao histórico
-        if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-          const existingIds = new Set(instagramHistory.map((h: any) => h.id));
-          const pendingClientMsgs = body.currentMessages.filter((cm: any) => cm.id && !existingIds.has(cm.id));
-
-          for (const cm of pendingClientMsgs) {
-            let text = cm.text || "";
-            let transcript = cm.audioTranscript || "";
-            const isAudio =
-              cm.mediaType === "audio" ||
-              (typeof cm.text === "string" && cm.text.includes("[audio:"));
-
-            if (isAudio && !transcript) {
-              const audioUrl = cm.mediaUrl || cm.audioUrl || (cm.text?.match(/\[audio:(.*?)\]/)?.[1]);
-              if (audioUrl) {
-                try {
-                  const groqText = await transcribeWithGroqCloud(supabase, audioUrl);
-                  if (groqText) transcript = groqText;
-                } catch (tErr) {
-                  console.warn("Aviso ao transcrever áudio pendente da tela:", tErr);
-                }
-              }
-            }
-
-            if (transcript) {
-              text = `[áudio transcrito: "${transcript}"]`;
-            } else if (isAudio) {
-              text = "[áudio recebido]";
-            } else if (!text && cm.mediaType === "image") {
-              text = "📷 Foto";
-            }
-
-            const clientTimestamp = cm.sentDate || cm.timestamp || cm.createdAt || new Date().toISOString();
-            instagramHistory.push({
-              id: cm.id,
-              sender: (cm.isMine || cm.senderId === "me") ? "me" : "them",
-              text,
-              timestamp: clientTimestamp,
-              sentDate: clientTimestamp,
-            });
-          }
-        }
-
-        // Se o pretendente tiver histórico vinculado do Tinder, busca para alimentar a memória compartilhada (até 500 mensagens)
-        let tinderHistory: any[] = [];
-        if (convData?.contact_id) {
-          const { data: tinderMsgs } = await supabase
-            .from("tinder_messages")
-            .select("*")
-            .eq("match_id", convData.contact_id)
-            .order("sent_date", { ascending: false })
-            .limit(500);
-
-          if (tinderMsgs && tinderMsgs.length > 0) {
-            const chronTinderMsgs = [...tinderMsgs].reverse();
-            tinderHistory = chronTinderMsgs.map((m: any) => ({
-              id: m.id,
-              sender: m.sender_id === "me" ? "me" : "them",
-              text: m.message,
-              timestamp: m.sent_date || m.created_at || new Date().toISOString(),
-              sentDate: m.sent_date || m.created_at || new Date().toISOString(),
-            }));
-          }
-        }
-
-        // Busca referências ativas de persona no Supabase (se houver)
-        let personaReferences: any[] = [];
-        try {
-          const { data: personaData } = await supabase
-            .from("ai_persona_references")
-            .select("category, them_message, larissa_response, notes")
-            .eq("is_active", true)
-            .limit(20);
-          if (personaData && Array.isArray(personaData)) {
-            personaReferences = personaData;
-          }
-        } catch (pErr) {
-          console.warn("Aviso ao buscar ai_persona_references no Supabase:", pErr);
-        }
-
-        // Executa caso de uso oficial do Instagram
-        const useCase = new GenerateAiPromptUseCase();
-        const result = useCase.execute({
-          pretendente,
-          instagramHistory,
-          tinderHistory,
-          personaReferences,
-          stageContext: body?.stageContext,
-        });
-
-        return new Response(JSON.stringify({
-          success: true,
-          ...result,
-        }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-
-      } else {
-        // -------------------------------------------------------------
-        // GERAÇÃO OFICIAL TINDER (buildTinderAiPromptForBackend)
-        // -------------------------------------------------------------
-        const { data: matchData } = await supabase
-          .from("tinder_conversations")
-          .select("*")
-          .eq("match_id", convId)
-          .maybeSingle();
-
-        // Busca até 500 mensagens mais recentes do Tinder
-        const { data: messagesData } = await supabase
-          .from("tinder_messages")
-          .select("*")
-          .eq("match_id", convId)
-          .order("sent_date", { ascending: false })
-          .limit(500);
-
-        let name = matchData?.name || body?.conversationName || "Pretendente";
-        let birthDate = matchData?.birth_date || null;
-        const ageMatch = name.match(/^(.*?)(?:,\s*(\d+))?$/);
-        if (ageMatch) {
-          if (ageMatch[1]?.trim()) name = ageMatch[1].trim();
-          if (ageMatch[2] && !birthDate) {
-            const ageNum = parseInt(ageMatch[2], 10);
-            const birthYear = new Date().getFullYear() - ageNum;
-            birthDate = `${birthYear}-01-01`;
-          }
-        }
-
-        let messagesToUse = (messagesData && messagesData.length > 0) ? [...messagesData].reverse() : [];
-        if (Array.isArray(body?.currentMessages) && body.currentMessages.length > 0) {
-          const existingIds = new Set(messagesToUse.map((m: any) => m.id));
-          const pending = body.currentMessages.filter((cm: any) => cm.id && !existingIds.has(cm.id));
-          for (const m of pending) {
-            messagesToUse.push({
-              id: m.id || `msg_${Date.now()}`,
-              match_id: convId,
-              sender_id: (m.isMine || m.senderId === "me") ? "me" : "them",
-              message: m.text || "",
-              sent_date: m.timestamp || m.createdAt || new Date().toISOString(),
-            });
-          }
-        }
-
-        const effectiveMatch = {
-          ...(matchData || {}),
-          match_id: convId,
-          name,
-          birth_date: birthDate,
-        };
-
-        const promptText = buildTinderAiPromptForBackend(
-          effectiveMatch,
-          messagesToUse,
-          { instagram_handle: "lariresende_0611" }
-        );
-
-        return new Response(JSON.stringify({ success: true, prompt: promptText }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Rota padrão 404
-    return new Response(JSON.stringify({ error: "Endpoint não encontrado", path, rawPath: url.pathname }), {
-      status: 404,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-
   } catch (err: any) {
     return new Response(JSON.stringify({ error: err.message || "Erro interno" }), {
       status: 500,
