@@ -14,7 +14,11 @@ const vaultRepository = new SupabaseVaultRepository();
 const stagesUseCase = new ManageChatStagesUseCase(stageRepository);
 const progressUseCase = new ManageChatProgressUseCase(stageRepository, vaultRepository);
 
-export function useChatStages(activeConversationId?: string) {
+export function useChatStages(
+  activeConversationId?: string,
+  options?: { loadAllProgresses?: boolean }
+) {
+  const loadAllProgresses = options?.loadAllProgresses ?? true;
   const [stages, setStages] = useState<ChatStage[]>([]);
   const [allProgresses, setAllProgresses] = useState<Record<string, ChatProgress>>({});
   const [chatDetail, setChatDetail] = useState<ChatStageDetail | null>(null);
@@ -75,23 +79,28 @@ export function useChatStages(activeConversationId?: string) {
     setIsLoading(true);
     try {
       await fetchStages();
-      await fetchAllProgresses();
+      if (loadAllProgresses) {
+        await fetchAllProgresses();
+      }
       if (activeConversationId) {
         await fetchChatDetail(activeConversationId);
       }
     } finally {
       setIsLoading(false);
     }
-  }, [fetchStages, fetchAllProgresses, fetchChatDetail, activeConversationId]);
+  }, [fetchStages, fetchAllProgresses, fetchChatDetail, activeConversationId, loadAllProgresses]);
 
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
-    void Promise.all([fetchStages(), fetchAllProgresses()]).finally(() => {
+    const requests = loadAllProgresses
+      ? [fetchStages(), fetchAllProgresses()]
+      : [fetchStages()];
+    void Promise.all(requests).finally(() => {
       if (!cancelled) setIsLoading(false);
     });
     return () => { cancelled = true; };
-  }, [fetchStages, fetchAllProgresses]);
+  }, [fetchStages, fetchAllProgresses, loadAllProgresses]);
 
   useEffect(() => {
     if (!activeConversationId) {

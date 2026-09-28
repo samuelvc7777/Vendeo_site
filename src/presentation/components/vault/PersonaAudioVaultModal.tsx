@@ -47,7 +47,7 @@ export function PersonaAudioVaultModal({
   onSendAudioToChat,
   onOpenLegacyVault,
 }: PersonaAudioVaultModalProps) {
-  const { stages } = useChatStages();
+  const { stages } = useChatStages(undefined, { loadAllProgresses: false });
   const {
     audios,
     isLoading,

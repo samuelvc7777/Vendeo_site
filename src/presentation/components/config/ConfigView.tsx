@@ -75,7 +75,7 @@ export function ConfigView() {
     deleteGoal,
     moveGoalUp,
     moveGoalDown,
-  } = useChatStages();
+  } = useChatStages(undefined, { loadAllProgresses: false });
 
   const [tinderSession, setTinderSession] = useState<TinderSession | null>(null);
   const [isTinderModalOpen, setIsTinderModalOpen] = useState(false);

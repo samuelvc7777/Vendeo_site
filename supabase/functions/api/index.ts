@@ -4261,7 +4261,7 @@ serve(async (req: Request) => {
 
         // O semaforo global dentro do Brain limita a execucao cara. O tick apenas
         // alimenta a fila em pequenos lotes para manter os slots ocupados.
-        const batchConvs = validConvs.slice(0, 8);
+        const batchConvs = validConvs.slice(0, 3);
         const processed: string[] = [];
 
         if (batchConvs.length > 0) {

@@ -338,71 +338,35 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     const result: Record<string, ChatProgress> = {};
     if (!client) return result;
 
-    // Caminho leve para lista/filtros: evita baixar stage_completed_rules de centenas de chats.
     try {
-      const { data: summaries, error: summaryError } = await client
+      const { data: summaries, error } = await client
         .from("instagram_conversations")
-        .select("id, current_stage_id, is_converted, updated_at");
-      if (!summaryError && summaries) {
-        const configuredInitialStageId = (await this.getStages())[0]?.id || "";
-        for (const row of summaries) {
-          if (!row.id || row.id.startsWith("__")) continue;
-          result[row.id] = {
-            conversationId: row.id,
-            currentStageId: resolveCurrentStageId(row.current_stage_id, configuredInitialStageId),
-            completedItemIds: [],
-            completedGoalIds: [],
-            objectiveProgress: {},
-            isConverted: Boolean(row.is_converted),
-            updatedAt: row.updated_at || new Date(0).toISOString(),
-          };
-        }
+        .select("id, current_stage_id, is_converted, updated_at")
+        .not("id", "like", "\_\_%");
+
+      if (error || !summaries) {
+        console.warn("[SupabaseChatStageRepository] Falha na proje??o leve de progresso:", error?.message);
         return result;
       }
-    } catch {
-      // Rollout compativel: a coluna normalizada ainda pode nao existir.
-    }
 
-    try {
-      const { data, error } = await client
-        .from("instagram_conversations")
-        .select("id, contact_id, current_stage_id, stage_completed_rules, updated_at");
-
-      if (error || !data) return result;
       const configuredInitialStageId = (await this.getStages())[0]?.id || "";
-
-      for (const row of data) {
-        const convId = row.id || row.contact_id;
-        const rules = row.stage_completed_rules;
-        if (!convId || !rules || convId.startsWith("__")) continue;
-
-        const orch = rules.orchestration || {};
-        const chatProgress = rules.chat_progress || rules;
-        // A coluna normalizada é a fonte canônica; JSON é somente projeção legada.
-        const currentStageId = resolveCurrentStageId(row.current_stage_id, configuredInitialStageId);
-        const completedGoalIds = Array.isArray(orch.completedGoalIds)
-          ? orch.completedGoalIds
-          : (Array.isArray(rules.completed_goals)
-            ? rules.completed_goals
-            : (Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : []));
-        const objectiveProgress = orch.objectiveProgress || rules.objective_progress || chatProgress.objectiveProgress || {};
-        const completedItemIds = Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [];
-
-        result[convId] = {
-          conversationId: convId,
-          currentStageId,
-          completedItemIds,
-          completedGoalIds,
-          objectiveProgress,
-          isConverted: Boolean(chatProgress.isConverted || orch.isConverted),
-          updatedAt: chatProgress.updatedAt || row.updated_at,
+      for (const row of summaries) {
+        if (!row.id || row.id.startsWith("__")) continue;
+        result[row.id] = {
+          conversationId: row.id,
+          currentStageId: resolveCurrentStageId(row.current_stage_id, configuredInitialStageId),
+          completedItemIds: [],
+          completedGoalIds: [],
+          objectiveProgress: {},
+          isConverted: Boolean(row.is_converted),
+          updatedAt: row.updated_at || new Date(0).toISOString(),
         };
       }
+      return result;
     } catch (err) {
-      console.warn("[SupabaseChatStageRepository] Erro ao carregar progressos das conversas:", err);
+      console.warn("[SupabaseChatStageRepository] Erro na proje??o leve de progresso:", err);
+      return result;
     }
-
-    return result;
   }
 
   async getChatProgress(conversationId: string): Promise<ChatProgress | null> {

@@ -1091,53 +1091,39 @@ export function AutoPilotActivityIndicator({
 
   useEffect(() => {
     if (!targetId) return;
+
+    // O painel fechado usa a proje??o Realtime de autopilot_chat_states.
+    // Hist?rico detalhado s? ? consultado quando o console ? aberto.
+    if (!isConsoleOpen) {
+      setCanonicalEvents([]);
+      setCanonicalDeliveryActions([]);
+      setFailedConfirmedActions([]);
+      return;
+    }
+
     let cancelled = false;
     let pollTimer: number | undefined;
+
     const loadCanonicalEvents = async () => {
-      let nextDelay = 15000;
       try {
-        const session = await checkBrainOperatorSession();
-        if (session.authenticated !== true) {
-          if (!cancelled) {
-            setOperatorAuthenticated(false);
-            setOperationsAccessDenied(true);
-            setCanonicalEvents([]);
-            setCanonicalDeliveryActions([]);
-            setFailedConfirmedActions([]);
-          }
-          return;
-        }
-        if (!cancelled) setOperatorAuthenticated(true);
         const query = new URLSearchParams({ conversationId: targetId });
         const response = await brainOperatorFetch(`/operator/brain/events?${query.toString()}`);
-      const result = await response.json().catch(() => ({})) as {
+        const result = await response.json().catch(() => ({})) as {
           success?: boolean;
           events?: Array<{
-            id?: string | number;
-            turn_id?: string | null;
-            session_id?: string | null;
-            action_id?: string | null;
-            decision_id?: string | null;
-            conversation_id?: string | null;
-            status?: string | null;
-            event_type?: string | null;
-            human_message?: string | null;
-            created_at?: string | null;
-            metadata?: Record<string, unknown> | null;
+            id?: string | number; turn_id?: string | null; session_id?: string | null;
+            action_id?: string | null; decision_id?: string | null; conversation_id?: string | null;
+            status?: string | null; event_type?: string | null; human_message?: string | null;
+            created_at?: string | null; metadata?: Record<string, unknown> | null;
           }>;
           failedActions?: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
           actions?: Array<{
-            id: string;
-            decision_id?: string | null;
-            turn_id?: string | null;
-            decision_delivery_status?: string | null;
-            action_index: number;
-            action_type: string;
-            status: string;
-            provider_message_id?: string | null;
-            attempts?: number;
+            id: string; decision_id?: string | null; turn_id?: string | null;
+            decision_delivery_status?: string | null; action_index: number; action_type: string;
+            status: string; provider_message_id?: string | null; attempts?: number;
           }>;
         };
+
         if (response.status === 401) {
           if (!cancelled) {
             setOperatorAuthenticated(false);
@@ -1146,56 +1132,56 @@ export function AutoPilotActivityIndicator({
           return;
         }
         if (!response.ok || result?.success !== true || cancelled) return;
+
         setOperationsAccessDenied(false);
-        const events = result.events || [];
-        const normalizedEvents = events.map((event) => ({
+        const normalizedEvents = (result.events || []).map((event) => ({
           id: event.id,
           cycleId: eventMetadataText(event.metadata || {}, "cycleId") || eventMetadataText(event.metadata || {}, "cycle_id") || undefined,
-          turnId: event.turn_id || undefined,
-          sessionId: event.session_id || undefined,
-          actionId: event.action_id || undefined,
-          decisionId: event.decision_id || undefined,
-          conversationId: event.conversation_id || targetId,
-          sequence: Number(event.id) || 0,
+          turnId: event.turn_id || undefined, sessionId: event.session_id || undefined,
+          actionId: event.action_id || undefined, decisionId: event.decision_id || undefined,
+          conversationId: event.conversation_id || targetId, sequence: Number(event.id) || 0,
           phase: String(event.metadata?.phase || event.status || "observed"),
-          status: event.status || undefined,
-          event: event.event_type || "brain_event",
+          status: event.status || undefined, event: event.event_type || "brain_event",
           label: formatVisibleBrainIdentity(String(event.metadata?.label || formatBrainEvent(event.event_type))),
           detail: event.human_message ? formatVisibleBrainIdentity(event.human_message) : undefined,
-          timestamp: event.created_at || new Date().toISOString(),
-          metadata: event.metadata || {},
+          timestamp: event.created_at || new Date().toISOString(), metadata: event.metadata || {},
         }));
         setCanonicalEvents(normalizedEvents);
-        const normalizedActions = (result.actions || []).map((action) => ({
-          id: action.id,
-          decisionId: action.decision_id || undefined,
-          turnId: action.turn_id || undefined,
-          actionIndex: action.action_index,
-          actionType: action.action_type,
-          status: action.status,
-          providerMessageId: action.provider_message_id,
-          attempts: action.attempts,
+        setCanonicalDeliveryActions((result.actions || []).map((action) => ({
+          id: action.id, decisionId: action.decision_id || undefined, turnId: action.turn_id || undefined,
+          actionIndex: action.action_index, actionType: action.action_type, status: action.status,
+          providerMessageId: action.provider_message_id, attempts: action.attempts,
           deliveryStatus: action.decision_delivery_status,
-        }));
-        setCanonicalDeliveryActions(normalizedActions);
+        })));
         setFailedConfirmedActions(Array.isArray(result.failedActions) ? result.failedActions : []);
-        const activeTurn = selectActiveBrainTurn(groupBrainTurns(normalizedEvents), {
-          activeCycleToken: sourceState.activeCycleToken,
-          now: Date.now(),
-        });
-        const deliveryNeedsAttention = normalizedActions.some((action) =>
-          action.status !== "sent" || !action.providerMessageId
-        );
-        nextDelay = isConsoleOpen || Boolean(activeTurn) || deliveryNeedsAttention
-          ? 1800
-          : 7000;
-      } catch { /* A observabilidade não interrompe o atendimento. */ }
-      finally {
-        if (!cancelled) pollTimer = window.setTimeout(() => { void loadCanonicalEvents(); }, nextDelay);
+      } catch {
+        // Observabilidade nunca interrompe o atendimento.
+      } finally {
+        if (!cancelled) pollTimer = window.setTimeout(() => { void loadCanonicalEvents(); }, 4000);
       }
     };
-    void loadCanonicalEvents();
-    return () => { cancelled = true; if (pollTimer) window.clearTimeout(pollTimer); };
+
+    const initialize = async () => {
+      try {
+        const session = await checkBrainOperatorSession();
+        if (cancelled) return;
+        if (session.authenticated !== true) {
+          setOperatorAuthenticated(false);
+          setOperationsAccessDenied(true);
+          return;
+        }
+        setOperatorAuthenticated(true);
+        void loadCanonicalEvents();
+      } catch {
+        if (!cancelled) setOperationsAccessDenied(true);
+      }
+    };
+
+    void initialize();
+    return () => {
+      cancelled = true;
+      if (pollTimer) window.clearTimeout(pollTimer);
+    };
   }, [targetId, isConsoleOpen]);
 
   const handleManualFailedAction = async (actionId: string) => {
