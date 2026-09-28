@@ -42,15 +42,61 @@ export async function getExistingOpenAiTurn(params: {
   sessionId: string;
   turnId: string;
   fetcher?: typeof fetch;
-}): Promise<{ status: string; turn: any }> {
+}): Promise<{ status: string; turn: any; source?: "direct" | "list_fallback" }> {
   if (!params.apiKey || !params.sessionId || !params.turnId) throw new Error("existing_turn_reference_required");
-  const response = await (params.fetcher || fetch)(
-    `https://api.openai.com/v1/agents/sessions/${encodeURIComponent(params.sessionId)}/turns/${encodeURIComponent(params.turnId)}`,
-    { headers: { Authorization: `Bearer ${params.apiKey}` }, signal: AbortSignal.timeout(10_000) },
+
+  const fetcher = params.fetcher || fetch;
+  const headers = {
+    Authorization: `Bearer ${params.apiKey}`,
+    "Content-Type": "application/json",
+    "OpenAI-Beta": "agents=v1",
+  };
+  const sessionId = encodeURIComponent(params.sessionId);
+  const turnId = encodeURIComponent(params.turnId);
+  const directUrl = `https://api.openai.com/v1/agents/sessions/${sessionId}/turns/${turnId}`;
+
+  const response = await fetcher(directUrl, {
+    headers,
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.ok) {
+    const turn = await response.json();
+    return { status: String(turn?.status || "unknown"), turn, source: "direct" };
+  }
+
+  const directStatus = response.status;
+  const directBody = (await response.text().catch(() => "")).slice(0, 500);
+
+  // Alguns snapshots/provider gateways podem rejeitar o retrieve direto mesmo
+  // quando o turno existe. O fallback continua sendo somente leitura: lista os
+  // turns da MESMA session e procura exclusivamente o provider_turn_id persistido.
+  // Nunca cria novo turn nem nova inferência.
+  if ([400, 404, 405].includes(directStatus)) {
+    const listUrl = `https://api.openai.com/v1/agents/sessions/${sessionId}/turns?limit=100&order=desc`;
+    const listResponse = await fetcher(listUrl, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (listResponse.ok) {
+      const page = await listResponse.json() as { data?: unknown[] };
+      const turns = Array.isArray(page?.data) ? page.data : [];
+      const matched = turns.find((raw) => {
+        const turn = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+        return String(turn.id || "") === params.turnId;
+      }) as Record<string, unknown> | undefined;
+      if (matched) {
+        console.warn(
+          `[OpenAI Agent] existing_turn_direct_lookup_fallback: directStatus=${directStatus} sessionId=${params.sessionId} turnId=${params.turnId}`,
+        );
+        return { status: String(matched?.status || "unknown"), turn: matched, source: "list_fallback" };
+      }
+    }
+  }
+
+  const safeBody = directBody.replace(/\s+/g, " ").trim();
+  throw new Error(
+    `existing_turn_lookup_failed:${directStatus}${safeBody ? `:${safeBody}` : ""}`.slice(0, 700),
   );
-  if (!response.ok) throw new Error(`existing_turn_lookup_failed:${response.status}`);
-  const turn = await response.json();
-  return { status: String(turn?.status || "unknown"), turn };
 }
 
 export function brainLateRecoveryDisposition(status: string): "recover" | "wait" | "fail" {

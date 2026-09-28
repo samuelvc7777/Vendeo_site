@@ -151,16 +151,11 @@ test("decisão canônica é persistida antes do dispatcher e backend não ressus
   assert.doesNotMatch(source, /responsibleSubagent|delegate_mission|CANONICAL_SUBAGENTS/);
 });
 
-test("inbox usa overview canônico do Brain e não depende apenas de chatStates", () => {
+test("inbox n?o exp?e estado de Brain/Piloto ap?s limpeza visual", () => {
   const source = fs.readFileSync(
     new URL("../src/presentation/components/chat/InstagramDirect.tsx", import.meta.url),
     "utf8",
   );
-  const hook = fs.readFileSync(
-    new URL("../src/presentation/hooks/useBrainInboxOverview.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(source, /useBrainInboxOverview/);
-  assert.match(hook, /operator\/brain\/overview/);
-  assert.match(hook, /dispatch_uncertain|uncertain/);
+  assert.doesNotMatch(source, /useBrainInboxOverview|brainInboxOverview/);
+  assert.doesNotMatch(source, /Piloto desativado|Erro na IA|Enviando resposta/);
 });
