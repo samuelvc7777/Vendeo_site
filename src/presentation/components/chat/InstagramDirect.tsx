@@ -74,13 +74,13 @@ import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { StageChecklistItem } from "@/domain/entities/ChatStage";
 import { useAutoPilot } from "@/presentation/hooks/useAutoPilot";
 import { AutoPilotApprovalCard } from "./AutoPilotApprovalCard";
-import { ManualResponseReviewDialog } from "./ManualResponseReviewDialog";
 import {
   AutoPilotActivityIndicator,
   isAutoPilotActivelyWorking,
   isAutoPilotWorking,
 } from "./AutoPilotActivityIndicator";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
+import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 
 function InstagramIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -620,20 +620,39 @@ function getStoredRestrictedChatIds(): Set<string> {
 export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [conversations, setConversations] = useState<DirectConversation[]>([]);
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
-  const [manualReviewClosedChatId, setManualReviewClosedChatId] = useState<string | null>(null);
-  const [manualResponseText, setManualResponseText] = useState("");
-  const [isSendingManualResponse, setIsSendingManualResponse] = useState(false);
+  const [brainConsoleRequest, setBrainConsoleRequest] = useState<{ conversationId: string; requestId: number } | null>(null);
+  const brainConsoleRequestIdRef = useRef(0);
+  const handleBrainConsoleOpenRequestHandled = useCallback((requestId: number) => {
+    setBrainConsoleRequest((current) => current?.requestId === requestId ? null : current);
+  }, []);
   const [messages, setMessages] = useState<Record<string, DirectMessage[]>>({});
   const messagesRef = useRef<Record<string, DirectMessage[]>>({});
+  const messageFetchesRef = useRef(new Map<string, Promise<void>>());
+  const latestRealtimeMessageAtRef = useRef(new Map<string, number>());
+  const latestFetchedMessageAtRef = useRef(new Map<string, number>());
+  const chatLoadStartedAtRef = useRef(new Map<string, number>());
   useEffect(() => {
     messagesRef.current = messages;
-  }, [messages]);
+    const activeId = activeChat?.id;
+    if (!activeId || !messages[activeId]?.length) return;
+    const startedAt = chatLoadStartedAtRef.current.get(activeId);
+    if (startedAt === undefined) return;
+    if (process.env.NODE_ENV !== "production") {
+      console.debug("chat_load_rendered", {
+        conversationId: activeId,
+        messageCount: messages[activeId].length,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      });
+    }
+    chatLoadStartedAtRef.current.delete(activeId);
+  }, [messages, activeChat?.id]);
   const composerRef = useRef<InstagramChatComposerRef>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [chatPlatform, setChatPlatform] = useState<"instagram" | "tinder">("instagram");
   const [isLoadingList, setIsLoadingList] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
+  const isLoadingMessages = loadingConversationId === activeChat?.id;
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [aiTargetMessageId, setAiTargetMessageId] = useState<string | null>(null);
   const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
@@ -777,19 +796,30 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         : `/api/instagram/messages/${conversationId}`
     );
 
-    try {
-      const res = await fetch(endpoint);
-      if (res.ok) {
+    await runDeduplicatedConversationFetch(
+      messageFetchesRef.current,
+      conversationId,
+      async () => {
+        const res = await fetch(endpoint);
+        if (!res.ok) return;
         const data = await res.json();
         const incoming: DirectMessage[] = data?.messages || [];
+        const newestIncoming = incoming.reduce((latest, message) => Math.max(
+          latest,
+          getMessageTimestampMs(message.timestamp || message.sentDate || message.createdAt),
+        ), 0);
+        if (newestIncoming > 0) latestFetchedMessageAtRef.current.set(conversationId, newestIncoming);
         setMessages((prev) => ({
           ...prev,
           [conversationId]: deduplicateMessages([...(prev[conversationId] || []), ...incoming]),
         }));
-      }
-    } catch (err) {
+      },
+      () => {
+        if (process.env.NODE_ENV !== "production") console.debug("chat_fetch_deduped", { conversationId });
+      },
+    ).catch((err) => {
       console.warn(`[AutoPilot] Erro ao sincronizar mensagens de ${conversationId} em segundo plano:`, err);
-    }
+    });
   }, [conversations, activeChat]);
 
   // Sincronização manual sob demanda com a Meta Graph API
@@ -798,16 +828,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     setIsManualSyncing(true);
     try {
       if (activeChat.type === "instagram") {
-        const res = await fetch(getApiUrl(`/api/instagram/messages/${activeChat.id}?sync=true`));
-        if (res.ok) {
+        const conversationId = activeChat.id;
+        await messageFetchesRef.current.get(conversationId)?.catch(() => undefined);
+        await runDeduplicatedConversationFetch(messageFetchesRef.current, conversationId, async () => {
+          const res = await fetch(getApiUrl(`/api/instagram/messages/${conversationId}?sync=true`));
+          if (!res.ok) return;
           const data = await res.json();
-          if (data?.messages) {
-            setMessages((prev) => ({
-              ...prev,
-              [activeChat.id]: deduplicateMessages(data.messages),
-            }));
-          }
-        }
+          if (!data?.messages) return;
+          setMessages((prev) => ({
+            ...prev,
+            [conversationId]: deduplicateMessages(data.messages),
+          }));
+        });
       } else {
         await fetchConversationMessages(activeChat.id);
       }
@@ -1389,6 +1421,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     // Se a nova mensagem for do contato e o chat não estiver aberto na tela, remove qualquer marcação antiga de lido para ativar a bolinha azul
     const isCurrentActive = activeChatIdRef.current === msg.conversationId;
+    const realtimeTimestamp = getMessageTimestampMs(msg.timestamp);
+    if (realtimeTimestamp > 0) {
+      latestRealtimeMessageAtRef.current.set(
+        msg.conversationId,
+        Math.max(latestRealtimeMessageAtRef.current.get(msg.conversationId) || 0, realtimeTimestamp),
+      );
+      if (latestRealtimeMessageAtRef.current.size > 200) {
+        const oldestConversationId = latestRealtimeMessageAtRef.current.keys().next().value;
+        if (oldestConversationId) latestRealtimeMessageAtRef.current.delete(oldestConversationId);
+      }
+    }
     if (!msg.isMine) {
       autoPilotRef.current?.registerClientMessage(msg.conversationId, msg.timestamp);
       if (!isCurrentActive) {
@@ -1491,7 +1534,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         );
       }, 0);
 
-      if (incomingTimestamp > latestKnownTimestamp) {
+      const latestRealtimeTimestamp = latestRealtimeMessageAtRef.current.get(conv.id) || 0;
+      const latestFetchedTimestamp = latestFetchedMessageAtRef.current.get(conv.id) || 0;
+      if (hasNewConversationMessage(
+        incomingTimestamp,
+        latestKnownTimestamp,
+        Math.max(latestRealtimeTimestamp, latestFetchedTimestamp),
+      )) {
         void fetchConversationMessages(conv.id);
       }
     }
@@ -3309,6 +3358,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (activeChatIdRef.current) {
       markConversationAsReadLocally(activeChatIdRef.current);
     }
+    activeChatIdRef.current = null;
+    setLoadingConversationId(null);
     setActiveChat(null);
     setReplyingToMessage(null);
     onChatOpenChange?.(false);
@@ -3354,19 +3405,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   }, [closeChatDirectly]);
 
   const handleOpenConversation = async (conv: DirectConversation) => {
-    // 1. Salva a posição atual de rolagem da lista de conversas
-    if (conversationsScrollRef.current) {
-      savedScrollTopRef.current = conversationsScrollRef.current.scrollTop;
-    }
+    const loadStartedAt = performance.now();
+    chatLoadStartedAtRef.current.set(conv.id, loadStartedAt);
+    if (conversationsScrollRef.current) savedScrollTopRef.current = conversationsScrollRef.current.scrollTop;
 
-    // 2. Marca a conversa como lida e aberta imediatamente
     markConversationAsReadLocally(conv.id);
-
+    activeChatIdRef.current = conv.id;
     setActiveChat(conv);
     setReplyingToMessage(null);
     onChatOpenChange?.(true);
 
-    // 3. Registra no histórico do navegador para interceptar o botão/gesto voltar
     if (typeof window !== "undefined") {
       if (!isPushedToHistoryRef.current) {
         window.history.pushState({ vendeoChatOpen: true, chatId: conv.id }, "");
@@ -3376,135 +3424,76 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       }
     }
 
-    setConversations((prev) =>
-      prev.map((c) => (c.id === conv.id ? { ...c, unread: false } : c))
-    );
-
-    // 4. Sincroniza marcação de leitura com o banco Supabase imediatamente (< 50ms)
-    const supabase = getSupabaseBrowserClient();
-    if (supabase && conv.type === "instagram") {
-      supabase
-        .from("instagram_conversations")
-        .update({ unread: false, updated_at: new Date().toISOString() })
-        .eq("id", conv.id)
-        .then(() => {});
-    }
-
+    setConversations((prev) => prev.map((item) => item.id === conv.id ? { ...item, unread: false } : item));
     if (conv.type === "instagram") {
-      fetch(getApiUrl(`/api/instagram/conversations/${conv.id}/read`), {
-        method: "POST",
-      }).catch(() => {});
+      fetch(getApiUrl(`/api/instagram/conversations/${conv.id}/read`), { method: "POST" }).catch(() => {});
     }
 
-    // Ativa esqueleto de mensagens caso não haja cache local prévio
     const cached = messages[conv.id];
-    if (!cached || cached.length === 0) {
-      setIsLoadingMessages(true);
+    const hasCache = Boolean(cached?.length);
+    setLoadingConversationId(hasCache ? null : conv.id);
+    if (process.env.NODE_ENV !== "production") {
+      console.debug(hasCache ? "chat_load_cache_hit" : "chat_load_start", {
+        conversationId: conv.id,
+        elapsedMs: Math.round(performance.now() - loadStartedAt),
+      });
     }
 
-    // Carrega mensagens do Supabase/API
     const endpoint = getApiUrl(
-      conv.type === "tinder"
-        ? `/api/tinder/messages/${conv.id}`
-        : `/api/instagram/messages/${conv.id}?sync=true`
+      conv.type === "tinder" ? `/api/tinder/messages/${conv.id}` : `/api/instagram/messages/${conv.id}`,
     );
 
     try {
-      const res = await fetch(endpoint);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.messages) {
-          let formatted: DirectMessage[] = data.messages.map((m: DirectMessage) => ({
-            ...m,
-            status: m.status || "sent",
-          }));
+      await runDeduplicatedConversationFetch(messageFetchesRef.current, conv.id, async () => {
+        const response = await fetch(endpoint);
+        if (!response.ok) throw new Error(`Falha ao carregar mensagens: ${response.status}`);
+        const data = await response.json();
+        const formatted: DirectMessage[] = Array.isArray(data.messages)
+          ? data.messages.map((message: DirectMessage) => ({ ...message, status: message.status || "sent" }))
+          : [];
+        formatted.sort((left, right) =>
+          getMessageTimestampMs(left.timestamp || left.createdAt || left.sentDate)
+          - getMessageTimestampMs(right.timestamp || right.createdAt || right.sentDate),
+        );
 
-          // Enriquecimento direto via Supabase Client (blindagem contra backends remotos desatualizados)
-          try {
-            const supabase = getSupabaseBrowserClient();
-            if (supabase && conv.type !== "tinder") {
-              const cutoff = new Date(Date.now() - 48 * 3600_000).toISOString();
-              const { data: dbRows, error: dbErr } = await supabase
-                .from("instagram_messages")
-                .select("id, reply_to_message_id, audio_transcript, timestamp")
-                .or(`conversation_id.eq.${conv.id},contact_id.eq.${conv.id}`)
-                .gte("created_at", cutoff)
-                .limit(150);
-
-              if (dbRows && dbRows.length > 0) {
-                const replyMap = new Map<string, string>();
-                const audioMap = new Map<string, string>();
-                const timeMap = new Map<string, string>();
-                for (const r of dbRows) {
-                  if (r.reply_to_message_id) {
-                    replyMap.set(r.id, r.reply_to_message_id);
-                  }
-                  if (r.audio_transcript) {
-                    audioMap.set(r.id, r.audio_transcript);
-                  }
-                  if (r.timestamp) {
-                    timeMap.set(r.id, r.timestamp);
-                  }
-                }
-                formatted = formatted.map((m) => {
-                  const rId = replyMap.get(m.id) || m.replyToMessageId;
-                  const aTranscript = audioMap.get(m.id) || m.audioTranscript;
-                  const dbTs = timeMap.get(m.id);
-                  return {
-                    ...m,
-                    timestamp: m.timestamp || (dbTs ? getMessageTimestampMs(dbTs) : undefined),
-                    sentDate: m.sentDate || dbTs,
-                    replyToMessageId: rId,
-                    audioTranscript: aTranscript,
-                  };
-                });
-              }
-            }
-          } catch (enrichErr) {
-            console.warn("⚠️ [Instagram Reply - UI] Aviso ao enriquecer replies e transcrições do Supabase:", enrichErr);
-          }
-
-          formatted.sort((a, b) => {
-            const tA = getMessageTimestampMs((a as any).timestamp || a.createdAt || a.sentDate);
-            const tB = getMessageTimestampMs((b as any).timestamp || b.createdAt || b.sentDate);
-            return tA - tB;
+        const newestIncoming = formatted.reduce((latest, message) => Math.max(
+          latest,
+          getMessageTimestampMs(message.timestamp || message.sentDate || message.createdAt),
+        ), 0);
+        if (newestIncoming > 0) latestFetchedMessageAtRef.current.set(conv.id, newestIncoming);
+        setMessages((previous) => ({ ...previous, [conv.id]: formatted }));
+        if (process.env.NODE_ENV !== "production") {
+          console.debug("chat_load_db_complete", {
+            conversationId: conv.id,
+            messageCount: formatted.length,
+            elapsedMs: Math.round(performance.now() - loadStartedAt),
           });
-
-          setMessages((prev) => ({
-            ...prev,
-            [conv.id]: formatted,
-          }));
-
-          // Se a lista de mensagens vier vazia no Instagram, aciona sync em background para garantir busca de mensagens pendentes/restringidas
-          if (formatted.length === 0 && conv.type === "instagram") {
-            fetch(getApiUrl("/api/instagram/sync"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ conversationId: conv.id }),
-            })
-              .then((sRes) => sRes.json())
-              .then(async (sData) => {
-                if (sData.success) {
-                  const retryRes = await fetch(endpoint);
-                  if (retryRes.ok) {
-                    const retryJson = await retryRes.json();
-                    if (retryJson.messages && retryJson.messages.length > 0) {
-                      setMessages((prev) => ({
-                        ...prev,
-                        [conv.id]: retryJson.messages,
-                      }));
-                    }
-                  }
-                }
-              })
-              .catch(() => {});
-          }
         }
-      }
-    } catch (err) {
-      console.error("Erro ao carregar mensagens:", err);
+
+        if (formatted.length === 0 && conv.type === "instagram") {
+          if (process.env.NODE_ENV !== "production") console.debug("chat_background_sync_started", { conversationId: conv.id });
+          void fetch(getApiUrl("/api/instagram/sync"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ conversationId: conv.id }),
+          })
+            .then(async (syncResponse) => {
+              const syncResult = await syncResponse.json();
+              if (!syncResponse.ok || !syncResult.success) throw new Error("Sincronização em segundo plano falhou");
+              await fetchConversationMessages(conv.id);
+              if (process.env.NODE_ENV !== "production") {
+                console.debug("chat_background_sync_complete", { conversationId: conv.id });
+              }
+            })
+            .catch((error) => console.warn("Erro na sincronização em segundo plano do Instagram:", error));
+        }
+      }, () => {
+        if (process.env.NODE_ENV !== "production") console.debug("chat_fetch_deduped", { conversationId: conv.id });
+      });
+    } catch (error) {
+      console.error("Erro ao carregar mensagens:", error);
     } finally {
-      setIsLoadingMessages(false);
+      setLoadingConversationId((current) => current === conv.id ? null : current);
     }
   };
 
@@ -3700,16 +3689,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return msg;
     });
   }, [activeChat, activeChatMessagesRaw, activeAutoPilotState?.pendingOutboundMessages]);
-  const isManualReviewOpen = Boolean(
-    activeChat &&
-    activeAutoPilotState?.status === "waiting_human" &&
-    manualReviewClosedChatId !== activeChat.id
-  );
-  useEffect(() => {
-    if (activeChat && activeAutoPilotState?.status === "waiting_human") {
-      setManualReviewClosedChatId((current) => current === activeChat.id ? current : null);
-    }
-  }, [activeChat?.id, activeAutoPilotState?.status, activeAutoPilotState?.stateUpdatedAt]);
   const isTinderChat = activeChat?.type === "tinder";
 
   const renderChatThread = () => {
@@ -3717,42 +3696,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     return (
       <div className="absolute inset-0 z-30 flex flex-col h-full w-full bg-black text-white overflow-hidden animate-in fade-in duration-150">
-          {isManualReviewOpen && activeChat && activeAutoPilotState && (
-            <ManualResponseReviewDialog
-              contactName={activeChat.fullName || activeChat.username || "Contato"}
-              contactUsername={activeChat.username}
-              messages={chatMessages.slice(-12).map((message) => ({
-                id: message.id,
-                text: message.text,
-                isMine: message.isMine,
-                createdAt: message.createdAt,
-                sentDate: message.sentDate,
-                timestamp: message.timestamp,
-                status: message.status,
-                mediaType: message.mediaType,
-              }))}
-              reason={activeAutoPilotState.pauseReason || "A IA não encontrou uma resposta segura."}
-              value={manualResponseText}
-              isSending={isSendingManualResponse}
-              onChange={setManualResponseText}
-              onClose={() => setManualReviewClosedChatId(activeChat.id)}
-              onSend={async () => {
-                const responseText = manualResponseText.trim();
-                if (!responseText || isSendingManualResponse) return;
-                setIsSendingManualResponse(true);
-                try {
-                  const sent = await sendMessageWithText(responseText);
-                  if (!sent) return;
-                  await autoPilot.completeManualReview(activeChat.id);
-                  setManualResponseText("");
-                  setManualReviewClosedChatId(activeChat.id);
-                } finally {
-                  setIsSendingManualResponse(false);
-                }
-              }}
-            />
-          )}
-
           {/* Header do Chat */}
         <div className="h-14 px-3.5 border-b border-[#262626] flex items-center justify-between bg-black shrink-0 z-10">
           <div className="flex items-center gap-3">
@@ -3956,12 +3899,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   <button
                     type="button"
                     onClick={() => {
-                      setManualResponseText("");
-                      setManualReviewClosedChatId(null);
+                      brainConsoleRequestIdRef.current += 1;
+                      setBrainConsoleRequest({
+                        conversationId: activeChat.id,
+                        requestId: brainConsoleRequestIdRef.current,
+                      });
                     }}
                     className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs shrink-0 cursor-pointer active:scale-95 transition-all shadow-sm self-end sm:self-auto"
                   >
-                    Responder agora
+                    Abrir resolução do Brain
                   </button>
                 </div>
               );
@@ -4396,6 +4342,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 state={currentChatState}
                 variant="floating"
                 conversationId={activeChat.id}
+                openConsoleRequestId={brainConsoleRequest?.conversationId === activeChat.id ? brainConsoleRequest.requestId : undefined}
+                onConsoleOpenRequestDismissed={handleBrainConsoleOpenRequestHandled}
               />
             </div>
           );

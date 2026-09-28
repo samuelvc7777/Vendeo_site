@@ -295,19 +295,5 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  const completeManualReview = useCallback(async (conversationId: string) => {
-    const completedAt = new Date().toISOString();
-    const updated = await autoPilotRepo.saveChatState(conversationId, {
-      isEnabled: false,
-      status: "disabled",
-      pauseReason: "paused_manual",
-      pausedAt: completedAt,
-      activity: null,
-      lastResponseSentAt: completedAt,
-    });
-    setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
-    toast.success("Resposta enviada. O Piloto continua pausado nesta conversa.");
-  }, []);
-
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, completeManualReview, refreshState, applyRemoteStateUpdate };
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }

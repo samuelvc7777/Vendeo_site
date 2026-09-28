@@ -1031,10 +1031,14 @@ export function AutoPilotActivityIndicator({
   state: sourceState,
   variant,
   conversationId,
+  openConsoleRequestId,
+  onConsoleOpenRequestDismissed,
 }: {
   state: AutoPilotChatState;
   variant: Variant;
   conversationId?: string;
+  openConsoleRequestId?: number;
+  onConsoleOpenRequestDismissed?: (requestId: number) => void;
 }) {
   const targetId = conversationId || sourceState.conversationId;
 
@@ -1898,7 +1902,7 @@ export function AutoPilotActivityIndicator({
         )}
       </div>
       <BrainOperationalConsole
-        open={isConsoleOpen}
+        open={isConsoleOpen || openConsoleRequestId !== undefined}
         events={canonicalEvents}
         deliveryActions={canonicalDeliveryActions}
         runtimeState={{ activeCycleToken: state.activeCycleToken }}
@@ -1909,7 +1913,10 @@ export function AutoPilotActivityIndicator({
         retryingActionId={retryingActionId}
         onRetryAction={handleManualFailedAction}
         onManualRetry={handleManualRetryOnce}
-        onClose={() => setIsConsoleOpen(false)}
+        onClose={() => {
+          setIsConsoleOpen(false);
+          if (openConsoleRequestId !== undefined) onConsoleOpenRequestDismissed?.(openConsoleRequestId);
+        }}
         manualResolution={{ answer: manualResolutionAnswer, question: formatVisibleBrainIdentity(state.pauseReason), submitting: isSubmittingResolution, authenticated: operatorAuthenticated }}
         onManualResolution={handleSubmitManualResolution}
         onManualResolutionChange={setManualResolutionAnswer}

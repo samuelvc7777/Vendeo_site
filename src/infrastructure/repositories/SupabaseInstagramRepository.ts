@@ -205,14 +205,14 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
     }
   }
 
-  async getMessages(conversationId: string, limit = 500): Promise<InstagramMessage[]> {
+  async getMessages(conversationId: string, limit = 150): Promise<InstagramMessage[]> {
     const client = this.getClient();
     if (!client) return [];
 
     try {
       const { data, error } = await client
         .from("instagram_messages")
-        .select("*")
+        .select("id, conversation_id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript")
         .or(`conversation_id.eq.${conversationId},contact_id.eq.${conversationId}`)
         .order("timestamp", { ascending: false })
         .limit(limit);
@@ -233,6 +233,9 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
         seenAt: item.seen_at ? item.seen_at : undefined,
         deliverAt: item.deliver_at ? new Date(item.deliver_at).getTime() : undefined,
         replyToMessageId: item.reply_to_message_id || null,
+        mediaUrl: item.media_url || undefined,
+        mediaType: item.media_type || undefined,
+        audioTranscript: item.audio_transcript || undefined,
       }));
     } catch {
       return [];

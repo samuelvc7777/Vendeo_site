@@ -24,14 +24,12 @@ export async function GET(req: NextRequest, context: RouteParams) {
     }
 
     const repo = new SupabaseInstagramRepository();
-    // Marca a conversa como lida no banco de dados
-    repo.saveConversation({ id: conversationId, unread: false }).catch(() => {});
-
     // Leitura 100% direta do banco Supabase com altíssima performance (< 20ms)
     let messages = await repo.getMessages(conversationId);
 
     // Auto-Sync On-Demand: se a conversa estiver vazia no banco, busca na Meta Graph API na hora
-    if (messages.length === 0) {
+    const forceSync = req.nextUrl.searchParams.get("sync") === "true" || req.nextUrl.searchParams.get("sync") === "1";
+    if (forceSync) {
       try {
         const config = await repo.getConfig();
         if (config?.isConnected && config.accessToken) {
@@ -201,6 +199,7 @@ export async function GET(req: NextRequest, context: RouteParams) {
         text: text || (mediaType === "audio" ? "🎙️ Mensagem de voz" : mediaType === "image" ? "📷 Foto" : ""),
         mediaUrl,
         mediaType,
+        audioTranscript: m.audioTranscript,
         createdAt: formatMessageTime(m.timestamp),
         timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
         sentDate: m.timestamp || new Date().toISOString(),
