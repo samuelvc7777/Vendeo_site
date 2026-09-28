@@ -2550,6 +2550,8 @@ async function syncBrainDecisionActionStatus(params: {
   actionId?: string;
   status: "sending" | "sent" | "dispatch_uncertain" | "failed_retryable" | "failed_confirmed";
   providerMessageId?: string;
+  providerError?: string;
+  attempts?: number;
 }): Promise<void> {
   if (!params.actionId) return;
   try {
@@ -2557,7 +2559,7 @@ async function syncBrainDecisionActionStatus(params: {
     if (params.providerMessageId) update.provider_message_id = params.providerMessageId;
     const { data, error } = await params.supabase.from("brain_decision_actions")
       .update(update).eq("id", params.actionId)
-      .select("id, decision_id, conversation_id, action_index, action_type, payload, status, provider_message_id")
+      .select("id, decision_id, conversation_id, action_index, action_type, payload, status, provider_message_id, attempts")
       .maybeSingle();
     if (error || !data?.decision_id) return;
     const eventMessage: Record<string, string> = {
@@ -2578,7 +2580,11 @@ async function syncBrainDecisionActionStatus(params: {
       event_type: `action_${params.status}`,
       status: params.status,
       human_message: eventMessage[params.status],
-      metadata: params.providerMessageId ? { providerMessageId: params.providerMessageId } : {},
+      metadata: {
+        ...(params.providerMessageId ? { providerMessageId: params.providerMessageId } : {}),
+        ...((params.attempts ?? data.attempts) > 0 ? { attemptCount: params.attempts ?? data.attempts } : {}),
+        ...(params.providerError ? { providerError: toProviderErrorDetails(params.providerError) } : {}),
+      },
     });
     const { data: actions } = await params.supabase.from("brain_decision_actions")
       .select("status").eq("decision_id", data.decision_id);
@@ -2626,6 +2632,37 @@ async function syncBrainDecisionActionStatus(params: {
   } catch (error) {
     console.warn("[Brain] Não foi possível atualizar a projeção da ação persistida:", error);
   }
+}
+
+export function toProviderErrorDetails(rawError: string): Record<string, string | number> {
+  const httpMatch = rawError.match(/HTTP\s+(\d{3})/i);
+  const bodyStart = rawError.indexOf(": {");
+  let providerBody: Record<string, unknown> | null = null;
+  if (bodyStart >= 0) {
+    try {
+      const parsed = JSON.parse(rawError.slice(bodyStart + 2));
+      providerBody = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      providerBody = null;
+    }
+  }
+  const nested = providerBody?.error && typeof providerBody.error === "object"
+    ? providerBody.error as Record<string, unknown>
+    : providerBody;
+  const message = typeof nested?.message === "string"
+    ? nested.message
+    : rawError;
+  const details: Record<string, string | number> = {
+    provider: /Meta/i.test(rawError) ? "Meta" : "Provedor",
+    message: message.slice(0, 600),
+  };
+  if (httpMatch) details.httpStatus = Number(httpMatch[1]);
+  if (typeof nested?.code === "number" || typeof nested?.code === "string") details.code = nested.code;
+  const subcode = nested?.error_subcode ?? nested?.subcode;
+  if (typeof subcode === "number" || typeof subcode === "string") details.subcode = subcode;
+  return details;
 }
 
 export interface ReconcileOutboxEntryParams {
@@ -4176,6 +4213,8 @@ export async function runDurableOutboxDispatcher(
           supabase,
           actionId: outboxBrainActionId(claimedEntry),
           status: "dispatch_uncertain",
+          providerError: dispatchRes.error,
+          attempts: claimedEntry.attempts,
         });
         result.uncertainCount++;
         result.errors.push(`dispatch_uncertain:${dispatchRes.error}`);
@@ -4196,6 +4235,8 @@ export async function runDurableOutboxDispatcher(
           supabase,
           actionId: outboxBrainActionId(claimedEntry),
           status: nextStatus === "failed" ? "failed_confirmed" : "failed_retryable",
+          providerError: dispatchRes.error,
+          attempts: claimedEntry.attempts,
         });
         result.errors.push(`dispatch_failed:${dispatchRes.error}`);
         blockedCycleKeys.add(entryCycleKey);

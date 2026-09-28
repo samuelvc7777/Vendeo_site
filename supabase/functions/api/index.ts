@@ -12,7 +12,7 @@ import {
   runDurableOutboxDispatcher,
 } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
-import { enrichBrainTurnEventRows } from "./brain_event_enrichment.ts";
+import { enrichBrainDecisionActionRows, enrichBrainTurnEventRows } from "./brain_event_enrichment.ts";
 import {
   getGroqApiKey,
   transcribeWithGroqCloud,
@@ -2218,18 +2218,12 @@ serve(async (req: Request) => {
       // GET: Busca mensagens do Supabase com normalização completa de áudio e imagem
       if (req.method === "GET") {
         // Marca a conversa automaticamente como lida no banco de dados
-        supabase
-          .from("instagram_conversations")
-          .update({ unread: false, updated_at: new Date().toISOString() })
-          .eq("id", conversationId)
-          .then(() => {});
-
         let { data, error } = await supabase
           .from("instagram_messages")
-          .select("*")
+          .select("id, conversation_id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript")
           .or(`conversation_id.eq.${conversationId},contact_id.eq.${conversationId}`)
           .order("timestamp", { ascending: false })
-          .limit(500);
+          .limit(150);
 
         if (data && data.length > 0) {
           data = data.reverse();
@@ -2237,9 +2231,10 @@ serve(async (req: Request) => {
 
         const urlObj = new URL(req.url);
         const forceSync = urlObj.searchParams.get("sync") === "true" || urlObj.searchParams.get("sync") === "1";
-        const shouldSyncWithMeta = !data || data.length === 0 || forceSync;
+        const shouldSyncWithMeta = forceSync;
 
-        // Auto-Sync On-Demand com a Meta Graph API: executado se a conversa estiver vazia ou se sync for solicitado
+        // A abertura do chat serve o cache do Supabase. Meta só é consultada
+        // quando a pessoa solicita uma sincronização manual.
         if (shouldSyncWithMeta) {
           try {
             const { data: igConfig } = await supabase
@@ -2364,10 +2359,10 @@ serve(async (req: Request) => {
                     }
                     const { data: refetched } = await supabase
                       .from("instagram_messages")
-                      .select("*")
+                      .select("id, conversation_id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript")
                       .or(`conversation_id.eq.${conversationId},contact_id.eq.${conversationId}`)
                       .order("timestamp", { ascending: true })
-                      .limit(500);
+                      .limit(150);
                     if (refetched && refetched.length > 0) {
                       data = refetched;
                     }
@@ -2445,6 +2440,7 @@ serve(async (req: Request) => {
             sentDate: m.timestamp ? new Date(m.timestamp).toISOString() : new Date().toISOString(),
             isMine: Boolean(m.is_mine),
             status: m.status || "sent",
+            audioTranscript: m.audio_transcript || undefined,
             seenAt: m.seen_at || undefined,
             deliverAt: m.deliver_at ? new Date(m.deliver_at).getTime() : undefined,
             delaySeconds: m.deliver_at ? Math.max(0, Math.ceil((new Date(m.deliver_at).getTime() - Date.now()) / 1000)) : undefined,
@@ -4918,19 +4914,50 @@ serve(async (req: Request) => {
         .select("id, conversation_id, session_id, turn_id, decision_id, action_id, event_type, status, human_message, metadata, created_at")
         .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(100);
       if (eventError) return new Response(JSON.stringify({ success: false, error: eventError.message }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      const { data: failedActions } = await supabase.from("brain_decision_actions")
-        .select("id, decision_id, action_index, action_type, payload, status")
-        .eq("conversation_id", conversationId).eq("status", "failed_confirmed").order("created_at", { ascending: true });
+      const { data: actions, error: actionError } = await supabase.from("brain_decision_actions")
+        .select("id, decision_id, action_index, action_type, status, provider_message_id, attempts, created_at")
+        .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(200);
+      if (actionError) return new Response(JSON.stringify({ success: false, error: actionError.message }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       let operationalEvents = (events || []).reverse();
+      const decisionIds = [...new Set([
+        ...(actions || []).map((action: any) => action.decision_id).filter(Boolean),
+        ...operationalEvents.map((event: any) => event.decision_id).filter(Boolean),
+      ])].slice(0, 300);
+      let decisions: any[] = [];
+      if (decisionIds.length > 0) {
+        const { data, error: decisionError } = await supabase.from("brain_decisions")
+          .select("id, turn_id, session_id, payload, delivery_status, created_at")
+          .eq("conversation_id", conversationId).in("id", decisionIds);
+        if (decisionError) return new Response(JSON.stringify({ success: false, error: decisionError.message }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        decisions = data || [];
+      }
       const needsTurnMapping = operationalEvents.some((event: any) => !event.turn_id
         && (typeof event.metadata?.cycleId === "string" || typeof event.metadata?.cycle_id === "string"));
       if (needsTurnMapping) {
-        const { data: decisions } = await supabase.from("brain_decisions")
+        const { data: recentDecisions, error: recentDecisionError } = await supabase.from("brain_decisions")
           .select("turn_id, session_id, payload, created_at")
           .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(100);
-        if (Array.isArray(decisions)) operationalEvents = enrichBrainTurnEventRows(operationalEvents, decisions);
+        if (recentDecisionError) return new Response(JSON.stringify({ success: false, error: recentDecisionError.message }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (Array.isArray(recentDecisions)) {
+          const knownDecisionKeys = new Set(decisions.map((decision: any) => `${decision.turn_id}:${decision.created_at}`));
+          decisions.push(...recentDecisions.filter((decision: any) => !knownDecisionKeys.has(`${decision.turn_id}:${decision.created_at}`)));
+          operationalEvents = enrichBrainTurnEventRows(operationalEvents, decisions);
+        }
       }
-      return new Response(JSON.stringify({ success: true, events: operationalEvents, failedActions: failedActions || [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const deliveryActions = enrichBrainDecisionActionRows(actions || [], decisions).map((action: any) => ({
+        id: action.id,
+        decision_id: action.decision_id,
+        turn_id: action.turn_id,
+        decision_delivery_status: action.decision_delivery_status,
+        action_index: action.action_index,
+        action_type: action.action_type,
+        status: action.status,
+        provider_message_id: action.provider_message_id || null,
+        attempts: action.attempts || 0,
+        created_at: action.created_at,
+      }));
+      const failedActions = deliveryActions.filter((action: any) => action.status === "failed_confirmed");
+      return new Response(JSON.stringify({ success: true, events: operationalEvents, actions: deliveryActions, failedActions }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     if ((path === "/autopilot/retry-failed-action" || path === "/api/autopilot/retry-failed-action") && req.method === "POST") {

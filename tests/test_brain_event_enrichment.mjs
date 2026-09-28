@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enrichBrainTurnEventRows } from "../supabase/functions/api/brain_event_enrichment.ts";
+import { enrichBrainDecisionActionRows, enrichBrainTurnEventRows } from "../supabase/functions/api/brain_event_enrichment.ts";
 import { groupBrainTurns } from "../src/presentation/components/chat/brain-turn-view-model.ts";
 
 test("eventos de projeção em ciclos distintos são associados ao mesmo turno manual persistido", () => {
@@ -40,4 +40,21 @@ test("ID canônico do evento tem precedência sobre a associação inferida", ()
     { turn_id: "other-turn", session_id: "session-1", payload: { semanticState: { cycleToken: "cycle-1" } } },
   ]);
   assert.equal(event.turn_id, "explicit-turn");
+});
+
+test("ações operacionais recebem turno e delivery_status da decisão persistida", () => {
+  const [action] = enrichBrainDecisionActionRows([
+    { id: "action-0", decision_id: "decision-tiquin", status: "failed_confirmed", provider_message_id: null, attempts: 3 },
+  ], [
+    { id: "decision-tiquin", turn_id: "turn-tiquin", delivery_status: "delivery_pending" },
+  ]);
+  assert.deepEqual(action, {
+    id: "action-0",
+    decision_id: "decision-tiquin",
+    status: "failed_confirmed",
+    provider_message_id: null,
+    attempts: 3,
+    turn_id: "turn-tiquin",
+    decision_delivery_status: "delivery_pending",
+  });
 });

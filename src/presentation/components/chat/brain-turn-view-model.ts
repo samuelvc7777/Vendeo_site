@@ -16,6 +16,33 @@ export type BrainOperationalEvent = {
   metadata?: Record<string, unknown>;
 };
 
+export type BrainDecisionAction = {
+  id: string;
+  decisionId?: string;
+  turnId?: string;
+  actionIndex: number;
+  actionType: string;
+  status: string;
+  providerMessageId?: string | null;
+  attempts?: number;
+  deliveryStatus?: string | null;
+};
+
+export type DeliveryUiState = "idle" | "pending" | "sending" | "partially_sent" | "fully_sent" | "failed" | "uncertain";
+
+export type DeliveryProjection = {
+  status: DeliveryUiState;
+  actionCount: number;
+  sentCount: number;
+  pendingCount: number;
+  failedCount: number;
+  uncertainCount: number;
+  sendingCount: number;
+  statusLabel: string;
+  label: string;
+  showSuccess: boolean;
+};
+
 export type BrainTurnStatus = "running" | "completed" | "waiting_human" | "failed" | "cancelled" | "stale";
 
 export type BrainTurnView = {
@@ -29,7 +56,116 @@ export type BrainTurnView = {
   status: BrainTurnStatus;
   events: BrainOperationalEvent[];
   summary: { actionCount: number; sentCount: number; failedCount: number };
+  deliveryActions?: BrainDecisionAction[];
+  delivery?: DeliveryProjection;
 };
+
+export function deriveDeliveryProjection(
+  actions: BrainDecisionAction[],
+  context: { deliveryStatus?: string | null; cycleStatus?: string | null; sentBalloonsCount?: number } = {},
+): DeliveryProjection {
+  const actionCount = actions.length;
+  let sentCount = 0;
+  let pendingCount = 0;
+  let failedCount = 0;
+  let uncertainCount = 0;
+  let sendingCount = 0;
+  const decisionDeliveryStatus = context.deliveryStatus?.toLowerCase() || "";
+
+  for (const action of actions) {
+    const status = action.status.toLowerCase();
+    if (status === "sent") {
+      if (action.providerMessageId?.trim()) sentCount += 1;
+      else uncertainCount += 1;
+    } else if (status === "failed_confirmed" || status === "failed") {
+      failedCount += 1;
+    } else if (status === "dispatch_uncertain" || status === "uncertain") {
+      uncertainCount += 1;
+    } else if (status === "sending") {
+      sendingCount += 1;
+    } else {
+      pendingCount += 1;
+      if (status === "failed_retryable") sendingCount += 1;
+    }
+  }
+
+  let status: DeliveryUiState = "idle";
+  if (actionCount > 0) {
+    if (uncertainCount > 0 || decisionDeliveryStatus === "dispatch_uncertain") status = "uncertain";
+    else if (failedCount > 0 || decisionDeliveryStatus === "delivery_failed") status = "failed";
+    else if (sentCount === actionCount && (!decisionDeliveryStatus || decisionDeliveryStatus === "fully_sent")) status = "fully_sent";
+    else if (decisionDeliveryStatus === "delivery_pending") status = sendingCount > 0 ? "sending" : "pending";
+    else if (sentCount > 0 || decisionDeliveryStatus === "partially_sent") status = "partially_sent";
+    else if (sendingCount > 0) status = "sending";
+    else status = "pending";
+  }
+
+  const statusLabel = status === "fully_sent"
+    ? "Envio concluído"
+    : status === "partially_sent"
+    ? "Envio parcial"
+    : status === "failed"
+    ? "Falha no envio"
+    : status === "uncertain"
+    ? "Confirmação de envio pendente"
+    : status === "sending"
+    ? "Tentando enviar"
+    : status === "pending"
+    ? "Envio pendente"
+    : "Envio ainda não iniciado";
+  const label = actionCount > 0
+    ? `${sentCount} de ${actionCount} mensagens enviadas`
+    : "Envio ainda não iniciado";
+
+  return {
+    status,
+    actionCount,
+    sentCount,
+    pendingCount,
+    failedCount,
+    uncertainCount,
+    sendingCount,
+    statusLabel,
+    label,
+    showSuccess: status === "fully_sent" && actionCount > 0,
+  };
+}
+
+export function attachDeliveryActionsToTurns(
+  turns: BrainTurnView[],
+  actions: BrainDecisionAction[],
+): BrainTurnView[] {
+  return turns.map((turn) => {
+    const decisionIds = new Set(turn.events.flatMap((event) => event.decisionId ? [event.decisionId] : []));
+    const deliveryActions = actions.filter((action) =>
+      (turn.turnId && action.turnId === turn.turnId)
+      || (action.decisionId && decisionIds.has(action.decisionId))
+    ).sort((left, right) => left.actionIndex - right.actionIndex);
+    const decisionStatuses = new Set(deliveryActions.map((action) => action.deliveryStatus?.toLowerCase()).filter(Boolean));
+    const deliveryStatus = decisionStatuses.has("dispatch_uncertain")
+      ? "dispatch_uncertain"
+      : decisionStatuses.has("delivery_failed")
+      ? "delivery_failed"
+      : decisionStatuses.has("delivery_pending")
+      ? "delivery_pending"
+      : decisionStatuses.has("partially_sent")
+      ? "partially_sent"
+      : decisionStatuses.has("fully_sent")
+      ? "fully_sent"
+      : null;
+    const delivery = deriveDeliveryProjection(deliveryActions, { deliveryStatus });
+    return {
+      ...turn,
+      deliveryActions,
+      delivery,
+      summary: {
+        actionCount: delivery.actionCount,
+        sentCount: delivery.sentCount,
+        failedCount: delivery.failedCount,
+      },
+    };
+  });
+}
 
 const EVENT_LABELS: Record<string, string> = {
   turn_started: "Turno iniciado",
@@ -52,8 +188,8 @@ const EVENT_LABELS: Record<string, string> = {
   failed_confirmed: "Falha confirmada no envio",
   action_dispatch_uncertain: "Confirmação de envio pendente",
   dispatch_uncertain: "Confirmação de envio pendente",
-  turn_completed: "Turno concluído",
-  cycle_completed: "Turno concluído",
+  turn_completed: "Processamento do Brain concluído",
+  cycle_completed: "Processamento do Brain concluído",
   fully_sent: "Todas as mensagens enviadas",
   phase_scheduled: "Próxima análise agendada",
   toggle_immediate_started: "Iniciando análise",
@@ -72,9 +208,9 @@ const STATUS_LABELS: Record<string, string> = {
   processing: "Processando",
   executing: "Enviando mensagem",
   decision_persisted: "Decisão registrada",
-  completed: "Concluído",
-  turn_completed: "Concluído",
-  cycle_completed: "Concluído",
+  completed: "Brain concluído",
+  turn_completed: "Brain concluído",
+  cycle_completed: "Brain concluído",
   failed: "Com erro",
   failed_technical: "Com erro",
   failed_confirmed: "Falha confirmada",
@@ -113,9 +249,9 @@ const PHASE_LABELS: Record<string, string> = {
 
 const TERMINAL_EVENTS = new Set([
   "turn_completed", "cycle_completed", "cycle_cancelled", "cycle_failed",
-  "action_failed_confirmed", "failed_confirmed", "action_dispatch_uncertain", "dispatch_uncertain",
 ]);
-const FAILED_EVENTS = new Set(["cycle_failed", "action_failed_confirmed", "failed_confirmed", "action_dispatch_uncertain", "dispatch_uncertain"]);
+const FAILED_EVENTS = new Set(["cycle_failed"]);
+const FAILED_ACTION_EVENTS = new Set(["action_failed_confirmed", "failed_confirmed"]);
 const CANCELLED_EVENTS = new Set(["cycle_cancelled"]);
 const WAITING_EVENTS = new Set(["manual_resolution_required", "waiting_human"]);
 const SENT_EVENTS = new Set(["action_sent", "sent"]);
@@ -300,7 +436,7 @@ export function groupBrainTurns(events: BrainOperationalEvent[]): BrainTurnView[
       || String(item.metadata?.actionIndex ?? item.metadata?.action_index ?? `${item.sequence ?? item.timestamp}`);
     const uniqueActions = new Map(actionEvents.map((item) => [actionKey(item), item]));
     const sentActions = new Map(actionEvents.filter((item) => SENT_EVENTS.has(item.event)).map((item) => [actionKey(item), item]));
-    const failedActions = new Map(actionEvents.filter((item) => FAILED_EVENTS.has(item.event) || FAILED_EVENTS.has(item.status || "")).map((item) => [actionKey(item), item]));
+    const failedActions = new Map(actionEvents.filter((item) => FAILED_ACTION_EVENTS.has(item.event) || FAILED_ACTION_EVENTS.has(item.status || "")).map((item) => [actionKey(item), item]));
     return {
       id,
       turnId: sorted.find((item) => item.turnId)?.turnId

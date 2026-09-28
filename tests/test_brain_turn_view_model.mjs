@@ -102,7 +102,7 @@ test("Robson: a view conclui só com os eventos, sem inbound novo", () => {
   assert.equal(turn.status, "completed");
   assert.equal(turn.finishedAt, "2026-09-27T20:27:49Z");
   assert.equal(turn.summary.sentCount, 2);
-  assert.equal(formatBrainStatus(turn.status), "Concluído");
+  assert.equal(formatBrainStatus(turn.status), "Brain concluído");
   assert.equal(selectActiveBrainTurn([turn], { now: "2026-09-27T20:28:45Z", activeCycleToken: null }), null);
 });
 

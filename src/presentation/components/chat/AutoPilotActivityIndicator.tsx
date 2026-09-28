@@ -33,6 +33,8 @@ import {
   formatBrainPhase,
   formatBrainStatus,
   formatVisibleBrainIdentity,
+  attachDeliveryActionsToTurns,
+  deriveDeliveryProjection,
   groupBrainTurns,
   getEffectiveBrainTurnEvent,
   getVisibleBrainTurns,
@@ -40,7 +42,7 @@ import {
   initialBrainTurnUiState,
   isTerminalBrainTurn,
 } from "./brain-turn-view-model";
-import type { BrainOperationalEvent } from "./brain-turn-view-model";
+import type { BrainDecisionAction, BrainOperationalEvent, DeliveryProjection } from "./brain-turn-view-model";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
 
@@ -543,6 +545,55 @@ function eventMainDescription(event: BrainOperationalEvent): string | null {
   return null;
 }
 
+function formatDeliveryActionStatus(action: BrainDecisionAction): string {
+  const status = action.status.toLowerCase();
+  if (status === "sent" && action.providerMessageId) return "Enviada e confirmada pelo provedor";
+  if (status === "sent") return "Sem confirmação de entrega registrada";
+  if (status === "failed_confirmed") return action.attempts
+    ? `Falha confirmada após ${action.attempts} tentativas`
+    : "Falha confirmada";
+  if (status === "dispatch_uncertain") return "Confirmação de envio pendente";
+  if (status === "sending") return "Tentando enviar";
+  if (status === "failed_retryable") return "Nova tentativa programada";
+  if (status === "waiting_delay") return "Aguardando o horário de envio";
+  if (status === "cancelled") return "Envio cancelado";
+  return "Pendente · não enviada";
+}
+
+function deliveryStatusTone(status: DeliveryProjection["status"]): string {
+  if (status === "fully_sent") return "border-emerald-400/25 bg-emerald-400/[0.05] text-emerald-200";
+  if (status === "failed") return "border-rose-400/25 bg-rose-400/[0.06] text-rose-100";
+  if (status === "uncertain" || status === "partially_sent") return "border-amber-400/25 bg-amber-400/[0.06] text-amber-100";
+  if (status === "sending") return "border-emerald-400/20 bg-emerald-400/[0.04] text-emerald-100";
+  return "border-zinc-700 bg-zinc-900/60 text-zinc-300";
+}
+
+function eventDotTone(event: string): string {
+  if (event === "action_sent" || event === "fully_sent") return "border-emerald-300 bg-emerald-400";
+  if (event === "cycle_failed" || event.includes("failed")) return "border-rose-300 bg-rose-400";
+  if (event === "manual_resolution_required") return "border-amber-300 bg-amber-400";
+  if (event === "turn_completed" || event === "cycle_completed") return "border-purple-300 bg-purple-400";
+  return "border-cyan-300 bg-[#101016]";
+}
+
+function ProviderErrorDetails({ value }: { value: Record<string, unknown> }) {
+  const provider = typeof value.provider === "string" ? value.provider : "Provedor";
+  const httpStatus = typeof value.httpStatus === "number" ? value.httpStatus : null;
+  const code = value.code;
+  const subcode = value.subcode;
+  const message = typeof value.message === "string" ? value.message : "Falha sem mensagem detalhada.";
+  return (
+    <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.05] p-2 text-xs text-zinc-200">
+      <div className="font-medium text-rose-100">
+        {provider}{httpStatus !== null ? ` HTTP ${httpStatus}` : ""}
+        {code !== undefined ? ` · código ${String(code)}` : ""}
+        {subcode !== undefined ? ` · subcódigo ${String(subcode)}` : ""}
+      </div>
+      <p className="mt-1 break-words">{formatVisibleBrainIdentity(message)}</p>
+    </div>
+  );
+}
+
 function BrainTurnTimeline({
   turn,
   turnNumber,
@@ -587,6 +638,8 @@ function BrainTurnTimeline({
   const plannedResponses = [...eventMetadataStrings(decisionMetadata, "proposedResponses")];
   const modelEvent = [...turn.events].reverse().find((event) => event.event === "brain_started");
   const model = formatConsoleModel(eventMetadataText(modelEvent?.metadata || {}, "executedModel") || eventMetadataText(modelEvent?.metadata || {}, "model"));
+  const delivery = turn.delivery;
+  const deliveryActions = turn.deliveryActions || [];
   const statusTone = turn.status === "stale"
     ? "border-zinc-700 bg-zinc-800/50 text-zinc-400"
     : turn.status === "running"
@@ -615,7 +668,7 @@ function BrainTurnTimeline({
             </div>
             <p className="mt-1 text-xs leading-5 text-zinc-400">
               {formatConsoleTime(turn.startedAt)}
-              {turn.summary.actionCount > 0 ? ` · ${turn.summary.sentCount} de ${turn.summary.actionCount} mensagens enviadas` : turn.status === "completed" ? " · Nenhuma mensagem enviada" : ""}
+              {delivery?.actionCount ? ` · ${delivery.label}` : ""}
               {model ? ` · ${model.replace(/^GPT-[^ ]+ /, "")}` : ""}
             </p>
           </div>
@@ -633,6 +686,22 @@ function BrainTurnTimeline({
 
       {expanded && (
         <div className="border-t border-zinc-800 px-3 pb-4 pt-3 sm:px-4">
+          {delivery && delivery.actionCount > 0 && (
+            <section aria-label="Estado de entrega" className={`mb-4 rounded-xl border p-3 ${deliveryStatusTone(delivery.status)}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold">{delivery.statusLabel}</h4>
+                <span className="text-xs tabular-nums">{delivery.label}</span>
+              </div>
+              <ol className="mt-2 space-y-1.5">
+                {deliveryActions.map((action) => (
+                  <li key={action.id} className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-xs">
+                    <span>Ação {action.actionIndex + 1} · {action.actionType === "audio" ? "áudio" : "mensagem"}</span>
+                    <span>{formatDeliveryActionStatus(action)}</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
           {decision && (
             <section className="mb-4 rounded-xl border border-purple-400/20 bg-purple-400/[0.06] p-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-purple-200"><BrainCircuit className="h-4 w-4" />Decisão</div>
@@ -679,7 +748,7 @@ function BrainTurnTimeline({
               return (
                 <li key={`${turn.id}-${event.sequence}-${event.event}`} className="relative flex gap-3">
                   {!isLast && <span aria-hidden="true" className="absolute bottom-0 left-[7px] top-4 w-px bg-zinc-800" />}
-                  <span className={`relative mt-1.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${event.event === "action_sent" || event.event === "turn_completed" || event.event === "cycle_completed" ? "border-emerald-300 bg-emerald-400" : event.event === "cycle_failed" || event.event.includes("failed") ? "border-rose-300 bg-rose-400" : event.event === "manual_resolution_required" ? "border-amber-300 bg-amber-400" : "border-cyan-300 bg-[#101016]"}`} />
+                  <span className={`relative mt-1.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${eventDotTone(event.event)}`} />
                   <div className={`min-w-0 flex-1 pb-4 ${isLast ? "pb-1" : ""}`}>
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-100">{label}</span></div>
                     {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-300">{description}</p>}
@@ -687,6 +756,9 @@ function BrainTurnTimeline({
                     <details className="mt-1 text-xs text-zinc-400">
                       <summary className="min-h-10 cursor-pointer py-2 font-medium">Ver detalhes técnicos</summary>
                       <div className="space-y-2 rounded-xl border border-zinc-800 bg-black/30 p-3">
+                        {event.metadata && event.metadata.providerError && typeof event.metadata.providerError === "object"
+                          ? <ProviderErrorDetails value={event.metadata.providerError as Record<string, unknown>} />
+                          : null}
                         <dl className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
                           <div><dt className="text-zinc-500">ID do turno</dt><dd className="break-all font-mono text-zinc-300">{event.turnId || turn.turnId || "Não informado"}</dd></div>
                           <div><dt className="text-zinc-500">ID da sessão</dt><dd className="break-all font-mono text-zinc-300">{event.sessionId || turn.sessionId || "Não informado"}</dd></div>
@@ -715,6 +787,7 @@ function BrainTurnTimeline({
 function BrainOperationalConsole({
   open,
   events,
+  deliveryActions,
   runtimeState,
   failedActions,
   operationsAccessDenied,
@@ -730,6 +803,7 @@ function BrainOperationalConsole({
 }: {
   open: boolean;
   events: AutoPilotCycleEvent[];
+  deliveryActions: BrainDecisionAction[];
   runtimeState: { activeCycleToken?: string | null };
   failedActions: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
   operationsAccessDenied: boolean;
@@ -743,7 +817,7 @@ function BrainOperationalConsole({
   onManualResolution: (saveForFuture: boolean) => void;
   onManualResolutionChange: (value: string) => void;
 }) {
-  const groupedTurns = groupBrainTurns(events);
+  const groupedTurns = attachDeliveryActionsToTurns(groupBrainTurns(events), deliveryActions);
   const selectorRuntime = { ...runtimeState, now: Date.now() };
   const activeTurn = selectActiveBrainTurn(groupedTurns, selectorRuntime);
   const turns = getVisibleBrainTurns(groupedTurns, selectorRuntime);
@@ -983,6 +1057,7 @@ export function AutoPilotActivityIndicator({
   const [manualResolutionAnswer, setManualResolutionAnswer] = useState("");
   const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
   const [canonicalEvents, setCanonicalEvents] = useState<AutoPilotCycleEvent[]>([]);
+  const [canonicalDeliveryActions, setCanonicalDeliveryActions] = useState<BrainDecisionAction[]>([]);
   const [failedConfirmedActions, setFailedConfirmedActions] = useState<Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>>([]);
   const [retryingActionId, setRetryingActionId] = useState<string | null>(null);
   const [operationsAccessDenied, setOperationsAccessDenied] = useState(false);
@@ -1001,6 +1076,7 @@ export function AutoPilotActivityIndicator({
             setOperatorAuthenticated(false);
             setOperationsAccessDenied(true);
             setCanonicalEvents([]);
+            setCanonicalDeliveryActions([]);
             setFailedConfirmedActions([]);
           }
           return;
@@ -1024,6 +1100,17 @@ export function AutoPilotActivityIndicator({
             metadata?: Record<string, unknown> | null;
           }>;
           failedActions?: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
+          actions?: Array<{
+            id: string;
+            decision_id?: string | null;
+            turn_id?: string | null;
+            decision_delivery_status?: string | null;
+            action_index: number;
+            action_type: string;
+            status: string;
+            provider_message_id?: string | null;
+            attempts?: number;
+          }>;
         };
         if (response.status === 401) {
           if (!cancelled) {
@@ -1053,12 +1140,27 @@ export function AutoPilotActivityIndicator({
           metadata: event.metadata || {},
         }));
         setCanonicalEvents(normalizedEvents);
+        const normalizedActions = (result.actions || []).map((action) => ({
+          id: action.id,
+          decisionId: action.decision_id || undefined,
+          turnId: action.turn_id || undefined,
+          actionIndex: action.action_index,
+          actionType: action.action_type,
+          status: action.status,
+          providerMessageId: action.provider_message_id,
+          attempts: action.attempts,
+          deliveryStatus: action.decision_delivery_status,
+        }));
+        setCanonicalDeliveryActions(normalizedActions);
         setFailedConfirmedActions(Array.isArray(result.failedActions) ? result.failedActions : []);
         const activeTurn = selectActiveBrainTurn(groupBrainTurns(normalizedEvents), {
           activeCycleToken: sourceState.activeCycleToken,
           now: Date.now(),
         });
-        nextDelay = isConsoleOpen || Boolean(activeTurn)
+        const deliveryNeedsAttention = normalizedActions.some((action) =>
+          action.status !== "sent" || !action.providerMessageId
+        );
+        nextDelay = isConsoleOpen || Boolean(activeTurn) || deliveryNeedsAttention
           ? 1800
           : 7000;
       } catch { /* A observabilidade não interrompe o atendimento. */ }
@@ -1092,7 +1194,7 @@ export function AutoPilotActivityIndicator({
   };
 
   const turnRuntimeState = { activeCycleToken: sourceState.activeCycleToken, now: Date.now() };
-  const groupedCanonicalTurns = groupBrainTurns(canonicalEvents);
+  const groupedCanonicalTurns = attachDeliveryActionsToTurns(groupBrainTurns(canonicalEvents), canonicalDeliveryActions);
   const activeCanonicalTurn = selectActiveBrainTurn(groupedCanonicalTurns, turnRuntimeState);
   const visibleCanonicalTurns = getVisibleBrainTurns(groupedCanonicalTurns, turnRuntimeState);
   const latestDisplayTurn = activeCanonicalTurn
@@ -1100,6 +1202,15 @@ export function AutoPilotActivityIndicator({
     || visibleCanonicalTurns.find((turn) => turn.status === "waiting_human")
     || visibleCanonicalTurns.find((turn) => Boolean(turn.turnId))
     || visibleCanonicalTurns[0];
+  const deliveryProjection = latestDisplayTurn?.delivery || deriveDeliveryProjection([]);
+  const deliveryActionDetails = latestDisplayTurn?.deliveryActions?.map((action) =>
+    `Ação ${action.actionIndex + 1}: ${formatDeliveryActionStatus(action)}`
+  ) || [];
+  const hasUnresolvedDelivery = deliveryProjection.status === "pending"
+    || deliveryProjection.status === "sending"
+    || deliveryProjection.status === "partially_sent"
+    || deliveryProjection.status === "failed"
+    || deliveryProjection.status === "uncertain";
   const latestCanonicalEvent = latestDisplayTurn ? getEffectiveBrainTurnEvent(latestDisplayTurn) : undefined;
   const canonicalEventToStatus: Record<string, { status: AutoPilotChatState["status"]; phase: AutoPilotActivityPhase }> = {
     brain_late: { status: "processing", phase: "brain" },
@@ -1160,11 +1271,18 @@ export function AutoPilotActivityIndicator({
     : sourceState;
   const shouldRender = variant === "floating"
     ? state.isEnabled || state.status === "waiting_human" || state.status === "failed"
-    : isAutoPilotWorking(state);
+    : isAutoPilotWorking(state) || hasUnresolvedDelivery;
   const rawCopy = getCopy(state);
   const copy = {
-    title: formatVisibleBrainIdentity(rawCopy.title),
-    detail: formatVisibleBrainIdentity(rawCopy.detail),
+    title: formatVisibleBrainIdentity(hasUnresolvedDelivery ? deliveryProjection.statusLabel : rawCopy.title),
+    detail: formatVisibleBrainIdentity(hasUnresolvedDelivery
+      ? [deliveryProjection.label,
+          deliveryProjection.failedCount ? `${deliveryProjection.failedCount} falha(s) confirmada(s)` : "",
+          deliveryProjection.pendingCount ? `${deliveryProjection.pendingCount} pendente(s)` : "",
+          deliveryProjection.uncertainCount ? `${deliveryProjection.uncertainCount} sem confirmação` : "",
+          ...deliveryActionDetails,
+        ].filter(Boolean).join(" · ")
+      : rawCopy.detail),
   };
   const activity = state.activity;
 
@@ -1202,7 +1320,8 @@ export function AutoPilotActivityIndicator({
     (phase as string) === "reanalyzing";
 
   const isTypingOrSending = phase === "typing" || phase === "sending";
-  const isSendingDone = isCompleted;
+  const isSendingDone = deliveryProjection.showSuccess;
+  const isSendingActive = !isSendingDone && (deliveryProjection.status === "sending" || isTypingOrSending);
   const isBrainDone = isCompleted || (!isBrainActive && (Boolean(validBrainThought) || isTypingOrSending));
 
   const isWorking = isAutoPilotWorking(state);
@@ -1587,7 +1706,7 @@ export function AutoPilotActivityIndicator({
         </div>
 
         {/* Stepper Cognitivo do Brain - Fluxo Canônico Brain -> Envio */}
-        {isWorking && (
+        {(isWorking || hasUnresolvedDelivery) && (
           <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/50 rounded-xl border border-zinc-800/70 mt-2.5 text-[10px]">
             {/* Etapa 1: Brain */}
             <div
@@ -1611,19 +1730,27 @@ export function AutoPilotActivityIndicator({
             <div
               className={cn(
                 "flex items-center justify-center gap-1 py-1 px-1.5 rounded-lg font-medium transition-all text-center truncate",
-                isTypingOrSending
+                isSendingActive
                   ? "bg-emerald-500/20 text-emerald-200 border border-emerald-500/50 font-bold animate-pulse"
                   : isSendingDone
                   ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/25"
+                  : deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain"
+                  ? "bg-rose-500/10 text-rose-200 border border-rose-500/30"
+                  : deliveryProjection.status === "partially_sent"
+                  ? "bg-amber-500/10 text-amber-200 border border-amber-500/30"
                   : "text-zinc-500"
               )}
             >
               <Send className="h-3 w-3 shrink-0" />
               <span className="truncate">2. Envio</span>
+              {deliveryProjection.actionCount > 0 && <span className="shrink-0 tabular-nums">{deliveryProjection.sentCount}/{deliveryProjection.actionCount}</span>}
               {isSendingDone && !isTypingOrSending && (
                 <Check className="h-2.5 w-2.5 text-emerald-400 shrink-0 ml-0.5" />
               )}
+              {(deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain") && <AlertTriangle className="h-2.5 w-2.5 text-rose-300 shrink-0 ml-0.5" />}
+              {deliveryProjection.status === "partially_sent" && <AlertTriangle className="h-2.5 w-2.5 text-amber-300 shrink-0 ml-0.5" />}
             </div>
+            {hasUnresolvedDelivery && deliveryProjection.actionCount > 0 && <p className={`col-span-2 px-1 text-center text-[9px] ${deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain" ? "text-rose-200" : "text-zinc-400"}`}>{deliveryProjection.label}</p>}
           </div>
         )}
 
@@ -1773,6 +1900,7 @@ export function AutoPilotActivityIndicator({
       <BrainOperationalConsole
         open={isConsoleOpen}
         events={canonicalEvents}
+        deliveryActions={canonicalDeliveryActions}
         runtimeState={{ activeCycleToken: state.activeCycleToken }}
         failedActions={failedConfirmedActions}
         operationsAccessDenied={operationsAccessDenied}

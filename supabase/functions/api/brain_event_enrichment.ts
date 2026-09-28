@@ -42,3 +42,22 @@ export function enrichBrainTurnEventRows<T extends JsonRecord>(events: T[], deci
     };
   });
 }
+
+/** Joins persisted outbound actions to their canonical Brain turn without exposing payload text. */
+export function enrichBrainDecisionActionRows<T extends JsonRecord>(actions: T[], decisions: JsonRecord[]): Array<T & {
+  turn_id: string | null;
+  decision_delivery_status: string | null;
+}> {
+  const decisionById = new Map<string, JsonRecord>();
+  for (const decision of decisions) {
+    if (typeof decision.id === "string" && decision.id) decisionById.set(decision.id, decision);
+  }
+  return actions.map((action) => {
+    const decision = typeof action.decision_id === "string" ? decisionById.get(action.decision_id) : undefined;
+    return {
+      ...action,
+      turn_id: typeof decision?.turn_id === "string" ? decision.turn_id : null,
+      decision_delivery_status: typeof decision?.delivery_status === "string" ? decision.delivery_status : null,
+    };
+  });
+}
