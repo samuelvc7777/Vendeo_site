@@ -1254,12 +1254,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       if (supabase) {
         const pageSize = 1000;
         const fetchedRows: any[] = [];
+        let expectedTotal: number | null = null;
         let directFetchComplete = true;
 
         for (let from = 0; ; from += pageSize) {
-          const { data, error } = await supabase
+          const { data, error, count } = await supabase
             .from("instagram_conversations")
-            .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
+            .select(
+              "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at",
+              { count: "exact" }
+            )
             .neq("status", "vault")
             .neq("status", "system")
             .order("last_message_at", { ascending: false, nullsFirst: false })
@@ -1271,8 +1275,22 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             break;
           }
 
+          if (expectedTotal === null && typeof count === "number") {
+            expectedTotal = count;
+          }
+
           fetchedRows.push(...(data || []));
+
+          if (expectedTotal !== null && fetchedRows.length >= expectedTotal) break;
           if (!data || data.length < pageSize) break;
+        }
+
+        if (expectedTotal === null || fetchedRows.length !== expectedTotal) {
+          directFetchComplete = false;
+          console.warn("[Inbox] Snapshot parcial descartado.", {
+            received: fetchedRows.length,
+            expected: expectedTotal,
+          });
         }
 
         if (directFetchComplete && fetchedRows.length > 0) {

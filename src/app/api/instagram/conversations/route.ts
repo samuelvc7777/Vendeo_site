@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
     const config = await repo.getConfig();
 
     // 1. Buscar lista consolidada exclusivamente do banco Supabase (< 20ms)
-    const rawConversations = await repo.getConversations(300);
+    const rawConversations = await repo.getConversations();
 
     // Deduplicação defensiva: garante que cada username apareça apenas uma vez na lista
     const uniqueMap = new Map<string, any>();

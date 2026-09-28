@@ -1870,64 +1870,36 @@ serve(async (req: Request) => {
     // 3. INSTAGRAM: CONVERSAS (GET)
     // ==========================================
     if (path === "/instagram/conversations" && req.method === "GET") {
-      const { data, error } = await supabase
-        .from("instagram_conversations")
-        .select("*")
-        .order("last_message_at", { ascending: false, nullsFirst: false })
-        .limit(300);
+      const pageSize = 1000;
+      const data: any[] = [];
+      let error: any = null;
 
-      // Auto-cura instantânea: se houver conversas salvas com username 'ig_', resolve na hora
-      const pendingConvs = (data || []).filter((c: any) => c.username?.startsWith("ig_"));
-      if (pendingConvs.length > 0) {
-        try {
-          const { data: config } = await supabase
-            .from("instagram_config")
-            .select("access_token, username")
-            .eq("id", "default")
-            .maybeSingle();
+      for (let from = 0; ; from += pageSize) {
+        const page = await supabase
+          .from("instagram_conversations")
+          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
+          .neq("status", "vault")
+          .neq("status", "system")
+          .order("last_message_at", { ascending: false, nullsFirst: false })
+          .range(from, from + pageSize - 1);
 
-          if (config?.access_token) {
-            await Promise.all(
-              pendingConvs.map(async (pConv: any) => {
-                const { data: lastMsg } = await supabase
-                  .from("instagram_messages")
-                  .select("id")
-                  .eq("conversation_id", pConv.id)
-                  .order("timestamp", { ascending: false })
-                  .limit(1)
-                  .maybeSingle();
-
-                const resolved = await resolveInstagramContactProfile(
-                  supabase,
-                  config.access_token,
-                  config.username || "lariresende_0611",
-                  pConv.id,
-                  lastMsg?.id
-                );
-
-                if (resolved.username && !resolved.username.startsWith("ig_")) {
-                  pConv.username = resolved.username;
-                  pConv.full_name = resolved.fullName;
-                  if (resolved.avatar && !resolved.avatar.includes("default-avatar.svg")) {
-                    pConv.avatar = resolved.avatar;
-                  }
-
-                  await supabase
-                    .from("instagram_conversations")
-                    .update({
-                      username: pConv.username,
-                      full_name: pConv.full_name,
-                      avatar: pConv.avatar,
-                      updated_at: new Date().toISOString(),
-                    })
-                    .eq("id", pConv.id);
-                }
-              })
-            );
-          }
-        } catch (healErr) {
-          console.warn("Aviso na auto-cura de conversas:", healErr);
+        if (page.error) {
+          error = page.error;
+          break;
         }
+
+        data.push(...(page.data || []));
+        if (!page.data || page.data.length < pageSize) break;
+      }
+
+      if (error) {
+        return new Response(
+          JSON.stringify({ conversations: [], error: error.message || "instagram_conversations_snapshot_failed" }),
+          {
+            status: 503,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
       }
 
       const validConvs = (data || []).filter(

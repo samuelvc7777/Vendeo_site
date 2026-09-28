@@ -106,26 +106,31 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
       .eq("id", "default");
   }
 
-  async getConversations(limit = 300): Promise<InstagramConversation[]> {
+  async getConversations(): Promise<InstagramConversation[]> {
     const client = this.getClient();
     if (!client) return [];
 
     try {
-      const { data, error } = await client
-        .from("instagram_conversations")
-        .select(
-          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at"
-        )
-        .neq("status", "vault")
-        .neq("status", "system")
-        .order("last_message_at", { ascending: false, nullsFirst: false })
-        .limit(limit);
+      const pageSize = 1000;
+      const rows: any[] = [];
 
-      if (error || !data) {
-        return [];
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await client
+          .from("instagram_conversations")
+          .select(
+            "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at"
+          )
+          .neq("status", "vault")
+          .neq("status", "system")
+          .order("last_message_at", { ascending: false, nullsFirst: false })
+          .range(from, from + pageSize - 1);
+
+        if (error) return [];
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
       }
 
-      const validItems = data.filter(
+      const validItems = rows.filter(
         (item: any) => !item.id?.startsWith("__") && item.status !== "system" && item.status !== "vault"
       );
 
