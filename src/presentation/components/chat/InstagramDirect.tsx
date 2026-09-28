@@ -700,6 +700,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [chatPlatform, setChatPlatform] = useState<"instagram" | "tinder">("instagram");
   const [isLoadingList, setIsLoadingList] = useState(false);
+  const [hasCanonicalInstagramSnapshot, setHasCanonicalInstagramSnapshot] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const isLoadingMessages = loadingConversationId === activeChat?.id;
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
@@ -1248,13 +1249,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     try {
       const supabase = getSupabaseBrowserClient();
       let rawConversations: any[] = [];
+      let expectedTotal: number | null = null;
 
       // 1. Fonte canônica: carrega TODAS as conversas diretamente do Supabase em páginas.
       // Só publica o snapshot depois que todas as páginas terminarem com sucesso.
       if (supabase) {
         const pageSize = 1000;
         const fetchedRows: any[] = [];
-        let expectedTotal: number | null = null;
         let directFetchComplete = true;
 
         for (let from = 0; ; from += pageSize) {
@@ -1294,6 +1295,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         }
 
         if (directFetchComplete && fetchedRows.length > 0) {
+          setHasCanonicalInstagramSnapshot(true);
           setIsInstagramConnected((current) => current === false ? current : true);
 
           // Auto-cura do cache local de restrições com a verdade canônica do banco.
@@ -1355,7 +1357,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         }
       }
 
-      if (rawConversations.length === 0) return;
+      if (rawConversations.length === 0) {
+        if (supabase && expectedTotal === 0) {
+          setHasCanonicalInstagramSnapshot(true);
+        }
+        return;
+      }
 
       // 3. Mescla com restrições locais e status de leitura
       setConversations((prev) => {
@@ -1390,6 +1397,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       isDirectLoadingConvsRef.current = false;
     }
   }, []);
+
+  // Enquanto ainda não existe um snapshot canônico completo, tenta novamente em
+  // cadência curta. Realtime pode continuar recebendo eventos, mas a UI não os
+  // apresenta como se fossem a lista completa.
+  useEffect(() => {
+    if (chatPlatform !== "instagram" || hasCanonicalInstagramSnapshot) return;
+    const retryId = window.setInterval(() => {
+      void loadInstagramConversations();
+    }, 5000);
+    return () => window.clearInterval(retryId);
+  }, [chatPlatform, hasCanonicalInstagramSnapshot, loadInstagramConversations]);
 
   // Carrega matches reais do Tinder do Supabase / API
   const loadRealTinderMatches = useCallback(async () => {
@@ -5041,7 +5059,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* FILTRO DE ETAPAS DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
-        {chatPlatform === "instagram" && stages.length > 0 && (
+        {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && stages.length > 0 && (
           <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-[#202020] bg-zinc-950/40 -mx-4 px-4">
             <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-400 shrink-0 mr-1">
               <Layers className="w-3.5 h-3.5 text-sky-400" />
@@ -5126,7 +5144,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* Lista de Conversas Filtradas e Ordenadas */}
         <div className="space-y-1 pt-1">
-          {isLoadingList && sortedConversations.length === 0 ? (
+          {chatPlatform === "instagram" && !hasCanonicalInstagramSnapshot ? (
+            <div className="py-3 space-y-3">
+              <p className="text-center text-[11px] text-zinc-500">Sincronizando conversas...</p>
+              <ConversationSkeletonList count={6} isTinder={false} />
+            </div>
+          ) : isLoadingList && sortedConversations.length === 0 ? (
             <div className="py-1">
               <ConversationSkeletonList count={6} isTinder={chatPlatform === "tinder"} />
             </div>
