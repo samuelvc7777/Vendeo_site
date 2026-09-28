@@ -1243,19 +1243,35 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const supabase = getSupabaseBrowserClient();
       let rawConversations: any[] = [];
 
-      // 1. Tenta carregar diretamente do banco Supabase com colunas explícitas (elimina payload pesado de stage_completed_rules)
+      // 1. Fonte canônica: carrega TODAS as conversas diretamente do Supabase em páginas.
+      // Só publica o snapshot depois que todas as páginas terminarem com sucesso.
       if (supabase) {
-        const { data, error } = await supabase
-          .from("instagram_conversations")
-          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
-          .not("id", "like", "\_\_%")
-          .neq("status", "vault")
-          .neq("status", "system")
-          .order("last_message_at", { ascending: false, nullsFirst: false })
-          .limit(300);
+        const pageSize = 250;
+        const fetchedRows: any[] = [];
+        let directFetchComplete = true;
 
-        if (!error && data && data.length > 0) {
-          rawConversations = data
+        for (let from = 0; ; from += pageSize) {
+          const { data, error } = await supabase
+            .from("instagram_conversations")
+            .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at")
+            .not("id", "like", "\_\_%")
+            .neq("status", "vault")
+            .neq("status", "system")
+            .order("last_message_at", { ascending: false, nullsFirst: false })
+            .range(from, from + pageSize - 1);
+
+          if (error) {
+            directFetchComplete = false;
+            console.warn("[Inbox] Snapshot direto incompleto; mantendo lista atual:", error.message);
+            break;
+          }
+
+          fetchedRows.push(...(data || []));
+          if (!data || data.length < pageSize) break;
+        }
+
+        if (directFetchComplete && fetchedRows.length > 0) {
+          rawConversations = fetchedRows
             .filter((c: any) => !c.id?.startsWith("__") && c.status !== "system" && c.status !== "vault")
             .map((c: any) => ({
             id: c.id,
@@ -1278,11 +1294,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             isRestricted: Boolean(c.is_restricted),
             status: c.status || (c.is_restricted ? "restricted" : "active"),
           }));
+        } else if (!directFetchComplete) {
+          return;
         }
       }
 
-      // 2. Fallback via API
-      if (rawConversations.length === 0) {
+      // 2. Fallback via API apenas se o client Supabase não estiver disponível.
+      // Um snapshot vazio/parcial nunca deve apagar a lista que já está visível.
+      if (!supabase && rawConversations.length === 0) {
         const res = await fetch(getApiUrl("/api/instagram/conversations"));
         if (res.ok) {
           const data = await res.json();
@@ -1293,6 +1312,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           }
         }
       }
+
+      if (rawConversations.length === 0) return;
 
       // 3. Mescla com restrições locais e status de leitura
       setConversations((prev) => {
@@ -2192,10 +2213,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       lastConvFetchAtRef.current = Date.now();
 
       try {
-        const endpoint = getApiUrl(
-          chatPlatform === "tinder" ? "/api/tinder/matches" : "/api/instagram/conversations"
-        );
+        // Instagram usa a mesma fonte canônica paginada da carga inicial.
+        // Nunca reconciliamos a inbox com um snapshot HTTP potencialmente parcial.
+        if (chatPlatform === "instagram") {
+          await loadInstagramConversations();
+          consecutiveListFailuresRef.current = 0;
+          return;
+        }
 
+        const endpoint = getApiUrl("/api/tinder/matches");
         const res = await fetch(endpoint);
 
         if (!res.ok) {
@@ -2236,53 +2262,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 return merged;
               });
               return [...instagramOnly, ...mergedTinder];
-            });
-          } else if (chatPlatform === "instagram" && data?.conversations && isSubscribed) {
-            setConversations((prev) => {
-              const tinderOnly = prev.filter((c) => c.type === "tinder");
-              const validRemoteConvs = (data.conversations as DirectConversation[]).filter(
-                (c: any) => !c.id?.startsWith("__") && c.status !== "system" && c.status !== "vault"
-              );
-              const mergedInstagram = validRemoteConvs.map((remoteConv: DirectConversation) => {
-                const local = prev.find((c) => c.id === remoteConv.id);
-                const isRestr =
-                  restrictedChatIdsRef.current.has(remoteConv.id) ||
-                  Boolean(local?.isRestricted || remoteConv.isRestricted);
-                const lastMsgTime = getMessageTimestampMs(remoteConv.lastMessageAt || remoteConv.lastActive);
-                const readTime = readChatTimestampsRef.current[remoteConv.id];
-                const isRead =
-                  remoteConv.lastSender === "me" ||
-                  (readTime && lastMsgTime > 0 && lastMsgTime <= readTime);
-
-                let merged: DirectConversation = {
-                  ...remoteConv,
-                  isRestricted: isRestr,
-                  status: isRestr ? "restricted" : (remoteConv.status === "restricted" ? "active" : (remoteConv.status || "active")),
-                  unread: isRead ? false : Boolean(remoteConv.unread),
-                };
-
-                if (local && local.lastSender === "me") {
-                  const localTime = local.lastMessageAt ? new Date(local.lastMessageAt).getTime() : 0;
-                  const remoteTime = remoteConv.lastMessageAt ? new Date(remoteConv.lastMessageAt).getTime() : 0;
-                  if (localTime >= remoteTime) {
-                    const shouldKeepRemoteIdentity =
-                      local.username.startsWith("ig_") && !remoteConv.username.startsWith("ig_");
-                    merged = {
-                      ...merged,
-                      ...local,
-                      username: shouldKeepRemoteIdentity ? remoteConv.username : (local.username || remoteConv.username),
-                      fullName: shouldKeepRemoteIdentity ? remoteConv.fullName : (local.fullName || remoteConv.fullName),
-                      avatar:
-                        shouldKeepRemoteIdentity || !local.avatar || local.avatar.includes("default-avatar")
-                          ? remoteConv.avatar
-                          : local.avatar,
-                      isRestricted: isRestr,
-                    };
-                  }
-                }
-                return merged;
-              });
-              return [...mergedInstagram, ...tinderOnly];
             });
           }
         }
@@ -2329,7 +2308,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       window.removeEventListener("focus", handleImmediateListRevalidate);
       document.removeEventListener("visibilitychange", handleImmediateListRevalidate);
     };
-  }, [activeChat, chatPlatform]);
+  }, [activeChat, chatPlatform, loadInstagramConversations]);
   // Iniciar Gravação de Áudio via Microfone
   const handleStartRecording = async () => {
     try {
