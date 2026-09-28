@@ -5329,6 +5329,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         ai.status === "sending" ? "text-emerald-300" :
                         ai.status === "processing" ? "text-sky-300" :
                         ai.status === "completed" ? "text-emerald-400" :
+                        ai.status === "idle" ? "text-cyan-300" :
                         "text-[#737373]";
                       const dotClass =
                         ai.status === "failed" ? "bg-red-400" :
@@ -5338,7 +5339,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         ai.status === "sending" ? "bg-emerald-300" :
                         ai.status === "processing" ? "bg-sky-300" :
                         ai.status === "completed" ? "bg-emerald-400" :
+                        ai.status === "idle" ? "bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.55)]" :
                         "bg-[#525252]";
+                      const statusBadgeClass = ai.status === "idle"
+                        ? "rounded-md border border-cyan-400/20 bg-cyan-400/10 px-1.5 py-0.5"
+                        : "";
                       const objectiveIsCurrent =
                         ai.status === "processing" ||
                         ai.status === "sending" ||
@@ -5358,7 +5363,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
                           <span className={`shrink-0 font-semibold ${toneClass}`}>IA</span>
                           <span className="text-[#525252]">·</span>
-                          <span className={`truncate font-medium ${toneClass}`}><InboxAiStatusLabel ai={ai} /></span>
+                          <span className={`truncate font-medium ${toneClass} ${statusBadgeClass}`}><InboxAiStatusLabel ai={ai} /></span>
                           {objectiveText && (
                             <>
                               <span className="text-[#525252]">·</span>
