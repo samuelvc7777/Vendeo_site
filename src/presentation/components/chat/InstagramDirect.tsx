@@ -991,7 +991,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Função sênior unificada para verificar se uma conversa está restrita
   const isChatRestricted = useCallback((c: DirectConversation) => {
-    return restrictedChatIdsRef.current.has(c.id) || Boolean(c.isRestricted || c.status === "restricted");
+    // O estado da conversa/banco é canônico. localStorage não pode esconder chats
+    // por carregar IDs antigos de uma sessão anterior.
+    return Boolean(c.isRestricted || c.status === "restricted");
   }, []);
 
   // Função sênior unificada para verificação de não lida
@@ -1250,7 +1252,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       // 1. Fonte canônica: carrega TODAS as conversas diretamente do Supabase em páginas.
       // Só publica o snapshot depois que todas as páginas terminarem com sucesso.
       if (supabase) {
-        const pageSize = 250;
+        const pageSize = 1000;
         const fetchedRows: any[] = [];
         let directFetchComplete = true;
 
@@ -1276,6 +1278,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         if (directFetchComplete && fetchedRows.length > 0) {
           setIsInstagramConnected((current) => current === false ? current : true);
+
+          // Auto-cura do cache local de restrições com a verdade canônica do banco.
+          // IDs antigos no localStorage nunca mais podem esconder a inbox.
+          const canonicalRestrictedIds = new Set<string>(
+            fetchedRows
+              .filter((c: any) => Boolean(c.is_restricted) || c.status === "restricted")
+              .map((c: any) => String(c.id))
+          );
+          restrictedChatIdsRef.current = canonicalRestrictedIds;
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem(
+                "vendeo_restricted_chats",
+                JSON.stringify(Array.from(canonicalRestrictedIds))
+              );
+            } catch {}
+          }
+
           rawConversations = fetchedRows
             .filter((c: any) => !c.id?.startsWith("__") && c.status !== "system" && c.status !== "vault")
             .map((c: any) => ({
@@ -1327,7 +1347,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           const lastMsgTime = getMessageTimestampMs(c.lastMessageAt || c.lastActive);
           const readTime = readChatTimestampsRef.current[c.id];
           const isRead = c.lastSender === "me" || (readTime && lastMsgTime > 0 && lastMsgTime <= readTime);
-          const isRestr = restrictedChatIdsRef.current.has(c.id) || Boolean(c.isRestricted || c.is_restricted);
+          const isRestr = Boolean(c.isRestricted || c.is_restricted || c.status === "restricted");
           const rawSeenAt = c.seenAt || c.seen_at;
           const rawStatus = c.lastStatus || c.last_status;
           const isValidSeen =
