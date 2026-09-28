@@ -791,9 +791,7 @@ export function createBrainOutboxBatch(params: {
   return actions.map((action, index) => {
     const isAudio = action.type === "audio";
     const requestedDelay = Number(action.delayBeforeSendSeconds);
-    const stepDelay = index === 0
-      ? 0
-      : actions[index - 1]?.type === "audio"
+    const stepDelay = index > 0 && actions[index - 1]?.type === "audio"
       ? Math.max(0, Number(resolvedAudio?.duration) || 0)
       : Number.isFinite(requestedDelay) && requestedDelay >= 0
       ? requestedDelay
@@ -4267,6 +4265,7 @@ export async function runDurableOutboxDispatcher(
       deliverAt: entry.notBefore || entry.createdAt || new Date().toISOString(),
       createdAt: entry.createdAt || new Date().toISOString(),
       audioDurationSeconds: entry.audioDurationSeconds ?? null,
+      status: entry.status === "sending" ? "sending" : "pending",
     }))
     .filter((entry) => Boolean(entry.content));
   await publishAutoPilotState(supabase, conversationId, { pendingOutboundMessages });
@@ -9645,6 +9644,7 @@ export async function runBrainOrchestration(
           deliverAt: entry.notBefore || entry.createdAt,
           createdAt: entry.createdAt,
           audioDurationSeconds: entry.audioDurationSeconds ?? null,
+          status: entry.status === "sending" ? "sending" : "pending",
         })),
       });
 

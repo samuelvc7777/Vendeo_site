@@ -129,6 +129,7 @@ export interface DirectMessage {
   errorReason?: "outside_24h_window" | "generic";
   deliverAt?: number;
   delaySeconds?: number;
+  deliveryQueueStatus?: "pending" | "sending";
   replyToMessageId?: string | null;
   replyTo?: {
     id: string;
@@ -351,18 +352,24 @@ function getResilientInterval(failures: number, baseInterval: number = 3000): nu
 
 /**
  * Mini-componente de contagem regressiva em tempo real para mensagens com envio programado.
- * Exibe contagem decrescente segundo a segundo (ex: 10s -> 09s -> ... -> 01s)
- * mantendo '01s' até a confirmação final da entrega.
+ * Exibe contagem decrescente até o instante mínimo de envio.
+ * Depois disso, mostra o estado real da fila ("Aguardando…" ou "Enviando…").
  */
-function MessageCountdown({ deliverAt }: { deliverAt: number }) {
+function MessageCountdown({
+  deliverAt,
+  queueStatus,
+}: {
+  deliverAt: number;
+  queueStatus?: "pending" | "sending";
+}) {
   const [remaining, setRemaining] = useState<number>(() => {
-    return Math.max(1, Math.ceil((deliverAt - Date.now()) / 1000));
+    return Math.max(0, Math.ceil((deliverAt - Date.now()) / 1000));
   });
 
   useEffect(() => {
     const update = () => {
       const diff = Math.ceil((deliverAt - Date.now()) / 1000);
-      setRemaining(Math.max(1, diff));
+      setRemaining(Math.max(0, diff));
     };
 
     update();
@@ -370,15 +377,25 @@ function MessageCountdown({ deliverAt }: { deliverAt: number }) {
     return () => clearInterval(interval);
   }, [deliverAt]);
 
-  const formatted = String(remaining).padStart(2, "0") + "s";
+  const waitingForEligibility = remaining === 0 && queueStatus === "pending";
+  const sendingNow = remaining === 0 && queueStatus !== "pending";
+  const label = remaining > 0
+    ? String(remaining).padStart(2, "0") + "s"
+    : waitingForEligibility
+    ? "Aguardando…"
+    : "Enviando…";
 
   return (
     <span
       className="inline-flex items-center gap-1 font-mono text-[10px] text-white/95 bg-white/20 px-1.5 py-0.5 rounded-full font-semibold tabular-nums select-none"
-      title={`Enviando em ${formatted}`}
+      title={remaining > 0 ? `Envio elegível em ${label}` : waitingForEligibility ? "Aguardando liberação do dispatcher" : "Envio em andamento"}
     >
-      <Clock className="w-2.5 h-2.5 animate-pulse text-amber-300 shrink-0" />
-      <span>{formatted}</span>
+      {sendingNow ? (
+        <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-300 shrink-0" />
+      ) : (
+        <Clock className="w-2.5 h-2.5 animate-pulse text-amber-300 shrink-0" />
+      )}
+      <span>{label}</span>
     </span>
   );
 }
@@ -3654,6 +3671,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         isMine: true,
         status: "sending",
         deliverAt: Date.parse(preview.deliverAt) || 0,
+        deliveryQueueStatus: preview.status,
       };
     });
     const rawChatMessages = deduplicateMessages([...(activeChatMessagesRaw || []), ...pendingPreviews]);
@@ -4230,7 +4248,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             <span className="ml-0.5 flex items-center gap-1">
                               {msg.status === "sending" ? (
                                 msg.deliverAt ? (
-                                  <MessageCountdown deliverAt={msg.deliverAt} />
+                                  <MessageCountdown deliverAt={msg.deliverAt} queueStatus={msg.deliveryQueueStatus} />
                                 ) : (
                                   <Loader2 className="w-2.5 h-2.5 animate-spin inline" />
                                 )
