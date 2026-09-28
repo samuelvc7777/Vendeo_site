@@ -4067,6 +4067,29 @@ serve(async (req: Request) => {
               p_worker_token: recoveryWorkerToken,
               p_status: status,
             });
+            const finishRecoveredTurnLease = async (restoreForRetry: boolean) => {
+              const patch: Record<string, unknown> = {
+                recovery_lease_token: null,
+                recovery_lease_expires_at: null,
+                updated_at: new Date().toISOString(),
+              };
+              if (restoreForRetry) patch.status = "brain_late";
+
+              let update = supabase.from("brain_turns")
+                .update(patch)
+                .eq("id", lateTurn.id)
+                .eq("recovery_lease_token", recoveryWorkerToken);
+              if (restoreForRetry) {
+                update = update.in("status", ["brain_late", "executing"]);
+              }
+              const { error: finishError } = await update;
+              if (finishError) {
+                console.error(
+                  `[Brain recovery] Falha ao finalizar lease do turno ${lateTurn.id} (restoreForRetry=${restoreForRetry}):`,
+                  finishError,
+                );
+              }
+            };
             try {
               if (!lateTurn.provider_turn_id || !lateTurn.session_id || !Array.isArray(lateTurn.inbound_message_ids)) {
                 await releaseLateTurn("failed_technical");
@@ -4115,13 +4138,15 @@ serve(async (req: Request) => {
                   audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : original.audio_transcript,
                 } as any,
               });
-              if (!recovery.handled && recovery.error) {
-                console.warn(`[Brain recovery] Turno ${lateTurn.id} continua recuperável: ${recovery.error}`);
+              if (!recovery.handled || recovery.error) {
+                console.warn(`[Brain recovery] Turno ${lateTurn.id} continua recuperável: ${recovery.error || "recovery_not_handled"}`);
+                await finishRecoveredTurnLease(true);
+              } else {
+                await finishRecoveredTurnLease(false);
               }
-              await releaseLateTurn("brain_late");
             } catch (recoveryError) {
               console.error(`[Brain recovery] Falha no turno ${lateTurn.id}:`, recoveryError);
-              await releaseLateTurn("brain_late");
+              await finishRecoveredTurnLease(true);
             }
           }
         }

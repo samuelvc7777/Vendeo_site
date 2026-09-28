@@ -147,3 +147,15 @@ test("webhook não referencia variável isExplicitlyDisabled inexistente", () =>
   assert.doesNotMatch(source, /isExplicitlyDisabled=/);
   assert.match(source, /isPaused=\$\{isPaused\}/);
 });
+
+test("scanner de recovery libera lease sem ressuscitar turno concluído", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/index.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const finishRecoveredTurnLease = async \(restoreForRetry: boolean\)/);
+  assert.match(source, /update = update\.in\("status", \["brain_late", "executing"\]\)/);
+  assert.match(source, /if \(!recovery\.handled \|\| recovery\.error\)[\s\S]*finishRecoveredTurnLease\(true\)/s);
+  assert.match(source, /else \{\s*await finishRecoveredTurnLease\(false\)/s);
+  assert.doesNotMatch(source, /if \(!recovery\.handled && recovery\.error\)[\s\S]*await releaseLateTurn\("brain_late"\)/s);
+});
