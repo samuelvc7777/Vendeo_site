@@ -1200,12 +1200,57 @@ export function recoverSafeBrainPlan(parsedPlan: any): any | null {
   if (responses.length < 1 || responses.length > 4) return null;
   const safeResponses = responses.map((item: unknown) => typeof item === "string" ? item.trim() : "");
   if (safeResponses.some((item: string) => !item || item.length > 2000 || looksLikeInternalBrainPayload(item))) return null;
-  return {
+
+  const questionResponseIndexes = safeResponses
+    .map((response: string, index: number) => response.includes("?") ? index : -1)
+    .filter((index: number) => index >= 0);
+  const rawQuestionIntents: unknown[] = Array.isArray(parsedPlan.questionIntents) ? parsedPlan.questionIntents : [];
+  const baseValidQuestionIntents = rawQuestionIntents
+    .map((raw: unknown) => raw && typeof raw === "object" ? raw as Record<string, unknown> : null)
+    .filter((intent): intent is Record<string, unknown> =>
+      Boolean(
+        intent &&
+        typeof intent.intentKey === "string" &&
+        intent.intentKey.trim() &&
+        typeof intent.canonicalMeaning === "string" &&
+        intent.canonicalMeaning.trim() &&
+        typeof intent.kind === "string" &&
+        ["discovery", "continuity", "follow_up", "callback"].includes(intent.kind) &&
+        (intent.target === undefined || intent.target === "pretendente" || intent.target === "terceiro")
+      )
+    );
+
+  let recoveredQuestionIntents = baseValidQuestionIntents.filter((intent) =>
+    Number.isInteger(intent.responseIndex) &&
+    Number(intent.responseIndex) >= 0 &&
+    Number(intent.responseIndex) < safeResponses.length
+  );
+
+  // Correção estrutural estritamente inequívoca: um único intent + uma única
+  // resposta interrogativa permite corrigir apenas o índice, sem inventar
+  // conteúdo, intenção ou nova pergunta.
+  if (
+    rawQuestionIntents.length === 1 &&
+    baseValidQuestionIntents.length === 1 &&
+    recoveredQuestionIntents.length === 0 &&
+    questionResponseIndexes.length === 1
+  ) {
+    recoveredQuestionIntents = [{
+      ...baseValidQuestionIntents[0],
+      responseIndex: questionResponseIndexes[0],
+    }];
+  }
+
+  const recoveredPlan = {
     ...parsedPlan,
     responses: safeResponses,
+    questionIntents: recoveredQuestionIntents,
     suggestedResponse: safeResponses.join("\n\n"),
     action: parsedPlan.action === "wait" ? "wait" : "reply",
   };
+  const recoveredQuestionIntentValidation = validateQuestionIntentsInvariant(recoveredPlan);
+  if (!recoveredQuestionIntentValidation.valid) return null;
+  return recoveredPlan;
 }
 
 function looksLikeInternalBrainPayload(text: string): boolean {

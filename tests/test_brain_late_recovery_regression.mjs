@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { getExistingOpenAiTurn } from "../supabase/functions/api/openai_brain.ts";
+import { getExistingOpenAiTurn, recoverSafeBrainPlan } from "../supabase/functions/api/openai_brain.ts";
 
 test("brain_late retrieve usa o contrato completo da Agents API", async () => {
   const requests = [];
@@ -104,4 +104,46 @@ test("brain_late não reivindica novamente mensagens do provider turn existente"
   assert.match(source, /\} else \{\s*for \(const id of claimedMessageIds\)[\s\S]*claimExperimentalCycleMessagesAtomic/s);
   assert.match(source, /resumeTurnId: lateTurnForResume\?\.provider_turn_id \|\| null/);
   assert.match(source, /resumeExistingTurnOnly: Boolean\(lateTurnForResume\?\.provider_turn_id\)/);
+});
+
+test("recovery corrige responseIndex apenas quando o remapeamento é inequívoco", () => {
+  const recovered = recoverSafeBrainPlan({
+    action: "reply",
+    responses: ["e vc curte fazer isso sempre?"],
+    outboundActions: [
+      { type: "text", text: "e vc curte fazer isso sempre?" },
+      { type: "audio", audioId: "audio-hobbies" },
+    ],
+    questionIntents: [{
+      responseIndex: 1,
+      intentKey: "hobbies.frequency",
+      canonicalMeaning: "saber se ele faz isso com frequência",
+      kind: "follow_up",
+      target: "pretendente",
+    }],
+  });
+
+  assert.ok(recovered);
+  assert.equal(recovered.questionIntents[0].responseIndex, 0);
+  assert.equal(recovered.outboundActions[1].audioId, "audio-hobbies");
+});
+
+test("brain_late revalida somente o audioId já escolhido pelo Brain contra o objetivo atual", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /if \(lateTurnForResume && !alreadyAuthorized\)/);
+  assert.match(source, /objective_id: lateObjectiveId/);
+  assert.match(source, /candidate\.audio_id === agentSelectedAudioId/);
+  assert.match(source, /late_turn_audio_revalidated=/);
+});
+
+test("webhook não referencia variável isExplicitlyDisabled inexistente", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/index.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /isExplicitlyDisabled=/);
+  assert.match(source, /isPaused=\$\{isPaused\}/);
 });

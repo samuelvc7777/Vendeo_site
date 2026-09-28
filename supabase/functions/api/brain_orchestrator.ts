@@ -8942,6 +8942,40 @@ export async function runBrainOrchestration(
         }
 
         if (agentSelectedAudioId) {
+          const alreadyAuthorized = brainAudioCandidates.some(
+            (c) => c.audio_id === agentSelectedAudioId ||
+              (c as CofreAudioCandidate & { audioId?: string }).audioId === agentSelectedAudioId
+          );
+
+          if (lateTurnForResume && !alreadyAuthorized) {
+            const lateObjectiveId = stageChecklistForRouter.currentObjective?.id;
+            if (lateObjectiveId) {
+              currentCycle.trace.push(`late_turn_audio_revalidation_started=${agentSelectedAudioId}`);
+              try {
+                const stillEligible = await searchCofreAudios({
+                  supabase,
+                  conversationId,
+                  objective_id: lateObjectiveId,
+                });
+                const revalidatedCandidate = stillEligible.find(
+                  (candidate) => candidate.audio_id === agentSelectedAudioId
+                );
+                if (revalidatedCandidate) {
+                  brainAudioCandidates.push(revalidatedCandidate);
+                  currentCycle.trace.push(`late_turn_audio_revalidated=${agentSelectedAudioId}`);
+                } else {
+                  currentCycle.trace.push(`late_turn_audio_revalidation_failed=${agentSelectedAudioId}`);
+                }
+              } catch (lateAudioRevalidationError) {
+                console.warn(
+                  `[Brain] Falha ao revalidar áudio de turno tardio ${agentSelectedAudioId}; mantendo fail-closed.`,
+                  lateAudioRevalidationError,
+                );
+                currentCycle.trace.push(`late_turn_audio_revalidation_error=${agentSelectedAudioId}`);
+              }
+            }
+          }
+
           const authorizedCand = brainAudioCandidates.find(
             (c) => c.audio_id === agentSelectedAudioId || (c as any).audioId === agentSelectedAudioId
           );

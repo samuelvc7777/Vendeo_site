@@ -1141,7 +1141,7 @@ serve(async (req: Request) => {
 
                 if (isPaused) {
                   console.log(
-                    `[AutoPilot] Conversa ${conversationId} está desativada/pausada manualmente (ai_auto_respond=${convRow?.ai_auto_respond}, status=${convRules.status}, isExplicitlyDisabled=${isExplicitlyDisabled}). Não respondendo.`
+                    `[AutoPilot] Conversa ${conversationId} está desativada/pausada manualmente (ai_auto_respond=${convRow?.ai_auto_respond}, status=${convRules.status}, isPaused=${isPaused}). Não respondendo.`
                   );
                   if (convRow?.ai_debounce_until) {
                     await supabase
