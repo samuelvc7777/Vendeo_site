@@ -1133,6 +1133,7 @@ serve(async (req: Request) => {
                   (convRow?.ai_auto_respond !== true && (convRules.status === "paused_manual" || convRules.status === "disabled"));
 
                 const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
+                const isConversationAiEnabled = convRow?.ai_auto_respond === true;
                 const isActionable = isActionableInboundMessage({
                   text,
                   mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
@@ -1160,7 +1161,14 @@ serve(async (req: Request) => {
                 }
 
                 // BRAIN: Único orquestrador oficial de produção (fail-closed)
-                if (!isPaused && isEnabledGlobally && !isManual && isEligibleByWatermark && isActionable) {
+                if (
+                  isConversationAiEnabled &&
+                  !isPaused &&
+                  isEnabledGlobally &&
+                  !isManual &&
+                  isEligibleByWatermark &&
+                  isActionable
+                ) {
                   const delayMinutes =
                     typeof apConfig?.responseDelayMinutes === "number"
                       ? apConfig.responseDelayMinutes
@@ -1218,7 +1226,6 @@ serve(async (req: Request) => {
                     await supabase
                       .from("instagram_conversations")
                       .update({
-                        ai_auto_respond: true,
                         ai_debounce_until: scheduledUntil,
                       })
                       .eq("id", conversationId);
