@@ -1380,10 +1380,12 @@ export interface OpenAiBrainTurnResult {
 }
 
 /**
- * Recupera histórico recente de instagram_messages (15 a 20 mensagens) exclusivamente
- * para o bootstrap de uma nova sessão (recuperação de sessão perdida ou primeira sessão
- * de conversa pré-existente). Não utiliza nenhuma memória MCP.
- * Utiliza estritamente as colunas canônicas da tabela: id, sender_id, is_mine, text, created_at, timestamp.
+ * Bootstrap de uma NOVA session persistente.
+ *
+ * O histórico recente recompõe continuidade conversacional sem depender de MCP.
+ * Fatos de resolução manual marcados como permanentes são promovidos para
+ * persona_memory e entram SOMENTE na criação/recriação da session, evitando
+ * custo por turno e sem retroalimentar sessions antigas.
  */
 export async function fetchSessionRecoveryBootstrap(
   supabase: any,
@@ -1392,63 +1394,101 @@ export async function fetchSessionRecoveryBootstrap(
 ): Promise<{
   text: string;
   messageCount: number;
+  factCount?: number;
   queryFailed?: boolean;
   errorMessage?: string | null;
 }> {
   if (!supabase || !conversationId) {
-    return { text: "", messageCount: 0, queryFailed: false, errorMessage: null };
+    return { text: "", messageCount: 0, factCount: 0, queryFailed: false, errorMessage: null };
   }
 
+  let queryFailed = false;
+  const errors: string[] = [];
+  let rows: any[] = [];
+  let permanentFacts: any[] = [];
+
   try {
-    const { data: rows, error } = await supabase
+    const historyResult = await supabase
       .from("instagram_messages")
       .select("id, sender_id, is_mine, text, created_at, timestamp")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
       .limit(35);
 
-    if (error) {
-      const errMsg = error.message || error.details || String(error);
-      console.error("[OpenAI Agent] agent_session_bootstrap_query_failed:", errMsg);
-      return {
-        text: "",
-        messageCount: 0,
-        queryFailed: true,
-        errorMessage: errMsg.slice(0, 200),
-      };
+    if (historyResult?.error) {
+      queryFailed = true;
+      const errMsg = historyResult.error.message || historyResult.error.details || String(historyResult.error);
+      errors.push(`history: ${errMsg}`);
+      console.error("[OpenAI Agent] agent_session_bootstrap_history_query_failed:", errMsg);
+    } else {
+      rows = Array.isArray(historyResult?.data) ? historyResult.data : [];
     }
+  } catch (err: any) {
+    queryFailed = true;
+    const errMsg = err?.message || String(err);
+    errors.push(`history: ${errMsg}`);
+    console.error("[OpenAI Agent] agent_session_bootstrap_history_exception:", errMsg);
+  }
 
-    if (!Array.isArray(rows) || rows.length === 0) {
-      return { text: "", messageCount: 0, queryFailed: false, errorMessage: null };
+  try {
+    const factsResult = await supabase
+      .from("persona_memory")
+      .select("key, value, updated_at")
+      .eq("persona_id", "larissa")
+      .eq("category", "manual_resolution")
+      .order("updated_at", { ascending: false })
+      .limit(50);
+
+    if (factsResult?.error) {
+      queryFailed = true;
+      const errMsg = factsResult.error.message || factsResult.error.details || String(factsResult.error);
+      errors.push(`permanent_facts: ${errMsg}`);
+      console.error("[OpenAI Agent] agent_session_bootstrap_persona_query_failed:", errMsg);
+    } else {
+      permanentFacts = Array.isArray(factsResult?.data) ? factsResult.data : [];
     }
+  } catch (err: any) {
+    queryFailed = true;
+    const errMsg = err?.message || String(err);
+    errors.push(`permanent_facts: ${errMsg}`);
+    console.error("[OpenAI Agent] agent_session_bootstrap_persona_exception:", errMsg);
+  }
 
-    const excludeSet = new Set(excludeMessageIds.map((id) => String(id)));
-    const filteredRows = rows.filter((r: any) => {
-      const idStr = String(r.id || "");
-      if (idStr && excludeSet.has(idStr)) return false;
-      const content = String(r.text || "").trim();
-      return Boolean(content);
-    });
+  const excludeSet = new Set(excludeMessageIds.map((id) => String(id)));
+  const filteredRows = rows.filter((r: any) => {
+    const idStr = String(r.id || "");
+    if (idStr && excludeSet.has(idStr)) return false;
+    return Boolean(String(r.text || "").trim());
+  });
 
-    if (filteredRows.length === 0) {
-      return { text: "", messageCount: 0, queryFailed: false, errorMessage: null };
-    }
+  const targetSlice = filteredRows.slice(0, 20);
+  targetSlice.sort((a: any, b: any) => {
+    const tA = new Date(a.created_at || a.timestamp || 0).getTime();
+    const tB = new Date(b.created_at || b.timestamp || 0).getTime();
+    return tA - tB;
+  });
 
-    // Recupera entre 15 e 20 mensagens mais recentes (limite de 20)
-    const targetSlice = filteredRows.slice(0, 20);
+  const normalizedFacts = permanentFacts
+    .map((row: any) => {
+      const fact = typeof row?.value?.fact === "string"
+        ? row.value.fact.trim()
+        : typeof row?.value === "string"
+        ? row.value.trim()
+        : "";
+      const question = typeof row?.value?.question === "string" ? row.value.question.trim() : "";
+      const key = String(row?.key || "").trim();
+      return fact ? { key, question, fact } : null;
+    })
+    .filter(Boolean) as Array<{ key: string; question: string; fact: string }>;
 
-    // Ordena cronologicamente (da mais antiga para a mais recente)
-    targetSlice.sort((a: any, b: any) => {
-      const tA = new Date(a.created_at || a.timestamp || 0).getTime();
-      const tB = new Date(b.created_at || b.timestamp || 0).getTime();
-      return tA - tB;
-    });
+  const lines: string[] = [];
 
-    const lines: string[] = [
+  if (targetSlice.length > 0) {
+    lines.push(
       "## RECUPERAÇÃO EXCEPCIONAL DE CONTEXTO",
       "",
       "Histórico recente real da conversa:",
-    ];
+    );
 
     for (const msg of targetSlice) {
       const isLarissa = Boolean(
@@ -1459,27 +1499,30 @@ export async function fetchSessionRecoveryBootstrap(
       const senderLabel = isLarissa ? "Larissa" : "Pretendente";
       const idPart = msg.id ? ` | id=${msg.id}` : "";
       const text = String(msg.text || "").trim();
-      lines.push("");
-      lines.push(`[${senderLabel}${idPart}]`);
-      lines.push(text);
+      lines.push("", `[${senderLabel}${idPart}]`, text);
     }
-
-    return {
-      text: lines.join("\n"),
-      messageCount: targetSlice.length,
-      queryFailed: false,
-      errorMessage: null,
-    };
-  } catch (err: any) {
-    const errMsg = err?.message || String(err);
-    console.error("[OpenAI Agent] agent_session_bootstrap_exception:", errMsg);
-    return {
-      text: "",
-      messageCount: 0,
-      queryFailed: true,
-      errorMessage: errMsg.slice(0, 200),
-    };
   }
+
+  if (normalizedFacts.length > 0) {
+    if (lines.length) lines.push("", "---", "");
+    lines.push(
+      "## FATOS PERMANENTES CONFIRMADOS PELO OPERADOR",
+      "Estes fatos foram explicitamente salvos para novas sessions da Larissa. Use-os como contexto factual; nunca revele metadados internos.",
+    );
+    for (const item of normalizedFacts) {
+      lines.push(
+        `- ${item.key || "fato_manual"}: ${item.fact}${item.question ? ` (origem: resposta factual à pergunta "${item.question}")` : ""}`
+      );
+    }
+  }
+
+  return {
+    text: lines.join("\n"),
+    messageCount: targetSlice.length,
+    factCount: normalizedFacts.length,
+    queryFailed,
+    errorMessage: errors.length ? errors.join(" | ").slice(0, 400) : null,
+  };
 }
 
 async function fetchAgentGenerationIds(
@@ -2549,7 +2592,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
               params.conversationId,
               currentInboundIds
             );
-            telemetry.agentSessionBootstrapInjected = bootstrap.messageCount > 0;
+            telemetry.agentSessionBootstrapInjected = Boolean(bootstrap.text.trim());
             telemetry.agentSessionBootstrapMessageCount = bootstrap.messageCount;
             telemetry.agentSessionBootstrapQueryFailed = Boolean(bootstrap.queryFailed);
             telemetry.agentSessionBootstrapError = bootstrap.errorMessage || null;
@@ -2929,7 +2972,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         if (bootstrapRes.queryFailed) {
           console.warn(`[OpenAI Agent] agent_session_bootstrap_query_failed=true error=${bootstrapRes.errorMessage}`);
         }
-        if (bootstrapRes.messageCount > 0) {
+        if (bootstrapRes.text.trim()) {
           initialInputText = `${bootstrapRes.text}\n\n---\n\n${contextMessage}`;
           telemetry.agentSessionBootstrapInjected = true;
           telemetry.agentSessionBootstrapMessageCount = bootstrapRes.messageCount;
