@@ -712,7 +712,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [selectedProfileForModal, setSelectedProfileForModal] = useState<DirectConversation | null>(null);
 
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
-  const [isInstagramConnected, setIsInstagramConnected] = useState(false);
+  const [isInstagramConnected, setIsInstagramConnected] = useState<boolean | null>(null);
   const [showFilterBar, setShowFilterBar] = useState(true);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [sortOrder, setSortOrder] = useState<SortOrder>("recentes");
@@ -1207,13 +1207,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   const checkInstagramStatus = useCallback(async () => {
     try {
-      const res = await fetch(getApiUrl("/api/instagram/config"));
-      if (res.ok) {
-        const data = await res.json();
-        setIsInstagramConnected(Boolean(data.isConnected));
+      const res = await fetch(getApiUrl("/api/instagram/config"), { cache: "no-store" });
+      if (!res.ok) {
+        console.warn("[Instagram] Falha temporária ao verificar conexão; mantendo último estado.", res.status);
+        return;
       }
-    } catch {
-      setIsInstagramConnected(false);
+      const data = await res.json();
+      if (typeof data?.isConnected === "boolean") {
+        setIsInstagramConnected(data.isConnected);
+      }
+    } catch (error) {
+      console.warn("[Instagram] Status indisponível temporariamente; mantendo último estado.", error);
     }
   }, []);
 
@@ -1271,6 +1275,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         }
 
         if (directFetchComplete && fetchedRows.length > 0) {
+          setIsInstagramConnected((current) => current === false ? current : true);
           rawConversations = fetchedRows
             .filter((c: any) => !c.id?.startsWith("__") && c.status !== "system" && c.status !== "vault")
             .map((c: any) => ({
@@ -5102,7 +5107,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       : "Conecte sua conta do Tinder na aba Config para carregar seus matches reais."}
                   </p>
                 </>
-              ) : chatPlatform === "instagram" && !isInstagramConnected ? (
+              ) : chatPlatform === "instagram" && isInstagramConnected === false ? (
                 <div className="py-14 text-center space-y-3 px-4">
                   <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] flex items-center justify-center mx-auto text-white shadow-lg">
                     <Camera className="w-6 h-6 stroke-[2]" />
@@ -5120,6 +5125,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <Camera className="w-4 h-4" />
                     Conectar Instagram Oficial
                   </button>
+                </div>
+              ) : chatPlatform === "instagram" && isInstagramConnected === null ? (
+                <div className="py-10 text-center space-y-2">
+                  <div className="w-7 h-7 mx-auto rounded-full border-2 border-zinc-700 border-t-zinc-300 animate-spin" />
+                  <p className="text-xs text-[#737373]">Verificando conexão do Instagram...</p>
                 </div>
               ) : (
                 <p className="text-xs text-[#737373]">Nenhuma conversa encontrada neste filtro.</p>
