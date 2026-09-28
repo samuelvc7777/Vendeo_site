@@ -8492,6 +8492,14 @@ export async function runBrainOrchestration(
           if (openAiBrainTurn.telemetry.toolSchemaEstimatedTokens !== undefined) {
             currentCycle.trace.push(`tool_schema_estimated_tokens=${openAiBrainTurn.telemetry.toolSchemaEstimatedTokens}`);
           }
+          currentCycle.trace.push(`web_search_enabled=${Boolean(openAiBrainTurn.telemetry.webSearchEnabled)}`);
+          currentCycle.trace.push(`web_search_status=${openAiBrainTurn.telemetry.webSearchStatus || "not_used"}`);
+          currentCycle.trace.push(`web_search_call_count=${openAiBrainTurn.telemetry.webSearchCallCount || 0}`);
+          currentCycle.trace.push(`web_search_duplicate_call_count=${openAiBrainTurn.telemetry.webSearchDuplicateCallCount || 0}`);
+          currentCycle.trace.push(`web_search_session_recreated=${Boolean(openAiBrainTurn.telemetry.webSearchSessionRecreated)}`);
+          for (const source of openAiBrainTurn.telemetry.webSearchSources || []) {
+            currentCycle.trace.push(`web_search_source=${source}`);
+          }
           if (openAiBrainTurn.telemetry.modelGenerationCount !== undefined) {
             currentCycle.trace.push(`model_generation_count=${openAiBrainTurn.telemetry.modelGenerationCount}`);
           }
