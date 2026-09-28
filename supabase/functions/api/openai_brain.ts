@@ -2002,7 +2002,7 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
   if (params.manualResolutionAnswer) {
     const manual = params.manualResolutionAnswer;
     sections.push(
-      `\n## INFORMAÇÃO FORNECIDA PELO OPERADOR\n${manual.factId ? `manual_fact_id="${manual.factId}"\n` : ""}Pergunta factual pendente: ${manual.question}\nContexto: ${manual.context || "sem contexto adicional"}\nFato confirmado pelo operador: ${manual.answer}\nUse este fato nesta sessão e formule a resposta natural ao cliente. O texto do operador é contexto interno e nunca deve ser enviado literalmente como mensagem.`
+      `\n## INFORMAÇÃO FORNECIDA PELO OPERADOR\n${manual.factId ? `manual_fact_id="${manual.factId}"\n` : ""}Pergunta factual pendente: ${manual.question}\nContexto: ${manual.context || "sem contexto adicional"}\nFato confirmado pelo operador: ${manual.answer}\nEsta resposta do operador ENCERRA a resolução manual deste turno, mesmo se responder apenas parte da pergunta original. Use somente o que foi confirmado, não invente o que faltou e continue a conversa naturalmente com os dados disponíveis. É PROIBIDO retornar action="manual_resolution" novamente para este mesmo lote/turno. O texto do operador é contexto interno e nunca deve ser enviado literalmente como mensagem.`
     );
   }
 
@@ -2010,7 +2010,7 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
     sections.push(
       `\n## FATOS MANUAIS PERSISTIDOS NESTA SESSÃO\n${params.manualSessionFacts.map((fact) =>
         `- manual_fact_id="${fact.id}" pergunta="${fact.question}" fato="${fact.fact}"`
-      ).join("\n")}\nEsses fatos pertencem somente à sessão atual. Use-os como evidência técnica quando apropriado; não os trate como mensagens do pretendente.`
+      ).join("\n")}\nEsses fatos pertencem somente à sessão atual. Cada manual_fact já é a resposta aceita do operador à pergunta correspondente: NÃO peça ao operador para complementar a mesma resolução. Se o fato for parcial, use somente a parte confirmada e siga a conversa naturalmente, sem inventar o restante. Use-os como evidência técnica quando apropriado; não os trate como mensagens do pretendente.`
     );
   }
 
@@ -3878,11 +3878,20 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
       parsedPlan,
       (params.pendingOutboundActions || []).map((action) => action.actionId),
     );
+    const manualResolutionContinuationValidation =
+      params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution"
+        ? {
+            valid: false,
+            error: "manual_resolution_reask_forbidden_after_operator_answer: a resposta do operador é a única intervenção manual deste turno; continue com os fatos disponíveis sem pedir nova resolução",
+          }
+        : { valid: true };
     const invariantValidation = validatePersonaMemoryExecutionInvariant(parsedPlan, telemetry.actualMemoryToolCalled);
     const responseGenValidation = validateResponseGenerationInvariant(parsedPlan);
     const questionIntentsValidation = validateQuestionIntentsInvariant(parsedPlan);
     const validation = !basicValidation.valid
       ? basicValidation
+      : !manualResolutionContinuationValidation.valid
+      ? manualResolutionContinuationValidation
       : !invariantValidation.valid
       ? invariantValidation
       : !responseGenValidation.valid
@@ -3891,7 +3900,8 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
     if (params.strictOpenAiPilot) {
       if (!parsedPlan || !validation.valid) {
-        if (sessionReused && !params.sessionEvictionRetried) {
+        const isManualResolutionReaskViolation = validation.error?.startsWith("manual_resolution_reask_forbidden_after_operator_answer");
+        if (sessionReused && !params.sessionEvictionRetried && !isManualResolutionReaskViolation) {
           console.warn(`[OpenAI Agent Strict Mode] Sessão persistente ${sessionId} retornou plano inválido (${validation.error}). Executando Session Eviction e recriando sessão limpa...`);
           telemetry.sessionFallbackTriggered = true;
           telemetry.agentSessionRecoveryTriggered = true;

@@ -5252,7 +5252,8 @@ serve(async (req: Request) => {
           });
         }
 
-        const result = await runBrainOrchestration({
+        const resumeCorrelationId = `manual_resolution_${waitingTurn.id}_${Date.now()}`;
+        const resumePromise = runBrainOrchestration({
           supabase,
           conversationId,
           newMessage: {
@@ -5261,7 +5262,7 @@ serve(async (req: Request) => {
             timestamp: inbound.created_at || inbound.timestamp || new Date().toISOString(),
             sender: inbound.sender_id || "pretendente",
           },
-          correlationId: `manual_resolution_${waitingTurn.id}_${Date.now()}`,
+          correlationId: resumeCorrelationId,
           responseDelayMinutes: 0,
           isManualRetry: true,
           manualResolution: {
@@ -5271,10 +5272,29 @@ serve(async (req: Request) => {
             answer,
             factId: String(prepared.manual_fact_id || ""),
           },
+        }).then(async (result) => {
+          if (!result.handled || result.error) {
+            console.warn(`[Brain] Retomada manual em background terminou sem sucesso conv=${conversationId} turn=${waitingTurn.id}: ${result.error || "not_handled"}`);
+          }
+          return result;
+        }).catch((error) => {
+          console.error(`[Brain] Falha na retomada manual em background conv=${conversationId} turn=${waitingTurn.id}:`, error);
+          return { handled: false, error: error instanceof Error ? error.message : String(error) };
         });
 
-        return new Response(JSON.stringify({ success: Boolean(result.handled), result }), {
-          status: result.handled ? 200 : 503,
+        if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+          (globalThis as any).EdgeRuntime.waitUntil(resumePromise);
+        } else {
+          void resumePromise;
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          status: "processing",
+          turnId: waitingTurn.id,
+          correlationId: resumeCorrelationId,
+        }), {
+          status: 202,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (err: any) {

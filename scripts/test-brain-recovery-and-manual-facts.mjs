@@ -13,6 +13,9 @@ import { consumeOperatorLoginAttempt } from "../src/infrastructure/security/brai
 const root = process.cwd();
 const migration = fs.readFileSync(`${root}/supabase/migrations/20260926235806_brain_late_recovery_and_manual_facts.sql`, "utf8");
 const orchestrator = fs.readFileSync(`${root}/supabase/functions/api/brain_orchestrator.ts`, "utf8");
+const apiIndex = fs.readFileSync(`${root}/supabase/functions/api/index.ts`, "utf8");
+const openAiBrain = fs.readFileSync(`${root}/supabase/functions/api/openai_brain.ts`, "utf8");
+const canonicalPrompt = fs.readFileSync(`${root}/supabase/functions/api/larissa_canonical_prompt.md`, "utf8");
 
 test("turno late concluído é consultado por GET e recuperação não cria inferência", async () => {
   const requests = [];
@@ -75,6 +78,23 @@ test("fato permanente também é promovido para a memória disponível em novas 
   const permanentBranch = migration.slice(migration.indexOf("IF p_save_for_future THEN"), migration.indexOf("SELECT stage_completed_rules", migration.indexOf("IF p_save_for_future THEN")));
   assert.match(permanentBranch, /INSERT INTO public\.persona_memory/);
   assert.match(permanentBranch, /ON CONFLICT \(persona_id, key\) DO UPDATE/);
+});
+
+test("resolução manual aceita resposta parcial e proíbe perguntar novamente no mesmo turno", () => {
+  assert.match(canonicalPrompt, /RESOLUÇÃO MANUAL É UMA ÚNICA INTERVENÇÃO POR TURNO/);
+  assert.match(canonicalPrompt, /Mesmo que o operador responda somente parte da pergunta original/);
+  assert.match(openAiBrain, /manual_resolution_reask_forbidden_after_operator_answer/);
+  assert.match(openAiBrain, /params\.manualResolutionAnswer && parsedPlan\?\.action === "manual_resolution"/);
+});
+
+test("endpoint de resolução manual responde rápido e continua o Brain em background", () => {
+  const start = apiIndex.indexOf('path === "/autopilot/manual-resolution"');
+  const end = apiIndex.indexOf("// 8.11. AUTOPILOT: RETRY MANUAL ÚNICO", start);
+  const endpoint = apiIndex.slice(start, end);
+  assert.match(endpoint, /EdgeRuntime\?\.waitUntil/);
+  assert.match(endpoint, /status: 202/);
+  assert.match(endpoint, /status: "processing"/);
+  assert.doesNotMatch(endpoint, /const result = await runBrainOrchestration/);
 });
 
 test("manual_fact só valida dentro da conversa e da sessão durável", async () => {
