@@ -10509,6 +10509,41 @@ export async function runBrainOrchestration(
         cycleToken: correlationId,
       });
     } catch (_fErr) {}
+
+    // Se o operador desligou o AutoPilot global enquanto este ciclo já estava
+    // em andamento, o ciclo pôde terminar normalmente. Só agora o chat é
+    // desligado de forma atômica.
+    try {
+      const { data: gracefulDisable, error: gracefulDisableError } = await supabase.rpc(
+        "finalize_autopilot_disable_after_cycle_atomic",
+        { p_conversation_id: conversationId },
+      );
+      if (!gracefulDisableError && gracefulDisable?.disabled === true) {
+        await publishAutoPilotState(supabase, conversationId, {
+          cycleId: correlationId,
+          isEnabled: false,
+          status: "disabled",
+          activity: activity(
+            "completed",
+            "IA desligada",
+            "O ciclo em andamento terminou e este chat foi desligado pelo controle global.",
+            { cycleId: correlationId },
+          ),
+          scheduledResponseAt: null,
+          isSending: false,
+          sendingStartedAt: null,
+          sendingCycleToken: null,
+          cycleEvent: {
+            phase: "completed",
+            event: "global_disable_after_cycle",
+            label: "IA desligada após concluir ciclo",
+            detail: "O desligamento global aguardou este ciclo terminar antes de desativar o chat.",
+          },
+        });
+      }
+    } catch (gracefulDisableError) {
+      console.warn("[Brain] Falha fail-safe ao finalizar desligamento gracioso:", gracefulDisableError);
+    }
   }
 }
 

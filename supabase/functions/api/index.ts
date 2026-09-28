@@ -4201,13 +4201,40 @@ serve(async (req: Request) => {
         const isEnabledGlobally = apConfig?.isEnabledGlobally !== false;
 
         if (!isEnabledGlobally) {
-          console.log("[Cloud AutoPilot] cron:tick abortado pois o Piloto Automático está desativado globalmente.");
+          console.log("[Cloud AutoPilot] cron:tick em modo OFF global: sem novos ciclos; apenas drenagem/recuperação.");
+
+          // Mesmo com o global OFF precisamos liberar ciclos que morreram no meio.
+          // Isso não inicia inferência nova: apenas recupera ownership stale.
+          try {
+            const { error: staleDrainError } = await supabase.rpc(
+              "recover_stale_experimental_cycles_atomic",
+              { p_stale_before: getStaleCycleThresholdIso(), p_limit: 10 },
+            );
+            if (staleDrainError) {
+              console.warn("[Cloud AutoPilot] recovery stale durante drenagem global falhou:", staleDrainError.message);
+            }
+          } catch (staleDrainError) {
+            console.warn("[Cloud AutoPilot] recovery stale durante drenagem global lançou exceção:", staleDrainError);
+          }
+
+          const { data: finalizedDrains, error: finalizedDrainsError } = await supabase.rpc(
+            "finalize_all_pending_autopilot_disables_atomic"
+          );
+          if (finalizedDrainsError) {
+            console.warn("[Cloud AutoPilot] finalização de drenagens globais falhou:", finalizedDrainsError.message);
+          }
+
           await supabase
             .from("instagram_conversations")
             .update({ ai_debounce_until: null })
             .not("ai_debounce_until", "is", null);
 
-          return new Response(JSON.stringify({ success: true, message: "Piloto desativado globalmente. Debounces cancelados.", processedCount: 0 }), {
+          return new Response(JSON.stringify({
+            success: true,
+            message: "Piloto desativado globalmente. Nenhum ciclo novo será iniciado.",
+            processedCount: 0,
+            drainedChats: finalizedDrains?.disabled || 0,
+          }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
@@ -5486,48 +5513,25 @@ serve(async (req: Request) => {
             updated_at: new Date().toISOString(),
           });
 
-        // 2. Se desativado: cancela conversas que estão APENAS aguardando debounce (waiting_delay)
-        // e preserva aquelas onde a IA já está em análise/envio ativo (processing) para concluir com segurança
+        // 2. OFF global = drenagem graciosa:
+        // - chats sem ciclo ativo desligam imediatamente;
+        // - chats com Brain em execução recebem disable_after_cycle e terminam normalmente;
+        // - nenhum ciclo novo nasce porque a chave global já foi persistida como OFF.
+        let shutdownStats: Record<string, unknown> | null = null;
         if (!isEnabled) {
-          await supabase
-            .from("instagram_conversations")
-            .update({
-              ai_debounce_until: null,
-            })
-            .not("ai_debounce_until", "is", null);
-
-          const { data: statesRow } = await supabase
-            .from("instagram_conversations")
-            .select("stage_completed_rules")
-            .eq("id", "__autopilot_states__")
-            .maybeSingle();
-
-          const statesRules = statesRow?.stage_completed_rules || {};
-          const states = statesRules.states || {};
-          let statesModified = false;
-
-          for (const [convId, chatState] of Object.entries(states as Record<string, any>)) {
-            if (
-              chatState &&
-              (chatState.status === "waiting_delay" ||
-                (chatState.activity && chatState.activity.phase === "waiting"))
-            ) {
-              const nowIso = new Date().toISOString();
-              const patch = { status: "idle", activity: null, scheduledResponseAt: null, updatedAt: nowIso, stateUpdatedAt: nowIso };
-              const projectionResult = await patchAutoPilotProjectionState(supabase, convId, patch, chatState.stateUpdatedAt);
-              if (projectionResult.applied) {
-                states[convId] = { ...chatState, ...patch, isEnabled: projectionResult.isEnabled };
-                statesModified = true;
-              }
-            }
+          const { data: gracefulDisable, error: gracefulDisableError } = await supabase.rpc(
+            "request_global_autopilot_disable_graceful"
+          );
+          if (gracefulDisableError || gracefulDisable?.success !== true) {
+            throw new Error(gracefulDisableError?.message || gracefulDisable?.reason || "Falha ao iniciar parada graciosa global");
           }
-
-          if (statesModified) {
-            await supabase.channel("autopilot_realtime").send({
-              type: "broadcast",
-              event: "autopilot_state_changed",
-              payload: { allStates: states },
-            });
+          shutdownStats = gracefulDisable;
+        } else {
+          // Se o operador religar antes de um ciclo drenado terminar, cancela a intenção
+          // de desligamento pós-ciclo para que o chat continue ativo normalmente.
+          const { error: clearDrainError } = await supabase.rpc("cancel_global_autopilot_disable_drain");
+          if (clearDrainError) {
+            console.warn("[AutoPilot] Falha ao limpar flags de drenagem após religar global:", clearDrainError.message);
           }
         }
 
@@ -5535,9 +5539,10 @@ serve(async (req: Request) => {
           JSON.stringify({
             success: true,
             isEnabledGlobally: isEnabled,
+            shutdownStats,
             detail: isEnabled
               ? "Piloto Automático ativado globalmente."
-              : "Piloto Automático desativado com parada graciosa.",
+              : "Piloto Automático desativado com parada graciosa; ciclos em andamento serão concluídos antes de desligar o chat.",
           }),
           {
             headers: { ...corsHeaders, "Content-Type": "application/json" },

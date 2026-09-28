@@ -136,7 +136,7 @@ export function AutoPilotConfigManager() {
       if (checked) {
         toast.success("Piloto Automático ATIVADO! As conversas serão respondidas no tempo programado.");
       } else {
-        toast.info("Piloto Automático DESLIGADO. Filas aguardando foram canceladas; análises em andamento serão concluídas com segurança.");
+        toast.info("Piloto Automático DESLIGADO. Chats parados desligam na hora; os que já estão com o Brain trabalhando terminam o ciclo e desligam em seguida.");
       }
     } catch {
       toast.error("Erro ao alternar Piloto Automático.");
