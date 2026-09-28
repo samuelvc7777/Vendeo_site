@@ -30,6 +30,7 @@ import {
   QUESTION_INTENTS_CONTRACT_EXAMPLE,
 } from "./openai_agent_instructions.ts";
 import { formatRecentGreetingStateForPrompt, type RecentGreetingState } from "./greeting_repeat_guard.ts";
+import type { RecoveredAudioToolState } from "./brain_audio_tool_recovery.ts";
 
 function fetchOpenAiBounded(url: string | URL, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
@@ -164,7 +165,7 @@ export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
   function: {
     name: "cofre_audio_search",
     description:
-      "No Cofre de Áudios, retorna somente os áudios habilitados e ainda não enviados da conversa vinculados ao objective_id solicitado, com título, transcrição integral, instrução de uso e duração. O backend não faz seleção semântica; compare os candidatos com a conversa e decida se deve enviar algum e qual.",
+      "No Cofre de Áudios, retorna somente os áudios habilitados e ainda não enviados da conversa vinculados ao objective_id solicitado, com título, transcrição integral, instrução de uso e duração. O backend não faz seleção semântica; compare os candidatos com a conversa e decida se deve enviar algum e qual. Depois de receber o resultado, não repita esta ferramenta para o mesmo objective_id: avalie os candidatos e emita imediatamente a decisão final estruturada.",
     parameters: {
       type: "object",
       properties: {
@@ -192,7 +193,7 @@ export const COFRE_AUDIO_SEARCH_AGENT_TOOL_DEFINITION: OpenAiAgentFunctionToolDe
   type: "function",
   name: "cofre_audio_search",
   description:
-    "No Cofre de Áudios, retorna somente os áudios habilitados e ainda não enviados vinculados ao objective_id solicitado, com título, transcrição, instrução de uso e duração. O backend não faz seleção semântica; você decide se envia algum candidato e qual.",
+    "No Cofre de Áudios, retorna somente os áudios habilitados e ainda não enviados vinculados ao objective_id solicitado, com título, transcrição, instrução de uso e duração. O backend não faz seleção semântica; você decide se envia algum candidato e qual. Depois de receber o resultado, não repita esta ferramenta para o mesmo objective_id: avalie os candidatos e emita imediatamente a decisão final estruturada.",
   parameters: {
     type: "object",
     properties: {
@@ -443,6 +444,33 @@ export async function executeCofreAudioSearch(params: {
 
 export const MAX_APP_TOOL_ROUNDS = 4;
 
+export function stableSerializeToolArguments(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerializeToolArguments(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableSerializeToolArguments(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+export function buildAppToolExecutionKey(params: {
+  sessionId: string;
+  turnId: string;
+  conversationId: string;
+  toolName: string;
+  toolArgs: unknown;
+}): string {
+  return stableSerializeToolArguments({
+    sessionId: params.sessionId,
+    turnId: params.turnId,
+    conversationId: params.conversationId,
+    toolName: params.toolName,
+    toolArgs: params.toolArgs,
+  });
+}
+
 export interface ExecuteOpenAiAppToolParams {
   toolName: string;
   toolArgs: any;
@@ -492,6 +520,9 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
   }
 
   const query = typeof rawQuery === "string" ? rawQuery.trim().slice(0, 200) : "";
+  telemetry.lastToolName = toolName;
+  telemetry.lastToolArgs = { objective_id: objectiveId.trim(), query: "<redacted>" };
+  console.log(`[Brain] audio_tool_requested objective_id=${objectiveId.trim()}`);
 
   // Deduplicação estrita de tool calls por callId
   if (callId && seenToolCallIds) {
@@ -537,13 +568,31 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
     ...(c.duration != null ? { duration: Number(c.duration) } : {}),
   }));
 
-  telemetry.authorizedCandidateAudios = sanitizedCandidates;
+  const authorizedByAudioId = new Map(
+    (telemetry.authorizedCandidateAudios || []).map((candidate: any) => [candidate.audioId, candidate]),
+  );
+  for (const candidate of sanitizedCandidates) authorizedByAudioId.set(candidate.audioId, candidate);
+  telemetry.authorizedCandidateAudios = [...authorizedByAudioId.values()];
+  const objectiveGroups = telemetry.authorizedCandidateAudiosByObjective || [];
+  telemetry.authorizedCandidateAudiosByObjective = [
+    ...objectiveGroups.filter((group: any) => group.objectiveId !== objectiveId.trim()),
+    { objectiveId: objectiveId.trim(), candidates: sanitizedCandidates },
+  ];
+  telemetry.audioToolCandidatesCount = sanitizedCandidates.length;
+  telemetry.audioSearchResults = { query: objectiveId.trim(), count: sanitizedCandidates.length };
   console.log(`[Brain] audio_candidates_returned count=${sanitizedCandidates.length}`);
+  console.log(`[Brain] audio_tool_candidates_count=${sanitizedCandidates.length}`);
 
   const output = {
     status: sanitizedCandidates.length > 0 ? "success_with_results" : "success_no_results",
     count: sanitizedCandidates.length,
     candidates: sanitizedCandidates,
+    ...(sanitizedCandidates.length > 0
+      ? {
+          finalize_decision_after_tool: true,
+          agent_instruction: "Compare os candidatos com o contexto, escolha áudio ou texto conforme sua decisão semântica e emita agora a decisão final estruturada. Não repita cofre_audio_search para este objective_id; o resultado já foi resolvido.",
+        }
+      : {}),
   };
 
   return {
@@ -1037,6 +1086,7 @@ export interface RunOpenAiBrainParams {
   candidateEvidence?: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }>;
   schemaRetryCount?: number;
   schemaFeedback?: string;
+  recoveredAudioToolState?: RecoveredAudioToolState;
   recentGreetingState?: RecentGreetingState;
   greetingRepeatFeedback?: string;
   recentStyleStateSnippet?: string;
@@ -1116,7 +1166,17 @@ export interface OpenAiBrainTurnResult {
     toolExecutionsCount: number;
     memoryToolResults: Array<{ toolName: string; status: string; reasonCode?: string; resultCount?: number }>;
     authorizedCandidateAudios?: Array<{ audioId: string; title: string; transcript: string; whenToUse: string; duration?: number }>;
+    authorizedCandidateAudiosByObjective?: Array<{ objectiveId: string; candidates: Array<{ audioId: string; title: string; transcript: string; whenToUse: string; duration?: number }> }>;
     audioSearchResults?: { query: string; count: number };
+    audioToolCandidatesCount?: number;
+    audioToolResultReusedCount?: number;
+    audioToolDuplicateRequestBlockedCount?: number;
+    audioToolStateRecovered?: boolean;
+    audioToolDecisionFinalized?: boolean;
+    audioSelected?: boolean;
+    lastToolName?: string;
+    lastToolArgs?: Record<string, unknown>;
+    duplicateToolRequestCount?: number;
     actualMemoryToolCalled: boolean;
     durationMs: number;
     inputTokens: number;
@@ -1533,6 +1593,16 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
   }
   if (params.recentGreetingState) {
     sections.push(`\n${formatRecentGreetingStateForPrompt(params.recentGreetingState)}`);
+  }
+  if (params.recoveredAudioToolState?.candidates.length) {
+    const recoveredAudioCandidates = params.recoveredAudioToolState.candidates.map((candidate) =>
+      `• audio_id: "${candidate.audioId}" | título: "${candidate.title}" | instrução: "${candidate.whenToUse}" | transcrição: "${candidate.transcript}"`
+    ).join("\n");
+    sections.push(
+      `\n## RESULTADO AUTORIZADO RECUPERADO DO COFRE\n` +
+      `Uma busca cofre_audio_search já foi concluída no turno anterior que falhou e os candidatos abaixo foram revalidados como ainda elegíveis para esta conversa e este objective_id=${params.recoveredAudioToolState.objectiveId}. ` +
+      `Eles são candidatos autorizados desta execução; avalie semanticamente se deve usar algum e qual. Não repita a busca para este mesmo objective_id. Finalize agora a decisão estruturada.\n${recoveredAudioCandidates}`
+    );
   }
 
   if (params.candidateEvidence && params.candidateEvidence.length > 0) {
@@ -2018,6 +2088,15 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     contactMemoryToolEnabled: !persistentMode,
     conversationMemoryToolEnabled: !persistentMode,
     audioSearchToolEnabled: true,
+    audioToolCandidatesCount: params.recoveredAudioToolState?.candidates.length || 0,
+    audioToolStateRecovered: Boolean(params.recoveredAudioToolState?.candidates.length),
+    ...(params.recoveredAudioToolState?.candidates.length
+      ? {
+          authorizedCandidateAudios: params.recoveredAudioToolState.candidates,
+          authorizedCandidateAudiosByObjective: [{ objectiveId: params.recoveredAudioToolState.objectiveId, candidates: params.recoveredAudioToolState.candidates }],
+          sourcesUsed: ["audio_vault"],
+        }
+      : {}),
     agentSessionRecoveryTriggered: false,
     agentSessionBootstrapInjected: false,
     agentSessionBootstrapMessageCount: 0,
@@ -2320,7 +2399,18 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
       if (mockResult.telemetry) {
         if (Array.isArray(mockResult.telemetry.authorizedCandidateAudios)) {
-          telemetry.authorizedCandidateAudios = mockResult.telemetry.authorizedCandidateAudios;
+          const authorizedByAudioId = new Map(
+            (telemetry.authorizedCandidateAudios || []).map((candidate: any) => [candidate.audioId, candidate]),
+          );
+          for (const candidate of mockResult.telemetry.authorizedCandidateAudios) authorizedByAudioId.set(candidate.audioId, candidate);
+          telemetry.authorizedCandidateAudios = [...authorizedByAudioId.values()];
+        }
+        if (Array.isArray(mockResult.telemetry.authorizedCandidateAudiosByObjective)) {
+          const groupsByObjective = new Map(
+            (telemetry.authorizedCandidateAudiosByObjective || []).map((group: any) => [group.objectiveId, group]),
+          );
+          for (const group of mockResult.telemetry.authorizedCandidateAudiosByObjective) groupsByObjective.set(group.objectiveId, group);
+          telemetry.authorizedCandidateAudiosByObjective = [...groupsByObjective.values()];
         }
         if (Array.isArray(mockResult.telemetry.toolsRequested)) {
           telemetry.toolsRequested = [...new Set([...telemetry.toolsRequested, ...mockResult.telemetry.toolsRequested])];
@@ -2792,6 +2882,9 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     let lastLoggedPendingBucket = -1;
     let appToolRound = 0;
     const appToolCallCache = new Map<string, string>();
+    const appToolExecutionCache = new Map<string, string>();
+    const submittedAppToolCallIds = new Set<string>();
+    const duplicateRequestsByExecutionKey = new Map<string, number>();
 
     if (!params.resumeExistingTurnOnly && typeof sessionData?.current_turn?.id === "string" && sessionData.current_turn.id) {
       turnId = sessionData.current_turn.id;
@@ -2942,53 +3035,115 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         if (params.resumeExistingTurnOnly) {
           throw new Error("existing_turn_recovery_requires_provider_action; refusing to create a continuation inference");
         }
-        if (appToolRound >= MAX_APP_TOOL_ROUNDS) {
-          const elapsedMs = Date.now() - executionStartTimeMs;
-          console.error(`[OpenAI Agent] app_tool_max_rounds_exceeded sessionId=${sessionId} turnId=${turnId} rounds=${appToolRound} elapsedMs=${elapsedMs}`);
-          telemetry.status = "requires_action";
-          throw new Error(`agent_app_tool_max_rounds_exceeded: excedeu ${MAX_APP_TOOL_ROUNDS} rodadas`);
-        }
-        appToolRound++;
-        const elapsedMs = Date.now() - executionStartTimeMs;
-        const remainingWaitMs = Math.max(0, waitDeadlineMs - Date.now());
-        console.log(`[OpenAI Agent] agent_requires_action_detected sessionId=${sessionId} turnId=${turnId} round=${appToolRound} elapsedMs=${elapsedMs} remainingWaitMs=${remainingWaitMs}`);
-
         const requiredActions: any[] = Array.isArray(latestSessionData?.required_actions)
           ? latestSessionData.required_actions
           : [];
-
-        for (const action of requiredActions) {
-          if (action?.type !== "function_call") continue;
-          const callId = String(action.call_id || "");
-          const actionTurnId = String(action.turn_id || "");
-          const toolName = String(action.name || "");
-
-          // ── VALIDAÇÃO: action.turn_id DEVE corresponder ao turn acompanhado ──
-          if (actionTurnId !== turnId) {
-            console.error(`[OpenAI Agent] app_tool_turn_mismatch callId=${callId} actionTurnId=${actionTurnId} trackedTurnId=${turnId}`);
-            telemetry.status = "requires_action";
-            throw new Error(`agent_app_tool_turn_mismatch: action.turn_id=${actionTurnId} differs from tracked turnId=${turnId}`);
-          }
-
-          // ── PARSE seguro de arguments (objeto direto ou string JSON) ──
-          let toolArgs: Record<string, any>;
-          if (typeof action.arguments === "string") {
-            try {
-              const parsed = JSON.parse(action.arguments);
-              toolArgs = (parsed !== null && typeof parsed === "object") ? parsed : {};
-            } catch {
-              console.warn(`[OpenAI Agent] app_tool_args_parse_error callId=${callId} toolName=${toolName}`);
-              toolArgs = {};
+        const parsedActions = requiredActions
+          .filter((action) => action?.type === "function_call")
+          .map((action) => {
+            const callId = String(action.call_id || "");
+            const actionTurnId = String(action.turn_id || "");
+            const toolName = String(action.name || "");
+            if (actionTurnId !== turnId) {
+              console.error(`[OpenAI Agent] app_tool_turn_mismatch callId=${callId} actionTurnId=${actionTurnId} trackedTurnId=${turnId}`);
+              telemetry.status = "requires_action";
+              throw new Error(`agent_app_tool_turn_mismatch: action.turn_id=${actionTurnId} differs from tracked turnId=${turnId}`);
             }
-          } else {
-            toolArgs = (action.arguments !== null && typeof action.arguments === "object") ? action.arguments : {};
+
+            let toolArgs: Record<string, any>;
+            if (typeof action.arguments === "string") {
+              try {
+                const parsed = JSON.parse(action.arguments);
+                toolArgs = (parsed !== null && typeof parsed === "object") ? parsed : {};
+              } catch {
+                console.warn(`[OpenAI Agent] app_tool_args_parse_error callId=${callId} toolName=${toolName}`);
+                toolArgs = {};
+              }
+            } else {
+              toolArgs = (action.arguments !== null && typeof action.arguments === "object") ? action.arguments : {};
+            }
+
+            return {
+              action,
+              callId,
+              actionTurnId,
+              toolName,
+              toolArgs,
+              executionKey: buildAppToolExecutionKey({
+                sessionId,
+                turnId: actionTurnId,
+                conversationId: params.conversationId,
+                toolName,
+                toolArgs,
+              }),
+            };
+          });
+        const pendingActions = parsedActions.filter(({ callId }) => !submittedAppToolCallIds.has(callId));
+
+        if (pendingActions.length === 0) {
+          const repeatedCount = parsedActions.length;
+          const repeatedAudioCount = parsedActions.filter(({ toolName }) => toolName === "cofre_audio_search").length;
+          telemetry.duplicateToolRequestCount = (telemetry.duplicateToolRequestCount || 0) + repeatedCount;
+          telemetry.audioToolDuplicateRequestBlockedCount = (telemetry.audioToolDuplicateRequestBlockedCount || 0)
+            + repeatedAudioCount;
+          console.log(`[OpenAI Agent] app_tool_duplicate_request_blocked=true sameSubmittedCallIds=${repeatedCount} candidateCount=${telemetry.audioToolCandidatesCount || 0}`);
+          if (repeatedAudioCount > 0) console.log(`[Brain] audio_tool_duplicate_request_blocked=true count=${repeatedAudioCount}`);
+          // A resposta já foi aceita pelo provedor; não reenvie required_actions do snapshot antigo.
+          sessionStatus = "in_progress";
+          latestSessionData = { ...latestSessionData, status: "in_progress", required_actions: [] };
+        } else {
+          const hasNewSemanticExecution = pendingActions.some(({ executionKey, callId }) =>
+            !appToolExecutionCache.has(executionKey) && !appToolCallCache.has(callId)
+          );
+          if (hasNewSemanticExecution && appToolRound >= MAX_APP_TOOL_ROUNDS) {
+            const elapsedMs = Date.now() - executionStartTimeMs;
+            const lastAction = pendingActions[pendingActions.length - 1];
+            telemetry.lastToolName = lastAction.toolName;
+            telemetry.lastToolArgs = lastAction.toolName === "cofre_audio_search"
+              ? { objective_id: String(lastAction.toolArgs.objective_id || ""), query: "<redacted>" }
+              : { argumentKeys: Object.keys(lastAction.toolArgs).sort() };
+            const lastToolArgsForLog = JSON.stringify(telemetry.lastToolArgs);
+            console.error(`[OpenAI Agent] app_tool_max_rounds_exceeded sessionId=${sessionId} turnId=${turnId} rounds=${appToolRound} lastToolName=${lastAction.toolName} lastToolArgs=${lastToolArgsForLog} duplicateToolRequestCount=${telemetry.duplicateToolRequestCount || 0} candidateCount=${telemetry.audioToolCandidatesCount || 0} elapsedMs=${elapsedMs}`);
+            telemetry.status = "requires_action";
+            throw new Error(`agent_app_tool_max_rounds_exceeded: excedeu ${MAX_APP_TOOL_ROUNDS} execuções distintas de ferramenta`);
           }
+          if (hasNewSemanticExecution) appToolRound++;
+          const elapsedMs = Date.now() - executionStartTimeMs;
+          const remainingWaitMs = Math.max(0, waitDeadlineMs - Date.now());
+          console.log(`[OpenAI Agent] agent_requires_action_detected sessionId=${sessionId} turnId=${turnId} round=${appToolRound} elapsedMs=${elapsedMs} remainingWaitMs=${remainingWaitMs}`);
 
-
+        for (const { callId, actionTurnId, toolName, toolArgs, executionKey } of pendingActions) {
           let outputString: string;
           if (appToolCallCache.has(callId)) {
             outputString = appToolCallCache.get(callId)!;
             console.log(`[OpenAI Agent] app_tool_cache_hit callId=${callId} toolName=${toolName}`);
+          } else if (appToolExecutionCache.has(executionKey)) {
+            const priorOutput = JSON.parse(appToolExecutionCache.get(executionKey)!);
+            const duplicateCount = (duplicateRequestsByExecutionKey.get(executionKey) || 0) + 1;
+            duplicateRequestsByExecutionKey.set(executionKey, duplicateCount);
+            telemetry.duplicateToolRequestCount = (telemetry.duplicateToolRequestCount || 0) + 1;
+            telemetry.audioToolResultReusedCount = (telemetry.audioToolResultReusedCount || 0) + (toolName === "cofre_audio_search" ? 1 : 0);
+            telemetry.audioToolDuplicateRequestBlockedCount = (telemetry.audioToolDuplicateRequestBlockedCount || 0) + (toolName === "cofre_audio_search" ? 1 : 0);
+            telemetry.lastToolName = toolName;
+            telemetry.lastToolArgs = toolName === "cofre_audio_search"
+              ? { objective_id: String(toolArgs.objective_id || ""), query: "<redacted>" }
+              : { argumentKeys: Object.keys(toolArgs).sort() };
+            console.log(`[OpenAI Agent] app_tool_duplicate_request_blocked=true toolName=${toolName} duplicateCount=${duplicateCount} candidateCount=${Number(priorOutput?.count) || 0}`);
+            if (duplicateCount > 1) {
+              telemetry.status = "requires_action";
+              throw new Error(`agent_app_tool_duplicate_request_loop: ${toolName} repetida com os mesmos argumentos após reutilização do resultado`);
+            }
+            if (toolName === "cofre_audio_search") {
+              console.log("[Brain] audio_tool_result_reused=true");
+            }
+            outputString = JSON.stringify({
+              ...priorOutput,
+              tool_already_resolved: true,
+              reuse_previous_result: true,
+              finalize_decision_after_tool: true,
+              agent_instruction: "Você já possui o resultado desta ferramenta para estes mesmos argumentos. Reutilize os candidatos retornados, não solicite novamente a busca e finalize agora sua decisão estruturada.",
+            });
+            appToolCallCache.set(callId, outputString);
           } else {
             console.log(`[OpenAI Agent] app_tool_requested: ${toolName} callId=${callId} round=${appToolRound}`);
 
@@ -3010,6 +3165,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
             outputString = JSON.stringify(toolRes.output);
             appToolCallCache.set(callId, outputString);
+            appToolExecutionCache.set(executionKey, outputString);
             const candidateCount = (toolRes.output as any)?.count ?? 0;
             console.log(`[OpenAI Agent] app_tool_candidates_count=${candidateCount} callId=${callId} round=${appToolRound}`);
           }
@@ -3058,6 +3214,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
                 // Aceito — NÃO reenviar imediatamente, continua polling
                 console.log(`[OpenAI Agent] app_tool_output_submitted callId=${callId} toolName=${toolName} round=${appToolRound} attempt=${submitAttempt} idempotencyKey=${idempotencyKey}`);
                 submitConfirmed = true;
+                submittedAppToolCallIds.add(callId);
                 break;
               } else if (submitRes.status >= 400 && submitRes.status < 500) {
                 // 4xx definitivo — FAIL CLOSED, sem retry
@@ -3080,14 +3237,17 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
           }
 
           if (!submitConfirmed) {
-            // Esgotou retries sem 202 — polling continua; se agent persistir em requires_action,
-            // MAX_APP_TOOL_ROUNDS será atingido e o erro será lançado lá
+            // Esgotou retries sem 202; mantém o resultado em cache para não executar o efeito novamente.
             console.warn(`[OpenAI Agent] app_tool_submit_unconfirmed callId=${callId} — continuando polling`);
           }
         }
 
         console.log(`[OpenAI Agent] app_tool_resumed sessionId=${sessionId} turnId=${turnId} round=${appToolRound}`);
+        // Não reprocesse snapshot antigo de required_actions antes de buscar um estado novo do provedor.
+        sessionStatus = "in_progress";
+        latestSessionData = { ...latestSessionData, status: "in_progress", required_actions: [] };
         // Não faz break — continua polling normalmente
+        }
       }
 
       if (Date.now() >= waitDeadlineMs) break;
@@ -3387,6 +3547,18 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         telemetry.finalPlanParsed = true;
         console.log(`[OpenAI Agent] plan_validated`);
       }
+    }
+    const availableAudioCandidates = telemetry.authorizedCandidateAudios || [];
+    const selectedAudioAction = Array.isArray(parsedPlan.outboundActions)
+      ? parsedPlan.outboundActions.find((action: any) => action?.type === "audio")
+      : null;
+    if (availableAudioCandidates.length > 0) {
+      telemetry.audioToolDecisionFinalized = true;
+      telemetry.audioSelected = Boolean(
+        selectedAudioAction && availableAudioCandidates.some((candidate) => candidate.audioId === selectedAudioAction.audioId)
+      );
+      console.log(`[Brain] audio_tool_decision_finalized=true audio_selected=${telemetry.audioSelected}`);
+      console.log(telemetry.audioSelected ? "[Brain] audio_selected=true" : "[Brain] audio_not_selected=true");
     }
     telemetry.agentToolCallCount = telemetry.toolsRequested.length;
     telemetry.modelGenerationCount = 1 + appToolRound;

@@ -155,6 +155,11 @@ import {
   type OutboundAction,
 } from "./openai_brain.ts";
 import {
+  loadAndRevalidateRecoverableAudioToolState,
+  persistRecoverableAudioToolState,
+  type RecoveredAudioToolState,
+} from "./brain_audio_tool_recovery.ts";
+import {
   LARISSA_INTERACTION_DNA_VERSION,
   LARISSA_INTERACTION_DNA_HASH,
   formatRecentStyleStateForPrompt,
@@ -8036,6 +8041,25 @@ export async function runBrainOrchestration(
             manualSessionFacts = Array.isArray(factRows) ? factRows : [];
           }
         }
+        let recoveredAudioToolState: RecoveredAudioToolState | undefined;
+        const activeObjectiveId = stageChecklistForRouter.currentObjective?.id;
+        if (activeObjectiveId) {
+          try {
+            recoveredAudioToolState = await loadAndRevalidateRecoverableAudioToolState({
+              supabase,
+              conversationId,
+              objectiveId: activeObjectiveId,
+              searchCofreAudios: (searchParams) => searchCofreAudios({ supabase, ...searchParams }),
+            });
+            if (recoveredAudioToolState) {
+              currentCycle.trace.push("audio_tool_state_recovered=true");
+              currentCycle.trace.push(`audio_tool_candidates_count=${recoveredAudioToolState.candidates.length}`);
+              console.log(`[Brain] audio_tool_state_recovered=true candidates=${recoveredAudioToolState.candidates.length} objective_id=${activeObjectiveId}`);
+            }
+          } catch (recoveryError) {
+            console.warn("[Brain] Falha ao recuperar candidatos de áudio; o Brain continuará sem o estado anterior.", recoveryError);
+          }
+        }
         const agentTurnParams: Parameters<typeof runOpenAiBrainTurn>[0] = {
           supabase,
           conversationId,
@@ -8082,6 +8106,7 @@ export async function runBrainOrchestration(
           strictOpenAiPilot: isStrict,
           recentStyleStateSnippet: recentStyleSnippet,
           recentGreetingState,
+          recoveredAudioToolState,
           memoryScopeId: currentMemoryScopeId,
           recentQuestionIntentsSnippet: persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents),
           searchCofreAudios: (p) => searchCofreAudios({
@@ -8554,6 +8579,33 @@ export async function runBrainOrchestration(
                 });
                 return { handled: true, sentToMeta: false, blockLegacyFallback: true, error: "brain_late", trace: currentCycle.trace };
               }
+            }
+          }
+          const currentObjectiveId = stageChecklistForRouter.currentObjective?.id;
+          const recoverableAudioCandidates = openAiBrainTurn.telemetry.authorizedCandidateAudiosByObjective
+            ?.find((group) => group.objectiveId === currentObjectiveId)?.candidates || [];
+          const recoverableToolLoopFailure = openAiBrainTurn.error?.includes("agent_app_tool_max_rounds_exceeded")
+            || openAiBrainTurn.error?.includes("agent_app_tool_duplicate_request_loop");
+          if (
+            recoverableToolLoopFailure &&
+            recoverableAudioCandidates.length > 0 &&
+            openAiBrainTurn.telemetry.sessionId &&
+            currentObjectiveId
+          ) {
+            try {
+              await persistRecoverableAudioToolState({
+                supabase,
+                conversationId,
+                sessionId: openAiBrainTurn.telemetry.sessionId,
+                objectiveId: currentObjectiveId,
+                candidates: recoverableAudioCandidates,
+                sourceTurnId: openAiBrainTurn.telemetry.turnId,
+                sourceCycleId: correlationId,
+              });
+              currentCycle.trace.push("audio_tool_recovery_state_persisted=true");
+              console.log(`[Brain] audio_tool_state_recovered=false audio_tool_recovery_state_persisted=true candidateCount=${recoverableAudioCandidates.length}`);
+            } catch (persistRecoveryError) {
+              console.error("[Brain] Não foi possível persistir os candidatos autorizados para recuperação.", persistRecoveryError);
             }
           }
           console.warn(
