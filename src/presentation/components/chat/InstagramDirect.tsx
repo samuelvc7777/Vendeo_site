@@ -79,7 +79,7 @@ import {
   isAutoPilotActivelyWorking,
 } from "./AutoPilotActivityIndicator";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
-import { useBrainInboxOverview } from "@/presentation/hooks/useBrainInboxOverview";
+import { useBrainInboxOverview, type BrainInboxOverviewItem } from "@/presentation/hooks/useBrainInboxOverview";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 
 function InstagramIcon({ className = "w-4 h-4" }: { className?: string }) {
@@ -398,6 +398,38 @@ function MessageCountdown({
       <span>{label}</span>
     </span>
   );
+}
+
+function InboxAiStatusLabel({ ai }: { ai: BrainInboxOverviewItem }) {
+  const scheduledAtMs = ai.scheduledResponseAt ? Date.parse(ai.scheduledResponseAt) : 0;
+  const isWaiting = ai.status === "waiting_delay" && scheduledAtMs > 0;
+  const calcRemaining = () => isWaiting
+    ? Math.max(0, Math.ceil((scheduledAtMs - Date.now()) / 1000))
+    : 0;
+  const [remainingSeconds, setRemainingSeconds] = useState(calcRemaining);
+
+  useEffect(() => {
+    const nextRemaining = isWaiting
+      ? Math.max(0, Math.ceil((scheduledAtMs - Date.now()) / 1000))
+      : 0;
+    setRemainingSeconds(nextRemaining);
+    if (!isWaiting) return;
+    const interval = window.setInterval(() => {
+      setRemainingSeconds(Math.max(0, Math.ceil((scheduledAtMs - Date.now()) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isWaiting, scheduledAtMs]);
+
+  if (!isWaiting) return <>{ai.label}</>;
+  if (remainingSeconds <= 0) return <>IA iniciando...</>;
+
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  const countdown = minutes > 0
+    ? `${minutes}m ${String(seconds).padStart(2, "0")}s`
+    : `${seconds}s`;
+
+  return <>Responde em {countdown}</>;
 }
 
 /**
@@ -5323,7 +5355,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
                           <span className={`shrink-0 font-semibold ${toneClass}`}>IA</span>
                           <span className="text-[#525252]">·</span>
-                          <span className={`truncate font-medium ${toneClass}`}>{ai.label}</span>
+                          <span className={`truncate font-medium ${toneClass}`}><InboxAiStatusLabel ai={ai} /></span>
                           {objectiveText && (
                             <>
                               <span className="text-[#525252]">·</span>

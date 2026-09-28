@@ -73,7 +73,13 @@ export function isAutoPilotWorking(state?: AutoPilotChatState | null): boolean {
     const updatedAtMs = actUpdatedAt ? Date.parse(actUpdatedAt) : 0;
     
     // Para fase de espera / agendamento de debounce:
-    if (state.activity.phase === "waiting" || state.status === "waiting_delay") {
+    if (
+      state.activity.phase === "waiting" ||
+      state.activity.phase === "scheduled" ||
+      state.status === "waiting_delay" ||
+      state.status === "waiting_debounce" ||
+      state.status === "scheduled"
+    ) {
       const scheduledMs = state.scheduledResponseAt ? Date.parse(state.scheduledResponseAt) : 0;
       // Só é zumbi se já passou do horário agendado há mais de 120s
       if (scheduledMs > 0 && Date.now() - scheduledMs > 120_000) {
@@ -100,6 +106,7 @@ export function isAutoPilotWorking(state?: AutoPilotChatState | null): boolean {
       state.status === "activation_wait" ||
       state.status === "waiting_delay" ||
       state.status === "waiting_debounce" ||
+      state.status === "scheduled" ||
       state.status === "in_queue" ||
       state.status === "processing"
   );
@@ -112,10 +119,11 @@ export function isAutoPilotActivelyWorking(state?: AutoPilotChatState | null): b
   if (!isAutoPilotWorking(state)) return false;
   if (state?.status === "paused_guardrail" || state?.status === "paused_handoff" || state?.status === "waiting_human") return false;
   return (
-    !["waiting", "completed", undefined].includes(state?.activity?.phase) &&
+    !["waiting", "scheduled", "completed", undefined].includes(state?.activity?.phase) &&
     state?.status !== "activation_wait" &&
     state?.status !== "waiting_delay" &&
-    state?.status !== "waiting_debounce"
+    state?.status !== "waiting_debounce" &&
+    state?.status !== "scheduled"
   );
 }
 
@@ -913,7 +921,12 @@ function getCopy(state: AutoPilotChatState) {
   }
   const actUpdatedAt = state.activity?.updatedAt || state.stateUpdatedAt;
   const updatedAtMs = actUpdatedAt ? Date.parse(actUpdatedAt) : 0;
-  const isWaiting = state.activity?.phase === "waiting" || state.status === "waiting_delay";
+  const isWaiting =
+    state.activity?.phase === "waiting" ||
+    state.activity?.phase === "scheduled" ||
+    state.status === "waiting_delay" ||
+    state.status === "waiting_debounce" ||
+    state.status === "scheduled";
   const scheduledMs = state.scheduledResponseAt ? Date.parse(state.scheduledResponseAt) : 0;
   const isCompleted = state.activity?.phase === "completed";
   const isStale = isCompleted
@@ -933,7 +946,7 @@ function getCopy(state: AutoPilotChatState) {
       detail: "Aguardando o período de segurança após a ativação.",
     };
   }
-  if (state.status === "waiting_delay") {
+  if (state.status === "waiting_delay" || state.status === "waiting_debounce" || state.status === "scheduled") {
     return {
       title: "IA aguardando tempo pra agir",
       detail: "Esperando o tempo configurado antes de analisar e responder.",
@@ -970,7 +983,7 @@ function ActivityIcon({ state, className }: { state: AutoPilotChatState; classNa
   }
   const phase = state.activity?.phase;
   if (phase === "completed") return <Check className={className} />;
-  if (phase === "waiting" || !phase) return <Clock3 className={className} />;
+  if (phase === "waiting" || phase === "scheduled" || !phase) return <Clock3 className={className} />;
   if (phase === "brain" || phase === "atria" || phase === "context") return <BrainCircuit className={`${className} animate-pulse text-purple-400`} />;
   if (phase === "sending" || phase === "typing") return <Send className={`${className} animate-pulse text-emerald-400`} />;
   return <Loader2 className={`${className} animate-spin`} />;
@@ -1044,8 +1057,17 @@ export function AutoPilotActivityIndicator({
 
   // Contagem regressiva suave para prévia e delay (recalcula com precisão mesmo em caso de F5/refresh)
   const calcInitialCountdown = () => {
-    if (sourceState.scheduledResponseAt && (sourceState.status === "waiting_delay" || sourceState.activity?.phase === "waiting")) {
-      const diffSec = Math.round((Date.parse(sourceState.scheduledResponseAt) - Date.now()) / 1000);
+    if (
+      sourceState.scheduledResponseAt &&
+      (
+        sourceState.status === "waiting_delay" ||
+        sourceState.status === "waiting_debounce" ||
+        sourceState.status === "scheduled" ||
+        sourceState.activity?.phase === "waiting" ||
+        sourceState.activity?.phase === "scheduled"
+      )
+    ) {
+      const diffSec = Math.ceil((Date.parse(sourceState.scheduledResponseAt) - Date.now()) / 1000);
       return Math.max(0, diffSec);
     }
     return sourceState.activity?.countdownSeconds ?? 0;
@@ -1260,7 +1282,18 @@ export function AutoPilotActivityIndicator({
   const canonicalProjection = latestCanonicalEvent
     ? canonicalEventToStatus[latestCanonicalEvent.event] || phaseProjection
     : undefined;
-  const state: AutoPilotChatState = canonicalProjection && latestCanonicalEvent
+  const hasLiveScheduledWait = Boolean(
+    sourceState.isEnabled &&
+    sourceState.scheduledResponseAt &&
+    (
+      sourceState.status === "waiting_delay" ||
+      sourceState.status === "waiting_debounce" ||
+      sourceState.status === "scheduled" ||
+      sourceState.activity?.phase === "waiting" ||
+      sourceState.activity?.phase === "scheduled"
+    )
+  );
+  const state: AutoPilotChatState = !hasLiveScheduledWait && canonicalProjection && latestCanonicalEvent
     ? {
         ...sourceState,
         status: canonicalProjection.status,
@@ -1278,7 +1311,7 @@ export function AutoPilotActivityIndicator({
     : sourceState;
   const shouldRender = variant === "floating"
     ? state.isEnabled || state.status === "waiting_human" || state.status === "failed"
-    : isAutoPilotWorking(state) || hasUnresolvedDelivery;
+    : hasLiveScheduledWait || isAutoPilotWorking(state) || hasUnresolvedDelivery;
   const rawCopy = getCopy(state);
   const copy = {
     title: formatVisibleBrainIdentity(hasUnresolvedDelivery ? deliveryProjection.statusLabel : rawCopy.title),
@@ -1393,7 +1426,16 @@ export function AutoPilotActivityIndicator({
     if (!shouldRender) return;
     if (isEditing) return;
     const interval = setInterval(() => {
-      if (state.scheduledResponseAt && (state.status === "waiting_delay" || activity?.phase === "waiting")) {
+      if (
+        state.scheduledResponseAt &&
+        (
+          state.status === "waiting_delay" ||
+          state.status === "waiting_debounce" ||
+          state.status === "scheduled" ||
+          activity?.phase === "waiting" ||
+          activity?.phase === "scheduled"
+        )
+      ) {
         setRemainingSeconds(Math.max(0, Math.ceil((Date.parse(state.scheduledResponseAt) - Date.now()) / 1000)));
       } else if (activity?.countdownSeconds && activity.countdownSeconds > 0) {
         const updatedAt = Date.parse(activity.updatedAt || state.stateUpdatedAt || "");
@@ -1561,7 +1603,17 @@ export function AutoPilotActivityIndicator({
     return (
     <span className={cn("flex min-w-0 items-center gap-1.5 text-[11px] font-semibold", state.isEnabled ? "text-emerald-400" : "text-zinc-500")}>
       <ActivityIcon state={state} className="h-3 w-3 shrink-0" />
-        <span className="truncate">{state.scheduledResponseAt && remainingSeconds > 0 ? `IA responde em ${remainingSeconds}s` : remainingSeconds === 0 && (state.status === "waiting_delay" || activity?.phase === "waiting") ? "IA iniciando..." : copy.title}</span>
+        <span className="truncate">{state.scheduledResponseAt && remainingSeconds > 0
+          ? `IA responde em ${Math.floor(remainingSeconds / 60) > 0 ? `${Math.floor(remainingSeconds / 60)}m ` : ""}${String(remainingSeconds % 60).padStart(2, "0")}s`
+          : remainingSeconds === 0 && (
+              state.status === "waiting_delay" ||
+              state.status === "waiting_debounce" ||
+              state.status === "scheduled" ||
+              activity?.phase === "waiting" ||
+              activity?.phase === "scheduled"
+            )
+          ? "IA iniciando..."
+          : copy.title}</span>
         {state.isEnabled && isWorking && <TypingDots compact />}
         {operationsAccessDenied && <a href="/operator?returnTo=%2F" onClick={(event) => event.stopPropagation()} className="ml-1 shrink-0 text-amber-300 underline underline-offset-2" title="Entrar como operador para ver eventos do Brain">Operador</a>}
       </span>
@@ -1648,11 +1700,15 @@ export function AutoPilotActivityIndicator({
                 <Pause className="h-2.5 w-2.5" />
                 <span>Pausado p/ edição</span>
               </span>
-            ) : remainingSeconds > 0 && (
+            ) : (
+              remainingSeconds > 0 || hasLiveScheduledWait
+            ) && (
               <span className="font-mono text-[11px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/40 animate-pulse">
-                {remainingSeconds >= 60
-                  ? `${Math.floor(remainingSeconds / 60)}m ${String(remainingSeconds % 60).padStart(2, "0")}s`
-                  : `${remainingSeconds}s`}
+                {remainingSeconds > 0
+                  ? remainingSeconds >= 60
+                    ? `${Math.floor(remainingSeconds / 60)}m ${String(remainingSeconds % 60).padStart(2, "0")}s`
+                    : `${remainingSeconds}s`
+                  : "Iniciando..."}
               </span>
             )}
 
@@ -1680,7 +1736,11 @@ export function AutoPilotActivityIndicator({
             )}
 
             {/* Botão Responder Já (quando aguardando debounce de tempo) */}
-            {(state.status === "waiting_delay" || activity?.phase === "waiting") && (
+            {(state.status === "waiting_delay" ||
+              state.status === "waiting_debounce" ||
+              state.status === "scheduled" ||
+              activity?.phase === "waiting" ||
+              activity?.phase === "scheduled") && (
               <button
                 type="button"
                 onClick={handleSendNow}

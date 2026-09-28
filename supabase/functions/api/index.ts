@@ -1201,7 +1201,7 @@ serve(async (req: Request) => {
                       status: "scheduled",
                       activity: activity(
                         "scheduled",
-                        `Ciclo preemptado por nova mensagem. Novo quiet period (${delayMinutes}m)...`,
+                        `Nova mensagem recebida. Reiniciando tempo de espera (${delayMinutes}m)...`,
                         "Aguardando período de silêncio para responder com o contexto atualizado.",
                         {
                           scheduledAt: newDebounceUntil,
@@ -1227,8 +1227,8 @@ serve(async (req: Request) => {
                       status: "scheduled",
                       activity: activity(
                         "scheduled",
-                        `Aguardando quiet period (${delayMinutes}m)...`,
-                        "Respeitando o tempo de silêncio configurado após a mensagem inbound.",
+                        `Aguardando tempo de resposta (${delayMinutes}m)...`,
+                        "Aguardando o tempo configurado após a última mensagem recebida.",
                         {
                           scheduledAt: scheduledUntil,
                           quietPeriodMinutes: delayMinutes,
@@ -5146,7 +5146,7 @@ serve(async (req: Request) => {
             : "Existe lock ativo; o ciclo está sendo iniciado.";
           active = true;
         } else if (conversation?.ai_debounce_until && Date.parse(conversation.ai_debounce_until) > now) {
-          status = "waiting_delay"; label = "Aguardando quiet period"; detail = "A resposta está agendada pelo backend."; active = true;
+          status = "waiting_delay"; label = "Aguardando tempo de resposta"; detail = "A resposta está agendada e o tempo restante é calculado pelo horário persistido."; active = true;
         } else if (pendingInboundCount > 0 || claimedInboundCount > 0) {
           status = "queued";
           label = pendingInboundCount > 0
