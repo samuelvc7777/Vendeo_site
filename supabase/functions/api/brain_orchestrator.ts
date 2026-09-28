@@ -7248,6 +7248,11 @@ export async function runBrainOrchestration(
       });
       return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_turn_recovery_reference_invalid" };
     }
+    const lateTurnInboundIds = new Set<string>(
+      lateTurnForResume && Array.isArray(lateTurnForResume.inbound_message_ids)
+        ? lateTurnForResume.inbound_message_ids.map(String)
+        : []
+    );
 
   // Fonte canônica da etapa: coluna normalizada. JSON mantém apenas projeções legadas/read models.
   let currentPhase: OrchestrationPhase = resolveCurrentStageId(claimedConversation.current_stage_id || convRow?.current_stage_id);
@@ -7291,6 +7296,12 @@ export async function runBrainOrchestration(
       for (const m of batch) {
         const msg = normalizeToCanonicalMessage(m, conversationId);
         if (msg.sender === "pretendente" && msg.direction === "inbound") {
+          const belongsToLateTurn = lateTurnInboundIds.has(String(msg.id));
+          if (belongsToLateTurn) {
+            collectedPendingRaw.push({ ...msg, status: "claimed" });
+            continue;
+          }
+
           const isProcessed =
             ledger[msg.id] === "processed" ||
             (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
@@ -7365,6 +7376,10 @@ export async function runBrainOrchestration(
     const freshPendingMessages: CanonicalMessage[] = [];
     const stalePendingMessages: CanonicalMessage[] = [];
     for (const msg of pendingMessages) {
+      if (lateTurnInboundIds.has(String(msg.id))) {
+        freshPendingMessages.push(msg);
+        continue;
+      }
       const timestampMs = messageTimestampMs(msg);
       const ageMs = timestampMs > 0 ? Math.max(0, cycleNow.getTime() - timestampMs) : 0;
       if (timestampMs > 0 && ageMs > STALE_INBOUND_CUTOFF_MS) stalePendingMessages.push(msg);
@@ -7460,46 +7475,52 @@ export async function runBrainOrchestration(
     }));
     const rawInbounds = (claimedMessages || []).filter((m: any) => m.sender === "pretendente" || m.direction === "inbound");
 
-    for (const id of claimedMessageIds) {
-      ledger[id] = "claimed";
-    }
-
-    // Persiste atomicamente o claim e o ledger no banco de dados via RPC com SELECT ... FOR UPDATE
-    const claimMsgsRes = await claimExperimentalCycleMessagesAtomic({
-      supabase,
-      conversationId,
-      cycleToken: correlationId,
-      messageIds: claimedMessageIds,
-    });
-
-    if (!claimMsgsRes.success) {
-      console.warn(
-        `[Orchestrator] Falha no claim atômico de mensagens para ciclo ${correlationId} em ${conversationId} (motivo=${claimMsgsRes.reason}). Abortando ciclo.`
-      );
-      currentCycle.status = "superseded";
-      currentCycle.trace.push(`claim_messages_failed: ${claimMsgsRes.reason}`);
-      await releaseExperimentalCycleAtomic({
+    // Um brain_late já possui snapshot imutável dos inbounds no próprio brain_turn.
+    // Recovery nunca re-claim os mesmos IDs no ledger nem cria uma segunda inferência:
+    // apenas reutiliza o snapshot original para interpretar o resultado do provider_turn_id.
+    if (lateTurnForResume) {
+      currentCycle.trace.push(`late_turn_snapshot_reused=${claimedMessageIds.length}`);
+    } else {
+      for (const id of claimedMessageIds) {
+        ledger[id] = "claimed";
+      }
+      // Fluxo normal: persiste atomicamente o claim e o ledger no banco via SELECT ... FOR UPDATE.
+      const claimMsgsRes = await claimExperimentalCycleMessagesAtomic({
         supabase,
         conversationId,
         cycleToken: correlationId,
-        processingStatus: "idle",
-        lastError: `Falha no claim de mensagens: ${claimMsgsRes.reason}`,
-        cycleRecord: currentCycle,
+        messageIds: claimedMessageIds,
       });
-      if (claimMsgsRes.reason === "cycle_preempted") {
+
+      if (!claimMsgsRes.success) {
+        console.warn(
+          `[Orchestrator] Falha no claim atômico de mensagens para ciclo ${correlationId} em ${conversationId} (motivo=${claimMsgsRes.reason}). Abortando ciclo.`
+        );
+        currentCycle.status = "superseded";
+        currentCycle.trace.push(`claim_messages_failed: ${claimMsgsRes.reason}`);
+        await releaseExperimentalCycleAtomic({
+          supabase,
+          conversationId,
+          cycleToken: correlationId,
+          processingStatus: "idle",
+          lastError: `Falha no claim de mensagens: ${claimMsgsRes.reason}`,
+          cycleRecord: currentCycle,
+        });
+        if (claimMsgsRes.reason === "cycle_preempted") {
+          return {
+            handled: false,
+            sentToMeta: false,
+            blockLegacyFallback: true,
+            error: "Ciclo preemptado antes do claim de mensagens",
+          };
+        }
         return {
           handled: false,
           sentToMeta: false,
           blockLegacyFallback: true,
-          error: "Ciclo preemptado antes do claim de mensagens",
+          error: `Falha ao reivindicar mensagens (${claimMsgsRes.reason})`,
         };
       }
-      return {
-        handled: false,
-        sentToMeta: false,
-        blockLegacyFallback: true,
-        error: `Falha ao reivindicar mensagens (${claimMsgsRes.reason})`,
-      };
     }
 
     currentCycle.claimedMessageIds = claimedMessageIds;

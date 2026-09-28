@@ -81,3 +81,27 @@ test("migration canônica de profissão remove o ID legado e preserva goal_job",
   assert.match(sql, /objective_progress/);
   assert.match(sql, /objectiveProgress/);
 });
+
+test("brain_late reutiliza o snapshot original sem depender do ledger pendente", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /const lateTurnInboundIds = new Set<string>/);
+  assert.match(source, /const belongsToLateTurn = lateTurnInboundIds\.has\(String\(msg\.id\)\)/);
+  assert.match(source, /collectedPendingRaw\.push\(\{ \.\.\.msg, status: "claimed" \}\)/);
+  assert.match(source, /if \(lateTurnInboundIds\.has\(String\(msg\.id\)\)\) \{\s*freshPendingMessages\.push\(msg\)/s);
+});
+
+test("brain_late não reivindica novamente mensagens do provider turn existente", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /if \(lateTurnForResume\) \{\s*currentCycle\.trace\.push\(/s);
+  assert.match(source, /\} else \{\s*for \(const id of claimedMessageIds\)[\s\S]*claimExperimentalCycleMessagesAtomic/s);
+  assert.match(source, /resumeTurnId: lateTurnForResume\?\.provider_turn_id \|\| null/);
+  assert.match(source, /resumeExistingTurnOnly: Boolean\(lateTurnForResume\?\.provider_turn_id\)/);
+});
