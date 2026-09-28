@@ -77,10 +77,8 @@ import { AutoPilotApprovalCard } from "./AutoPilotApprovalCard";
 import {
   AutoPilotActivityIndicator,
   isAutoPilotActivelyWorking,
-  isAutoPilotWorking,
 } from "./AutoPilotActivityIndicator";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
-import { useBrainInboxOverview } from "@/presentation/hooks/useBrainInboxOverview";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 
 function InstagramIcon({ className = "w-4 h-4" }: { className?: string }) {
@@ -3628,9 +3626,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     }
     return timeB - timeA;
   });
-  const { overview: brainInboxOverview, available: brainInboxOverviewAvailable } = useBrainInboxOverview(
-    sortedConversations.filter((conversation) => conversation.type === "instagram").map((conversation) => conversation.id),
-  );
 
   // 1. RENDERIZADOR DA TELA DE CONVERSA ABERTA (CHAT THREAD EM CAMADA SOBREPOSTA)
   const activeChatMessagesRaw = activeChat ? messages[activeChat.id] : undefined;
@@ -5228,95 +5223,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         );
                       })()}
 
-                      {/* BADGE DO PILOTO AUTOMÁTICO */}
-                      {(() => {
-                        const apState = autoPilot.chatStates[conv.id];
-                        if (!apState) return null;
-                        const canonicalState = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : undefined;
-                        const effectiveEnabled = canonicalState ? canonicalState.isEnabled : apState.isEnabled;
-
-                        if (canonicalState?.status === "waiting_human" || (!brainInboxOverviewAvailable && apState.status === "waiting_human")) {
-                          return (
-                            <span
-                              title={apState.pauseReason || "A IA precisa de uma resposta manual."}
-                              className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1 animate-pulse"
-                            >
-                              <AlertTriangle className="w-2.5 h-2.5 text-amber-300" />
-                              Responder
-                            </span>
-                          );
-                        }
-
-                        if (canonicalState?.status === "failed" || canonicalState?.status === "uncertain") {
-                          return (
-                            <span
-                              title={canonicalState.detail || canonicalState.label}
-                              className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1"
-                            >
-                              <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
-                              Envio
-                            </span>
-                          );
-                        }
-
-                        if (apState.status === "paused_guardrail") {
-                          return (
-                            <span
-                              title={`Piloto pausado por segurança: ${apState.pauseReason || "Mídia ou conteúdo sensível"}`}
-                              className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1"
-                            >
-                              <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
-                              Erro na IA
-                            </span>
-                          );
-                        }
-
-                        if ((apState.status as string) === "paused_handoff") {
-                          return (
-                            <span
-                              title="Etapa da Rifa atingida! Assuma a conversa."
-                              className="text-[9px] bg-amber-500/25 text-amber-300 border border-amber-500/50 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1 animate-pulse"
-                            >
-                              <Trophy className="w-2.5 h-2.5 text-amber-300" />
-                              Assumir
-                            </span>
-                          );
-                        }
-
-                        if ((apState.status as string) === "waiting_approval") {
-                          return (
-                            <span
-                              title="A IA gerou uma proposta de resposta para este chat! Toque para revisar e aprovar."
-                              className="text-[9px] bg-purple-500/25 text-purple-300 border border-purple-500/50 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1 animate-pulse shadow-sm shadow-purple-500/10"
-                            >
-                              <Sparkles className="w-2.5 h-2.5 text-purple-300" />
-                              Aprovar
-                            </span>
-                          );
-                        }
-
-                        if (!effectiveEnabled) {
-                          return (
-                            <span title="Piloto Automático desativado neste chat" className="text-[9px] bg-zinc-800/70 text-zinc-500 border border-zinc-700 font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
-                              <Bot className="w-2.5 h-2.5 text-zinc-500" /> Piloto desativado
-                            </span>
-                          );
-                        }
-
-                        return (
-                          <span
-                            title="Piloto Automático ativo neste chat"
-                            className="text-[9px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1"
-                          >
-                            <Bot className="w-2.5 h-2.5 text-emerald-400" />
-                            Piloto
-                          </span>
-                        );
-                      })()}
                     </div>
                     <div className="flex items-center text-xs text-[#a8a8a8] mt-0.5 min-w-0">
                       {(() => {
-                        const canonicalState = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : undefined;
                         const isLastMessageSeen =
                           conv.lastSender === "me" &&
                           conv.lastStatus === "seen" &&
@@ -5329,28 +5238,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         return (
                           <>
                             <span className="flex min-w-0 flex-1 items-center">
-                              {canonicalState?.active ? (
-                                <span
-                                  className={`truncate font-semibold ${
-                                    canonicalState.status === "failed" || canonicalState.status === "uncertain"
-                                      ? "text-rose-300"
-                                      : canonicalState.status === "waiting_human"
-                                      ? "text-amber-300"
-                                      : "text-emerald-400"
-                                  }`}
-                                  title={canonicalState.detail || canonicalState.label}
-                                >
-                                  {canonicalState.label}
-                                </span>
-                              ) : !brainInboxOverviewAvailable && isAutoPilotWorking(autoPilot.chatStates[conv.id]) ? (
-                                <AutoPilotActivityIndicator state={autoPilot.chatStates[conv.id]} variant="inbox" />
-                              ) : isLastMessageSeen ? (
+                              {isLastMessageSeen ? (
                                 <span className="text-[#8e8e8e] font-normal truncate">Visto</span>
                               ) : (
                                 <span
-                                  className={`truncate ${
-                                    isConversationUnread(conv) ? "text-white font-semibold" : "text-[#a8a8a8]"
-                                  }`}
+                                  className={isConversationUnread(conv) ? "truncate text-white font-semibold" : "truncate text-[#a8a8a8]"}
                                 >
                                   {conv.lastMessage}
                                 </span>
@@ -5358,7 +5250,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             </span>
                             {timestamp && (
                               <span className="text-[#737373] shrink-0 text-xs ml-1 font-normal">
-                                • {formatMessageTime(timestamp)}
+                                {"\u2022"} {formatMessageTime(timestamp)}
                               </span>
                             )}
                           </>
