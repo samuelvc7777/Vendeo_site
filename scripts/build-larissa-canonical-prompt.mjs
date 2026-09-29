@@ -20,7 +20,7 @@ const generated = [
 ].join("\n");
 
 if (process.argv.includes("--check")) {
-  const current = fs.existsSync(generatedPath) ? fs.readFileSync(generatedPath, "utf8") : "";
+  const current = fs.existsSync(generatedPath) ? fs.readFileSync(generatedPath, "utf8").replace(/\r\n/g, "\n") : "";
   if (current !== generated) {
     console.error("Prompt gerado desatualizado. Execute: node scripts/build-larissa-canonical-prompt.mjs");
     process.exitCode = 1;
