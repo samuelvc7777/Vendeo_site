@@ -84,7 +84,7 @@ test("CENÁRIO 2: Caso real de cidade (already_satisfied + evidenceMessageId vá
   assert.equal(turnResult.success, true);
   const plan = turnResult.plan;
 
-  // 3. Validação determinística do backend (simulação do experimental_orchestrator)
+  // 3. Validação determinística do backend canônico
   let workingCompletedGoalIds = [];
   if (plan.objectiveDecision === "already_satisfied") {
     if (

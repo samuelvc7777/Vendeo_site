@@ -1,5 +1,5 @@
 // ============================================================================
-// PERSONA MEMORY SERVICE (Desacoplado de experimental_orchestrator.ts)
+// PERSONA MEMORY SERVICE — fonte canônica independente do orquestrador
 // Fonte Oficial de Verdade: Supabase (public.persona_memory)
 // Suporta resolução canônica com precedência temporal e fallback seguro.
 // ============================================================================
