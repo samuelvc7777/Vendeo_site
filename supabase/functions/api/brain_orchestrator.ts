@@ -3042,8 +3042,6 @@ export async function requestBrainCyclePreemptionAtomic(
   };
 }
 
-export const requestExperimentalCyclePreemptionAtomic = requestBrainCyclePreemptionAtomic;
-
 export interface ClaimExperimentalCycleParams {
   supabase: any;
   conversationId: string;
@@ -6729,7 +6727,7 @@ export function checkOutboundActionDispatchPayload(
   return { isAudio: false, valid: check.valid, error: check.error };
 }
 // ----------------------------------------------------------------------------
-// 9. Motor Operacional Determinístico do Backend (runExperimentalOrchestration)
+// 9. Motor Operacional Determinístico do Backend (runBrainOrchestration)
 // ----------------------------------------------------------------------------
 export interface RunOrchestrationParams {
   supabase: any;
@@ -10794,4 +10792,3 @@ export async function runBrainOrchestration(
   }
 }
 
-export const runExperimentalOrchestration = runBrainOrchestration;
