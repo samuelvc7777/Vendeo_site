@@ -2314,6 +2314,36 @@ export async function persistCanonicalBrainDecision(params: {
       return { success: false, reason: "semantic_state_required_for_canonical_decision" };
     }
     const now = new Date().toISOString();
+
+    const { data: existingDecisionRow, error: existingDecisionError } = await params.supabase
+      .from("brain_decisions")
+      .select("id, version")
+      .eq("id", params.decisionId)
+      .maybeSingle();
+    if (existingDecisionError) {
+      return { success: false, reason: existingDecisionError.message || "brain_decision_id_lookup_failed" };
+    }
+
+    let decisionVersion: number;
+    if (existingDecisionRow?.id) {
+      decisionVersion = Math.max(1, Number(existingDecisionRow.version || 1));
+    } else {
+      const { data: latestDecisionRow, error: latestDecisionError } = await params.supabase
+        .from("brain_decisions")
+        .select("version")
+        .eq("turn_id", params.turnId)
+        .order("version", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (latestDecisionError) {
+        return { success: false, reason: latestDecisionError.message || "brain_decision_version_lookup_failed" };
+      }
+      const latestDecisionVersion = Number(latestDecisionRow?.version || 0);
+      decisionVersion = Number.isFinite(latestDecisionVersion) && latestDecisionVersion > 0
+        ? latestDecisionVersion + 1
+        : 1;
+    }
+
     const { data, error } = await params.supabase.rpc("persist_brain_decision_with_outbox", {
       p_session: {
         id: `bs_${params.sessionId}`,
@@ -2339,7 +2369,7 @@ export async function persistCanonicalBrainDecision(params: {
         conversation_id: params.conversationId,
         session_id: `bs_${params.sessionId}`,
         turn_id: params.turnId,
-        version: 1,
+        version: decisionVersion,
         decision_type: params.decisionType,
         objective_updates: params.decisionPayload.objectiveUpdates || [],
         stage_transition: params.decisionPayload.stageTransition || null,
