@@ -497,7 +497,6 @@ export async function executePersonaMemoryTool(
     personaId: "larissa",
     query,
     limit: safeLimit,
-    allowLegacyFallback: false,
   });
 
   const output = formatPersonaMemoryForToolOutput(hits);

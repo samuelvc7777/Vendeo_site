@@ -9,8 +9,7 @@ import {
   runOpenAiBrainTurn,
 } from "../supabase/functions/api/openai_brain.ts";
 import {
-  searchPersonaMemory,
-  resolvePersonaFact,
+  searchPersonaMemory
 } from "../supabase/functions/api/persona_memory.ts";
 
 // ============================================================================
@@ -503,7 +502,6 @@ test("Cenário 1: Inbound 'vc trabalha com oq?' + Memory canônica -> Resposta c
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_A_CURRENT,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({
@@ -534,7 +532,6 @@ test("Cenário 2: Inbound 'oq vc faz da vida?' -> Conteúdo ocupacional completo
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_A_CURRENT,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({
@@ -557,11 +554,13 @@ test("Cenário 2: Inbound 'oq vc faz da vida?' -> Conteúdo ocupacional completo
 
 test("Cenário 3: Inbound 'qual sua profissão?' -> NÃO dizer 'sou enfermeira', deve refletir faculdade/estágio", async () => {
   const inbound = "qual sua profissão?";
-  const fact = await resolvePersonaFact("profissao", {
+  const facts = await searchPersonaMemory({
+    query: "profissao",
     cachedFacts: FIXTURE_A_CURRENT,
+    limit: 1,
   });
-  assert.ok(fact.found);
-  assert.match(String(fact.value), /estudante/i);
+  assert.ok(facts.length > 0);
+  assert.match(String(facts[0].value), /estudante/i);
 
   // Violação de profissão concluída
   const formedViolation = ["sou enfermeira"];
@@ -590,7 +589,6 @@ test("Cenário 4: Inbound 'vc ainda vende roupa?' -> Responde especificamente so
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_A_CURRENT,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({
@@ -614,7 +612,6 @@ test("Cenário 5: Inbound 'oq vc vende na loja?' -> Responde loja sem despejar E
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_A_CURRENT,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({
@@ -646,7 +643,6 @@ test("Cenário 6: Inbound 'como é seu estágio?' -> Responde estágio hospitala
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_A_CURRENT,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({
@@ -865,7 +861,6 @@ test("TESTE B — Persona A: Inbound 'oq vc faz da vida?' escolhe o fato abrange
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_A_CURRENT,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({
@@ -883,7 +878,6 @@ test("TESTE C — Persona B FUTURA: MESMAS instructions, trabalha com 'Enfermeir
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_B_GRADUATED,
-    allowLegacyFallback: false,
   });
 
   // A mesma política genérica com a MESMA instruction
@@ -922,7 +916,6 @@ test("TESTE D — Persona C TOTALMENTE DIFERENTE: MESMAS instructions com 'Desig
   const searchResults = await searchPersonaMemory({
     query: inbound,
     cachedFacts: FIXTURE_C_DESIGNER,
-    allowLegacyFallback: false,
   });
 
   const policy = evaluateOccupationFactSelection({

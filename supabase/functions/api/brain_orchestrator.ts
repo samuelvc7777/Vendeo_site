@@ -107,42 +107,7 @@ export {
 export { buildTurnContract, normalizeBrainTurnContract, runConversationQualityGate, safeHighConfidenceFallback };
 export type { TurnContract };
 
-import {
-  type PersonaMemoryFact,
-  type PersonaFactResult,
-  type PersonaMemorySearchResult,
-  type PersonaMemoryCompactToolOutput,
-  LARISSA_PERSONA_FACTS,
-  setPersonaMemoryCache,
-  clearPersonaMemoryCache,
-  isTemporalFactActive,
-  loadPersonaMemoryFacts,
-  stripAccents,
-  resolveFactFromCollection,
-  resolveLegacyFactFallback,
-  getPersonaFact,
-  resolvePersonaFact,
-  searchPersonaMemory,
-  formatPersonaMemoryForToolOutput,
-} from "./persona_memory.ts";
-export {
-  type PersonaMemoryFact,
-  type PersonaFactResult,
-  type PersonaMemorySearchResult,
-  type PersonaMemoryCompactToolOutput,
-  LARISSA_PERSONA_FACTS,
-  setPersonaMemoryCache,
-  clearPersonaMemoryCache,
-  isTemporalFactActive,
-  loadPersonaMemoryFacts,
-  stripAccents,
-  resolveFactFromCollection,
-  resolveLegacyFactFallback,
-  getPersonaFact,
-  resolvePersonaFact,
-  searchPersonaMemory,
-  formatPersonaMemoryForToolOutput,
-};
+import { searchPersonaMemory } from "./persona_memory.ts";
 
 import {
   runOpenAiBrainTurn,
@@ -7399,7 +7364,6 @@ export async function runBrainOrchestration(
           personaId: "larissa",
           query: "identidade cidade estudo trabalho preferências rotina",
           limit: 8,
-          allowLegacyFallback: false,
         });
         personaMemorySummary = formatPersonaMemoryHitsForBrain(personaFacts || []);
       } catch {}
@@ -8401,7 +8365,6 @@ export async function runBrainOrchestration(
                 personaId: "larissa",
                 query: q,
                 limit: 8,
-                allowLegacyFallback: false,
               });
             } catch {
               personaToolFacts = [];
