@@ -824,8 +824,6 @@ export interface ProcessingCycle {
 
 export interface ConversationOrchestrationState {
   version: 1;
-  /** @deprecated Apenas leitura de registros históricos legados */
-  mode?: string;
   brainProvider?: "internal" | "openai_agent";
   currentPhase: OrchestrationPhase;
   currentStageId?: string;
@@ -7210,7 +7208,7 @@ export async function runBrainOrchestration(
       stageRules?.orchestration?.openai_session_kind ||
       orchState?.openai_session_kind ||
       stageRules?.openai_session_kind ||
-      (stageRules?.mode === "legacy" || orchState?.mode === "legacy" ? "legacy" : null);
+      null;
 
     const rawSessionVersion =
       typeof stageRules?.orchestration?.persistent_session_version === "number"

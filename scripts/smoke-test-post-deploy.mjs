@@ -85,7 +85,6 @@ async function runSmokeTests() {
     console.log(`Moose Encontrado: ID=${mooseConv.id} (${mooseConv.full_name} / @${mooseConv.username})`);
     console.log(`- ai_auto_respond: ${mooseConv.ai_auto_respond}`);
     console.log(`- active_cycle_token: ${orchState.activeCycleToken || 'nenhum'}`);
-    console.log(`- mode: ${orchState.mode || mooseConv.metadata?.mode || 'padrão'}`);
     console.log(`- phase: ${orchState.currentPhase || 'conexao_inicial'}`);
     console.log(`- checkpoint: ${orchState.checkpoint || 'não iniciado'}`);
   } else {
