@@ -1,11 +1,5 @@
 import { getSupabaseServerClient } from "@/infrastructure/supabase/server";
 
-export interface TranscribeResult {
-  text: string;
-  model: string;
-  cached?: boolean;
-}
-
 export class GroqCloudAudioTranscriber {
   private static readonly GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
   private static readonly DEFAULT_MODEL = "whisper-large-v3";

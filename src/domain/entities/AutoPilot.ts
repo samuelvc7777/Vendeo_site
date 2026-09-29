@@ -131,11 +131,3 @@ export interface AutoPilotChatState {
   stateUpdatedAt?: string;
   stateRevision?: number;
 }
-
-export interface AutoPilotQueueItem {
-  conversationId: string;
-  conversationName: string;
-  contactUsername?: string;
-  scheduledAt: string;
-  priorityTimestamp: number;
-}

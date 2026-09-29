@@ -1,12 +1,5 @@
 import { getSupabaseAdminClient } from "../supabase/server";
 
-export interface StoredMediaResult {
-  url: string;
-  fileName: string;
-  contentType: string;
-  sizeBytes: number;
-}
-
 /**
  * Serviço de Mídia para Download e Armazenamento no Supabase Storage
  * Responsável por persistir mídias temporárias (como URLs efêmeras da Meta)

@@ -23,8 +23,6 @@ export interface StageObjective {
   updatedAt?: string;
 }
 
-export type ObjectiveCompletionPolicy = "conversation_evidence" | "fact_only";
-
 // Type alias para compatibilidade com código existente
 export type ConversationGoal = StageObjective;
 
@@ -112,7 +110,3 @@ export interface ChatProgress {
   updatedAt: string;
 }
 
-export interface ChatStageWithStats extends ChatStage {
-  totalItems: number;
-  folderName?: string;
-}
