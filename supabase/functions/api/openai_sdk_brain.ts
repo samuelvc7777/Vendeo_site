@@ -87,7 +87,10 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   if (params.schemaFeedback) lines.push(`SCHEMA_RETRY: ${params.schemaFeedback}`);
   lines.push(
     "O backend continua autoridade de objetivos, etapas, outbox e idempotência. Você decide semanticamente a resposta.",
-    "Use cofre_audio_search somente quando um áudio do objetivo ativo puder ser oportuno; não repita a mesma busca no mesmo turno.",
+    "OBJETIVO_ATIVO controla o próximo dado ainda pendente sobre o pretendente; ele NÃO limita a categoria temática do Cofre.",
+    "Objetivo completed significa somente não perguntar esse dado novamente ao pretendente; NÃO desabilita áudio vinculado ao mesmo objective_id.",
+    "Se a mensagem atual perguntar algo sobre Larissa relacionado a qualquer objective_id configurado da etapa — inclusive um objetivo completed, como uma devolução 'e vc?' após ele responder — consulte cofre_audio_search com o objective_id desse assunto. Outro objetivo estar ativo não bloqueia essa consulta.",
+    "Não repita cofre_audio_search para o mesmo objective_id no mesmo turno.",
   );
   return lines.join("\n");
 }

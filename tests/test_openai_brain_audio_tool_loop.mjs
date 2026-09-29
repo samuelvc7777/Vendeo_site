@@ -132,6 +132,8 @@ async function executeMarcosTurn({
   provider = createMarcosAgentProvider(),
   recoveredAudioToolState,
   searchCofreAudios,
+  currentObjectiveId = OBJECTIVE_ID,
+  currentObjectiveLabel = "Descobrir profissão",
 } = {}) {
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
@@ -147,8 +149,8 @@ async function executeMarcosTurn({
       supabase: createEmptySupabase(),
       conversationId: CONVERSATION_ID,
       currentStageId: "stage_1_conexao",
-      currentObjectiveId: OBJECTIVE_ID,
-      currentObjectiveLabel: "Descobrir profissão",
+      currentObjectiveId,
+      currentObjectiveLabel,
       inboundMessages: [INBOUND],
       recentMessages: [{ sender: "user", text: INBOUND }],
       persistentSessionEnabled: true,
@@ -188,6 +190,21 @@ test("Marcos: um resultado do Cofre leva à decisão final sem repetir a busca",
   assert.equal(result.telemetry.audioSelected, true);
   assert.ok((result.telemetry.audioToolDuplicateRequestBlockedCount || 0) >= 4);
   assert.equal(/Enfermagem|estágio no hospital|vendas online/i.test(result.plan.outboundActions[0].text), false);
+});
+
+test("objetivo temático concluído continua elegível para o Cofre mesmo com outro objetivo ativo", async () => {
+  const provider = createMarcosAgentProvider();
+  const { result, audioSearchCount } = await executeMarcosTurn({
+    provider,
+    currentObjectiveId: "goal_age",
+    currentObjectiveLabel: "Descobrir idade",
+  });
+
+  assert.equal(result.success, true, result.error);
+  assert.equal(audioSearchCount, 1, "o backend não deve bloquear a consulta de profissão só porque idade está ativa");
+  assert.equal(result.telemetry.authorizedCandidateAudios?.[0]?.audioId, AUDIO_ID);
+  assert.equal(result.telemetry.authorizedCandidateAudios?.[0]?.objectiveId, OBJECTIVE_ID);
+  assert.ok(result.plan.outboundActions.some((action) => action.type === "audio" && action.audioId === AUDIO_ID));
 });
 
 test("B: mesma ferramenta e argumentos com outro call_id reutilizam o resultado autorizado", async () => {

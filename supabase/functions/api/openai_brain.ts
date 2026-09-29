@@ -748,6 +748,7 @@ export async function executeOpenAiAppTool(params: ExecuteOpenAiAppToolParams): 
 
   const sanitizedCandidates = (Array.isArray(candidates) ? candidates : []).map((c: any) => ({
     audioId: String(c.audioId || c.audio_id || c.id),
+    objectiveId: objectiveId.trim(),
     title: String(c.title || ""),
     transcript: String(c.transcript || c.full_transcript || ""),
     whenToUse: String(c.whenToUse || c.when_to_use || c.usageInstruction || c.usage_instruction || ""),
@@ -1418,8 +1419,8 @@ export interface OpenAiBrainTurnResult {
     toolsRequested: string[];
     toolExecutionsCount: number;
     memoryToolResults: Array<{ toolName: string; status: string; reasonCode?: string; resultCount?: number }>;
-    authorizedCandidateAudios?: Array<{ audioId: string; title: string; transcript: string; whenToUse: string; duration?: number }>;
-    authorizedCandidateAudiosByObjective?: Array<{ objectiveId: string; candidates: Array<{ audioId: string; title: string; transcript: string; whenToUse: string; duration?: number }> }>;
+    authorizedCandidateAudios?: Array<{ audioId: string; objectiveId?: string; title: string; transcript: string; whenToUse: string; duration?: number }>;
+    authorizedCandidateAudiosByObjective?: Array<{ objectiveId: string; candidates: Array<{ audioId: string; objectiveId?: string; title: string; transcript: string; whenToUse: string; duration?: number }> }>;
     audioSearchResults?: { query: string; count: number };
     audioToolCandidatesCount?: number;
     audioToolResultReusedCount?: number;

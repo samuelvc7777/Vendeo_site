@@ -5525,6 +5525,7 @@ export async function recordAudioDeliveryHistory(params: {
 
 export interface CofreAudioCandidate {
   audio_id: string;
+  objective_id?: string;
   title: string;
   summary: string;
   full_transcript: string;
@@ -5557,6 +5558,7 @@ export async function searchCofreAudios(params: {
     const fullTranscript = a.transcript || a.title || "";
     return {
       audio_id: a.id,
+      objective_id: objective_id,
       title: a.title || "",
       summary: fullTranscript,
       full_transcript: fullTranscript,
@@ -8023,6 +8025,7 @@ export async function runBrainOrchestration(
     let brainUsedContactMemory = Object.keys(contactFacts).length > 0;
     let brainUsedAudio = false;
     let brainAudioCandidates: CofreAudioCandidate[] = [];
+    const brainAudioObjectiveById = new Map<string, string>();
     const tokenMeasurements = new Set<"provider" | "estimated" | "unavailable">();
 
     if (brainUsedLandmark) brainMemorySourcesUsed.add("landmark");
@@ -8245,6 +8248,9 @@ export async function runBrainOrchestration(
               searchCofreAudios: (searchParams) => searchCofreAudios({ supabase, ...searchParams }),
             });
             if (recoveredAudioToolState) {
+              for (const candidate of recoveredAudioToolState.candidates) {
+                brainAudioObjectiveById.set(candidate.audioId, recoveredAudioToolState.objectiveId);
+              }
               currentCycle.trace.push("audio_tool_state_recovered=true");
               currentCycle.trace.push(`audio_tool_candidates_count=${recoveredAudioToolState.candidates.length}`);
               console.log(`[Brain] audio_tool_state_recovered=true candidates=${recoveredAudioToolState.candidates.length} objective_id=${activeObjectiveId}`);
@@ -8578,9 +8584,24 @@ export async function runBrainOrchestration(
           }
 
           if (openAiBrainTurn.telemetry.authorizedCandidateAudios) {
+            const objectiveByAudioId = new Map<string, string>();
+            for (const group of openAiBrainTurn.telemetry.authorizedCandidateAudiosByObjective || []) {
+              for (const groupedCandidate of group.candidates || []) {
+                if (groupedCandidate?.audioId) {
+                  objectiveByAudioId.set(String(groupedCandidate.audioId), String(group.objectiveId));
+                }
+              }
+            }
             for (const cand of openAiBrainTurn.telemetry.authorizedCandidateAudios) {
+              const authorizedObjectiveId = String(
+                cand.objectiveId || objectiveByAudioId.get(cand.audioId) || "",
+              ).trim();
+              if (authorizedObjectiveId) {
+                brainAudioObjectiveById.set(cand.audioId, authorizedObjectiveId);
+              }
               brainAudioCandidates.push({
                 audio_id: cand.audioId,
+                objective_id: authorizedObjectiveId || undefined,
                 title: cand.title,
                 summary: cand.transcript,
                 full_transcript: cand.transcript,
@@ -9002,6 +9023,11 @@ export async function runBrainOrchestration(
               objective_id: String(toolParams.objective_id || ""),
             });
             brainAudioCandidates = cofreMatches;
+            for (const candidate of cofreMatches) {
+              if (candidate.objective_id) {
+                brainAudioObjectiveById.set(candidate.audio_id, candidate.objective_id);
+              }
+            }
             const formatted = cofreMatches.map((c) => `• audio_id: "${c.audio_id}" | título: "${c.title}" | instrução: "${c.when_to_use}" | transcrição: "${c.full_transcript}"`).join("\n");
             toolResultsHistory.push(`[TOOL: cofre_audio_search | motivo: "${q}" | catálogo completo: ${cofreMatches.length}]\n${formatted || "Nenhum áudio habilitado, com transcrição e ainda não enviado está disponível no Cofre."}`);
           } else {
@@ -9611,13 +9637,30 @@ export async function runBrainOrchestration(
     let resolvedAudio: PersonaAudioAsset | undefined;
     const audioAction = canonicalOutboundActions.find((a) => a.type === "audio") as { type: "audio"; audioId: string } | undefined;
     if (audioAction && audioAction.audioId) {
-      // 1. Resolução do asset do áudio
-      const allAudios = await listEligiblePersonaAudios({
-        supabase,
-        conversationId,
-        objectiveId: stageChecklistForRouter.currentObjective?.id,
-      });
-      resolvedAudio = allAudios.find((a) => a.id === audioAction.audioId);
+      // 1. A autorização do asset vem da tool call deste turno, não do objetivo ativo.
+      // pending/completed governa progressão; o objective_id da tool governa o Cofre.
+      const authorizedCandidate = brainAudioCandidates.find(
+        (candidate) => candidate.audio_id === audioAction.audioId ||
+          (candidate as CofreAudioCandidate & { audioId?: string }).audioId === audioAction.audioId,
+      );
+      const authorizedAudioObjectiveId = String(
+        brainAudioObjectiveById.get(audioAction.audioId) ||
+        authorizedCandidate?.objective_id ||
+        "",
+      ).trim();
+
+      if (!authorizedCandidate || !authorizedAudioObjectiveId) {
+        currentCycle.trace.push("audio_rejected_not_authorized_for_turn");
+        canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
+      } else {
+        currentCycle.trace.push(`audio_authorized_objective_id=${authorizedAudioObjectiveId}`);
+        const allAudios = await listEligiblePersonaAudios({
+          supabase,
+          conversationId,
+          objectiveId: authorizedAudioObjectiveId,
+        });
+        resolvedAudio = allAudios.find((a) => a.id === audioAction.audioId);
+      }
 
       // 2. Trava de autorização: deve existir, estar habilitado e possuir URL HTTP pública válida (não blob / não data)
       const hasValidPublicUrl = Boolean(
@@ -9628,7 +9671,7 @@ export async function runBrainOrchestration(
         !resolvedAudio.audioUrl.startsWith("data:")
       );
 
-      if (!resolvedAudio || resolvedAudio.enabled === false || !hasValidPublicUrl) {
+      if (authorizedCandidate && authorizedAudioObjectiveId && (!resolvedAudio || resolvedAudio.enabled === false || !hasValidPublicUrl)) {
         currentCycle.trace.push(
           !resolvedAudio
             ? "audio_rejected_not_authorized"
@@ -9638,7 +9681,7 @@ export async function runBrainOrchestration(
         );
         canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
         resolvedAudio = undefined;
-      } else {
+      } else if (authorizedCandidate && authorizedAudioObjectiveId && resolvedAudio) {
         // Poda determinística no Outbox: remove qualquer texto redundante com a transcrição do áudio
         if (resolvedAudio && (resolvedAudio.transcript || resolvedAudio.title)) {
           const trans = resolvedAudio.transcript || resolvedAudio.title || "";

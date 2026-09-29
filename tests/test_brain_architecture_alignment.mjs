@@ -128,15 +128,28 @@ test("migration fecha debounce e duplicidade de profissão sem criar semântica 
 });
 
 
-test("bridge de áudio revalida o asset com o mesmo objetivo canônico do turno", () => {
+test("bridge de áudio revalida pelo objective_id que autorizou o candidato, não pelo objetivo ativo", () => {
   const source = fs.readFileSync(
     new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
     "utf8",
   );
-  assert.match(
-    source,
-    /listEligiblePersonaAudios\(\{[\s\S]{0,180}conversationId,[\s\S]{0,180}objectiveId:\s*stageChecklistForRouter\.currentObjective\?\.id/,
+  const sdkSource = fs.readFileSync(
+    new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url),
+    "utf8",
   );
+  const canonicalPrompt = fs.readFileSync(
+    new URL("../supabase/functions/api/larissa_canonical_prompt.md", import.meta.url),
+    "utf8",
+  );
+  const dispatchStart = source.indexOf("// Trava de autorização e resolução de áudio na sequência canônica");
+  assert.ok(dispatchStart >= 0);
+  const dispatchBlock = source.slice(dispatchStart, dispatchStart + 7000);
+  assert.match(dispatchBlock, /authorizedAudioObjectiveId/);
+  assert.match(dispatchBlock, /objectiveId:\s*authorizedAudioObjectiveId/);
+  assert.doesNotMatch(dispatchBlock, /objectiveId:\s*stageChecklistForRouter\.currentObjective\?\.id/);
+  assert.match(source, /brainAudioObjectiveById/);
+  assert.match(sdkSource, /Objetivo completed significa somente não perguntar esse dado novamente ao pretendente; NÃO desabilita áudio/);
+  assert.match(canonicalPrompt, /completed.*não perguntar novamente esse dado ao pretendente[\s\S]{0,180}NÃO significa "desabilitar os áudios/);
   assert.match(source, /executor_audio_id_not_authorized/);
 });
 
