@@ -6736,28 +6736,58 @@ export async function runBrainOrchestration(
 
   let stageRules = convRow?.stage_completed_rules || {};
 
-  // Debounce Real (Quiet Period): Respeita responseDelayMinutes da conversa/configuração
-  const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
-    ? params.responseDelayMinutes
-    : Number(stageRules?.responseDelayMinutes ?? 1);
-  let maxDebounceWindowMinutes = typeof params.maxDebounceWindowMinutes === "number"
-    ? Math.max(Number(params.maxDebounceWindowMinutes), responseDelayMinutes)
-    : Math.max(Number(stageRules?.orchestration?.maxDebounceWindowMinutes ?? 3), responseDelayMinutes);
-  if (typeof params.maxDebounceWindowMinutes !== "number" && responseDelayMinutes > 0) {
-    try {
-      const { data: globalAutoPilotConfig } = await supabase
-        .from("autopilot_settings")
-        .select("config")
-        .eq("id", "global")
-        .single();
-      const configuredMax = Number(globalAutoPilotConfig?.config?.maxDebounceWindowMinutes);
-      if (Number.isFinite(configuredMax) && configuredMax >= 0) {
-        maxDebounceWindowMinutes = Math.max(configuredMax, responseDelayMinutes);
-      }
-    } catch {
-      // Falha de telemetria/config não pode quebrar o ciclo; usa o teto determinístico já resolvido.
+  // Debounce Real (Quiet Period): a configuração global é a autoridade canônica.
+  // Overrides explícitos existem apenas para fluxos operacionais/manuais controlados.
+  const bypassConfiguredResponseDelay =
+    params.isManualRetry === true ||
+    Boolean(params.preClaimedCycleToken) ||
+    Boolean(params.manualResolution);
+
+  let globalAutoPilotConfig: any = null;
+  if (
+    typeof params.responseDelayMinutes !== "number" ||
+    typeof params.maxDebounceWindowMinutes !== "number"
+  ) {
+    const { data: configRow, error: configError } = await supabase
+      .from("autopilot_settings")
+      .select("config")
+      .eq("id", "global")
+      .maybeSingle();
+
+    if ((configError || !configRow?.config) && !bypassConfiguredResponseDelay) {
+      console.error("[Brain] Não foi possível ler a configuração canônica de tempo do AutoPilot:", configError || "config_missing");
+      return { handled: false, sentToMeta: false, error: "autopilot_timing_config_unavailable" };
     }
+    globalAutoPilotConfig = configRow?.config || null;
   }
+
+  const configuredResponseDelay = globalAutoPilotConfig?.responseDelayMinutes;
+  if (
+    !bypassConfiguredResponseDelay &&
+    typeof params.responseDelayMinutes !== "number" &&
+    (typeof configuredResponseDelay !== "number" || !Number.isFinite(configuredResponseDelay) || configuredResponseDelay < 0)
+  ) {
+    return { handled: false, sentToMeta: false, error: "autopilot_response_delay_invalid" };
+  }
+  const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
+    ? Math.max(0, Number(params.responseDelayMinutes))
+    : typeof configuredResponseDelay === "number"
+    ? configuredResponseDelay
+    : Math.max(0, Number(stageRules?.orchestration?.responseDelayMinutes ?? stageRules?.responseDelayMinutes ?? 1));
+
+  const configuredMaxDebounce = globalAutoPilotConfig?.maxDebounceWindowMinutes;
+  if (
+    !bypassConfiguredResponseDelay &&
+    typeof params.maxDebounceWindowMinutes !== "number" &&
+    (typeof configuredMaxDebounce !== "number" || !Number.isFinite(configuredMaxDebounce) || configuredMaxDebounce < 0)
+  ) {
+    return { handled: false, sentToMeta: false, error: "autopilot_max_debounce_invalid" };
+  }
+  const maxDebounceWindowMinutes = typeof params.maxDebounceWindowMinutes === "number"
+    ? Math.max(Number(params.maxDebounceWindowMinutes), responseDelayMinutes)
+    : typeof configuredMaxDebounce === "number"
+    ? Math.max(configuredMaxDebounce, responseDelayMinutes)
+    : Math.max(Number(stageRules?.orchestration?.maxDebounceWindowMinutes ?? 3), responseDelayMinutes);
   const boundedDebounce = computeBoundedDebounce({
     responseDelayMinutes,
     maxDebounceWindowMinutes,
@@ -6779,6 +6809,80 @@ export async function runBrainOrchestration(
     lastError: null,
     updatedAt: new Date().toISOString(),
   };
+
+  // GATE AUTORITATIVO DE TEMPO: executa ANTES de claim, sem gastar slot nem token.
+  // Mesmo se ai_debounce_until estiver nulo por qualquer rota de ingestão/sync,
+  // o PostgreSQL recalcula pelo lote inbound realmente pendente.
+  if (!bypassConfiguredResponseDelay && responseDelayMinutes > 0 && runtime?._fastTest !== true) {
+    const { data: timingGate, error: timingGateError } = await supabase.rpc(
+      "enforce_autopilot_response_delay_atomic",
+      {
+        p_conversation_id: conversationId,
+        p_quiet_seconds: Math.max(0, Math.round(responseDelayMinutes * 60)),
+        p_max_window_seconds: Math.max(
+          Math.round(responseDelayMinutes * 60),
+          Math.round(maxDebounceWindowMinutes * 60),
+        ),
+        p_now: cycleNow.toISOString(),
+      },
+    );
+
+    if (timingGateError || timingGate?.success !== true) {
+      console.error(
+        `[Brain] FAIL CLOSED: gate autoritativo de tempo indisponível conv=${conversationId}`,
+        timingGateError || timingGate,
+      );
+      return {
+        handled: false,
+        sentToMeta: false,
+        error: "authoritative_response_delay_gate_failed",
+      };
+    }
+
+    if (timingGate.due_now !== true) {
+      const scheduledAt = String(timingGate.scheduled_at || "");
+      if (!scheduledAt) {
+        return {
+          handled: false,
+          sentToMeta: false,
+          error: "authoritative_response_delay_missing_schedule",
+        };
+      }
+
+      console.log(
+        `[Brain] Quiet period autoritativo ativo conv=${conversationId}; Brain bloqueado até ${scheduledAt} (delay=${responseDelayMinutes}m, cap=${maxDebounceWindowMinutes}m).`,
+      );
+      await publishAutoPilotState(supabase, conversationId, {
+        status: "scheduled",
+        activity: activity(
+          "scheduled",
+          `Aguardando tempo de resposta (${responseDelayMinutes}m)...`,
+          "O backend está respeitando o quiet period configurado antes de iniciar o Brain.",
+          {
+            scheduledAt,
+            quietPeriodMinutes: responseDelayMinutes,
+            maxDebounceWindowMinutes,
+            event: "authoritative_response_delay",
+            firstPendingAt: timingGate.first_pending_at || null,
+            lastPendingAt: timingGate.last_pending_at || null,
+            capped: timingGate.capped === true,
+          },
+        ),
+        scheduledResponseAt: scheduledAt,
+      });
+
+      return {
+        handled: true,
+        sentToMeta: false,
+        trace: [
+          `response_delay_enforced: scheduled_at=${scheduledAt}`,
+          `response_delay_minutes=${responseDelayMinutes}`,
+          `max_debounce_window_minutes=${maxDebounceWindowMinutes}`,
+        ],
+      };
+    }
+  }
+
   // SNAPSHOT IMUTÁVEL NO INÍCIO DO CICLO:
   // A autoridade de progresso oficial pertence ao stage_completed_rules.
   // orchState.completedGoalIds e orchState.objectiveProgress servem como espelho/fallback.
@@ -7498,14 +7602,10 @@ export async function runBrainOrchestration(
 
     const currentCheckpoint = orchState.checkpoint || "";
 
-    const configuredOpenAiRuntime =
-      (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_RUNTIME") : process.env.OPENAI_BRAIN_RUNTIME)
-      || "agents_sdk_conversation";
-    // Recovery de turnos antigos continua no runtime legado. Em novos turnos,
-    // a Conversation da OpenAI é a fonte autoritativa do histórico conversacional.
-    const useSdkConversationRuntime =
-      configuredOpenAiRuntime !== "legacy_agents" && !lateTurnForResume;
-    currentCycle.trace.push(`openai_brain_runtime=${useSdkConversationRuntime ? "agents_sdk_conversation" : "legacy_agents"}`);
+    // Novos turnos usam exclusivamente Agents SDK + Conversations.
+    // A única exceção temporária é a retomada de um brain_late já existente.
+    const useSdkConversationRuntime = !lateTurnForResume;
+    currentCycle.trace.push(`openai_brain_runtime=${useSdkConversationRuntime ? "agents_sdk_conversation" : "brain_late_recovery"}`);
 
     const currentRecentQuestionIntents: RecentQuestionIntentEntry[] = useSdkConversationRuntime
       ? []

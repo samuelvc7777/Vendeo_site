@@ -1065,6 +1065,7 @@ export interface QuestionIntentAnnotation {
   canonicalMeaning: string;
   kind: "discovery" | "continuity" | "follow_up" | "callback";
   target?: "pretendente" | "terceiro";
+  objectiveId?: string;
 }
 
 /**
@@ -1151,6 +1152,12 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
           error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].target deve ser pretendente ou terceiro`,
         };
       }
+      if (q.objectiveId !== undefined && (typeof q.objectiveId !== "string" || !q.objectiveId.trim())) {
+        return {
+          valid: false,
+          error: `PLAN_INVALID_QUESTION_INTENTS: questionIntents[${i}].objectiveId deve ser string não vazia quando informado`,
+        };
+      }
     }
   }
 
@@ -1178,6 +1185,98 @@ export function validateQuestionIntentsInvariant(plan: any): PlanValidationResul
           error: `PLAN_MISSING_QUESTION_INTENTS: Balão no índice ${qIdx} contém '?', mas não possui anotação em 'questionIntents'`,
         };
       }
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Mantém o objetivo obrigatório vivo até existir evidência real de conclusão.
+ * O backend não escolhe a frase nem o rumo semântico; apenas rejeita decisões
+ * que contradizem o estado persistido da etapa.
+ */
+export function validateObjectiveProgressionInvariant(
+  plan: any,
+  params: {
+    currentObjectiveId?: string | null;
+    currentObjectiveRequired?: boolean;
+    currentObjectiveKind?: string | null;
+  },
+): PlanValidationResult {
+  if (!plan || typeof plan !== "object") {
+    return { valid: false, error: "PLAN_INVALID_OBJECTIVE_PROGRESSION: plano ausente" };
+  }
+  if (!params.currentObjectiveId || params.currentObjectiveRequired === false) {
+    return { valid: true };
+  }
+  if (plan.action === "wait" || plan.action === "manual_resolution") {
+    return { valid: true };
+  }
+
+  const objectiveId = String(params.currentObjectiveId);
+  const decision = String(
+    plan.objectiveDecision || plan.missionPackage?.objectiveDirective || "",
+  ).trim();
+
+  if (!["pursue", "defer", "already_satisfied"].includes(decision)) {
+    return {
+      valid: false,
+      error: `PLAN_OBJECTIVE_DROPPED: objetivo obrigatório pendente "${objectiveId}" não pode usar objectiveDecision="none"; escolha pursue, defer ou already_satisfied`,
+    };
+  }
+
+  const missionDirective = String(plan.missionPackage?.objectiveDirective || decision).trim();
+  if (missionDirective !== decision) {
+    return {
+      valid: false,
+      error: `PLAN_OBJECTIVE_DIRECTIVE_MISMATCH: objectiveDecision="${decision}" e missionPackage.objectiveDirective="${missionDirective}"`,
+    };
+  }
+
+  const targetObjectiveId = String(plan.missionPackage?.targetObjective?.id || objectiveId).trim();
+  if (targetObjectiveId && targetObjectiveId !== objectiveId && decision !== "already_satisfied") {
+    return {
+      valid: false,
+      error: `PLAN_OBJECTIVE_TARGET_MISMATCH: objetivo ativo="${objectiveId}" targetObjective="${targetObjectiveId}"`,
+    };
+  }
+
+  const opportunity = String(plan.objectiveProgressionOpportunity || "").trim();
+  if (opportunity && !["semantic_bridge", "natural_transition", "none"].includes(opportunity)) {
+    return {
+      valid: false,
+      error: "PLAN_INVALID_OBJECTIVE_OPPORTUNITY: use semantic_bridge, natural_transition ou none",
+    };
+  }
+  if (decision === "defer" && opportunity && opportunity !== "none") {
+    return {
+      valid: false,
+      error: `PLAN_OBJECTIVE_OPPORTUNITY_IGNORED: existe oportunidade "${opportunity}" para o objetivo "${objectiveId}", portanto use pursue`,
+    };
+  }
+
+  if (decision === "defer") {
+    const reason = String(plan.objectiveDeferralReason || "").trim();
+    if (!["emotional_priority", "strong_live_topic", "question_density", "no_natural_transition"].includes(reason)) {
+      return {
+        valid: false,
+        error: "PLAN_OBJECTIVE_DEFER_WITHOUT_REASON: defer exige objectiveDeferralReason válido",
+      };
+    }
+  }
+
+  if (decision === "pursue" && params.currentObjectiveKind === "fact") {
+    const intents = Array.isArray(plan.questionIntents) ? plan.questionIntents : [];
+    const hasObjectiveQuestion = intents.some((intent: any) =>
+      String(intent?.objectiveId || "").trim() === objectiveId &&
+      intent?.target !== "terceiro"
+    );
+    if (!hasObjectiveQuestion) {
+      return {
+        valid: false,
+        error: `PLAN_OBJECTIVE_PURSUE_WITHOUT_QUESTION: pursue do objetivo factual "${objectiveId}" exige questionIntents[].objectiveId="${objectiveId}"`,
+      };
     }
   }
 
@@ -2051,6 +2150,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
   "manualResolution": { "question": "...", "context": "..." },
   "pendingActionResolution": { "cancelActionIds": [] },
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
+  "objectiveProgressionOpportunity": "semantic_bridge" | "natural_transition" | "none",
+  "objectiveDeferralReason": null | "emotional_priority" | "strong_live_topic" | "question_density" | "no_natural_transition",
   "satisfiedObjectiveId": null,
   "objectiveEvidence": null,
   "evidenceMessageId": null,
@@ -2262,7 +2363,7 @@ Para decidir a resposta e a condução, considere rigorosamente nesta ordem:
 5. CONNECTION OPPORTUNITY (avaliar se o tópico pessoal tem potencial de conexão; ASSUNTO VIVO COM POTENCIAL DE CONEXÃO > PRÓXIMO CHECKLIST);
 6. APROFUNDAR TÓPICO VIVO & JANELA CONVERSACIONAL RECENTE (acompanhar o ritmo sem dead-end fático nem salto brusco);
 7. RECIPROCIDADE (compartilhar fato verdadeiro fundamentado da Larissa na PersonaMemory quando houver gancho);
-8. OBJETIVOS DA ETAPA (podem avançar DENTRO do assunto vivo quando houver ponte natural; não são uma pauta concorrente);
+8. OBJETIVOS DA ETAPA (o objetivo ativo obrigatório permanece vivo até evidência real; avance dentro do assunto quando houver ponte e use também transições naturais quando o tópico leve se esgotar ou a resposta ficaria sem direção);
 9. FERRAMENTAS MCP sob demanda se houver dúvida factual ou gancho de afinidade.
 
 FATO PESSOAL SEM EVIDÊNCIA: antes de responder pergunta sobre experiência ou fato autobiográfico da Larissa, use apenas fato canônico, conversa/histórico ou resultado real de ferramenta. Se continuar desconhecido, escolha action="manual_resolution", forneça manualResolution.question e manualResolution.context, e deixe responses e outboundActions vazios. Não chute nem envie a solicitação ao cliente.
@@ -2272,7 +2373,7 @@ Antes de responder, defina bestHook como o maior sinal humano/relacional do lote
 GANCHO HUMANO, ANTI-PAPAGAIO E OBJETIVO:
 - Use o fato recém-dito como gancho para acrescentar reação, opinião, humor, conexão verdadeira ou curiosidade; não devolva apenas uma paráfrase. Só retome o fato quando trouxer algo novo. Se o balão apenas reorganiza o que ele disse, reescreva.
 - Selecione os ganchos humanos mais fortes do lote; não responda cada mensagem com uma paráfrase. Quando houver dois ganchos relevantes, pode reagir a ambos em 1–3 balões curtos, respeitando o turnContract e sem transformar a conversa em questionário.
-- Antes de escolher defer, procure uma ponte semântica entre o assunto atual e o objetivo ativo. Se existir e couber naturalmente, prefira pursue dentro do assunto; não force mudança de tema. Use defer se não houver ponte genuína, se houver prioridade emocional, risco de soar como entrevista ou pergunta excessiva. Não infira fatos não revelados.
+- Antes de escolher defer, procure duas coisas: (a) ponte semântica com o assunto atual e (b) transição natural porque o tópico leve se esgotou ou a resposta ficaria apenas em reação/comentário sem direção. Se qualquer uma existir, prefira pursue. Use defer apenas se realmente não houver espaço por prioridade emocional, tópico forte ou densidade de perguntas. Perguntar antes sem receber resposta NÃO conclui nem apaga o objetivo. Não infira fatos não revelados.
 
 ${SOCIAL_CUE_AND_DELTA_GUIDANCE}
 
@@ -2290,6 +2391,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
   "action": "reply" | "wait" | "manual_resolution",
   "manualResolution": { "question": "...", "context": "..." },
   "objectiveDecision": "pursue" | "defer" | "already_satisfied" | "none",
+  "objectiveProgressionOpportunity": "semantic_bridge" | "natural_transition" | "none",
+  "objectiveDeferralReason": null | "emotional_priority" | "strong_live_topic" | "question_density" | "no_natural_transition",
   "satisfiedObjectiveId": null,
   "objectiveValue": null,
   "objectiveEvidence": null,
@@ -2325,7 +2428,8 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
       "intentKey": "feeling.miss_previous_place",
       "canonicalMeaning": "saber se o pretendente sente falta de morar no lugar anterior",
       "kind": "continuity",
-      "target": "pretendente"
+      "target": "pretendente",
+      "objectiveId": "ID exato quando esta pergunta executa pursue; omita em perguntas comuns"
     }
   ],
   "turnContract": {
@@ -2344,7 +2448,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
 Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Em turnos normais, use 0 a 1 emoji; em turnos afetivos, flerte ou lotes de 2-4 balões, podem aparecer até 2 emojis naturais (máximo 2). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado). Os campos objectiveBridgeDetected, objectiveBridgeEvidence, coveredHooks, ignoredRelevantHooks, socialCueInterpretation e selfFactRepeatedRisk são observabilidade opcionais; relate somente o que o plano sustenta, sem inventar evidências. Os campos sociais não acionam lógica de correção no backend.`
   );
 
-  if (params.schemaFeedback) sections.push(`\n## RETRY ESTRUTURAL\nO plano anterior falhou somente no schema: ${params.schemaFeedback}. Reenvie JSON válido sem alterar a estratégia por esse feedback.`);
+  if (params.schemaFeedback) sections.push(`\n## RETRY DE CONTRATO\nO plano anterior foi rejeitado pelo contrato do turno: ${params.schemaFeedback}. Corrija a decisão e a resposta final para respeitar o objetivo/estrutura informados, sem tratar este feedback como mensagem do pretendente.`);
   if (params.greetingRepeatFeedback) sections.push(`\n## REGENERAÇÃO — GREETING_REPEAT_GUARD\n${params.greetingRepeatFeedback}`);
   return { contextMessage: sections.join("\n"), contextWindow: recentWindow.telemetry };
 }

@@ -6,6 +6,7 @@ import {
   extractJsonFromText,
   recoverSafeBrainPlan,
   validateConversationBrainPlan,
+  validateObjectiveProgressionInvariant,
   validateQuestionIntentsInvariant,
   validateResponseGenerationInvariant,
   type OpenAiBrainTurnResult,
@@ -33,6 +34,8 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     "A Conversation da OpenAI é a fonte do histórico conversacional vivo. Não peça ao backend o histórico bruto.",
     `ETAPA_ATUAL=${params.currentStageId || "identificacao"}`,
     `OBJETIVO_ATIVO=${params.currentObjectiveId || "nenhum"}`,
+    `OBJETIVO_ATIVO_OBRIGATORIO=${params.currentObjectiveId ? params.currentObjectiveRequired !== false : false}`,
+    `OBJETIVO_ATIVO_TIPO=${params.currentObjectiveKind || "desconhecido"}`,
   ];
 
   if (params.currentObjectiveLabel) lines.push(`OBJETIVO_LABEL=${params.currentObjectiveLabel}`);
@@ -87,6 +90,11 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   if (params.schemaFeedback) lines.push(`SCHEMA_RETRY: ${params.schemaFeedback}`);
   lines.push(
     "O backend continua autoridade de objetivos, etapas, outbox e idempotência. Você decide semanticamente a resposta.",
+    "OBJETIVO_ATIVO é uma missão persistente da etapa: enquanto estiver presente e obrigatório, ele continua pendente até existir evidência real de conclusão. Ter perguntado antes SEM resposta não significa concluído.",
+    "Com OBJETIVO_ATIVO obrigatório, objectiveDecision='none' é inválido. Escolha pursue quando houver ponte semântica OU uma transição natural de assunto; escolha defer somente quando realmente não houver espaço naquele turno e informe objectiveDeferralReason.",
+    "Quando a resposta ao assunto atual terminaria em mera reação/comentário e deixaria a conversa sem direção, isso é uma natural_transition: use o objetivo ativo para abrir o próximo assunto de forma humana.",
+    "Ao usar pursue em objetivo factual, faça a pergunta do objetivo no mesmo turno e anote questionIntents[].objectiveId com o ID exato do OBJETIVO_ATIVO.",
+    "Não repita a mesma frase de pergunta em sequência, mas um objetivo obrigatório ainda sem resposta pode e deve ser retomado depois com formulação natural; anti-repetição nunca transforma pergunta ignorada em objetivo concluído.",
     "OBJETIVO_ATIVO controla o próximo dado ainda pendente sobre o pretendente; ele NÃO limita a categoria temática do Cofre.",
     "Objetivo completed significa somente não perguntar esse dado novamente ao pretendente; NÃO desabilita áudio vinculado ao mesmo objective_id.",
     "Se a mensagem atual perguntar algo sobre Larissa relacionado a qualquer objective_id configurado da etapa — inclusive um objetivo completed, como uma devolução 'e vc?' após ele responder — consulte cofre_audio_search com o objective_id desse assunto. Outro objetivo estar ativo não bloqueia essa consulta.",
@@ -289,10 +297,18 @@ function validateAndNormalizeSdkPlan(
     (params.pendingOutboundActions || []).map((action) => action.actionId),
   );
   const response = validateResponseGenerationInvariant(parsedPlan);
+  const progression = validateObjectiveProgressionInvariant(parsedPlan, {
+    currentObjectiveId: params.currentObjectiveId,
+    currentObjectiveRequired: params.currentObjectiveRequired,
+    currentObjectiveKind: params.currentObjectiveKind,
+  });
   const manualReask = Boolean(params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution");
 
   const questionValidation = validateQuestionIntentsInvariant(parsedPlan);
-  if (!questionValidation.valid && parsedPlan && typeof parsedPlan === "object") {
+  const isObjectivePursuit =
+    Boolean(params.currentObjectiveId) &&
+    String(parsedPlan?.objectiveDecision || parsedPlan?.missionPackage?.objectiveDirective || "") === "pursue";
+  if (!questionValidation.valid && parsedPlan && typeof parsedPlan === "object" && !isObjectivePursuit) {
     telemetry.questionIntentsValidationWarning = questionValidation.error || "invalid_question_intents";
     parsedPlan.questionIntents = [];
     parsedPlan.resolvedQuestionIntentIds = [];
@@ -311,6 +327,10 @@ function validateAndNormalizeSdkPlan(
     ? basic.error || "invalid_brain_plan"
     : !response.valid
     ? response.error || "invalid_response_generation"
+    : !progression.valid
+    ? progression.error || "invalid_objective_progression"
+    : isObjectivePursuit && !questionValidation.valid
+    ? questionValidation.error || "invalid_objective_question_intent"
     : manualReask
     ? "manual_resolution_reask_forbidden_after_operator_answer"
     : !audioAuthorized
@@ -318,8 +338,15 @@ function validateAndNormalizeSdkPlan(
     : null;
 
   if (!parsedPlan || validationError) {
-    if (!params.strictOpenAiPilot) parsedPlan = recoverSafeBrainPlan(parsedPlan);
-    if (!parsedPlan || validationError === "audio_not_authorized_for_this_turn") {
+    const hardContractViolation =
+      !progression.valid ||
+      (isObjectivePursuit && !questionValidation.valid) ||
+      manualReask ||
+      validationError === "audio_not_authorized_for_this_turn";
+    if (!params.strictOpenAiPilot && !hardContractViolation) {
+      parsedPlan = recoverSafeBrainPlan(parsedPlan);
+    }
+    if (!parsedPlan || hardContractViolation) {
       return {
         plan: null,
         error: validationError || "BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES",
@@ -1095,6 +1122,51 @@ export async function runOpenAiSdkBrainTurn(
     const normalized = validateAndNormalizeSdkPlan(params, parsedPlan, telemetry);
 
     if (!normalized.plan || normalized.error) {
+      const validationError = normalized.error || "BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES";
+
+      // Uma decisão semanticamente incompatível com o estado da etapa não deve
+      // chegar ao outbox. Dá ao próprio Brain uma única chance de corrigir a
+      // decisão, mantendo o mesmo turno, Conversation e marcador idempotente.
+      if (!params.schemaRetryCount) {
+        const firstAttemptTelemetry = { ...telemetry };
+        const retryResult = await runOpenAiSdkBrainTurn({
+          ...params,
+          schemaRetryCount: 1,
+          schemaFeedback: validationError,
+        });
+
+        const numericUsageKeys = [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "turnInputTokens",
+          "turnCachedInputTokens",
+          "turnUncachedInputTokens",
+          "turnOutputTokens",
+          "turnReasoningTokens",
+          "turnTotalTokens",
+          "modelGenerationCount",
+        ] as const;
+        for (const key of numericUsageKeys) {
+          const first = Number((firstAttemptTelemetry as any)[key] || 0);
+          const retried = Number((retryResult.telemetry as any)[key] || 0);
+          (retryResult.telemetry as any)[key] = first + retried;
+        }
+        retryResult.telemetry.durationMs =
+          Number(firstAttemptTelemetry.durationMs || 0) +
+          Number(retryResult.telemetry.durationMs || 0);
+
+        if (retryResult.success && executionKey && executionTurnId) {
+          await patchSdkExecutionMetadata(
+            params.supabase,
+            executionKey,
+            { usage: executionUsageSnapshot(retryResult.telemetry) },
+            executionTurnId,
+          );
+        }
+        return retryResult;
+      }
+
       telemetry.status = "failed";
       telemetry.finalPlanParsed = false;
       telemetry.durationMs = Date.now() - startedAt;
@@ -1103,7 +1175,7 @@ export async function runOpenAiSdkBrainTurn(
           params.supabase,
           executionKey,
           executionTurnId,
-          normalized.error || "BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES",
+          validationError,
         );
         await cleanupSdkConversationTechnicalItems({
           supabase: params.supabase,
@@ -1118,7 +1190,7 @@ export async function runOpenAiSdkBrainTurn(
       return {
         success: false,
         plan: null,
-        error: normalized.error || "BRAIN_PLAN_INVALID_NO_SAFE_RESPONSES",
+        error: validationError,
         telemetry,
       };
     }
