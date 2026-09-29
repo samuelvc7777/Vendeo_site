@@ -56,14 +56,6 @@ export class ServiceUnavailableError extends Error {
   }
 }
 
-export interface RetryOptions {
-  maxRetries?: number;
-  initialDelayMs?: number;
-  maxDelayMs?: number;
-  backoffFactor?: number;
-  shouldRetry?: (error: unknown, attempt: number) => boolean;
-}
-
 /**
  * Executa uma requisição HTTP com timeout seguro utilizando AbortController.
  *
@@ -130,57 +122,6 @@ export async function fetchWithTimeout(
       externalSignal.removeEventListener("abort", onExternalAbort);
     }
   }
-}
-
-/**
- * Executa uma operação assíncrona com retry e exponential backoff com jitter.
- *
- * @param operation Função assíncrona a ser executada
- * @param options Configurações de retries, limites e critério de repetição
- */
-export async function retryWithBackoff<T>(
-  operation: () => Promise<T>,
-  options: RetryOptions = {}
-): Promise<T> {
-  const maxRetries = options.maxRetries ?? 3;
-  const initialDelayMs = options.initialDelayMs ?? 500;
-  const maxDelayMs = options.maxDelayMs ?? 4000;
-  const backoffFactor = options.backoffFactor ?? 2;
-
-  const defaultShouldRetry = (err: unknown): boolean => {
-    if (err instanceof UnauthorizedError) return false;
-    if (err instanceof RateLimitError) return false;
-    if (err instanceof NetworkTimeoutError) return true;
-    if (err instanceof ServiceUnavailableError) return true;
-    if (err instanceof TypeError) return true; // Erros típicos de falha de conexão/DNS no fetch
-    return false;
-  };
-
-  const shouldRetry = options.shouldRetry ?? defaultShouldRetry;
-
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-    try {
-      return await operation();
-    } catch (err: unknown) {
-      lastError = err;
-
-      if (attempt > maxRetries || !shouldRetry(err, attempt)) {
-        throw err;
-      }
-
-      // Cálculo de delay exponencial com jitter de +/- 10%
-      const rawDelay = initialDelayMs * Math.pow(backoffFactor, attempt - 1);
-      const cappedDelay = Math.min(rawDelay, maxDelayMs);
-      const jitterFactor = Math.random() * 0.2 - 0.1;
-      const delay = Math.max(100, Math.floor(cappedDelay * (1 + jitterFactor)));
-
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-
-  throw lastError;
 }
 
 /**
