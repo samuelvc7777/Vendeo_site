@@ -155,6 +155,8 @@ export interface DirectConversation {
   city?: string;
   lastMessageAt?: string;
   isRestricted?: boolean;
+  currentStageId?: string | null;
+  isConverted?: boolean;
   status?: "active" | "archived" | "blocked" | "restricted" | "pending" | "system" | "vault";
 }
 
@@ -730,10 +732,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
   const [stageFilter, setStageFilter] = useState<string>("todas"); // "todas" | "concluidos" | stageId
-  const chatStages = useChatStages(activeChat?.id);
+  const chatStages = useChatStages(activeChat?.id, { loadAllProgresses: false });
   const {
     stages,
-    allProgresses,
     chatDetail,
     toggleItem,
     toggleObjective,
@@ -1400,6 +1401,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               type: "instagram" as const,
               lastMessageAt: c.last_message_at,
               isRestricted,
+              currentStageId: c.current_stage_id || c.currentStageId || null,
+              isConverted: Boolean(c.is_converted ?? c.isConverted),
               status: isRestricted ? "restricted" : (c.status || "active"),
             };
           });
@@ -1416,7 +1419,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             const current = currentById.get(next.id);
             const currentTime = getMessageTimestampMs(current?.lastMessageAt || current?.lastActive);
             const nextTime = getMessageTimestampMs(next.lastMessageAt || next.lastActive);
-            nextById.set(next.id, current && currentTime > nextTime ? current : next);
+            nextById.set(
+              next.id,
+              current && currentTime > nextTime
+                ? {
+                    ...current,
+                    // Metadados de etapa são canônicos e não dependem do timestamp da última mensagem.
+                    currentStageId: next.currentStageId,
+                    isConverted: next.isConverted,
+                  }
+                : next
+            );
           }
 
           return [...Array.from(nextById.values()), ...tinderOnly];
@@ -1428,7 +1441,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       // last_message_at porque chats ativos mudam de posição enquanto a carga roda.
       if (supabase) {
         const selectColumns =
-          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at";
+          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, created_at, updated_at";
 
         const { data: recentRows, error: recentError } = await supabase
           .from("instagram_conversations")
@@ -1549,6 +1562,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               seenAt: isValidSeen ? rawSeenAt : undefined,
               unread: isRead ? false : Boolean(c.unread),
               isRestricted: isRestr,
+              currentStageId: c.currentStageId ?? c.current_stage_id ?? null,
+              isConverted: Boolean(c.isConverted ?? c.is_converted),
               status: isRestr ? "restricted" : (c.status === "restricted" ? "active" : (c.status || "active")),
             };
           });
@@ -1812,6 +1827,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     fullName?: string;
     username?: string;
     avatar?: string;
+    currentStageId?: string | null;
+    isConverted?: boolean;
   }) => {
     if (!conv.id || conv.id.startsWith("__")) return;
 
@@ -1871,6 +1888,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         fullName: conv.fullName || target.fullName,
         username: conv.username || target.username,
         avatar: conv.avatar || target.avatar,
+        currentStageId: conv.currentStageId !== undefined ? conv.currentStageId : target.currentStageId,
+        isConverted: conv.isConverted !== undefined ? conv.isConverted : target.isConverted,
         lastMessage: formattedPreview,
         lastMessageAt: conv.lastMessageAt || target.lastMessageAt,
         lastSender: isSentByMe ? "me" : "them",
@@ -1899,6 +1918,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     fullName?: string;
     username?: string;
     avatar?: string;
+    currentStageId?: string | null;
+    isConverted?: boolean;
   }) => {
     if (!conv.id || conv.id.startsWith("__")) return;
 
@@ -1924,6 +1945,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         unread: isSentByMe ? false : Boolean(conv.unread),
         type: "instagram",
         isRestricted: false,
+        currentStageId: conv.currentStageId || null,
+        isConverted: Boolean(conv.isConverted),
         status: "active",
       };
       return [newConv, ...prevConvs];
@@ -3563,7 +3586,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // FILTRAGEM DE CONVERSAS BASEADA NA ABA ATIVA E NO FILTRO ESCOLHIDO
   const isFilterActive =
     sortOrder !== "recentes" ||
-    (chatPlatform === "instagram" && instaFilter !== "todos") ||
+    (chatPlatform === "instagram" && (instaFilter !== "todos" || stageFilter !== "todas")) ||
     (chatPlatform === "tinder" && tinderFilter !== "todos");
 
   const platformConversations = conversations.filter(
@@ -3642,12 +3665,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       if (chatPlatform !== "instagram") return true;
 
       if (stageFilter === "concluidos") {
-        return Boolean(allProgresses[c.id]?.isConverted);
+        return Boolean(c.isConverted);
       }
       if (stageFilter !== "todas") {
-        const progress = allProgresses[c.id];
-        const currentStageId = progress?.currentStageId || (stages.length > 0 ? stages[0].id : "");
-        return currentStageId === stageFilter && !progress?.isConverted;
+        const currentStageId = c.currentStageId || (stages.length > 0 ? stages[0].id : "");
+        return currentStageId === stageFilter && !c.isConverted;
       }
       return true;
     })
@@ -4976,9 +4998,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {stages.map((stg, idx) => {
               const countInStage = platformConversations.filter((c) => {
-                const p = allProgresses[c.id];
-                const currentStageId = p?.currentStageId || stages[0]?.id;
-                return currentStageId === stg.id && !p?.isConverted;
+                const currentStageId = c.currentStageId || stages[0]?.id;
+                return currentStageId === stg.id && !c.isConverted;
               }).length;
 
               const isSelected = stageFilter === stg.id;
@@ -5019,7 +5040,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {/* Filtro de Finalizados */}
             {(() => {
               const convertedCount = platformConversations.filter(
-                (c) => allProgresses[c.id]?.isConverted
+                (c) => Boolean(c.isConverted)
               ).length;
               const isSelected = stageFilter === "concluidos";
 
@@ -5208,8 +5229,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                       {/* BADGE DA ETAPA DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
                       {conv.type === "instagram" && (() => {
-                        const progress = allProgresses[conv.id];
-                        if (progress?.isConverted) {
+                        if (conv.isConverted) {
                           return (
                             <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
                               <Trophy className="w-2.5 h-2.5 text-amber-300" />
@@ -5217,7 +5237,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             </span>
                           );
                         }
-                        const currentStageId = progress?.currentStageId || stages[0]?.id;
+                        const currentStageId = conv.currentStageId || stages[0]?.id;
                         const currentStage = stages.find((s) => s.id === currentStageId);
                         if (!currentStage) return null;
                         const color = currentStage.color || "#3b82f6";

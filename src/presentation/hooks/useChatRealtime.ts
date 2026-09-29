@@ -38,6 +38,8 @@ export interface RealtimeConversationUpdatePayload {
   fullName?: string;
   username?: string;
   avatar?: string;
+  currentStageId?: string | null;
+  isConverted?: boolean;
 }
 
 export interface RealtimeSeenPayload {
@@ -306,6 +308,8 @@ export function useChatRealtime({
             fullName: row.full_name || undefined,
             username: row.username || undefined,
             avatar: row.avatar || undefined,
+            currentStageId: row.current_stage_id || null,
+            isConverted: Boolean(row.is_converted),
           });
         }
       )
@@ -330,6 +334,8 @@ export function useChatRealtime({
             fullName: row.full_name || undefined,
             username: row.username || undefined,
             avatar: row.avatar || undefined,
+            currentStageId: row.current_stage_id || null,
+            isConverted: Boolean(row.is_converted),
           });
         }
       )
