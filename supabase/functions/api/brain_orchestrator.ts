@@ -7239,18 +7239,36 @@ export async function runBrainOrchestration(
       };
     }
 
-    // 4. BACKEND DETERMINÍSTICO: Cancelamento e checagem de pausa pelo operador
-    if (!params.manualResolution && (stageRules.cancel_current_cycle === true || stageRules.status === "paused_manual")) {
-      console.log(`[Orchestrator] Ciclo cancelado pelo operador para ${conversationId}.`);
+    // 4. BACKEND DETERMINÍSTICO: Cancelamento e estados que bloqueiam ciclos automáticos.
+    // A resolução manual pode atravessar waiting_human porque ela é justamente a retomada autorizada.
+    const runtimeStatus = String(stageRules.status || "").trim();
+    const blocksAutomaticBrainCycle = new Set([
+      "paused_manual",
+      "waiting_human",
+      "paused_handoff",
+      "paused_guardrail",
+      "disabled",
+    ]).has(runtimeStatus);
+    if (!params.manualResolution && (stageRules.cancel_current_cycle === true || blocksAutomaticBrainCycle)) {
+      console.log(
+        `[Orchestrator] Ciclo automático bloqueado para ${conversationId} (status=${runtimeStatus || "none"}).`
+      );
       await releaseExperimentalCycleAtomic({
         supabase,
         conversationId,
         cycleToken: correlationId,
         processingStatus: "idle",
-        clearCancelFlag: true,
+        clearCancelFlag: stageRules.cancel_current_cycle === true,
         cycleRecord: currentCycle,
       });
-      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
+      return {
+        handled: false,
+        sentToMeta: false,
+        blockLegacyFallback: true,
+        error: stageRules.cancel_current_cycle === true
+          ? "Cancelado pelo operador"
+          : `runtime_status_blocks_automatic_cycle:${runtimeStatus}`,
+      };
     }
 
     let lateTurnForResume: any = null;
