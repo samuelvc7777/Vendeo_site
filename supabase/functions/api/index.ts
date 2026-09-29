@@ -3631,9 +3631,7 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
-    // 8.5.1. GERENCIAMENTO DA CHAVE KIE.AI (SOL) (/ai/kie-status)
-    // ==========================================
-    // 8.5.2. CONFIGURAÇÃO DO OPENAI BRAIN (/ai/openai-config)
+    // 8.5. CONFIGURAÇÃO DO OPENAI BRAIN (/ai/openai-config)
     // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
     // ==========================================
     if (path === "/ai/openai-config") {
