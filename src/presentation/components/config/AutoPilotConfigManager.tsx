@@ -354,18 +354,18 @@ export function AutoPilotConfigManager() {
           <button
             type="button"
             onClick={() => {
-              if (mobileNotifications.permission !== "granted") {
+              if (!mobileNotifications.remoteRegistered) {
                 void mobileNotifications.requestPermission();
               }
             }}
-            disabled={mobileNotifications.permission === "granted" || mobileNotifications.isLoading}
+            disabled={mobileNotifications.remoteRegistered || mobileNotifications.isLoading}
             className={`min-h-11 w-full shrink-0 rounded-xl px-4 py-2 text-xs font-bold shadow-sm transition-all sm:w-auto ${
-              mobileNotifications.permission === "granted"
+              mobileNotifications.remoteRegistered
                 ? "bg-emerald-600/30 text-emerald-200 cursor-default"
                 : "bg-purple-600 hover:bg-purple-500 text-white animate-pulse"
             }`}
           >
-            {mobileNotifications.permission === "granted" ? "Alertas críticos ativos" : "Ativar no Celular"}
+            {mobileNotifications.remoteRegistered ? "Push remoto ativo" : mobileNotifications.permission === "granted" ? "Vincular push remoto" : "Ativar no Celular"}
           </button>
         </div>
       </div>

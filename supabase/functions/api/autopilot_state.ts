@@ -1,5 +1,6 @@
 // supabase/functions/api/autopilot_state.ts
 // Gerenciamento e publicação de estado do AutoPilot (Brain) desacoplado do legado.
+import { dispatchCriticalWebPush } from "./web_push.ts";
 
 export function activity(
   phase: string,
@@ -35,6 +36,45 @@ export async function publishAutoPilotState(
   try {
     const requestedAt = new Date().toISOString();
     const { cycleEvent, appendEvent, eventMetadata, event: patchEvent, ...statePatch } = patch;
+
+    // O push crítico é independente da projeção visual. Isso garante o alerta
+    // mesmo quando a conversa acabou de ser desabilitada/finalizada atomicamente.
+    const preProjectionEventName = String(cycleEvent?.event || patchEvent || "");
+    const preProjectionCycleId = statePatch.cycleId || statePatch.activity?.cycleId || null;
+    if (preProjectionEventName === "manual_resolution_required") {
+      try {
+        await dispatchCriticalWebPush({
+          supabase,
+          eventType: "manual_resolution_required",
+          conversationId,
+          eventKey: `manual_resolution_required:${conversationId}:${preProjectionCycleId || requestedAt}`,
+          body: String(cycleEvent?.detail || statePatch.pauseReason || "O Brain precisa de uma informação sua para continuar."),
+        });
+      } catch (pushError) {
+        console.warn("[AutoPilot State] Falha no push crítico pré-projeção:", pushError);
+      }
+    } else if (preProjectionEventName === "cycle_completed") {
+      try {
+        const { data: finalizedConversation } = await supabase
+          .from("instagram_conversations")
+          .select("is_converted, stage_completed_rules")
+          .eq("id", conversationId)
+          .maybeSingle();
+        const finalized = finalizedConversation?.is_converted === true
+          || finalizedConversation?.stage_completed_rules?.workflow_finalized === true;
+        if (finalized) {
+          await dispatchCriticalWebPush({
+            supabase,
+            eventType: "workflow_finalized",
+            conversationId,
+            eventKey: `workflow_finalized:${conversationId}`,
+          });
+        }
+      } catch (pushError) {
+        console.warn("[AutoPilot State] Falha no push final pré-projeção:", pushError);
+      }
+    }
+
     const projectionResult = await patchAutoPilotProjectionState(
       supabase, conversationId, { ...statePatch, stateUpdatedAt: requestedAt }
     );

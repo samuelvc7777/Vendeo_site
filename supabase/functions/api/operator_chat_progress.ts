@@ -1,3 +1,5 @@
+import { getCriticalWebPushPublicConfig, registerCriticalWebPushSubscription, disableCriticalWebPushSubscription } from "./web_push.ts";
+
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store" };
 
 function jsonResponse(body: Record<string, unknown>, status: number, corsHeaders: Record<string, string>) {
@@ -13,6 +15,34 @@ export async function handleOperatorChatProgress(
   if (!authorized) return jsonResponse({ error: "Sessão de operador inválida ou expirada." }, 401, corsHeaders);
 
   const body = await request.json().catch(() => ({}));
+
+  if (body?.operation === "push_config") {
+    const config = await getCriticalWebPushPublicConfig(supabase);
+    return jsonResponse(config, 200, corsHeaders);
+  }
+
+  if (body?.operation === "register_device") {
+    try {
+      const result = await registerCriticalWebPushSubscription(
+        supabase,
+        body?.payload,
+        request.headers.get("user-agent"),
+      );
+      return jsonResponse(result, 200, corsHeaders);
+    } catch (error: any) {
+      return jsonResponse({ error: error?.message || "Falha ao registrar o dispositivo." }, 400, corsHeaders);
+    }
+  }
+
+  if (body?.operation === "push_unregister") {
+    try {
+      const result = await disableCriticalWebPushSubscription(supabase, String(body?.endpoint || ""));
+      return jsonResponse(result, 200, corsHeaders);
+    } catch (error: any) {
+      return jsonResponse({ error: error?.message || "Falha ao remover o dispositivo." }, 400, corsHeaders);
+    }
+  }
+
   const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
   const patch = body?.progressPatch;
   if (!conversationId || conversationId.length > 256 || !patch || typeof patch !== "object" || Array.isArray(patch)) {

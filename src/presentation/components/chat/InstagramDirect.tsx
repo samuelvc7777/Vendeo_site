@@ -1012,76 +1012,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     autoPilotRef.current = autoPilot;
   }, [autoPilot]);
 
-  // Instância do Gerenciador de Notificações Móveis e Push (FCM / Service Worker)
+  // Push remoto crítico: o frontend apenas registra este dispositivo.
+  // Os alertas são enviados pelo backend mesmo com o Vendeo fechado.
   const mobileNotifications = useMobileNotifications();
   const mobileNotificationsRef = useRef(mobileNotifications);
   useEffect(() => {
     mobileNotificationsRef.current = mobileNotifications;
   }, [mobileNotifications]);
-
-  // Notificações críticas: somente Brain aguardando operador e conversa finalizada.
-  const criticalNotificationInFlightRef = useRef<Set<string>>(new Set());
   const sendCriticalNotificationOnce = useCallback(async (
-    eventKey: string,
+    _eventKey: string,
     send: () => Promise<boolean>,
-  ) => {
-    if (typeof window === "undefined") return false;
-    if (criticalNotificationInFlightRef.current.has(eventKey)) return false;
-
-    const storageKey = "vendeo_critical_notification_keys_v1";
-    let sentKeys: string[] = [];
-    try {
-      const raw = localStorage.getItem(storageKey);
-      sentKeys = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(sentKeys)) sentKeys = [];
-    } catch {
-      sentKeys = [];
-    }
-
-    if (sentKeys.includes(eventKey)) return false;
-
-    criticalNotificationInFlightRef.current.add(eventKey);
-    try {
-      const sent = await send();
-      if (!sent) return false;
-
-      const nextKeys = [...sentKeys.filter((key) => key !== eventKey), eventKey].slice(-250);
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(nextKeys));
-      } catch {}
-      return true;
-    } finally {
-      criticalNotificationInFlightRef.current.delete(eventKey);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (mobileNotifications.permission !== "granted") return;
-
-    for (const [conversationId, state] of Object.entries(autoPilot.chatStates)) {
-      if (state.status !== "waiting_human") continue;
-
-      const eventVersion =
-        state.cycleId ||
-        state.pausedAt ||
-        state.stateUpdatedAt ||
-        "waiting_human";
-      const eventKey = `manual_resolution_required:${conversationId}:${eventVersion}`;
-      const conversation = conversationsRef.current.find((item) => item.id === conversationId);
-      const contactName =
-        conversation?.fullName ||
-        conversation?.username ||
-        "Conversa do Instagram";
-
-      void sendCriticalNotificationOnce(eventKey, () =>
-        mobileNotificationsRef.current.notifyBrainNeedsAnswer(
-          contactName,
-          conversationId,
-          state.pauseReason || state.activity?.detail || null,
-        )
-      );
-    }
-  }, [autoPilot.chatStates, mobileNotifications.permission, sendCriticalNotificationOnce]);
+  ) => send(), []);
 
   // Menu de Opções ao Clicar e Segurar (Long Press)
   const [selectedChatForActionSheet, setSelectedChatForActionSheet] = useState<DirectConversation | null>(null);

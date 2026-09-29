@@ -106,6 +106,7 @@ export function useMobileNotifications() {
     isLoading,
     remoteRegistered,
     requestPermission,
+    // Compatibilidade temporária com a view: o envio real agora é 100% backend.
     notifyBrainNeedsAnswer: async (_contactName: string, _conversationId: string, _question?: string | null) => false,
     notifyConversationFinalized: async (_contactName: string, _conversationId: string) => false,
   };
