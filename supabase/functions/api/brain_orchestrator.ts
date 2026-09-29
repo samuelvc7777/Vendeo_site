@@ -4659,6 +4659,8 @@ export async function validateAndApplyBrainStageDecision(params: {
   nextStageId: string;
   stageAdvanced: boolean;
   advancementReason?: string;
+  workflowComplete: boolean;
+  finalStageId: string;
 }> {
   const stagesResult = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
   if (stagesResult?.error) throw new Error(`Não foi possível validar a decisão contra chat_stages: ${stagesResult.error.message}`);
@@ -4731,6 +4733,29 @@ export async function validateAndApplyBrainStageDecision(params: {
     params.currentCycle?.trace?.push(`brain_stage_transition_rejected: ${reason}:${String(params.decision.nextPhase)}`);
   }
 
+  const finalStage = stages[stages.length - 1];
+  const finalStageId = String(finalStage?.id || "");
+  const finalStageGoals = (Array.isArray(finalStage?.goals)
+    ? finalStage.goals
+    : Array.isArray(finalStage?.objectives)
+    ? finalStage.objectives
+    : [])
+    .filter((goal: any) => goal && goal.enabled !== false && goal.required !== false);
+  const finalRequiredGoalIds = finalStageGoals.map((goal: any) => String(goal.id || "")).filter(Boolean);
+  const workflowComplete =
+    Boolean(finalStageId) &&
+    nextStageId === finalStageId &&
+    finalRequiredGoalIds.length > 0 &&
+    finalRequiredGoalIds.every((goalId: string) =>
+      completed.includes(goalId) || progress[goalId]?.status === "completed"
+    );
+
+  if (workflowComplete) {
+    params.currentCycle?.trace?.push(
+      `workflow_completed: final_stage=${finalStageId}; required_goals=${finalRequiredGoalIds.join(",")}`
+    );
+  }
+
   return {
     updatedCompletedGoals: completed,
     updatedObjectiveProgress: progress,
@@ -4739,6 +4764,8 @@ export async function validateAndApplyBrainStageDecision(params: {
     nextStageId,
     stageAdvanced,
     advancementReason: stageAdvanced ? "brain_requested_valid_stage_transition" : undefined,
+    workflowComplete,
+    finalStageId,
   };
 }
 // Persona Memory da Larissa desacoplada em ./persona_memory.ts (importada e reexportada no topo)
@@ -6681,6 +6708,7 @@ export async function runBrainOrchestration(
       "paused_handoff",
       "paused_guardrail",
       "disabled",
+      "completed",
     ]).has(runtimeStatus);
     if (!params.manualResolution && (stageRules.cancel_current_cycle === true || blocksAutomaticBrainCycle)) {
       console.log(
@@ -9759,6 +9787,16 @@ export async function runBrainOrchestration(
         updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
         updatedState.preemptRequested = false;
 
+        const workflowCompletedAt = stageProgression.workflowComplete
+          ? new Date().toISOString()
+          : null;
+        if (stageProgression.workflowComplete) {
+          (updatedState as any).isConverted = true;
+          (updatedState as any).workflowFinalized = true;
+          (updatedState as any).workflowCompletedAt = workflowCompletedAt;
+          currentCycle.trace.push("workflow_finalization_requested=true");
+        }
+
         const finalStageCompletedRules = {
           ...freshRules,
           completed_goals: stageProgression.updatedCompletedGoals,
@@ -9766,6 +9804,22 @@ export async function runBrainOrchestration(
           active_cycle_token: null,
           active_cycle_at: null,
           preempt_requested: false,
+          ...(stageProgression.workflowComplete
+            ? {
+                status: "completed",
+                workflow_finalized: true,
+                finalized_at: workflowCompletedAt,
+                finalized_reason: "all_required_objectives_completed",
+                chat_progress: {
+                  ...(freshRules?.chat_progress || {}),
+                  currentStageId: stageProgression.nextStageId,
+                  completedGoalIds: stageProgression.updatedCompletedGoals,
+                  objectiveProgress: stageProgression.updatedObjectiveProgress,
+                  isConverted: true,
+                  updatedAt: workflowCompletedAt,
+                },
+              }
+            : {}),
           openai_session_id: useSdkConversationRuntime
             ? null
             : (currentSessionId || (isPersistentSessionValid ? (persistentSessionId || freshRules.openai_session_id) : null)),

@@ -3879,7 +3879,9 @@ serve(async (req: Request) => {
           const { data: outboxConvs } = await supabase
             .from("instagram_conversations")
             .select("id, stage_completed_rules")
-            .eq("ai_auto_respond", true)
+            // Entrega de decisões já persistidas é independente do toggle da IA.
+            // Isso permite concluir o último balão do ciclo final mesmo após
+            // ai_auto_respond ser desligado atomicamente pela finalização.
             .not("stage_completed_rules->orchestration->outbox", "is", null)
             .limit(30);
 
