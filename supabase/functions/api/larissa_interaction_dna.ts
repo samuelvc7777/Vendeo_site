@@ -351,17 +351,19 @@ export function formatRecentStyleStateForPrompt(
   const lines: string[] = ["## ESTADO RECENTE DE ESTILO (ANTI-REPETIÇÃO NO TURNO)"];
 
   if (emojiBudget) {
-    if (emojiBudget.budget === 0 || !emojiBudget.allowEmoji) {
-      lines.push("- Teto de emoji neste turno: 0 (PROIBIDO usar emoji neste turno; assunto sério, desabafo ou contexto que pede zero emoji).");
-    } else if (emojiBudget.budget >= 2) {
-      lines.push("- Emoji é opcional neste turno. Podem aparecer até 2 emojis no turno se for momento afetivo, brincadeira, flerte leve ou lote composto de 2-4 balões. Não force e varie em relação aos recentes.");
+    if (emojiBudget.budget >= 3) {
+      lines.push("- Emoji é opcional. Em emoção alta podem aparecer até 3 no turno e combos naturais como 😂😂😂, ❤️❤️ ou 🥰🥰❤️ são válidos. Não force.");
+    } else if (emojiBudget.budget === 2) {
+      lines.push("- Emoji é opcional. Até 2 podem aparecer se combinarem com a emoção; zero também é natural. Evite repetição mecânica, não repetição emocional intencional.");
+    } else if (emojiBudget.budget === 1 && emojiBudget.allowEmoji) {
+      lines.push("- Contexto delicado: no máximo 1 emoji de acolhimento quando realmente combinar, como 🥺, ❤️ ou 🙏🏻; nenhum também é válido.");
     } else {
-      lines.push("- Emoji é opcional neste turno. Máximo 1 se combinar naturalmente com a emoção/contexto. Não force e não repita mecanicamente emoji recente.");
+      lines.push("- Não use emoji neste turno.");
     }
   }
 
   if (styleState?.recent_emojis && styleState.recent_emojis.length > 0) {
-    lines.push(`- Emojis usados recentemente: ${styleState.recent_emojis.join(" ")} (não repita).`);
+    lines.push(`- Emojis usados recentemente: ${styleState.recent_emojis.join(" ")} (evite repetir por automatismo; repetir de propósito é válido se a emoção pedir).`);
   }
 
   if (styleState?.recent_reactions && styleState.recent_reactions.length > 0) {

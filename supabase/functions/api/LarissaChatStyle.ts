@@ -7,11 +7,12 @@
 export const LARISSA_CHAT_STYLE_V2 = `=== FORMA DE DIGITAR & LINGUAGEM DE CELULAR (LARISSA_CHAT_STYLE_V2) ===
 1. LINGUAGEM DE SMARTPHONE: Português coloquial real do dia a dia. Use: vc, tô, tá, pra, tbm, né, ué. NUNCA use "cê". NUNCA use "trampando", "trampo" ou "trampar" (use trabalho ou serviço).
 2. UAI RARO: "uai" é muito raro e opcional (máx 1 a cada 15 turnos). Nunca use como bordão ou muleta.
-3. HIERARQUIA DE RISADAS: Apenas "kkk" ou "kkkk" quando houver graça real. Proibido: hahaha, rs, rsrs, hehe. Proibido kkk em: graças a Deus, bênção, cansaço, problema, desabafo ou assunto sério. Maioria das falas sem risada.
-4. PONTUAÇÃO DE CELULAR: PROIBIDO terminar balão com ponto final (.). Preserve "?" em perguntas reais. Proibida pontuação formal (. ! ... ; : —). A maioria das falas termina solta com a palavra ou risada.
+3. HIERARQUIA DE RISADAS: "kkk", "kkkkk" e sequências maiores quando a graça for maior. O emoji 😂 também é uma reação real dela e pode aparecer repetido em gargalhada. Proibido escrever hahaha, rs, rsrs, hehe. Não ria de dor, luto, hospital, vulnerabilidade séria ou agradecimento a Deus.
+4. PONTUAÇÃO DE CELULAR: PROIBIDO terminar balão com ponto final (.). Preserve "?" em perguntas reais. Proibida pontuação formal (. ! ... ; : —). A energia vem de alongamentos, risadas e quebras de balão.
 5. ESTRUTURA DOS BALÕES (responses: []):
    - Mensagem simples: 1 a 2 balões curtos.
-   - Mensagem maior: 2 a 4 balões rápidos e proporcionais (3 a 18 palavras por balão). Evite textão em bloco único.
+   - Turno normal: 2 a 3 balões quando houver reação + comentário/reciprocidade.
+   - Turno rico ou animado: 3 a 4 balões rápidos e proporcionais. Larissa pode reagir num balão e completar o pensamento nos próximos; não compacte tudo numa frase perfeita.
 6. ZERO SUJEIRA: Proibido markdown, prefixos ("Resposta:", "Larissa:") e explicações internas de IA.`;
 
 export const LARISSA_COMPACT_SUBAGENT_PROMPT = `=== DIRETRIZES CONVERSACIONAIS DA LARISSA ===
@@ -23,7 +24,7 @@ Você materializa a voz da Larissa com naturalidade de conversa no celular.
 5. FATOS: Fatos pessoais vêm exclusivamente do MissionPackage. Se não vieram no contexto, não invente.
 6. EXECUÇÃO: Você não pesquisa nem chama ferramentas. Materialize somente a missão recebida.
 7. ÁUDIO PRIORITÁRIO: Se o MissionPackage trouxer um áudio autorizado e ele for natural no turno, você pode usá-lo; nunca escolha outro ID.
-8. EMOJI: Emoji é opcional. Máximo 1 quando combinar com o contexto afetivo. Não use para preencher vazio e evite repetir emoji recente.`;
+8. EMOJI: Emoji é pontuação emocional, não obrigação. Pode usar 1 em emoção leve e 2-3 em reação realmente afetiva, engraçada ou intensa (ex: 🥰, ❤️, 😂, 🥺, 🫶🏻, 🤭, 🙏🏻). Combos como 😂😂😂 ou ❤️❤️ são válidos quando espontâneos. Evite repetição mecânica, não repetição emocional intencional.`;
 
 export const LARISSA_CONVERSATION_EXAMPLES_V1 = `=== EXEMPLOS DE RITMO, NÃO FRASES PARA COPIAR ===
 ELE: "Oii, tudo bem?" | NATURAL: "Oii, tô bem sim, e vc?" | EVITAR: "Oi, tudo bem? 😊 Como tá seu dia?"
@@ -52,7 +53,7 @@ export interface RecentStyleState {
 }
 
 export interface EmojiBudgetResult {
-  budget: number; // 0 ou 1
+  budget: number; // 0 a 3
   allowEmoji: boolean;
   blockedEmojis: string[];
   recentEmojis: string[];
@@ -205,11 +206,11 @@ export interface EmojiBudgetOptions {
 /**
  * Calcula deterministicamente o orçamento de emoji com base no contexto do turno e histórico recente.
  * Regras:
- * A. Se contexto for sério/delicado: budget = 0
- * B. Se contexto for afetivo, flerte leve ou lote composto (2 a 4 balões): budget = 2 (teto máximo)
- * C. Contexto normal: budget = 1 (padrão)
- * D. REMOVIDO o hard block do turno anterior: ter emoji no último outbound NÃO zera o budget
- * E. recentEmojis é mantido para garantir VARIEDADE (evitar repetir mecanicamente o mesmo emoji)
+ * A. Contexto sério/delicado: budget = 1, apenas para acolhimento emocional quando couber
+ * B. Contexto afetivo, flerte leve ou lote composto: budget = 3
+ * C. Contexto normal: budget = 2
+ * D. Ter emoji no último outbound NÃO bloqueia emoji no próximo turno
+ * E. recentEmojis serve só para evitar repetição mecânica; repetição emocional intencional é válida
  */
 export function computeDynamicEmojiBudget(
   recentOutbounds: Array<{ text?: string; content?: string; message?: string } | string>,
@@ -217,13 +218,13 @@ export function computeDynamicEmojiBudget(
 ): EmojiBudgetResult {
   const styleState = extractRecentStyleState(recentOutbounds);
 
-  let budget = 1;
+  let budget = 2;
   if (options?.isSeriousContext) {
-    budget = 0;
-  } else if (options?.isAffectionateOrFlirtyOrComplex) {
-    budget = 2;
-  } else {
     budget = 1;
+  } else if (options?.isAffectionateOrFlirtyOrComplex) {
+    budget = 3;
+  } else {
+    budget = 2;
   }
 
   let promptSnippet = `EMOJI_BUDGET=${budget}`;
@@ -231,12 +232,12 @@ export function computeDynamicEmojiBudget(
     promptSnippet += `\nRECENT_EMOJIS=[${styleState.recent_emojis.join(", ")}] (varie; evite repetir mecanicamente os mesmos emojis)`;
   }
   promptSnippet += `\nEMOJI_RECENT_HISTORY=${JSON.stringify(styleState.emoji_recent_history)}`;
-  if (budget === 0) {
-    promptSnippet += `\nContexto sério ou delicado: zero emoji neste turno.`;
-  } else if (budget >= 2) {
-    promptSnippet += `\nEmoji é opcional neste turno. Podem aparecer até 2 emojis no turno se for momento afetivo, brincadeira, flerte leve ou lote composto de 2-4 balões. Não force e varie em relação aos recentes.`;
+  if (budget >= 3) {
+    promptSnippet += `\nEmoji é opcional. Em emoção alta podem aparecer até 3 no turno, inclusive combo natural como 😂😂😂, ❤️❤️ ou 🥰🥰❤️. Não force.`;
+  } else if (budget === 2) {
+    promptSnippet += `\nEmoji é opcional. Até 2 podem aparecer quando a emoção pedir; zero também é natural. Evite repetição mecânica, mas não proíba repetição emocional intencional.`;
   } else {
-    promptSnippet += `\nEmoji é opcional neste turno. Máximo 1 se combinar naturalmente com a emoção/contexto. Varie em relação aos recentes.`;
+    promptSnippet += `\nContexto delicado: no máximo 1 emoji de acolhimento quando realmente combinar (ex: 🥺, ❤️ ou 🙏🏻); nenhum também é válido.`;
   }
 
   return {
@@ -364,7 +365,7 @@ export function runStyleLint(
   options: StyleLintOptions = {}
 ): StyleLintResult {
   const {
-    emojiBudget = 1,
+    emojiBudget = 2,
     recentEmojis = [],
     recentReactions = [],
     lastOutboundReaction,
@@ -482,20 +483,23 @@ export function runStyleLint(
   }
 
   // Regra 2: Violações de Emoji
-  const maxAllowedEmojis = Math.min(2, Math.max(1, emojiBudget));
+  const maxAllowedEmojis = Math.min(3, Math.max(1, emojiBudget));
   if (emojiBudget === 0 && totalEmojiCount > 0) {
     markRetry("EMOJI_BUDGET_ZERO", `Emoji usado (${emojisFoundInTurn.join(", ")}) com EMOJI_BUDGET=0.`);
   } else if (totalEmojiCount > maxAllowedEmojis) {
     markRetry("EXCESSO_EMOJIS", `Mais de ${maxAllowedEmojis} emoji(s) detectado no turno (total: ${totalEmojiCount}; teto do turno: ${maxAllowedEmojis}).`);
   }
 
-  // Regra 3: Emoji recente repetido (evitar repetição mecânica do mesmo emoji)
+  // Regra 3: Emoji recente repetido é apenas sinal de observabilidade.
+  // A Larissa real repete emoji de propósito em emoção genuína; não bloquear semanticamente.
   if (recentEmojis.length > 0 && emojisFoundInTurn.length > 0) {
-    for (const em of emojisFoundInTurn) {
-      if (recentEmojis.includes(em)) {
-        markRetry("EMOJI_REPETIDO", `Emoji recente repetido detectado: ${em} (varie o emoji ou envie sem emoji).`);
-        break;
-      }
+    const repeated = emojisFoundInTurn.find((em) => recentEmojis.includes(em));
+    if (repeated) {
+      issues.push({
+        type: "mechanical",
+        rule: "EMOJI_RECENTE_OBSERVADO",
+        message: `Emoji recente reapareceu: ${repeated}; aceitável quando contextual, evite apenas automatismo.`,
+      });
     }
   }
 
