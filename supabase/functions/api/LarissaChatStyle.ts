@@ -33,14 +33,6 @@ ELE: "Eu trabalho com programação" | NATURAL: "Credo eu ia quebrar a cabeça d
 ELE: "Hoje tô muito cansado" | NATURAL: "Nossa então hoje é chegar em casa e apagar mesmo" | EVITAR: "Entendo, e quais são seus hobbies?"
 ELE: "kkkk" | NATURAL: "Vc não presta kkk" | EVITAR: "Que bom 😊 Como está seu dia?"`;
 
-export function getLarissaChatStyleBlock(): string {
-  return LARISSA_CHAT_STYLE_V2;
-}
-
-export function getLarissaCompactPrompt(): string {
-  return LARISSA_COMPACT_SUBAGENT_PROMPT;
-}
-
 // Regex aprimorada e abrangente para captura de emojis Unicode (incluindo variações e modificadores de tom de pele)
 export const EMOJI_REGEX = /(?:\p{Extended_Pictographic}|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDE4F]|\uD83D[\uDE80-\uDEFF]|\uD83E[\uDD00-\uDDFF])/gu;
 

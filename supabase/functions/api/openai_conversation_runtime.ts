@@ -706,19 +706,3 @@ export async function resolveOpenAiConversationId(params: {
     created: true,
   };
 }
-
-export async function markOpenAiConversationFailure(params: {
-  supabase: any;
-  conversationId: string;
-  error: unknown;
-}): Promise<void> {
-  const message = params.error instanceof Error ? params.error.message : String(params.error);
-  await params.supabase
-    .from("openai_conversation_links")
-    .update({
-      status: "failed",
-      last_error: message.slice(0, 1000),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("conversation_id", params.conversationId);
-}

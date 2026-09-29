@@ -36,16 +36,6 @@ export interface ContactQuoteInput {
   metadata?: Record<string, any>;
 }
 
-export interface AgentMemoryScopeRecord {
-  scope_id: string;
-  conversation_id: string;
-  cycle_id: string;
-  agent_id: string;
-  created_at: string;
-  expires_at: string;
-  revoked_at?: string | null;
-}
-
 export function stripAccents(s: string): string {
   return (s || "")
     .normalize("NFD")

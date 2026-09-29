@@ -4548,21 +4548,6 @@ Responda ESTRITAMENTE em JSON puro:
 }`;
 }
 
-export interface SemanticGoalDefinition {
-  id: string;
-  stageId?: string;
-  label: string;
-  memoryEntity: string;
-  memoryField: string;
-  description?: string;
-  kind?: "fact" | "conversation_state";
-  required?: boolean;
-  order?: number;
-  enabled?: boolean;
-  /** Política de conclusão: "conversation_evidence" ou "fact_only" */
-  completionPolicy?: "conversation_evidence" | "fact_only";
-}
-
 export interface ResolvedStageGoal {
   id: string;
   label: string;

@@ -16,5 +16,3 @@ export function buildCanonicalAgentInstructions(_options?: { persistentMode?: bo
 export function getCanonicalAgentInstructionsHash(_options?: { persistentMode?: boolean } | string | boolean): string {
   return crypto.createHash("sha256").update(LARISSA_CANONICAL_PROMPT, "utf8").digest("hex");
 }
-
-export const VENDEO_AGENT_INSTRUCTIONS_HASH = getCanonicalAgentInstructionsHash();
