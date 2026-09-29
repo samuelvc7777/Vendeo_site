@@ -45,7 +45,6 @@ export interface ConversationObjectiveProgress {
 export interface PersonaAudioAsset {
   id: string;
   objectiveId?: string;
-  legacyStageId?: string; // Identifica áudio antigo ainda sem vínculo a objetivo.
   title: string;
   audioUrl: string;
   duration?: number; // Duração em segundos

@@ -289,8 +289,8 @@ export function PersonaAudioVaultModal({
     }
   };
 
-  const getObjectiveName = (objectiveId?: string, legacyStageId?: string) => {
-    if (!objectiveId) return legacyStageId ? "Necessita vinculação a objetivo" : "Sem objetivo";
+  const getObjectiveName = (objectiveId?: string) => {
+    if (!objectiveId) return "Sem objetivo";
     return objectives.find((objective) => objective.id === objectiveId)?.label || objectiveId;
   };
 
