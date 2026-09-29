@@ -41,7 +41,6 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
     return {
       id: row.id,
       objectiveId: row.objective_id || undefined,
-      legacyStageId: !row.objective_id ? row.stage_id || undefined : undefined,
       title: row.title,
       audioUrl: row.audio_url,
       duration: row.duration != null ? Number(row.duration) : undefined,

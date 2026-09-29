@@ -642,7 +642,6 @@ export interface ConversationObjectiveProgress {
 export interface PersonaAudioAsset {
   id: string;
   objectiveId?: string;
-  legacyStageId?: string;
   title: string;
   audioUrl: string;
   duration?: number;
@@ -4501,7 +4500,7 @@ ${toolsHistoryBlock}
 ### OBJETIVOS DA ETAPA ATUAL ("${currentStage}")
 ${objBlock || "Nenhum objetivo cadastrado."}
 
-Objetivos com status completed já foram cumpridos: não volte a perguntar por eles. Use seus valores como contexto quando fizer sentido. Objetivos pendentes são oportunidades, nunca perguntas obrigatórias; priorize a conversa e só os busque quando houver gancho natural.
+Objetivos com status completed já foram cumpridos: não volte a perguntar por eles. Use seus valores como contexto quando fizer sentido. O objetivo ATUAL/PENDENTE obrigatório permanece uma missão viva até existir evidência real de conclusão. Ter perguntado antes sem receber resposta não o conclui. Priorize a conversa viva, mas quando o tópico leve se esgotar ou a resposta terminaria sem direção, trate isso como transição natural e avance o objetivo.
 
 ### FERRAMENTAS DISPONÍVEIS SOB DEMANDA (MÁXIMO 2 DE MEMÓRIA + 1 DE COFRE)
 Use APENAS se realmente necessário. Para saudações, desabafos diretos ou mensagens triviais, NÃO use ferramentas.
@@ -5022,7 +5021,6 @@ export async function listEligiblePersonaAudios(params: {
       audios = audioRows.map((r: any) => ({
         id: r.id,
         objectiveId: r.objective_id || r.objectiveId || undefined,
-        legacyStageId: !r.objective_id ? r.stage_id || r.stageId || undefined : undefined,
         title: r.title,
         audioUrl: r.audio_url || r.audioUrl,
         duration: r.duration != null ? Number(r.duration) : undefined,
