@@ -3666,7 +3666,7 @@ serve(async (req: Request) => {
         const model = String(agent.model || configs.get("openai_brain_model") || "").trim() || null;
         const reasoningEffort = allowedReasoningEfforts.includes(agent.reasoning?.effort) ? agent.reasoning.effort : null;
         const verbosity = allowedVerbosityLevels.includes(agent.text?.verbosity) ? agent.text.verbosity : null;
-        const modelLabel = model ? labels[model] || legacyModelLabels[model] || `${model} (legado)` : null;
+        const modelLabel = model ? labels[model] || model : null;
         return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), model, modelLabel, reasoningEffort, verbosity }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
@@ -3718,7 +3718,7 @@ serve(async (req: Request) => {
           if (keyWrite.error) return new Response(JSON.stringify({ error: keyWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
         const finalModel = updatedAgent.model || targetModel;
-        const modelLabel = finalModel ? labels[finalModel] || legacyModelLabels[finalModel] || `${finalModel} (legado)` : null;
+        const modelLabel = finalModel ? labels[finalModel] || finalModel : null;
         return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), model: finalModel, modelLabel, reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
     }
