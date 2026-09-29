@@ -4576,6 +4576,8 @@ export async function resolveStageChecklistGoals(params: {
   });
   const completedObjectives = goals.filter((goal) => goal.status === "completed");
   const remainingObjectives = goals.filter((goal) => goal.status === "pending");
+  const currentStageIndex = stages.findIndex((item: any) => item.id === stageId);
+  const nextConfiguredStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] || null : null;
   return {
     stage: stage?.name || stageId,
     stageId,
@@ -4585,6 +4587,9 @@ export async function resolveStageChecklistGoals(params: {
     completedObjectives,
     remainingObjectives,
     stageComplete: goals.length > 0 && remainingObjectives.length === 0,
+    nextStageId: nextConfiguredStage?.id || null,
+    nextStageName: nextConfiguredStage?.name || null,
+    isFinalStage: !nextConfiguredStage,
   };
 }
 
@@ -4597,6 +4602,9 @@ export interface StageResolutionResult {
   completedObjectives: ResolvedStageGoal[];
   remainingObjectives: ResolvedStageGoal[];
   stageComplete: boolean;
+  nextStageId: string | null;
+  nextStageName: string | null;
+  isFinalStage: boolean;
 }
 export const resolveStageObjectives = resolveStageChecklistGoals;
 
@@ -4681,21 +4689,55 @@ export async function validateAndApplyBrainStageDecision(params: {
     }
   }
 
+  const currentStageIndex = stages.findIndex((stage: any) => stage.id === currentStageId);
+  const nextConfiguredStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] || null : null;
+  const currentRequiredGoals = (Array.isArray(configuredCurrent?.goals)
+    ? configuredCurrent.goals
+    : Array.isArray(configuredCurrent?.objectives)
+    ? configuredCurrent.objectives
+    : [])
+    .filter((goal: any) => goal && goal.enabled !== false && goal.required !== false);
+  const currentRequiredGoalIds = currentRequiredGoals
+    .map((goal: any) => String(goal.id || ""))
+    .filter(Boolean);
+  const allCurrentRequiredCompleted =
+    currentRequiredGoalIds.length > 0 &&
+    currentRequiredGoalIds.every((goalId: string) =>
+      completed.includes(goalId) || progress[goalId]?.status === "completed"
+    );
+
   const requestedStage = stages.find((stage: any) => stage.id === params.decision.nextPhase);
   const sameStage = params.decision.nextPhase === currentStageId;
-  const validForwardTransition = requestedStage && Number(requestedStage.stage_order) > Number(configuredCurrent.stage_order);
+  const requestsConfiguredNext = Boolean(
+    requestedStage &&
+    nextConfiguredStage &&
+    requestedStage.id === nextConfiguredStage.id
+  );
+  const validForwardTransition = requestsConfiguredNext && allCurrentRequiredCompleted;
   const transitionAccepted = !invalidCompletion && (sameStage || validForwardTransition);
   const nextStageId = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const nextPhase = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const stageAdvanced = nextStageId !== currentStageId;
-  if (stageAdvanced) params.currentCycle?.trace?.push(`brain_stage_transition_accepted: ${currentStageId}->${nextStageId}`);
-  else if (!sameStage) {
+
+  if (stageAdvanced) {
+    params.currentCycle?.trace?.push(`brain_stage_transition_accepted: ${currentStageId}->${nextStageId}`);
+  } else if (!sameStage) {
     const reason = invalidCompletion
       ? "objective_completion_invalid"
-      : requestedStage
-        ? "stage_transition_must_advance_in_configured_order"
-        : "stage_not_configured";
+      : !requestedStage
+      ? "stage_not_configured"
+      : !nextConfiguredStage
+      ? "already_final_stage"
+      : requestedStage.id !== nextConfiguredStage.id
+      ? "stage_transition_must_use_next_configured_stage"
+      : !allCurrentRequiredCompleted
+      ? "stage_transition_blocked_required_objectives_pending"
+      : "stage_transition_rejected";
     params.currentCycle?.trace?.push(`brain_stage_transition_rejected: ${reason}:${String(params.decision.nextPhase)}`);
+  } else if (allCurrentRequiredCompleted && nextConfiguredStage) {
+    params.currentCycle?.trace?.push(
+      `brain_stage_transition_missing: current=${currentStageId}; expected_next=${nextConfiguredStage.id}`
+    );
   }
 
   const finalStage = stages[stages.length - 1];
@@ -7721,6 +7763,7 @@ export async function runBrainOrchestration(
             value: goal.value,
             evidenceMessageId: goal.evidenceMessageId,
             description: goal.description,
+            required: goal.required !== false,
           })),
           contextPipeline: {
             candidateCount: budgetedRecentContext.candidateCount,
@@ -8530,7 +8573,7 @@ export async function runBrainOrchestration(
         checkpoint: "",
         summary: brainPlan.action === "manual_resolution" ? "Resolução manual solicitada pelo Brain" : "Brain decidiu aguardar",
         suggestedResponse: "",
-        nextPhase: currentPhase,
+        nextPhase: brainPlan.stageTransition?.stageId || brainPlan.nextStageId || currentPhase,
         reasoning: brainPlan.reasoning,
         manualResolution: brainPlan.manualResolution,
         pendingActionResolution: brainPlan.pendingActionResolution || { cancelActionIds: [] },

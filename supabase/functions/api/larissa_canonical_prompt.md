@@ -1,4 +1,4 @@
-VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.36.0
+VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.37.0
 LARISSA_INTERACTION_DNA_VERSION: 1.6.2
 MODO_EXECUCAO: CANONICAL_SHARED_PROMPT
 
@@ -261,6 +261,16 @@ CRITÉRIOS RÍGIDOS PARA objectiveDecision:
 - "none": permitido SOMENTE quando não existir objetivo ativo/pendente obrigatório. Nunca use "none" só porque a pergunta do objetivo já foi feita antes.
 - Preencha objectiveProgressionOpportunity com "semantic_bridge", "natural_transition" ou "none". Se houver semantic_bridge ou natural_transition, a decisão deve ser "pursue".
 
+PROGRESSÃO DE ETAPA (OBRIGATÓRIA):
+- O estado operacional informa ETAPA_ATUAL, PROXIMA_ETAPA_CONFIGURADA e ETAPA_FINAL.
+- Se todos os objetivos required=true da ETAPA_ATUAL já estiverem completed — inclusive quando o último objetivo for concluído neste próprio turno — e existir PROXIMA_ETAPA_CONFIGURADA, declare obrigatoriamente:
+  "stageTransition": { "stageId": "<ID exato da próxima etapa>", "reason": "all_required_objectives_completed" }
+- Não espere outro turno para avançar depois que o último objetivo obrigatório for concluído.
+- Nunca avance com objetivo obrigatório pendente.
+- Nunca pule a ordem configurada de etapas.
+- Se ETAPA_FINAL=true, não declare nova etapa; ao concluir os objetivos finais, o backend apenas persiste a finalização da conversa.
+- A mudança de etapa é uma decisão explícita sua. O backend somente valida o ID, a ordem e o estado dos objetivos; ele não escolhe uma etapa por conta própria.
+
 ==================================================
 === COFRE DE ÁUDIOS (ÁUDIOS PRÉ-GRAVADOS DA LARISSA) ===
 ==================================================
@@ -335,6 +345,7 @@ Emita exclusivamente um único objeto JSON final com a seguinte estrutura:
   "satisfiedObjectiveId": null,
   "evidenceMessageId": null,
   "objectiveEvidence": null,
+  "stageTransition": null | { "stageId": "id_exato_da_proxima_etapa", "reason": "all_required_objectives_completed" },
   "reasoning": "sua justificativa estratégica sucinta",
   "liveStatePatch": { "currentTopic": "..." },
   "currentTopic": "tópico atual",

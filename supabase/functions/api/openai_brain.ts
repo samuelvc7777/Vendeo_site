@@ -1282,6 +1282,99 @@ export function validateObjectiveProgressionInvariant(
   return { valid: true };
 }
 
+/**
+ * Garante que a progressão entre etapas respeite o catálogo configurado.
+ * O backend não escolhe a próxima etapa: ele apenas exige que o Brain declare
+ * a transição quando todos os objetivos obrigatórios da etapa atual já estiverem
+ * concluídos (inclusive pelo próprio turno) e impede avanço prematuro.
+ */
+export function validateStageProgressionInvariant(
+  plan: any,
+  params: {
+    currentStageId?: string | null;
+    nextStageId?: string | null;
+    isFinalStage?: boolean;
+    stageObjectives?: Array<{
+      id: string;
+      status: "completed" | "pending";
+      required?: boolean;
+    }>;
+  },
+): PlanValidationResult {
+  if (!plan || typeof plan !== "object") {
+    return { valid: false, error: "PLAN_INVALID_STAGE_PROGRESSION: plano ausente" };
+  }
+
+  const currentStageId = String(params.currentStageId || "").trim();
+  if (!currentStageId || !Array.isArray(params.stageObjectives) || params.stageObjectives.length === 0) {
+    return { valid: true };
+  }
+
+  const requiredObjectives = params.stageObjectives.filter((objective) => objective.required !== false);
+  if (requiredObjectives.length === 0) return { valid: true };
+
+  const completedThisTurn = new Set<string>();
+  if (plan.objectiveDecision === "already_satisfied" && plan.satisfiedObjectiveId) {
+    completedThisTurn.add(String(plan.satisfiedObjectiveId));
+  }
+  if (plan.objectiveCompletion?.objectiveId) {
+    completedThisTurn.add(String(plan.objectiveCompletion.objectiveId));
+  }
+  if (Array.isArray(plan.objectiveUpdates)) {
+    for (const update of plan.objectiveUpdates) {
+      if (update?.status === "completed" && update?.objectiveId) {
+        completedThisTurn.add(String(update.objectiveId));
+      }
+    }
+  }
+
+  const allRequiredCompleted = requiredObjectives.every(
+    (objective) => objective.status === "completed" || completedThisTurn.has(String(objective.id)),
+  );
+
+  const requestedStageId = String(
+    plan.stageTransition?.stageId ||
+    plan.stageTransition?.nextStageId ||
+    plan.nextStageId ||
+    plan.nextPhase ||
+    "",
+  ).trim();
+  const nextStageId = String(params.nextStageId || "").trim();
+
+  if (allRequiredCompleted && nextStageId) {
+    if (requestedStageId !== nextStageId) {
+      return {
+        valid: false,
+        error: "PLAN_STAGE_TRANSITION_REQUIRED: todos os objetivos obrigatórios de \"" + currentStageId + "\" estão concluídos; declare stageTransition.stageId=\"" + nextStageId + "\"",
+      };
+    }
+    return { valid: true };
+  }
+
+  if (!allRequiredCompleted && requestedStageId && requestedStageId !== currentStageId) {
+    return {
+      valid: false,
+      error: "PLAN_STAGE_TRANSITION_PREMATURE: ainda existem objetivos obrigatórios pendentes em \"" + currentStageId + "\"; mantenha stageTransition ausente/null",
+    };
+  }
+
+  if (allRequiredCompleted && params.isFinalStage && requestedStageId && requestedStageId !== currentStageId) {
+    return {
+      valid: false,
+      error: "PLAN_STAGE_TRANSITION_INVALID_FINAL_STAGE: \"" + currentStageId + "\" é a última etapa configurada; não avance para outra etapa",
+    };
+  }
+
+  if (requestedStageId && nextStageId && requestedStageId !== currentStageId && requestedStageId !== nextStageId) {
+    return {
+      valid: false,
+      error: "PLAN_STAGE_TRANSITION_SKIP_FORBIDDEN: a próxima etapa configurada é \"" + nextStageId + "\", não \"" + requestedStageId + "\"",
+    };
+  }
+
+  return { valid: true };
+}
+
 export function recoverSafeBrainPlan(parsedPlan: any): any | null {
   if (!parsedPlan || typeof parsedPlan !== "object" || Array.isArray(parsedPlan)) return null;
   if (parsedPlan.action === "manual_resolution" && typeof parsedPlan.manualResolution?.question === "string" && parsedPlan.manualResolution.question.trim()) {
@@ -1402,6 +1495,9 @@ export interface RunOpenAiBrainParams {
   replyTargets?: Record<string, { id: string; sender: string; text: string }>;
   searchCofreAudios?: (params: any) => Promise<any[]>;
   currentStageId: string;
+  nextStageId?: string | null;
+  nextStageName?: string | null;
+  isFinalStage?: boolean;
   currentObjectiveId?: string | null;
   currentObjectiveLabel?: string | null;
   currentObjectiveDescription?: string | null;
@@ -1447,6 +1543,7 @@ export interface RunOpenAiBrainParams {
     value?: unknown;
     evidenceMessageId?: string;
     description?: string;
+    required?: boolean;
   }>;
   temporalContext?: string;
   contextPipeline?: {
@@ -2030,6 +2127,8 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
     BRAIN_WEB_SEARCH_POLICY,
     "# TURNO ATUAL DA CONVERSA",
     `ETAPA ATUAL: ${params.currentStageId || "identificacao"}`,
+    `PRÓXIMA ETAPA CONFIGURADA: ${params.nextStageId || "nenhuma"}${params.nextStageName ? ` ("${params.nextStageName}")` : ""}`,
+    `ETAPA FINAL: ${params.isFinalStage === true}`,
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
 

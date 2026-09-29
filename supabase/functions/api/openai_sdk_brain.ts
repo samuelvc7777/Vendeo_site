@@ -9,6 +9,7 @@ import {
   validateObjectiveProgressionInvariant,
   validateQuestionIntentsInvariant,
   validateResponseGenerationInvariant,
+  validateStageProgressionInvariant,
   type OpenAiBrainTurnResult,
   type RunOpenAiBrainParams,
 } from "./openai_brain.ts";
@@ -33,6 +34,8 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     "Este bloco é estado interno do Vendeo, não é mensagem do pretendente.",
     "A Conversation da OpenAI é a fonte do histórico conversacional vivo. Não peça ao backend o histórico bruto.",
     `ETAPA_ATUAL=${params.currentStageId || "identificacao"}`,
+    `PROXIMA_ETAPA_CONFIGURADA=${params.nextStageId || "nenhuma"}${params.nextStageName ? ` ("${params.nextStageName}")` : ""}`,
+    `ETAPA_FINAL=${params.isFinalStage === true}`,
     `OBJETIVO_ATIVO=${params.currentObjectiveId || "nenhum"}`,
     `OBJETIVO_ATIVO_OBRIGATORIO=${params.currentObjectiveId ? params.currentObjectiveRequired !== false : false}`,
     `OBJETIVO_ATIVO_TIPO=${params.currentObjectiveKind || "desconhecido"}`,
@@ -46,7 +49,7 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     for (const objective of params.stageObjectives) {
       const value = objective.value == null ? "" : ` value=${JSON.stringify(objective.value)}`;
       const evidence = objective.evidenceMessageId ? ` evidence=${objective.evidenceMessageId}` : "";
-      lines.push(`- ${objective.id}: ${objective.status}${value}${evidence}${objective.description ? ` | ${objective.description}` : ""}`);
+      lines.push(`- ${objective.id}: ${objective.status} required=${objective.required !== false}${value}${evidence}${objective.description ? ` | ${objective.description}` : ""}`);
     }
   }
 
@@ -122,6 +125,8 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     "Não repita a mesma frase de pergunta em sequência, mas um objetivo obrigatório ainda sem resposta pode e deve ser retomado depois com formulação natural; anti-repetição nunca transforma pergunta ignorada em objetivo concluído.",
     "OBJETIVO_ATIVO controla o próximo dado ainda pendente sobre o pretendente; ele NÃO limita a categoria temática do Cofre.",
     "Objetivo completed significa somente não perguntar esse dado novamente ao pretendente; NÃO desabilita áudio vinculado ao mesmo objective_id.",
+    "TRANSIÇÃO DE ETAPA É OBRIGATÓRIA: se todos os objetivos required=true da ETAPA_ATUAL já estiverem completed, inclusive quando o último for concluído neste próprio turno, e PROXIMA_ETAPA_CONFIGURADA não for 'nenhuma', declare stageTransition={stageId: PROXIMA_ETAPA_CONFIGURADA, reason: 'all_required_objectives_completed'}.",
+    "Nunca avance de etapa enquanto existir objetivo obrigatório pendente. Nunca pule uma etapa configurada. Na ETAPA_FINAL não declare avanço; a finalização é aplicada após a conclusão dos objetivos.",
     "Se a mensagem atual perguntar algo sobre Larissa relacionado a qualquer objective_id configurado da etapa — inclusive um objetivo completed, como uma devolução 'e vc?' após ele responder — consulte cofre_audio_search com o objective_id desse assunto. Outro objetivo estar ativo não bloqueia essa consulta.",
     "Não repita cofre_audio_search para o mesmo objective_id no mesmo turno.",
   );
@@ -327,6 +332,12 @@ function validateAndNormalizeSdkPlan(
     currentObjectiveRequired: params.currentObjectiveRequired,
     currentObjectiveKind: params.currentObjectiveKind,
   });
+  const stageProgression = validateStageProgressionInvariant(parsedPlan, {
+    currentStageId: params.currentStageId,
+    nextStageId: params.nextStageId,
+    isFinalStage: params.isFinalStage,
+    stageObjectives: params.stageObjectives,
+  });
   const manualReask = Boolean(params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution");
 
   const questionValidation = validateQuestionIntentsInvariant(parsedPlan);
@@ -354,6 +365,8 @@ function validateAndNormalizeSdkPlan(
     ? response.error || "invalid_response_generation"
     : !progression.valid
     ? progression.error || "invalid_objective_progression"
+    : !stageProgression.valid
+    ? stageProgression.error || "invalid_stage_progression"
     : isObjectivePursuit && !questionValidation.valid
     ? questionValidation.error || "invalid_objective_question_intent"
     : manualReask
@@ -365,6 +378,7 @@ function validateAndNormalizeSdkPlan(
   if (!parsedPlan || validationError) {
     const hardContractViolation =
       !progression.valid ||
+      !stageProgression.valid ||
       (isObjectivePursuit && !questionValidation.valid) ||
       manualReask ||
       validationError === "audio_not_authorized_for_this_turn";
