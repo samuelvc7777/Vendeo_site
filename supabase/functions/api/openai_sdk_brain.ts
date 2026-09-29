@@ -26,7 +26,7 @@ function env(name: string): string | undefined {
   return typeof Deno !== "undefined" ? Deno.env.get(name) : process.env[name];
 }
 
-function compactOperationalInstructions(params: RunOpenAiBrainParams): string {
+function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   const lines: string[] = [
     "## ESTADO OPERACIONAL AUTORITATIVO DESTE TURNO",
     "Este bloco é estado interno do Vendeo, não é mensagem do pretendente.",
@@ -92,24 +92,50 @@ function compactOperationalInstructions(params: RunOpenAiBrainParams): string {
   return lines.join("\n");
 }
 
+function technicalSystemMessage(text: string): any {
+  return {
+    type: "message",
+    role: "system",
+    content: [{ type: "input_text", text }],
+  };
+}
+
 function buildTurnInput(params: RunOpenAiBrainParams): any[] | string {
+  const items: any[] = [
+    technicalSystemMessage(buildOperationalTurnState(params)),
+  ];
+
   if (params.greetingRepeatFeedback || params.schemaFeedback) {
-    return [system("[EVENTO INTERNO VENDEO] Regere a decisão anterior conforme a correção descrita no estado operacional. Não trate isto como nova mensagem do pretendente.")];
+    items.push(technicalSystemMessage(
+      "[EVENTO INTERNO VENDEO] Regere a decisão anterior conforme a correção descrita no estado operacional. Não trate isto como nova mensagem do pretendente."
+    ));
+    return items;
   }
   if (params.manualResolutionAnswer) {
-    return [system("[EVENTO INTERNO VENDEO] O operador respondeu a resolução manual. Continue o turno usando o estado operacional.")];
+    items.push(technicalSystemMessage(
+      "[EVENTO INTERNO VENDEO] O operador respondeu a resolução manual. Continue o turno usando o estado operacional."
+    ));
+    return items;
   }
   if (params.currentInboundMessages?.length) {
-    return [system("[EVENTO INTERNO VENDEO] Há novas mensagens reais do Instagram já persistidas nesta Conversation. Analise apenas o novo delta ainda não respondido e produza a decisão do turno.")];
+    items.push(technicalSystemMessage(
+      "[EVENTO INTERNO VENDEO] Há novas mensagens reais do Instagram já persistidas nesta Conversation. Analise apenas o novo delta ainda não respondido e produza a decisão do turno."
+    ));
+    return items;
   }
   if (params.inboundMessages?.length) {
-    return params.inboundMessages.map((text) => ({
+    items.push(...params.inboundMessages.map((text) => ({
       type: "message",
       role: "user",
       content: [{ type: "input_text", text }],
-    }));
+    })));
+    return items;
   }
-  return [system("[EVENTO INTERNO VENDEO] Reavalie o turno atual usando o estado operacional.")];
+
+  items.push(technicalSystemMessage(
+    "[EVENTO INTERNO VENDEO] Reavalie o turno atual usando o estado operacional."
+  ));
+  return items;
 }
 
 function detailSum(details: Array<Record<string, number>> | undefined, key: string): number {
@@ -981,17 +1007,23 @@ export async function runOpenAiSdkBrainTurn(
     },
   });
 
-  const instructions = [
-    buildCanonicalAgentInstructions({ persistentMode: true }),
-    compactOperationalInstructions(params),
-  ].join("\n\n");
+  // Keep Agent instructions byte-for-byte stable across turns so the provider can
+  // reuse the large canonical prefix through prompt caching. Turn-specific state
+  // is sent separately by buildTurnInput().
+  const instructions = buildCanonicalAgentInstructions({ persistentMode: true });
 
   const reasoningEffort = params.reasoningEffort as any;
   const brain = new Agent({
     name: "Vendeo Brain",
     instructions,
     model,
-    modelSettings: reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {},
+    modelSettings: {
+      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      promptCacheOptions: {
+        mode: "implicit",
+        ttl: "30m",
+      },
+    },
     tools: [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })],
     resetToolChoice: true,
   });
