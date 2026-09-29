@@ -35,6 +35,7 @@ import {
   Trophy,
   Clock,
   Bot,
+  BotOff,
   AlertTriangle,
   RefreshCw,
 } from "lucide-react";
@@ -157,6 +158,7 @@ export interface DirectConversation {
   isRestricted?: boolean;
   currentStageId?: string | null;
   isConverted?: boolean;
+  aiAutoRespond?: boolean;
   status?: "active" | "archived" | "blocked" | "restricted" | "pending" | "system" | "vault";
 }
 
@@ -697,6 +699,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
   const [stageFilter, setStageFilter] = useState<string>("todas"); // "todas" | "concluidos" | stageId
+  const [aiFilter, setAiFilter] = useState<"todas" | "com_ia" | "sem_ia">("todas");
   const chatStages = useChatStages(activeChat?.id, { loadAllProgresses: false });
   const {
     stages,
@@ -1368,6 +1371,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               isRestricted,
               currentStageId: c.current_stage_id || c.currentStageId || null,
               isConverted: Boolean(c.is_converted ?? c.isConverted),
+              aiAutoRespond: Boolean(c.ai_auto_respond ?? c.aiAutoRespond),
               status: isRestricted ? "restricted" : (c.status || "active"),
             };
           });
@@ -1392,6 +1396,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     // Metadados de etapa são canônicos e não dependem do timestamp da última mensagem.
                     currentStageId: next.currentStageId,
                     isConverted: next.isConverted,
+                    aiAutoRespond: next.aiAutoRespond,
                   }
                 : next
             );
@@ -1406,7 +1411,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       // last_message_at porque chats ativos mudam de posição enquanto a carga roda.
       if (supabase) {
         const selectColumns =
-          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, created_at, updated_at";
+          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, ai_auto_respond, created_at, updated_at";
 
         const { data: recentRows, error: recentError } = await supabase
           .from("instagram_conversations")
@@ -1529,6 +1534,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               isRestricted: isRestr,
               currentStageId: c.currentStageId ?? c.current_stage_id ?? null,
               isConverted: Boolean(c.isConverted ?? c.is_converted),
+              aiAutoRespond: Boolean(c.aiAutoRespond ?? c.ai_auto_respond),
               status: isRestr ? "restricted" : (c.status === "restricted" ? "active" : (c.status || "active")),
             };
           });
@@ -1794,6 +1800,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     avatar?: string;
     currentStageId?: string | null;
     isConverted?: boolean;
+    aiAutoRespond?: boolean;
   }) => {
     if (!conv.id || conv.id.startsWith("__")) return;
 
@@ -1855,6 +1862,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         avatar: conv.avatar || target.avatar,
         currentStageId: conv.currentStageId !== undefined ? conv.currentStageId : target.currentStageId,
         isConverted: conv.isConverted !== undefined ? conv.isConverted : target.isConverted,
+        aiAutoRespond: conv.aiAutoRespond !== undefined ? conv.aiAutoRespond : target.aiAutoRespond,
         lastMessage: formattedPreview,
         lastMessageAt: conv.lastMessageAt || target.lastMessageAt,
         lastSender: isSentByMe ? "me" : "them",
@@ -1885,6 +1893,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     avatar?: string;
     currentStageId?: string | null;
     isConverted?: boolean;
+    aiAutoRespond?: boolean;
   }) => {
     if (!conv.id || conv.id.startsWith("__")) return;
 
@@ -1912,6 +1921,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         isRestricted: false,
         currentStageId: conv.currentStageId || null,
         isConverted: Boolean(conv.isConverted),
+        aiAutoRespond: Boolean(conv.aiAutoRespond),
         status: "active",
       };
       return [newConv, ...prevConvs];
@@ -3551,7 +3561,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // FILTRAGEM DE CONVERSAS BASEADA NA ABA ATIVA E NO FILTRO ESCOLHIDO
   const isFilterActive =
     sortOrder !== "recentes" ||
-    (chatPlatform === "instagram" && (instaFilter !== "todos" || stageFilter !== "todas")) ||
+    (chatPlatform === "instagram" && (instaFilter !== "todos" || stageFilter !== "todas" || aiFilter !== "todas")) ||
     (chatPlatform === "tinder" && tinderFilter !== "todos");
 
   const platformConversations = conversations.filter(
@@ -3574,6 +3584,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const tinderRestritosCount = platformConversations.filter(
     (c) => isChatRestricted(c)
   ).length;
+
+  const aiEnabledCount = chatPlatform === "instagram"
+    ? platformConversations.filter((c) => c.aiAutoRespond === true).length
+    : 0;
+  const aiDisabledCount = chatPlatform === "instagram"
+    ? platformConversations.filter((c) => c.aiAutoRespond !== true).length
+    : 0;
 
   const filteredConversations = platformConversations
     .filter((c) => {
@@ -3637,6 +3654,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         return currentStageId === stageFilter && !c.isConverted;
       }
       return true;
+    })
+    .filter((c) => {
+      if (chatPlatform !== "instagram" || aiFilter === "todas") return true;
+      if (aiFilter === "com_ia") return c.aiAutoRespond === true;
+      return c.aiAutoRespond !== true;
     })
     .filter((c) => {
       if (!deferredSearchQuery.trim()) return true;
@@ -4953,6 +4975,69 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         )}
 
+        {/* FILTRO DE IA - Exclusivo Instagram Direct */}
+        {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && (
+          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-[#202020] bg-zinc-950/40 -mx-4 px-4">
+            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-400 shrink-0 mr-1">
+              <Bot className="w-3.5 h-3.5 text-emerald-400" />
+              <span>IA:</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setAiFilter("todas")}
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
+                aiFilter === "todas"
+                  ? "bg-zinc-100 text-black border-zinc-100 shadow-sm"
+                  : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+              }`}
+            >
+              <span>Todas</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
+                aiFilter === "todas" ? "bg-black/15 text-black" : "bg-zinc-800 text-zinc-300"
+              }`}>
+                {platformConversations.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setAiFilter("com_ia")}
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
+                aiFilter === "com_ia"
+                  ? "bg-emerald-500 text-black font-bold border-emerald-400 shadow-sm"
+                  : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+              }`}
+            >
+              <Bot className="w-3 h-3" />
+              <span>Com IA</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
+                aiFilter === "com_ia" ? "bg-black/20 text-black" : "bg-zinc-800 text-emerald-300"
+              }`}>
+                {aiEnabledCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setAiFilter("sem_ia")}
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
+                aiFilter === "sem_ia"
+                  ? "bg-zinc-600 text-white font-bold border-zinc-500 shadow-sm"
+                  : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+              }`}
+            >
+              <BotOff className="w-3 h-3" />
+              <span>Sem IA</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
+                aiFilter === "sem_ia" ? "bg-black/30 text-white" : "bg-zinc-800 text-zinc-300"
+              }`}>
+                {aiDisabledCount}
+              </span>
+            </button>
+          </div>
+        )}
+
         {/* FILTRO DE ETAPAS DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
         {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && stages.length > 0 && (
           <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-[#202020] bg-zinc-950/40 -mx-4 px-4">
@@ -5426,6 +5511,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           setSortOrder("recentes");
           setInstaFilter("todos");
           setTinderFilter("todos");
+          setStageFilter("todas");
+          setAiFilter("todas");
         }}
       />
 

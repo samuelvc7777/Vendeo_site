@@ -1662,7 +1662,7 @@ serve(async (req: Request) => {
       for (let from = 0; ; from += pageSize) {
         const page = await supabase
           .from("instagram_conversations")
-          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, created_at, updated_at")
+          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, ai_auto_respond, created_at, updated_at")
           .neq("status", "vault")
           .neq("status", "system")
           .order("last_message_at", { ascending: false, nullsFirst: false })
@@ -1721,6 +1721,7 @@ serve(async (req: Request) => {
           isRestricted: Boolean(c.is_restricted),
           currentStageId: c.current_stage_id || null,
           isConverted: Boolean(c.is_converted),
+          aiAutoRespond: Boolean(c.ai_auto_respond),
           status: c.status || (c.is_restricted ? "restricted" : "active"),
         };
 

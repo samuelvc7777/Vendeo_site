@@ -40,6 +40,7 @@ export interface RealtimeConversationUpdatePayload {
   avatar?: string;
   currentStageId?: string | null;
   isConverted?: boolean;
+  aiAutoRespond?: boolean;
 }
 
 export interface RealtimeSeenPayload {
@@ -310,6 +311,7 @@ export function useChatRealtime({
             avatar: row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
+            aiAutoRespond: Boolean(row.ai_auto_respond),
           });
         }
       )
@@ -336,6 +338,7 @@ export function useChatRealtime({
             avatar: row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
+            aiAutoRespond: Boolean(row.ai_auto_respond),
           });
         }
       )
