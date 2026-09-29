@@ -957,21 +957,6 @@ export interface MemoryProvider {
 }
 
 
-export interface ConversationAgentInput {
-  conversationId: string;
-  currentPhase: OrchestrationPhase;
-  checkpoint?: string;
-  contextText?: string;
-  newMessage?: {
-    id: string;
-    text: string;
-    timestamp: string;
-    sender: string;
-  };
-  recentHistory?: string;
-  openGoalsSummary?: string;
-}
-
 export interface SubagentInput {
   conversationId: string;
   currentPhase: OrchestrationPhase;
@@ -4687,10 +4672,6 @@ export interface ResolvedStageGoal {
   evidenceMessageId?: string;
   source?: string;
 }
-
-export const DEFAULT_CONEXAO_GOALS: SemanticGoalDefinition[] = [];
-export const DEFAULT_DESCOBERTA_GOALS: SemanticGoalDefinition[] = [];
-export const DEFAULT_COMPATIBILIDADE_GOALS: SemanticGoalDefinition[] = [];
 
 export async function resolveStageChecklistGoals(params: {
   supabase: any;
