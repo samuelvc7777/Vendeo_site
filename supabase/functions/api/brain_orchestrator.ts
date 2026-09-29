@@ -195,11 +195,10 @@ export const BRAIN_ORCHESTRATION_BUDGETS = {
 } as const;
 
 /**
- * Modelo padrão do Brain e Executores no runtime de produção.
+ * Modelo padrão do Brain no runtime de produção.
  * O modelo efetivo é selecionado no Agent OpenAI oficial.
  */
 export const OPENAI_BRAIN_DEFAULT_MODEL = "gpt-6-luna";
-export const OPENAI_EXECUTOR_DEFAULT_MODEL = "gpt-6-luna";
 export const ALLOWED_OPENAI_BRAIN_MODELS = [
   "gpt-6-luna",
   "gpt-6-sol",
@@ -218,15 +217,6 @@ export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel
 
 export function estimateTextTokens(text: string): number {
   return Math.max(1, Math.ceil((text || "").length / 4));
-}
-
-export function stableDiagnosticHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < String(value || "").length; index++) {
-    hash ^= String(value || "").charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 export function buildBudgetedRecentContext(params: {
@@ -482,22 +472,6 @@ export interface MissionPackage {
   preferAudio?: boolean;
   selectedAudioId?: string | null;
   turnContract?: TurnContract;
-}
-
-export async function searchPersonaMemoryForBrain(
-  personaProvider: { searchPersonaFacts: (personaId: string, query: string) => Promise<any[]> },
-  query: string,
-  limit = 8
-): Promise<string> {
-  const hits = await personaProvider.searchPersonaFacts("larissa", query);
-  const formatted = (hits || []).slice(0, limit).map((fact: any) => {
-    const key = fact.key || fact.field || fact.category || "fato";
-    const value = fact.value ?? fact.summary;
-    return value === undefined || value === null || value === ""
-      ? ""
-      : `• ${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`;
-  }).filter(Boolean).join("\n");
-  return formatted || "Nenhum fato encontrado na PersonaMemory.";
 }
 
 function formatPersonaMemoryHitsForBrain(hits: any[], limit = 8): string {
@@ -1185,83 +1159,6 @@ export function validateBrainDecision(
     audioUrl: typeof obj.audioUrl === "string" ? obj.audioUrl.trim() : undefined,
     objectiveCompletion,
     memoryCandidates,
-  };
-}
-
-// ----------------------------------------------------------------------------
-// 3. Validador de Esquema Estrito (Compatibilidade Retroativa)
-// ----------------------------------------------------------------------------
-export function validateOrchestratorDecision(data: unknown, allowedPhases?: string[]): OrchestratorDecision {
-  if (!data || typeof data !== "object") {
-    throw new Error("Decisão do orquestrador inválida: payload não é um objeto.");
-  }
-  const obj = data as Record<string, any>;
-
-  const validActions: OrchestrationAction[] = ["reply", "send_audio", "wait", "advance_phase", "escalate"];
-  if (!validActions.includes(obj.action)) {
-    throw new Error(`Ação inválida: "${obj.action}". Esperado: ${validActions.join(", ")}`);
-  }
-
-  const defaultPhases = ["conexao_inicial", "descoberta", "compatibilidade"];
-  const validPhases = allowedPhases && allowedPhases.length > 0 ? allowedPhases : defaultPhases;
-
-  if (
-    typeof obj.currentPhase !== "string" ||
-    (!validPhases.includes(obj.currentPhase) && !obj.currentPhase.startsWith("stage_"))
-  ) {
-    throw new Error(`Fase atual inválida: "${obj.currentPhase}".`);
-  }
-  if (
-    typeof obj.nextPhase !== "string" ||
-    (!validPhases.includes(obj.nextPhase) && !obj.nextPhase.startsWith("stage_"))
-  ) {
-    throw new Error(`Próxima fase inválida: "${obj.nextPhase}".`);
-  }
-
-  if (typeof obj.checkpoint !== "string" || !obj.checkpoint.trim()) {
-    throw new Error("Checkpoint é obrigatório e deve ser uma string não vazia.");
-  }
-
-  if (typeof obj.summary !== "string") {
-    throw new Error("Resumo da conversa deve ser uma string.");
-  }
-
-  if (typeof obj.suggestedResponse !== "string") {
-    throw new Error("Resposta sugerida deve ser uma string.");
-  }
-
-  if (!Array.isArray(obj.requiredTools)) {
-    throw new Error("requiredTools deve ser um array de strings.");
-  }
-
-  if (typeof obj.reasoning !== "string" || !obj.reasoning.trim()) {
-    throw new Error("Motivo da decisão (reasoning) é obrigatório.");
-  }
-
-  let objectiveCompletion: { objectiveId: string; evidence?: ObjectiveEvidence; evidenceMessageId?: string; value?: any } | undefined;
-  const rawObjComp = obj.objectiveCompletion || obj.objective_completion;
-  if (rawObjComp && typeof rawObjComp === "object" && (rawObjComp.objectiveId || rawObjComp.goalId)) {
-    objectiveCompletion = {
-      objectiveId: String(rawObjComp.objectiveId || rawObjComp.goalId || "").trim(),
-      evidence: normalizeObjectiveEvidence(rawObjComp.evidence, rawObjComp.evidenceMessageId) ?? undefined,
-      evidenceMessageId: rawObjComp.evidenceMessageId ? String(rawObjComp.evidenceMessageId).trim() : undefined,
-      value: rawObjComp.value !== undefined ? rawObjComp.value : true,
-    };
-  }
-
-  return {
-    action: obj.action,
-    currentPhase: obj.currentPhase,
-    nextPhase: obj.nextPhase,
-    checkpoint: obj.checkpoint.trim(),
-    summary: obj.summary.trim(),
-    suggestedResponse: obj.suggestedResponse.trim(),
-    responses: Array.isArray(obj.responses) ? obj.responses.map(String) : undefined,
-    requiredTools: obj.requiredTools.map(String),
-    reasoning: obj.reasoning.trim(),
-    audioId: typeof obj.audioId === "string" ? obj.audioId : undefined,
-    audioUrl: typeof obj.audioUrl === "string" ? obj.audioUrl : undefined,
-    objectiveCompletion,
   };
 }
 
