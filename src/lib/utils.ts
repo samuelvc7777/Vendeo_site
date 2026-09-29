@@ -5,13 +5,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(value);
-}
-
 /**
   * Formata timestamps com precisão garantindo o fuso horário oficial do Brasil (Horário de Brasília - UTC-3)
   */
@@ -84,46 +77,6 @@ export function getMessageTimestampMs(dateInput?: string | number | Date | null)
     }
   }
   return 0;
-}
-
-/**
- * Formata data e hora contextual com inteligência de dias ("hoje às 14:42", "ontem às 17:42", "13/09 às 16:51")
- * respeitando estritamente o fuso horário oficial de Brasília (America/Sao_Paulo - UTC-3).
- */
-export function formatMessageDateTime(dateInput?: string | number | Date | null): string {
-  if (!dateInput) return "Recentemente";
-  const ms = getMessageTimestampMs(dateInput);
-  if (!ms) return typeof dateInput === "string" ? dateInput : "Recentemente";
-
-  const date = new Date(ms);
-  const now = new Date();
-
-  const msgDayKey = date.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-  const todayKey = now.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const yesterdayKey = yesterday.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-
-  const timeStr = date.toLocaleTimeString("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  if (msgDayKey === todayKey) {
-    return `hoje às ${timeStr}`;
-  }
-  if (msgDayKey === yesterdayKey) {
-    return `ontem às ${timeStr}`;
-  }
-
-  const dayMonthStr = date.toLocaleDateString("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    day: "2-digit",
-    month: "2-digit",
-  });
-
-  return `${dayMonthStr} às ${timeStr}`;
 }
 
 /**

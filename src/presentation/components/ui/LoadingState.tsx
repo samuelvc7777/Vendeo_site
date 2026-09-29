@@ -125,32 +125,3 @@ export function ChatMessageSkeletonList({ count = 5 }: { count?: number }) {
     </div>
   );
 }
-
-/**
- * Skeleton para grid de produtos do catálogo
- */
-export function ProductGridSkeleton({ count = 4 }: { count?: number }) {
-  return (
-    <div className="grid grid-cols-2 gap-3 p-3">
-      {Array.from({ length: count }).map((_, idx) => (
-        <div
-          key={idx}
-          className="rounded-2xl bg-[#141414] border border-[#262626] overflow-hidden p-2.5 space-y-2.5 shadow-sm"
-        >
-          {/* Imagem do produto */}
-          <Skeleton className="w-full aspect-square rounded-xl" />
-
-          {/* Dados do produto */}
-          <div className="space-y-1.5 px-0.5">
-            <Skeleton className="h-3.5 w-3/4 rounded" />
-            <Skeleton className="h-4 w-1/2 rounded" />
-            <div className="pt-1 flex items-center justify-between">
-              <Skeleton className="h-3 w-16 rounded-full" />
-              <Skeleton className="h-3 w-10 rounded" />
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}

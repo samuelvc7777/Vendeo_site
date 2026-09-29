@@ -184,44 +184,6 @@ export async function retryWithBackoff<T>(
 }
 
 /**
- * Wrapper de fetch com timeout e retry automático para requisições idempotentes.
- */
-export async function fetchWithRetry(
-  url: string | URL | Request,
-  options: RequestInit = {},
-  timeoutMs = 6000,
-  retryOptions?: RetryOptions
-): Promise<Response> {
-  const method = (options.method || "GET").toUpperCase();
-  const isIdempotent = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"].includes(method);
-
-  if (!isIdempotent && !retryOptions?.shouldRetry) {
-    return fetchWithTimeout(url, options, timeoutMs);
-  }
-
-  return retryWithBackoff(async () => {
-    const res = await fetchWithTimeout(url, options, timeoutMs);
-
-    if (res.status === 401) {
-      throw new UnauthorizedError("Autenticação inválida ou token expirado na chamada.");
-    }
-    if (res.status === 429) {
-      const retryAfterHeader = res.headers.get("Retry-After");
-      const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
-      throw new RateLimitError(
-        "Limite de requisições atingido.",
-        isNaN(Number(retryAfter)) ? undefined : retryAfter
-      );
-    }
-    if (res.status === 503 || res.status === 502 || res.status === 504) {
-      throw new ServiceUnavailableError(`Serviço temporariamente indisponível (HTTP ${res.status}).`);
-    }
-
-    return res;
-  }, retryOptions);
-}
-
-/**
  * Retorna a URL canônica para chamadas de API, roteando para a rota local do Next.js em desenvolvimento
  * ou para a Edge Function de produção no Supabase quando em produção/Firebase Hosting.
  */

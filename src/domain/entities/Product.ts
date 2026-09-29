@@ -21,11 +21,3 @@ export interface Product {
   stock: number;
   description: string;
 }
-
-/**
- * Funções de domínio com regras de negócio puras
- */
-export function calculateDiscount(price: number, originalPrice?: number): number {
-  if (!originalPrice || originalPrice <= price) return 0;
-  return Math.round(((originalPrice - price) / originalPrice) * 100);
-}
