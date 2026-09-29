@@ -786,12 +786,14 @@ export async function runOpenAiSdkBrainTurn(
 ): Promise<OpenAiBrainTurnResult> {
   const startedAt = Date.now();
   const apiKey = params.apiKey || env("OPENAI_API_KEY") || "";
-  const model = params.model || env("OPENAI_BRAIN_MODEL") || "gpt-5.6-luna";
+  const model = params.model || env("OPENAI_BRAIN_MODEL") || "";
+  if (!model) {
+    throw new Error("OPENAI_BRAIN_MODEL_REQUIRED");
+  }
   const agentId = params.agentId || "agents-sdk-conversation";
 
   const telemetry: OpenAiBrainTurnResult["telemetry"] = {
     agentId,
-    runtimeKind: "agents_sdk_conversation",
     toolsRequested: [],
     toolExecutionsCount: 0,
     memoryToolResults: [],

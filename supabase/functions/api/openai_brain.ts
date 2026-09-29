@@ -1498,7 +1498,6 @@ export interface OpenAiBrainTurnResult {
   error?: string;
   telemetry: {
     agentId: string;
-    runtimeKind?: "legacy_agents" | "agents_sdk_conversation";
     sessionId?: string;
     turnId?: string;
     openAiConversationId?: string;
@@ -2525,7 +2524,6 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
 
   const telemetry: OpenAiBrainTurnResult["telemetry"] = {
     agentId,
-    runtimeKind: "legacy_agents",
     toolsRequested: [],
     toolExecutionsCount: 0,
     memoryToolResults: [],
