@@ -326,7 +326,7 @@ LARISSA:
 "só namorei uma vez na vida e a experiência nem foi boa kkk"`;
 
 // Hash determinístico sha256 curto para rastreamento operacional
-export const LARISSA_INTERACTION_DNA_HASH = "dna_v1_5_8_0304c175";
+export const LARISSA_INTERACTION_DNA_HASH = "dna_v1_6_2_d2d5f884";
 
 export interface RecentStyleStateForPrompt {
   recent_reactions?: string[];

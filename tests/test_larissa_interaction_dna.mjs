@@ -12,9 +12,9 @@ import {
 } from "../supabase/functions/api/openai_brain.ts";
 
 test("LARISSA_INTERACTION_DNA possui versão estável e hash válido", () => {
-  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.5.8");
-  assert.ok(LARISSA_INTERACTION_DNA_HASH.startsWith("dna_v1_5_8_"));
-  assert.ok(LARISSA_INTERACTION_DNA.includes("=== LARISSA_INTERACTION_DNA (v1.5.8) ==="));
+  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.6.2");
+  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_6_2_d2d5f884");
+  assert.ok(LARISSA_INTERACTION_DNA.includes("=== LARISSA_INTERACTION_DNA (v1.6.2) ==="));
   assert.ok(LARISSA_INTERACTION_DNA.includes("ZERO PAPAGAIO"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("FEW-SHOTS COMPORTAMENTAIS"));
 });
@@ -25,7 +25,7 @@ test("formatRecentStyleStateForPrompt formata restrições dinâmicas de anti-re
     { recent_reactions: ["nossa"], recent_emojis: ["🥰"] },
     { budget: 0, allowEmoji: false, blockedEmojis: ["🥰"], recentEmojis: ["🥰"] }
   );
-  assert.ok(snippetZeroEmoji.includes("Teto de emoji neste turno: 0"));
+  assert.ok(snippetZeroEmoji.includes("N\u00e3o use emoji neste turno."));
   assert.ok(snippetZeroEmoji.includes('Última reação de abertura: "nossa" (varie a abertura'));
   assert.ok(snippetZeroEmoji.includes("🥰"));
 
@@ -34,7 +34,7 @@ test("formatRecentStyleStateForPrompt formata restrições dinâmicas de anti-re
     { recent_reactions: [], recent_emojis: [] },
     { budget: 1, allowEmoji: true, blockedEmojis: [], recentEmojis: [] }
   );
-  assert.ok(snippetAllow.includes("Máximo 1 se combinar naturalmente"));
+  assert.ok(snippetAllow.includes("no máximo 1 emoji"));
 });
 
 test("CASO 1: Saudação direta deve gerar resposta curta, natural, sem ponto final e sem emoji por padrão", async () => {
