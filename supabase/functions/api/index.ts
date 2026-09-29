@@ -3876,16 +3876,36 @@ serve(async (req: Request) => {
         // o toggle global bloqueia novos ciclos do Brain.
         // 2. DISPATCHER DURAVEL INDEPENDENTE DO TOGGLE GLOBAL (P0): Despacha ações de outbox pendentes que já maturaram (not_before <= now)
         try {
-          const { data: outboxConvs } = await supabase
-            .from("instagram_conversations")
-            .select("id, stage_completed_rules")
-            // Entrega de decisões já persistidas é independente do toggle da IA.
-            // Isso permite concluir o último balão do ciclo final mesmo após
-            // ai_auto_respond ser desligado atomicamente pela finalização.
-            .not("stage_completed_rules->orchestration->outbox", "is", null)
-            .limit(30);
+          const finalizedDrainSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+          const [
+            { data: activeOutboxConvs },
+            { data: finalizedOutboxConvs },
+          ] = await Promise.all([
+            supabase
+              .from("instagram_conversations")
+              .select("id, stage_completed_rules")
+              .eq("ai_auto_respond", true)
+              .not("stage_completed_rules->orchestration->outbox", "is", null)
+              .order("updated_at", { ascending: false })
+              .limit(30),
+            supabase
+              .from("instagram_conversations")
+              .select("id, stage_completed_rules")
+              .eq("ai_auto_respond", false)
+              .eq("stage_completed_rules->>workflow_finalized", "true")
+              .gte("updated_at", finalizedDrainSince)
+              .not("stage_completed_rules->orchestration->outbox", "is", null)
+              .order("updated_at", { ascending: false })
+              .limit(20),
+          ]);
+          // Entrega de decisões já persistidas é independente da criação de novas
+          // inferências. Chats finalizados entram só na janela de drenagem recente.
+          const outboxConvs = Array.from(new Map(
+            [...(activeOutboxConvs || []), ...(finalizedOutboxConvs || [])]
+              .map((conversation: any) => [conversation.id, conversation]),
+          ).values());
 
-          if (outboxConvs && outboxConvs.length > 0) {
+          if (outboxConvs.length > 0) {
             for (const oc of outboxConvs) {
               const outbox = oc.stage_completed_rules?.orchestration?.outbox || {};
               const entries = Object.values(outbox) as any[];
