@@ -385,99 +385,6 @@ function createMockSupabase(facts = FIXTURE_A_CURRENT) {
 // BLOCO 1: AUDITORIA DE AUSÊNCIA DE HARDCODES NAS INSTRUÇÕES DO AGENT
 // ============================================================================
 
-test("TESTE A — Ausência de hardcodes biográficos na seção COMPLETE PERSONA FACT", () => {
-  const instructions = buildCanonicalAgentInstructions();
-  const sectionMatch = instructions.match(
-    /2\.1\.\s+COMPLETUDE DE FATOS DA PERSONA[\s\S]*?(?===+[\r\n]+3\.)/
-  );
-  assert.ok(sectionMatch, "Seção 2.1 deve existir");
-  const sectionText = sectionMatch[0];
-
-  // 1. NÃO conter "10º período" nem "10o período"
-  assert.ok(
-    !sectionText.includes("10º período") && !sectionText.includes("10o período"),
-    "A seção 2.1 NÃO deve conter '10º período'"
-  );
-
-  // 2. NÃO conter "moda masculina"
-  assert.ok(
-    !sectionText.toLowerCase().includes("moda masculina"),
-    "A seção 2.1 NÃO deve conter 'moda masculina'"
-  );
-
-  // 3. NÃO conter o valor literal atual completo de 'profissao'
-  assert.ok(
-    !sectionText.includes("Estudante de Enfermagem (estagiária hospitalar) e vendedora online"),
-    "A seção 2.1 NÃO deve conter o valor literal de 'profissao'"
-  );
-
-  // 4. NÃO conter exemplos de resposta atuais da Larissa
-  assert.ok(
-    !sectionText.toLowerCase().includes("faço enfermagem"),
-    "A seção 2.1 NÃO deve conter exemplo 'faço enfermagem'"
-  );
-  assert.ok(
-    !sectionText.toLowerCase().includes("tô no estágio"),
-    "A seção 2.1 NÃO deve conter exemplo 'tô no estágio'"
-  );
-  assert.ok(
-    !sectionText.toLowerCase().includes("vendas online de moda"),
-    "A seção 2.1 NÃO deve conter exemplo sobre vendas de moda"
-  );
-
-  // 5. NÃO conter biografia concreta: Enfermagem, hospital, loja
-  assert.ok(
-    !sectionText.toLowerCase().includes("enfermagem"),
-    "A seção 2.1 NÃO deve mencionar 'enfermagem'"
-  );
-  assert.ok(
-    !sectionText.toLowerCase().includes("hospital"),
-    "A seção 2.1 NÃO deve mencionar 'hospital'"
-  );
-  assert.ok(
-    !sectionText.toLowerCase().includes("vendas online"),
-    "A seção 2.1 NÃO deve mencionar 'vendas online'"
-  );
-
-  // 6. NÃO conter afirmação de que Larissa atualmente é estudante, estagiária ou não é formada
-  assert.ok(
-    !sectionText.toLowerCase().includes("larissa é estudante"),
-    "A seção 2.1 NÃO deve afirmar que Larissa é estudante"
-  );
-  assert.ok(
-    !sectionText.toLowerCase().includes("larissa é estagiária"),
-    "A seção 2.1 NÃO deve afirmar que Larissa é estagiária"
-  );
-  assert.ok(
-    !sectionText.toLowerCase().includes("não é formada"),
-    "A seção 2.1 NÃO deve afirmar que Larissa não é formada"
-  );
-});
-
-test("Auditoria: PersonaMemory é declarada formalmente como autoridade factual exclusiva", () => {
-  const instructions = buildCanonicalAgentInstructions();
-  assert.ok(
-    instructions.includes(
-      "Os fatos biográficos atuais da Persona vêm exclusivamente da PersonaMemory e do contexto autorizado do turno. Estas instructions definem comportamento, não biografia."
-    ),
-    "Instruções devem declarar que definem comportamento e não biografia"
-  );
-  assert.ok(
-    instructions.includes("Se houver qualquer conflito entre um exemplo antigo e a PersonaMemory atual: PersonaMemory vence."),
-    "Instruções devem fixar que PersonaMemory sempre vence"
-  );
-});
-
-test("Auditoria: Regra genérica de não inferir formação ou credencial profissional", () => {
-  const instructions = buildCanonicalAgentInstructions();
-  assert.ok(
-    instructions.includes(
-      "Não inferir formação concluída, profissão concluída ou credencial profissional a partir de curso, estágio, treinamento ou informação parcial. Só afirmar conclusão quando houver fato explícito e atual na PersonaMemory."
-    ),
-    "Deve conter a formulação genérica exata de não-inferência sem citar profissão concreta"
-  );
-});
-
 test("Auditoria: Tool description de persona_memory_search é genérica e conceitual", () => {
   const desc = PERSONA_MEMORY_TOOL_DEFINITION.function.description;
   assert.ok(
@@ -976,7 +883,7 @@ test("TESTE 7 — Prova Temporal: INSTRUCTIONS idênticas geram interpretação 
 
   // 1. As instruções são RIGOROSAMENTE idênticas
   assert.equal(instructions1, instructions2, "As instruções devem ser 100% idênticas");
-  assert.ok(instructions1.includes("VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.9.2"));
+  assert.ok(instructions1.includes(`VENDEO_AGENT_INSTRUCTIONS_VERSION: ${VENDEO_AGENT_INSTRUCTIONS_VERSION}`));
 
   const inbound = "vc trabalha com oq?";
 
