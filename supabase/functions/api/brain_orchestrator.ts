@@ -7345,9 +7345,13 @@ export async function runBrainOrchestration(
             continue;
           }
 
+          const isManualResolutionResumeMessage =
+            Boolean(params.manualResolution && newMessage?.id && String(msg.id) === String(newMessage.id));
           const isProcessed =
             ledger[msg.id] === "processed" ||
-            (orchState.lastProcessedMessageId && msg.id === orchState.lastProcessedMessageId);
+            (!isManualResolutionResumeMessage &&
+              orchState.lastProcessedMessageId &&
+              msg.id === orchState.lastProcessedMessageId);
 
           if (!isProcessed && !isInboundEligibleForCycle(msg.id)) {
             baselineMessageIds.push(String(msg.id));
@@ -7373,9 +7377,12 @@ export async function runBrainOrchestration(
     const pendingMessages: CanonicalMessage[] = collectedPendingRaw.reverse();
 
     if (newMessage && !pendingMessages.some((m) => m.id === newMessage.id)) {
+      const isManualResolutionResumeMessage = Boolean(params.manualResolution);
       const isProcessed =
         ledger[newMessage.id] === "processed" ||
-        (orchState.lastProcessedMessageId && newMessage.id === orchState.lastProcessedMessageId);
+        (!isManualResolutionResumeMessage &&
+          orchState.lastProcessedMessageId &&
+          newMessage.id === orchState.lastProcessedMessageId);
       if (!isProcessed && !isInboundEligibleForCycle(newMessage.id)) {
         baselineMessageIds.push(String(newMessage.id));
         ledger[newMessage.id] = "processed";
@@ -9990,7 +9997,7 @@ export async function runBrainOrchestration(
           reservedAudioId = undefined;
         }
         for (const id of claimedMessageIds) {
-          ledger[id] = "processed";
+          ledger[id] = decision.action === "manual_resolution" ? "pending" : "processed";
         }
         currentCycle.status = "completed";
         currentCycle.trace.push("cycle_completed_wait");
@@ -10166,8 +10173,12 @@ export async function runBrainOrchestration(
           currentPhase: finalPhaseForExp,
           currentStageId: stageProgression.nextStageId,
           checkpoint: decision.checkpoint,
-          lastProcessedMessageId: claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id,
-          lastProcessedAt: new Date().toISOString(),
+          lastProcessedMessageId: decision.action === "manual_resolution"
+            ? (orchState.lastProcessedMessageId || null)
+            : (claimedMessageIds[claimedMessageIds.length - 1] || newMessage.id),
+          lastProcessedAt: decision.action === "manual_resolution"
+            ? (orchState.lastProcessedAt || null)
+            : new Date().toISOString(),
           lastProcessingStatus: hasConfirmedDelivery
             ? "sent"
             : decision.action === "manual_resolution"
