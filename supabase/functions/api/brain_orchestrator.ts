@@ -6465,9 +6465,7 @@ export async function executeMemoryWriter(params: {
 }
 
 // ----------------------------------------------------------------------------
-// 8. Helper de Invocação de Modelo (Runtime Mock ou Kie.ai Sol / Terra)
-// ----------------------------------------------------------------------------
-// 8. Invoca??o can?nica do modelo OpenAI
+// 8. Invocação canônica do modelo OpenAI
 // ----------------------------------------------------------------------------
 
 export interface ModelCallOptions {
@@ -7702,8 +7700,6 @@ export async function runBrainOrchestration(
       ...(stageChecklistForRouter.completedObjectives || []).map((o: any) => o.id),
     ];
     const candidateObjectiveEvidence: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }> = [];
-    const shadowDetectedFacts: Array<{ entity: string; field: string; value: any; sourceMessageId: string }> = [];
-    const shadowWouldCompleteObjectives: string[] = [];
 
     const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
     const openGoalsSummary = openGoalsForRouter.length > 0
