@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import {
   BRAIN_OPERATOR_COOKIE,
   BRAIN_OPERATOR_SESSION_SECONDS,
@@ -66,13 +66,13 @@ test("eventos são inseridos e nenhum fluxo de aplicação atualiza ou apaga a t
   assert.doesNotMatch(migration, /GRANT [^;]*(?:UPDATE|DELETE) ON public\.brain_turn_events/i);
 });
 
-test("runtime novo não importa o detector semântico do piloto", async () => {
+test("detector semântico do piloto foi removido e não participa do runtime", async () => {
   const runtime = await readFile(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
   const brain = await readFile(new URL("../supabase/functions/api/openai_brain.ts", import.meta.url), "utf8");
-  const legacy = await readFile(new URL("../supabase/functions/api/legacy_pilot_objective_detector.ts", import.meta.url), "utf8");
+  const legacyUrl = new URL("../supabase/functions/api/legacy_pilot_objective_detector.ts", import.meta.url);
   assert.doesNotMatch(runtime, /detectSpontaneousObjectiveCompletions|legacy_pilot_objective_detector/);
   assert.doesNotMatch(brain, /detectSpontaneousObjectiveCompletions|legacy_pilot_objective_detector/);
-  assert.match(legacy, /exclusivo de simulações e scripts de piloto/);
+  await assert.rejects(access(legacyUrl));
 });
 
 test.after(() => {
