@@ -8102,8 +8102,12 @@ export async function runBrainOrchestration(
       const { data: agentSettingRows } = await supabase
         .from("instagram_config")
         .select("id, app_secret")
-        .in("id", ["openai_brain_reasoning_effort", "openai_brain_verbosity"]);
+        .in("id", ["openai_brain_reasoning_effort", "openai_brain_verbosity", "openai_brain_service_tier"]);
       agentSettings = new Map((agentSettingRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
+      const configuredServiceTierRaw = agentSettings.get("openai_brain_service_tier") || "auto";
+      const configuredServiceTier: "auto" | "default" | "flex" = ["auto", "default", "flex"].includes(configuredServiceTierRaw)
+        ? configuredServiceTierRaw as "auto" | "default" | "flex"
+        : "auto";
       const latestRelevantMessage = [...finalRecentMessages]
         .filter((message: any) => message?.createdAt)
         .sort((a: any, b: any) => messageTimestampMs(b) - messageTimestampMs(a))[0];
@@ -8196,6 +8200,7 @@ export async function runBrainOrchestration(
           detail: "O Agent oficial começou a processar o turno.",
           metadata: {
             model: configuredAgentModel,
+            serviceTier: configuredServiceTier,
             reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
             verbosity: agentSettings.get("openai_brain_verbosity") || null,
             inboundCount: claimedMessages.length,
@@ -8282,6 +8287,7 @@ export async function runBrainOrchestration(
           pendingOutboundActions,
           persistentSessionEnabled: persistentAgentSessionEnabled,
           model: configuredAgentModel,
+          serviceTier: configuredServiceTier,
           reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || undefined,
           replyTargets,
           currentStageId,
@@ -8529,6 +8535,8 @@ export async function runBrainOrchestration(
                 model: openAiBrainTurn.telemetry.agentSessionModelActual || configuredAgentModel,
                 configuredModel: configuredAgentModel,
                 executedModel: openAiBrainTurn.telemetry.agentSessionModelActual || configuredAgentModel,
+                configuredServiceTier,
+                executedServiceTier: openAiBrainTurn.telemetry.serviceTierActual || null,
                 reasoningEffort: openAiBrainTurn.telemetry.agentSessionReasoningActual || agentSettings.get("openai_brain_reasoning_effort") || null,
                 configuredReasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || null,
                 executedReasoningEffort: openAiBrainTurn.telemetry.agentSessionReasoningActual || agentSettings.get("openai_brain_reasoning_effort") || null,
@@ -8625,6 +8633,8 @@ export async function runBrainOrchestration(
             currentCycle.trace.push(`brain_model_configured: ${configuredAgentModel}`);
             currentCycle.trace.push(`brain_model_executed: ${openAiBrainTurn.telemetry.agentSessionModelActual}`);
           }
+          currentCycle.trace.push(`brain_service_tier_requested=${configuredServiceTier}`);
+          currentCycle.trace.push(`brain_service_tier_actual=${openAiBrainTurn.telemetry.serviceTierActual || "unknown"}`);
           currentCycle.trace.push(`brain_reasoning_effort=${executedReasoningEffort}`);
           if (openAiBrainTurn.telemetry.agentSessionReasoningActual && agentSettings.get("openai_brain_reasoning_effort") && openAiBrainTurn.telemetry.agentSessionReasoningActual !== agentSettings.get("openai_brain_reasoning_effort")) {
             currentCycle.trace.push(`brain_reasoning_effort_configured=${agentSettings.get("openai_brain_reasoning_effort")}`);

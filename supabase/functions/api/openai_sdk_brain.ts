@@ -238,6 +238,8 @@ function executionUsageSnapshot(
     modelGenerationCount: telemetry.modelGenerationCount ?? null,
     webSearchCallCount: telemetry.webSearchCallCount ?? 0,
     webSearchStatus: telemetry.webSearchStatus || "not_used",
+    serviceTierRequested: telemetry.serviceTierRequested || null,
+    serviceTierActual: telemetry.serviceTierActual || null,
     sourcesUsed: telemetry.sourcesUsed || [],
   };
 }
@@ -265,6 +267,12 @@ function restoreExecutionUsage(
   }
   if (typeof usage.webSearchStatus === "string") {
     telemetry.webSearchStatus = usage.webSearchStatus as any;
+  }
+  if (typeof usage.serviceTierRequested === "string") {
+    telemetry.serviceTierRequested = usage.serviceTierRequested as "auto" | "default" | "flex";
+  }
+  if (typeof usage.serviceTierActual === "string") {
+    telemetry.serviceTierActual = usage.serviceTierActual;
   }
   if (Array.isArray(usage.sourcesUsed)) {
     telemetry.sourcesUsed = usage.sourcesUsed.map(String);
@@ -1016,6 +1024,8 @@ export async function runOpenAiSdkBrainTurn(
   const instructions = buildCanonicalAgentInstructions({ persistentMode: true });
 
   const reasoningEffort = params.reasoningEffort as any;
+  const serviceTier: "auto" | "default" | "flex" = params.serviceTier || "auto";
+  telemetry.serviceTierRequested = serviceTier;
   const brain = new Agent({
     name: "Vendeo Brain",
     instructions,
@@ -1025,6 +1035,9 @@ export async function runOpenAiSdkBrainTurn(
       promptCacheOptions: {
         mode: "implicit",
         ttl: "30m",
+      },
+      providerData: {
+        service_tier: serviceTier,
       },
     },
     tools: [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })],
@@ -1065,6 +1078,10 @@ export async function runOpenAiSdkBrainTurn(
     const lastProviderResponse = rawResponses.length > 0 ? rawResponses[rawResponses.length - 1] as any : null;
     const providerResponseId = String(lastProviderResponse?.id || lastProviderResponse?.responseId || "").trim();
     if (providerResponseId) telemetry.providerResponseId = providerResponseId;
+    const serviceTierActual = String(
+      lastProviderResponse?.service_tier || lastProviderResponse?.serviceTier || "",
+    ).trim();
+    telemetry.serviceTierActual = serviceTierActual || null;
 
     const webSearchCount = rawResponses.reduce((count, response) => {
       const output = Array.isArray(response.output) ? response.output : [];

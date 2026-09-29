@@ -1324,6 +1324,7 @@ export interface RunOpenAiBrainParams {
   agentId?: string;
   apiKey?: string;
   model?: string;
+  serviceTier?: "auto" | "default" | "flex";
   reasoningEffort?: string;
   signal?: AbortSignal;
   runtime?: any;
@@ -1468,6 +1469,8 @@ export interface OpenAiBrainTurnResult {
     agentSessionModelActual?: string | null;
     agentSessionReasoningRequested?: string | null;
     agentSessionReasoningActual?: string | null;
+    serviceTierRequested?: "auto" | "default" | "flex";
+    serviceTierActual?: string | null;
     sessionFallbackUsed?: boolean;
     sessionFallbackTriggered?: boolean;
     agentSessionRecoveryTriggered?: boolean;

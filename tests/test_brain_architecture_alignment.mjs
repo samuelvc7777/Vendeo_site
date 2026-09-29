@@ -153,6 +153,22 @@ test("bridge de áudio revalida pelo objective_id que autorizou o candidato, nã
   assert.match(source, /executor_audio_id_not_authorized/);
 });
 
+test("Brain SDK aplica service_tier configurável sem fallback silencioso para Standard", () => {
+  const orchestrator = fs.readFileSync(
+    new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  const sdkSource = fs.readFileSync(
+    new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(orchestrator, /openai_brain_service_tier/);
+  assert.match(orchestrator, /serviceTier:\s*configuredServiceTier/);
+  assert.match(sdkSource, /providerData:\s*\{[\s\S]{0,100}service_tier:\s*serviceTier/);
+  assert.match(sdkSource, /serviceTierActual/);
+  assert.doesNotMatch(sdkSource, /service_tier:\s*["']default["']/);
+});
+
 test("decisão canônica é persistida antes do dispatcher e backend não ressuscita subagente", () => {
   const source = fs.readFileSync(
     new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
