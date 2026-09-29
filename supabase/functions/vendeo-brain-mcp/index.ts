@@ -523,7 +523,6 @@ serve(async (req: Request) => {
           personaId: "larissa",
           query,
           limit,
-          allowLegacyFallback: false,
           throwOnLoadError: true,
         });
       } catch {

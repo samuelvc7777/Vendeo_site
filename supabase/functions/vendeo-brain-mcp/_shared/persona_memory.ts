@@ -37,43 +37,6 @@ export interface PersonaMemoryCompactToolOutput {
   }>;
 }
 
-export interface PersonaFactResult {
-  value: any;
-  source: "canonical" | "temporal" | "generated" | "legacy_fallback";
-  confidence: number;
-  category?: string;
-  key?: string;
-  valid_until?: string | null;
-}
-
-export const DEFAULT_PERSONA_ID = "larissa";
-
-export const LARISSA_PERSONA_FACTS: Record<string, any> = {
-  name: "Larissa",
-  full_name: "Larissa Cristina Paiva Resende",
-  age: 23,
-  city: "São João del Rei (Minas Gerais)",
-  state: "MG",
-  origin_city: "São João del Rei, Minas Gerais",
-  current_city: "São João del Rei, Minas Gerais",
-  neighborhood: "Matosinhos",
-  location: "São João del Rei - MG (Bairro Matosinhos)",
-  lives_with: "mora em São João del-Rei, muito ligada à família (mãe, pai e avó)",
-  family: "Muito ligada à família (mãe, pai e avó), costuma almoçar na casa da avó",
-  education: "Cursando o 10º período de Enfermagem",
-  profession: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
-  occupation: "Estudante de Enfermagem (estágio hospitalar) e trabalha com vendas em casa",
-  job: "Vendas online e digitais em casa pelo celular e computador",
-  work: "Trabalho em casa com vendas online e estágio no hospital",
-  hobbies: "Filmes de terror e suspense psicológico, doces e chocolates, passeios ao pôr do sol em mirantes",
-  music: "Simone Mendes, Henrique & Juliano, Marília Mendonça, Jorge & Mateus e sertanejo romântico/universitário",
-  favorite_food: "bife com batata frita (prato favorito: strogonoff)",
-  favorite_dish: "strogonoff",
-  drinks: "Água, sucos naturais e refrigerante (não consome bebidas alcoólicas; bebe líquido durante as refeições)",
-  values: "Moça certinha de família, de igreja, honra pai, mãe e avó",
-  dislikes: "Odeia pessoa seca ou respostas monossilábicas, café preto, bebidas alcoólicas, baladas lotadas e barulhentas com bebida jogada, e falta de consideração",
-};
-
 let personaMemoryCache: {
   facts: PersonaMemoryFact[];
   expiresAt: number;
@@ -85,10 +48,6 @@ export function setPersonaMemoryCache(facts: PersonaMemoryFact[], ttlMs: number 
     facts: [...facts],
     expiresAt: Date.now() + ttlMs,
   };
-}
-
-export function clearPersonaMemoryCache() {
-  personaMemoryCache = null;
 }
 
 export function stripAccents(s: any): string {
@@ -158,7 +117,6 @@ export async function searchPersonaMemory(params: {
   limit?: number;
   now?: Date | string;
   cachedFacts?: PersonaMemoryFact[];
-  allowLegacyFallback?: boolean;
   throwOnLoadError?: boolean;
 }): Promise<PersonaMemorySearchResult[]> {
   const { supabase, query } = params;
@@ -169,20 +127,6 @@ export async function searchPersonaMemory(params: {
   let facts = params.cachedFacts || [];
   if (facts.length === 0) {
     facts = await loadPersonaMemoryFacts({ supabase, personaId, throwOnError: params.throwOnLoadError });
-  }
-
-  if (facts.length === 0 && params.allowLegacyFallback !== false) {
-    facts = Object.entries(LARISSA_PERSONA_FACTS).map(([k, v]) => ({
-      persona_id: personaId,
-      category: "geral",
-      key: k,
-      value: v,
-      source_type: "canonical",
-      confidence: 1.0,
-      aliases: [k],
-      valid_from: null,
-      valid_until: null,
-    }));
   }
 
   if (facts.length === 0) return [];
