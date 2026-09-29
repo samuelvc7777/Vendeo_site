@@ -4634,6 +4634,7 @@ export async function validateAndApplyBrainStageDecision(params: {
   advancementReason?: string;
   workflowComplete: boolean;
   finalStageId: string;
+  requiredTransitionMissing: boolean;
 }> {
   const stagesResult = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
   if (stagesResult?.error) throw new Error(`Não foi possível validar a decisão contra chat_stages: ${stagesResult.error.message}`);
@@ -4718,6 +4719,10 @@ export async function validateAndApplyBrainStageDecision(params: {
   const nextStageId = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const nextPhase = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const stageAdvanced = nextStageId !== currentStageId;
+  const requiredTransitionMissing =
+    sameStage &&
+    allCurrentRequiredCompleted &&
+    Boolean(nextConfiguredStage);
 
   if (stageAdvanced) {
     params.currentCycle?.trace?.push(`brain_stage_transition_accepted: ${currentStageId}->${nextStageId}`);
@@ -4773,6 +4778,7 @@ export async function validateAndApplyBrainStageDecision(params: {
     advancementReason: stageAdvanced ? "brain_requested_valid_stage_transition" : undefined,
     workflowComplete,
     finalStageId,
+    requiredTransitionMissing,
   };
 }
 // Persona Memory da Larissa desacoplada em ./persona_memory.ts (importada e reexportada no topo)
@@ -7706,6 +7712,9 @@ export async function runBrainOrchestration(
           reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || undefined,
           replyTargets,
           currentStageId,
+          nextStageId: stageChecklistForRouter.nextStageId,
+          nextStageName: stageChecklistForRouter.nextStageName,
+          isFinalStage: stageChecklistForRouter.isFinalStage,
           currentObjectiveId: stageChecklistForRouter.currentObjective?.id,
           currentObjectiveLabel: stageChecklistForRouter.currentObjective?.label,
           currentObjectiveDescription: stageChecklistForRouter.currentObjective?.description,
@@ -9186,6 +9195,17 @@ export async function runBrainOrchestration(
     decision.nextPhase = stageProgression.nextPhase;
     possibleSend = false;
     const audioPayload: PersonaAudioAsset | undefined = resolvedAudio;
+
+    // Defesa em profundidade: se todos os objetivos obrigatórios da etapa
+    // intermediária já foram concluídos, nenhum balão pode sair enquanto o Brain
+    // não declarar explicitamente a transição para a próxima etapa configurada.
+    // O backend não escolhe a etapa; apenas rejeita a ausência da decisão.
+    if (stageProgression.requiredTransitionMissing) {
+      currentCycle.trace.push(
+        `brain_plan_rejected_missing_required_stage_transition: current=${stageProgression.currentStageId}`
+      );
+      throw new Error("BRAIN_STAGE_TRANSITION_REQUIRED_BEFORE_DISPATCH");
+    }
 
     if (hasFinalDispatchPayload) {
       currentCycle.trace.push("brain_plan_accepted");
