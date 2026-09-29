@@ -244,7 +244,7 @@ export function PersonaAudioVaultModal({
       toast.error("Título e arquivo de áudio são obrigatórios.");
       return;
     }
-    if (!formObjectiveId && !editingAudio?.legacyStageId) {
+    if (!formObjectiveId) {
       toast.error("Selecione um objetivo para vincular o áudio.");
       return;
     }
@@ -419,7 +419,7 @@ export function PersonaAudioVaultModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {filteredAudios.map((audio) => {
                 const isPlaying = playingAudioId === audio.id;
-                const objectiveName = getObjectiveName(audio.objectiveId, audio.legacyStageId);
+                const objectiveName = getObjectiveName(audio.objectiveId);
 
                 return (
                   <div
