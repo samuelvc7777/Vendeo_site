@@ -182,11 +182,17 @@ export async function bootstrapOpenAiConversationHistory(params: {
           const batch = unsyncedRows.slice(index, index + BOOTSTRAP_OPENAI_BATCH_SIZE);
           if (batch.length === 0) continue;
 
-          const items = batch.map((row: any) => ({
-            type: "message",
-            role: isOutboundMessage(row) ? "assistant" : "user",
-            content: [{ type: "input_text", text: bootstrapMessageText(row) }],
-          }));
+          const items = batch.map((row: any) => {
+            const outbound = isOutboundMessage(row);
+            return {
+              type: "message",
+              role: outbound ? "assistant" : "user",
+              content: [{
+                type: outbound ? "output_text" : "input_text",
+                text: bootstrapMessageText(row),
+              }],
+            };
+          });
 
           const firstId = String(batch[0].id);
           const lastId = String(batch[batch.length - 1].id);
@@ -614,7 +620,7 @@ export async function persistConfirmedOutboundToOpenAiConversation(params: {
       items: [{
         type: "message",
         role: "assistant",
-        content: [{ type: "input_text", text: content }],
+        content: [{ type: "output_text", text: content }],
       }],
     },
     { idempotencyKey: `vendeo:instagram:${providerMessageId}` },
