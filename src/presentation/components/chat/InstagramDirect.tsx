@@ -4695,29 +4695,33 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <button
               type="button"
               onClick={() => {
-                if (mobileNotifications.permission !== "granted") {
+                if (!mobileNotifications.remoteRegistered) {
                   void mobileNotifications.requestPermission();
                 }
               }}
-              disabled={mobileNotifications.permission === "granted" || mobileNotifications.isLoading}
+              disabled={mobileNotifications.remoteRegistered || mobileNotifications.isLoading}
               className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
-                mobileNotifications.permission === "granted"
+                mobileNotifications.remoteRegistered
                   ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300 cursor-default"
                   : "bg-amber-500/15 border-amber-500/30 text-amber-300 hover:bg-amber-500/25 animate-pulse cursor-pointer"
               }`}
               title={
-                mobileNotifications.permission === "granted"
-                  ? "Alertas críticos ativos: Brain aguardando operador e conversa finalizada."
-                  : "Ativar alertas críticos no celular"
+                mobileNotifications.remoteRegistered
+                  ? "Push remoto ativo: chega mesmo com o Vendeo fechado."
+                  : "Vincular este celular aos alertas críticos remotos"
               }
             >
-              {mobileNotifications.permission === "granted" ? (
+              {mobileNotifications.remoteRegistered ? (
                 <BellRing className="w-3.5 h-3.5 text-emerald-400" />
               ) : (
                 <Bell className="w-3.5 h-3.5 text-amber-400" />
               )}
               <span className="hidden sm:inline">
-                {mobileNotifications.permission === "granted" ? "Alertas ativos" : "Ativar alertas"}
+                {mobileNotifications.remoteRegistered
+                  ? "Push ativo"
+                  : mobileNotifications.permission === "granted"
+                  ? "Vincular push"
+                  : "Ativar alertas"}
               </span>
             </button>
 
