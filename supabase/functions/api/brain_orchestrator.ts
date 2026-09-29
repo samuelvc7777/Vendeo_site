@@ -205,10 +205,6 @@ export const ALLOWED_OPENAI_BRAIN_MODELS = [
   "gpt-6-sol",
 ] as const;
 
-// Valores salvos antes da migração são lidos apenas para preservar o modelo remoto
-// até que alguém selecione explicitamente um modelo GPT-6 no painel.
-const LEGACY_OPENAI_BRAIN_MODELS = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as const;
-
 export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel?: string): Promise<string> {
   if (requestedModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(requestedModel)) return requestedModel;
   try {
@@ -1021,23 +1017,6 @@ export interface SubagentInput {
   styleStateSnippet?: string;
   softFocusSnippet?: string;
   audioCandidatesSnippet?: string;
-}
-
-// Mantido para compatibilidade retroativa
-export interface OrchestratorInput {
-  conversationId: string;
-  newMessage: {
-    id: string;
-    text: string;
-    timestamp: string;
-    sender: string;
-  };
-  currentPhase: OrchestrationPhase;
-  conversationSummary: string;
-  relevantMemories: string[];
-  pendingTasks: string[];
-  allowedTools: string[];
-  phaseRules: string[];
 }
 
 // ----------------------------------------------------------------------------
@@ -5748,58 +5727,6 @@ Responda ESTRITAMENTE em JSON puro, compacto e sem explicações longas de racio
 }`;
 }
 
-// Construtor unificado mantido para compatibilidade retroativa
-export function buildOrchestratorPrompt(input: OrchestratorInput): string {
-  return `Você é a IA Atria, Auditora Oficial de Atendimento e Relacionamento do Vendeo.
-Você atua na condução estratégica do atendimento para a persona **Larissa** (23 anos, moça meiga de Minas Gerais, estudante de enfermagem e trabalha com vendas).
-O pretendente/cliente é quem está conversando com a Larissa. Quem enviou a última mensagem foi o cliente (${input.newMessage.sender}).
-A fala formulada em "suggestedResponse" é a resposta direta da **Larissa** para o cliente.
-
-### DIRETRIZES DA PERSONA LARISSA (.agents/LARISSA_LINGUISTIC_DNA.md)
-- Tom: carinhoso, meigo, natural de Minas Gerais (usando 'né', 'kkk', 'vc', 'tô', 'tá', 'pra').
-- PROIBIDO terminar balão com ponto final (.)
-- PROIBIDO usar ponto de exclamação (!)
-- Jamais chame o cliente de Larissa. Responda ao que o cliente falou antes de perguntar qualquer coisa.
-- Mantenha a resposta curta, humana e fluida de WhatsApp/Instagram.
-- REGRA INVIOLÁVEL DE 'UAI' (RARO E OPCIONAL): O 'uai' é estritamente OPCIONAL e MUITO RARO (use no máximo em 1 a cada 15 falas). Na dúvida, NUNCA use 'uai'. Se puder falar sem 'uai', prefira SEMPRE sem 'uai'.
-- DIRETRIZ DE FECHAMENTO (ZERO PERGUNTA MECÂNICA): PROIBIDO terminar toda fala com a pergunta mecânica "e você?", "e vc?", "e tu?". Varie os fechamentos: comente, reaja, use deboche meigo ("sou moça de família rapaz kkk"), afirme ou solte risada ("kkk"). Só faça pergunta de volta quando houver real motivo (máximo 20% a 30% das falas).
-- ESTILO NUNCA SOBRESCREVE FATO: Não transforme fatos negativos em positivos. Matéria mais difícil: Embriologia. Matéria que não gosta: Farmacologia.
-- INTERPRETAÇÃO RIGOROSA DE BOOLEANOS (false): Fatos com value: false significam CATEGORICAMENTE que ela NÃO GOSTA, NÃO CONSOME, NÃO BEBE e NÃO ASSISTE. Jamais invente que consome ou gosta de vez em quando.
-
-### DOSSIÊ DA CONVERSA
-- ID da Conversa: ${input.conversationId}
-- Fase Atual: ${input.currentPhase}
-- Histórico Recente de Mensagens:
-${input.conversationSummary}
-- Memórias Relevantes: ${input.relevantMemories.length > 0 ? input.relevantMemories.join(" | ") : "Nenhuma memória registrada ainda."}
-- Ferramentas Permitidas: ${input.allowedTools.join(", ")}
-
-### DIRETRIZES DA FASE [${input.currentPhase}]
-${input.phaseRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
-
-### ÚLTIMA MENSAGEM DO CLIENTE
-- Remetente: ${input.newMessage.sender}
-- Texto: "${input.newMessage.text}"
-- Horário: ${input.newMessage.timestamp}
-
-### REGRAS OBRIGATÓRIAS DE AUDITORIA
-1. Avalie a interação do cliente com base no histórico e diretrizes da fase.
-2. Para avançar de 'conexao_inicial' para 'descoberta', você DEVE definir o checkpoint como 'chk_rapport_estabelecido' e próxima fase 'descoberta'.
-3. Se o cliente ainda estiver apenas em troca de saudações ou reciprocidade inicial, mantenha a fase 'conexao_inicial' e checkpoint 'chk_saudacao_feita'.
-4. Formule uma resposta curta e acolhedora em 'suggestedResponse' (estilo Larissa, sem ponto final).
-5. Responda ESTRITAMENTE em formato JSON puro com as seguintes chaves:
-{
-  "action": "reply",
-  "currentPhase": "${input.currentPhase}",
-  "nextPhase": "conexao_inicial",
-  "checkpoint": "chk_saudacao_feita",
-  "summary": "resumo conciso do turno",
-  "suggestedResponse": "resposta carinhosa da Larissa para o cliente",
-  "requiredTools": ["send_text"],
-  "reasoning": "análise analítica da decisão tomada"
-}`;
-}
-
 // ----------------------------------------------------------------------------
 // 7.5. Provedores de Memória Estruturada (Memory Providers) (.agents/ARCHITECTURE.md)
 // ----------------------------------------------------------------------------
@@ -6672,11 +6599,9 @@ async function callModelOrOpenAi(
     }
   }
 
-  // FAIL-CLOSED: O Brain oficial NUNCA degrada para Kie/Atria/Groq com fallback
+  // FAIL-CLOSED: O Brain oficial nunca degrada silenciosamente para provedores alternativos
   throw new Error(`BRAIN_MODEL_FAILED: Falha na execução do modelo oficial ${primaryModel} (${lastError?.message || "falha desconhecida"})`);
 }
-
-const callBrainModel = callModelOrOpenAi;
 
 async function waitForHumanSendDelay({
   supabase, conversationId, seconds, cycleId, phase, label, detail,
@@ -6807,8 +6732,6 @@ export function checkOutboundActionDispatchPayload(
   const check = validateFinalTextDispatchPayload(balloonText);
   return { isAudio: false, valid: check.valid, error: check.error };
 }
-const callModelOrAtria = callModelOrOpenAi;
-
 // ----------------------------------------------------------------------------
 // 9. Motor Operacional Determinístico do Backend (runExperimentalOrchestration)
 // ----------------------------------------------------------------------------
@@ -9338,7 +9261,7 @@ export async function runBrainOrchestration(
           ),
         });
 
-        // Resolução do modelo (fallback legado)
+        // Resolução do modelo configurado
         const brainLegacyModel = await resolveConfiguredOpenAiModel(supabase, params.model);
 
         const execRes = await callModelOrOpenAi(executorPrompt, {
