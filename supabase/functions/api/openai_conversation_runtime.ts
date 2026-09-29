@@ -453,6 +453,11 @@ export async function persistInboundToOpenAiConversation(params: {
   audioTranscript?: string | null;
   mediaType?: string | null;
   receivedAt?: string | null;
+  replyContext?: {
+    messageId: string;
+    sender: "larissa" | "pretendente";
+    text: string;
+  } | null;
 }): Promise<{ synced: boolean; openAiItemId?: string }> {
   const { supabase, conversationId } = params;
   const providerMessageId = String(params.providerMessageId || "").trim();
@@ -489,7 +494,7 @@ export async function persistInboundToOpenAiConversation(params: {
   }
 
   const receivedAt = params.receivedAt || new Date().toISOString();
-  const content = bootstrapMessageText({
+  const messageBody = bootstrapMessageText({
     id: providerMessageId,
     text: params.text || "",
     timestamp: receivedAt,
@@ -497,6 +502,14 @@ export async function persistInboundToOpenAiConversation(params: {
     audio_transcript: params.audioTranscript || null,
     is_mine: false,
   });
+  const replyContext = params.replyContext;
+  const content = replyContext?.messageId
+    ? [
+        `[REPLY DO INSTAGRAM: esta mensagem responde especificamente a uma mensagem de ${replyContext.sender === "larissa" ? "LARISSA" : "PRETENDENTE"}]`,
+        `[MENSAGEM CITADA id="${replyContext.messageId}"]: "${String(replyContext.text || "").replace(/\s+/g, " ").trim().slice(0, 700)}"`,
+        messageBody,
+      ].join("\n")
+    : messageBody;
 
   const created = await client.conversations.items.create(
     String(link.openai_conversation_id),

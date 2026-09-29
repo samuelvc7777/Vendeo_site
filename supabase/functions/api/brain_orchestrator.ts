@@ -7553,6 +7553,19 @@ export async function runBrainOrchestration(
           }
         }
       }
+      const replyContextRequestedIds = Array.from(new Set(
+        (claimedMessages as any[])
+          .map((m) => String(m.reply_to_message_id || m.replyToMessageId || "").trim())
+          .filter(Boolean),
+      ));
+      if (replyContextRequestedIds.length > 0) {
+        currentCycle.trace.push(`reply_context_requested=${replyContextRequestedIds.length}`);
+        currentCycle.trace.push(`reply_context_resolved=${Object.keys(replyTargets).length}`);
+        const unresolvedReplyIds = replyContextRequestedIds.filter((id) => !replyTargets[id]);
+        if (unresolvedReplyIds.length > 0) {
+          currentCycle.trace.push(`reply_context_unresolved=${unresolvedReplyIds.length}`);
+        }
+      }
 
       if (!persistentAgentSessionEnabled) {
         try {
@@ -7699,6 +7712,7 @@ export async function runBrainOrchestration(
               createdAt: m.createdAt || m.created_at || m.timestamp,
               mediaType: m.type || m.mediaType || m.media_type || null,
               audioTranscript: m.audioTranscript || m.audio_transcript || null,
+              replyToMessageId: m.reply_to_message_id || m.replyToMessageId || null,
             }))
             .filter((m: any) => m.id && m.text),
           recentMessages: persistentAgentSessionEnabled

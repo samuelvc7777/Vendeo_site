@@ -1415,6 +1415,7 @@ export interface RunOpenAiBrainParams {
     createdAt?: string;
     mediaType?: string | null;
     audioTranscript?: string | null;
+    replyToMessageId?: string | null;
   }>;
   recentMessages: Array<{ id?: string; sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;

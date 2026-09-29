@@ -72,6 +72,31 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     }
   }
 
+  const repliedInbounds = (params.currentInboundMessages || []).filter((message) =>
+    Boolean(message.replyToMessageId)
+  );
+  if (repliedInbounds.length > 0) {
+    lines.push("REPLY_CONTEXT_DESTE_TURNO:");
+    for (const message of repliedInbounds) {
+      const replyToMessageId = String(message.replyToMessageId || "");
+      const target = params.replyTargets?.[replyToMessageId];
+      const targetSender = target?.sender === "pretendente"
+        ? "PRETENDENTE"
+        : target?.sender === "larissa"
+        ? "LARISSA"
+        : "DESCONHECIDO";
+      const targetText = target?.text
+        ? String(target.text).replace(/\s+/g, " ").trim().slice(0, 700)
+        : "[mensagem citada não resolvida]";
+      lines.push(
+        `- inbound_id=${message.id} RESPONDE_ESPECIFICAMENTE_A id=${replyToMessageId} autor=${targetSender} texto=${JSON.stringify(targetText)}`
+      );
+    }
+    lines.push(
+      "REPLY_SEMANTICS: cada vínculo acima pertence àquele inbound_id específico. Interprete respostas curtas como 'sim', 'não', 'kkk', 'pois é' em relação à mensagem citada, nunca como resposta genérica ao último balão."
+    );
+  }
+
   if (params.manualResolutionAnswer) {
     lines.push("RESOLUCAO_MANUAL_CONFIRMADA:");
     lines.push(`question=${params.manualResolutionAnswer.question}`);
@@ -770,6 +795,8 @@ async function persistInboundMessagesInOpenAiConversation(
   }
 
   for (const message of params.currentInboundMessages) {
+    const replyToMessageId = String(message.replyToMessageId || "").trim();
+    const replyTarget = replyToMessageId ? params.replyTargets?.[replyToMessageId] : null;
     await persistInboundToOpenAiConversation({
       supabase: params.supabase,
       conversationId: params.conversationId,
@@ -778,6 +805,13 @@ async function persistInboundMessagesInOpenAiConversation(
       audioTranscript: message.audioTranscript || null,
       mediaType: message.mediaType || null,
       receivedAt: message.createdAt || null,
+      replyContext: replyToMessageId && replyTarget
+        ? {
+            messageId: replyToMessageId,
+            sender: replyTarget.sender === "pretendente" ? "pretendente" : "larissa",
+            text: String(replyTarget.text || ""),
+          }
+        : null,
     });
   }
 }
