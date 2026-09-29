@@ -51,7 +51,12 @@ export async function registerFirebaseServiceWorker(): Promise<ServiceWorkerRegi
   }
 }
 
+export type MobileNotificationEventType =
+  | "manual_resolution_required"
+  | "workflow_finalized";
+
 export interface MobileNotificationPayload {
+  eventType: MobileNotificationEventType;
   title: string;
   body: string;
   icon?: string;
@@ -61,8 +66,17 @@ export interface MobileNotificationPayload {
   requireInteraction?: boolean;
 }
 
-// Dispara notificação nativa do sistema operacional (estilo celular com vibração e clique)
+const ALLOWED_MOBILE_NOTIFICATION_EVENTS = new Set<MobileNotificationEventType>([
+  "manual_resolution_required",
+  "workflow_finalized",
+]);
+
+// Dispara somente os dois alertas críticos autorizados pelo produto.
 export async function sendNativeMobileNotification(payload: MobileNotificationPayload): Promise<boolean> {
+  if (!ALLOWED_MOBILE_NOTIFICATION_EVENTS.has(payload.eventType)) {
+    console.warn("Notificação móvel ignorada: evento não autorizado.", payload.eventType);
+    return false;
+  }
   if (typeof window === "undefined" || !("Notification" in window)) {
     return false;
   }
@@ -76,7 +90,10 @@ export async function sendNativeMobileNotification(payload: MobileNotificationPa
     icon: payload.icon || "/images/default-avatar.svg",
     badge: payload.badge || "/images/default-avatar.svg",
     tag: payload.tag || `vendeo_${Date.now()}`,
-    data: payload.data || { url: window.location.href },
+    data: {
+      ...(payload.data || { url: window.location.href }),
+      eventType: payload.eventType,
+    },
     requireInteraction: payload.requireInteraction || false,
     // Vibração real no celular Android: vibra 200ms, pausa 100ms, vibra 200ms
     vibrate: [200, 100, 200],

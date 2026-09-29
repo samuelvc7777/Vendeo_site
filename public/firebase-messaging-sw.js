@@ -1,8 +1,96 @@
-// Firebase Cloud Messaging Service Worker (Mobile & Web Push)
+// Firebase Cloud Messaging Service Worker — alertas críticos do Vendeo.
+// Somente dois eventos podem gerar notificação:
+// 1) manual_resolution_required
+// 2) workflow_finalized
+
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js");
 
-// Inicialização do Firebase no Service Worker
+const ALLOWED_NOTIFICATION_EVENTS = new Set([
+  "manual_resolution_required",
+  "workflow_finalized",
+]);
+
+function extractEventType(payload) {
+  return (
+    payload?.data?.eventType ||
+    payload?.data?.event_type ||
+    payload?.eventType ||
+    payload?.event_type ||
+    payload?.FCM_MSG?.data?.eventType ||
+    payload?.FCM_MSG?.data?.event_type ||
+    null
+  );
+}
+
+function isAllowedNotification(payload) {
+  return ALLOWED_NOTIFICATION_EVENTS.has(String(extractEventType(payload) || ""));
+}
+
+function notificationFromPayload(payload) {
+  const eventType = extractEventType(payload);
+  const data = payload?.data || payload?.FCM_MSG?.data || {};
+  const notification = payload?.notification || payload?.FCM_MSG?.notification || {};
+
+  if (eventType === "manual_resolution_required") {
+    return {
+      title: notification.title || data.title || "Brain precisa de você",
+      options: {
+        body: notification.body || data.body || "O Brain precisa de uma informação sua para continuar.",
+        icon: notification.icon || data.icon || "/images/logo.png",
+        badge: "/images/logo.png",
+        vibrate: [200, 100, 200],
+        tag: data.tag || `brain_manual_${data.conversationId || "unknown"}`,
+        data: { ...data, eventType },
+        requireInteraction: true,
+      },
+    };
+  }
+
+  return {
+    title: notification.title || data.title || "Conversa finalizada",
+    options: {
+      body: notification.body || data.body || "Todos os objetivos foram concluídos e a IA foi desligada neste chat.",
+      icon: notification.icon || data.icon || "/images/logo.png",
+      badge: "/images/logo.png",
+      vibrate: [200, 100, 200],
+      tag: data.tag || `workflow_finalized_${data.conversationId || "unknown"}`,
+      data: { ...data, eventType },
+      requireInteraction: false,
+    },
+  };
+}
+
+// Este listener é registrado ANTES do Firebase Messaging.
+// Qualquer push antigo/genérico é bloqueado antes de chegar ao SDK.
+self.addEventListener("push", (event) => {
+  if (!event.data) {
+    event.stopImmediatePropagation();
+    return;
+  }
+
+  let payload = null;
+  try {
+    payload = event.data.json();
+  } catch {
+    event.stopImmediatePropagation();
+    return;
+  }
+
+  if (!isAllowedNotification(payload)) {
+    event.stopImmediatePropagation();
+    return;
+  }
+
+  // FCM_MSG é tratado pelo Firebase Messaging abaixo.
+  if (payload?.FCM_MSG) return;
+
+  // Web Push genérico permitido: mostramos aqui e impedimos outro handler.
+  event.stopImmediatePropagation();
+  const rendered = notificationFromPayload(payload);
+  event.waitUntil(self.registration.showNotification(rendered.title, rendered.options));
+});
+
 firebase.initializeApp({
   apiKey: "AIzaSyBbotUfwf-cjufDlWeJOmSYChrP9_7XNwE",
   authDomain: "vendeo-e755e.firebaseapp.com",
@@ -19,55 +107,14 @@ try {
   console.warn("[SW] Firebase Messaging não suportado:", err);
 }
 
-// Manipulador de mensagens em segundo plano via Firebase Cloud Messaging
 if (messaging) {
   messaging.onBackgroundMessage((payload) => {
-    console.log("[SW] Mensagem recebida em segundo plano:", payload);
-    const notificationTitle = payload.notification?.title || payload.data?.title || "Vendeo Direct";
-    const notificationOptions = {
-      body: payload.notification?.body || payload.data?.body || "Nova mensagem recebida.",
-      icon: payload.notification?.icon || payload.data?.icon || "/images/logo.png",
-      badge: "/images/logo.png",
-      vibrate: [200, 100, 200],
-      tag: payload.data?.tag || `msg_${Date.now()}`,
-      data: payload.data || {},
-      requireInteraction: payload.data?.requireInteraction === "true",
-    };
-
-    self.registration.showNotification(notificationTitle, notificationOptions);
+    if (!isAllowedNotification(payload)) return;
+    const rendered = notificationFromPayload(payload);
+    self.registration.showNotification(rendered.title, rendered.options);
   });
 }
 
-// Manipulador de Web Push Genérico
-self.addEventListener("push", (event) => {
-  if (!event.data) return;
-
-  try {
-    const data = event.data.json();
-    const title = data.title || "Vendeo Direct";
-    const options = {
-      body: data.body || "",
-      icon: data.icon || "/images/logo.png",
-      badge: "/images/logo.png",
-      vibrate: [200, 100, 200],
-      tag: data.tag || `push_${Date.now()}`,
-      data: data.data || {},
-      requireInteraction: Boolean(data.requireInteraction),
-    };
-
-    event.waitUntil(self.registration.showNotification(title, options));
-  } catch (err) {
-    const text = event.data.text();
-    event.waitUntil(
-      self.registration.showNotification("Vendeo Direct", {
-        body: text,
-        vibrate: [200, 100, 200],
-      })
-    );
-  }
-});
-
-// Ao clicar na notificação: foca a janela aberta ou abre o chat correspondente
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
@@ -76,7 +123,6 @@ self.addEventListener("notificationclick", (event) => {
 
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
-      // Se já houver uma aba aberta do Vendeo, foca nela
       for (const client of windowClients) {
         if (client.url.includes(self.location.origin) && "focus" in client) {
           if (conversationId && "postMessage" in client) {
@@ -89,10 +135,7 @@ self.addEventListener("notificationclick", (event) => {
         }
       }
 
-      // Se não houver nenhuma aba aberta, abre uma nova
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
-      }
+      if (clients.openWindow) return clients.openWindow(targetUrl);
     })
   );
 });

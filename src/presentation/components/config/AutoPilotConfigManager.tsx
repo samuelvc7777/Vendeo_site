@@ -348,25 +348,24 @@ export function AutoPilotConfigManager() {
               Notificações no celular
             </span>
             <p className="text-[11px] text-zinc-400 leading-relaxed">
-              Receba alertas quando chegarem mensagens ou quando o Brain precisar da sua atenção.
+              Alertas somente quando o Brain precisar de uma informação sua ou quando uma conversa for finalizada.
             </p>
           </div>
           <button
             type="button"
             onClick={() => {
-              if (mobileNotifications.permission === "granted") {
-                mobileNotifications.sendTestNotification();
-              } else {
-                mobileNotifications.requestPermission();
+              if (mobileNotifications.permission !== "granted") {
+                void mobileNotifications.requestPermission();
               }
             }}
+            disabled={mobileNotifications.permission === "granted" || mobileNotifications.isLoading}
             className={`min-h-11 w-full shrink-0 rounded-xl px-4 py-2 text-xs font-bold shadow-sm transition-all sm:w-auto ${
               mobileNotifications.permission === "granted"
-                ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                ? "bg-emerald-600/30 text-emerald-200 cursor-default"
                 : "bg-purple-600 hover:bg-purple-500 text-white animate-pulse"
             }`}
           >
-            {mobileNotifications.permission === "granted" ? "Testar no Celular" : "Ativar no Celular"}
+            {mobileNotifications.permission === "granted" ? "Alertas críticos ativos" : "Ativar no Celular"}
           </button>
         </div>
       </div>

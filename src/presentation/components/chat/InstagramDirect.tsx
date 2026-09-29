@@ -648,6 +648,10 @@ function getStoredRestrictedChatIds(): Set<string> {
 
 export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [conversations, setConversations] = useState<DirectConversation[]>([]);
+  const conversationsRef = useRef<DirectConversation[]>([]);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
   const [brainConsoleRequest, setBrainConsoleRequest] = useState<{ conversationId: string; requestId: number } | null>(null);
   const brainConsoleRequestIdRef = useRef(0);
@@ -1014,6 +1018,70 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   useEffect(() => {
     mobileNotificationsRef.current = mobileNotifications;
   }, [mobileNotifications]);
+
+  // Notificações críticas: somente Brain aguardando operador e conversa finalizada.
+  const criticalNotificationInFlightRef = useRef<Set<string>>(new Set());
+  const sendCriticalNotificationOnce = useCallback(async (
+    eventKey: string,
+    send: () => Promise<boolean>,
+  ) => {
+    if (typeof window === "undefined") return false;
+    if (criticalNotificationInFlightRef.current.has(eventKey)) return false;
+
+    const storageKey = "vendeo_critical_notification_keys_v1";
+    let sentKeys: string[] = [];
+    try {
+      const raw = localStorage.getItem(storageKey);
+      sentKeys = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(sentKeys)) sentKeys = [];
+    } catch {
+      sentKeys = [];
+    }
+
+    if (sentKeys.includes(eventKey)) return false;
+
+    criticalNotificationInFlightRef.current.add(eventKey);
+    try {
+      const sent = await send();
+      if (!sent) return false;
+
+      const nextKeys = [...sentKeys.filter((key) => key !== eventKey), eventKey].slice(-250);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(nextKeys));
+      } catch {}
+      return true;
+    } finally {
+      criticalNotificationInFlightRef.current.delete(eventKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mobileNotifications.permission !== "granted") return;
+
+    for (const [conversationId, state] of Object.entries(autoPilot.chatStates)) {
+      if (state.status !== "waiting_human") continue;
+
+      const eventVersion =
+        state.cycleId ||
+        state.pausedAt ||
+        state.stateUpdatedAt ||
+        "waiting_human";
+      const eventKey = `manual_resolution_required:${conversationId}:${eventVersion}`;
+      const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+      const contactName =
+        conversation?.fullName ||
+        conversation?.username ||
+        "Conversa do Instagram";
+
+      void sendCriticalNotificationOnce(eventKey, () =>
+        mobileNotificationsRef.current.notifyBrainNeedsAnswer(
+          contactName,
+          conversationId,
+          state.pauseReason || state.activity?.detail || null,
+        )
+      );
+    }
+  }, [autoPilot.chatStates, mobileNotifications.permission, sendCriticalNotificationOnce]);
 
   // Menu de Opções ao Clicar e Segurar (Long Press)
   const [selectedChatForActionSheet, setSelectedChatForActionSheet] = useState<DirectConversation | null>(null);
@@ -1728,16 +1796,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           } catch {}
         }
 
-        // Dispara notificação móvel no celular ou computador
-        const senderName =
-          (msg as any).sender_name ||
-          conversations.find((c) => c.id === msg.conversationId)?.fullName ||
-          "Instagram Direct";
-        mobileNotificationsRef.current?.notifyClientMessage(
-          senderName,
-          msg.text || (msg.mediaType === "audio" ? "🎙️ Mensagem de voz" : "Nova mensagem recebida"),
-          msg.conversationId
-        );
+        // Notificações de mensagem nova foram desativadas.
+        // O sistema móvel alerta somente quando o Brain precisa do operador
+        // ou quando a conversa é finalizada.
       }
     }
 
@@ -1843,6 +1904,26 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       }
     }
 
+    const previousConversation = conversationsRef.current.find((item) => item.id === conv.id);
+    if (
+      conv.isConverted === true &&
+      previousConversation &&
+      previousConversation.isConverted !== true &&
+      mobileNotificationsRef.current.permission === "granted"
+    ) {
+      const contactName =
+        conv.fullName ||
+        previousConversation.fullName ||
+        conv.username ||
+        previousConversation.username ||
+        "Conversa do Instagram";
+
+      void sendCriticalNotificationOnce(
+        `workflow_finalized:${conv.id}`,
+        () => mobileNotificationsRef.current.notifyConversationFinalized(contactName, conv.id),
+      );
+    }
+
     setConversations((prevConvs) => {
       const idx = prevConvs.findIndex((c) => c.id === conv.id);
       if (idx === -1) return prevConvs;
@@ -1879,7 +1960,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const others = prevConvs.filter((c) => c.id !== conv.id);
       return [updated, ...others];
     });
-  }, [fetchConversationMessages]);
+  }, [fetchConversationMessages, sendCriticalNotificationOnce]);
 
   // Handler de INSERT de nova conversa via Realtime — adiciona incrementalmente à lista sem full fetch
   const handleRealtimeInstagramConversationInsert = useCallback((conv: {
@@ -2050,14 +2131,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     if (!isActuallyMine) {
       autoPilotRef.current?.registerClientMessage(msg.conversationId, msg.timestamp);
-      if (activeChatIdRef.current !== msg.conversationId) {
-        const found = conversations.find((c) => c.id === msg.conversationId);
-        mobileNotificationsRef.current?.notifyClientMessage(
-          found?.fullName || "Match no Tinder",
-          msg.text || "Nova mensagem recebida",
-          msg.conversationId
-        );
-      }
+      // Sem push para novas mensagens do Tinder/Instagram.
     }
 
     if (activeChatIdRef.current === msg.conversationId) {
@@ -4680,21 +4754,20 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <button
               type="button"
               onClick={() => {
-                if (mobileNotifications.permission === "granted") {
-                  mobileNotifications.sendTestNotification();
-                } else {
-                  mobileNotifications.requestPermission();
+                if (mobileNotifications.permission !== "granted") {
+                  void mobileNotifications.requestPermission();
                 }
               }}
-              className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+              disabled={mobileNotifications.permission === "granted" || mobileNotifications.isLoading}
+              className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
                 mobileNotifications.permission === "granted"
-                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25"
-                  : "bg-amber-500/15 border-amber-500/30 text-amber-300 hover:bg-amber-500/25 animate-pulse"
+                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300 cursor-default"
+                  : "bg-amber-500/15 border-amber-500/30 text-amber-300 hover:bg-amber-500/25 animate-pulse cursor-pointer"
               }`}
               title={
                 mobileNotifications.permission === "granted"
-                  ? "Notificações móveis ativas! Clique para testar no celular."
-                  : "Ativar notificações móveis no celular / push"
+                  ? "Alertas críticos ativos: Brain aguardando operador e conversa finalizada."
+                  : "Ativar alertas críticos no celular"
               }
             >
               {mobileNotifications.permission === "granted" ? (
@@ -4703,7 +4776,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <Bell className="w-3.5 h-3.5 text-amber-400" />
               )}
               <span className="hidden sm:inline">
-                {mobileNotifications.permission === "granted" ? "Notificações" : "Ativar Push"}
+                {mobileNotifications.permission === "granted" ? "Alertas ativos" : "Ativar alertas"}
               </span>
             </button>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { toast } from "sonner";
 import {
   registerFirebaseServiceWorker,
@@ -15,20 +15,18 @@ export function useMobileNotifications() {
   const [fcmToken, setFcmToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Verifica o suporte e o status atual da permissão no navegador
   useEffect(() => {
-    if (typeof window !== "undefined" && "Notification" in window) {
-      setIsSupported(true);
-      setPermission(Notification.permission);
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    setIsSupported(true);
+    setPermission(Notification.permission);
 
-      // Se já estiver concedido, registra o Service Worker silenciosamente
-      if (Notification.permission === "granted") {
-        registerFirebaseServiceWorker().catch(() => {});
-      }
+    if (Notification.permission === "granted") {
+      registerFirebaseServiceWorker().catch(() => {});
+      const storedToken = localStorage.getItem("vendeo_fcm_token");
+      if (storedToken) setFcmToken(storedToken);
     }
   }, []);
 
-  // Escuta mensagens do Service Worker (ex: navegação ao clicar na notificação)
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
 
@@ -39,12 +37,9 @@ export function useMobileNotifications() {
     };
 
     navigator.serviceWorker.addEventListener("message", handleServiceWorkerMessage);
-    return () => {
-      navigator.serviceWorker.removeEventListener("message", handleServiceWorkerMessage);
-    };
+    return () => navigator.serviceWorker.removeEventListener("message", handleServiceWorkerMessage);
   }, []);
 
-  // Solicita permissão explícita ao usuário (com gesto do clique)
   const requestPermission = useCallback(async () => {
     if (!isSupported) {
       toast.error("Notificações móveis não são suportadas neste navegador.");
@@ -53,18 +48,11 @@ export function useMobileNotifications() {
 
     try {
       setIsLoading(true);
-
-      // 1. Registra o Service Worker do Firebase
       const registration = await registerFirebaseServiceWorker();
-
-      // 2. Solicita a permissão do sistema
       const perm = await Notification.requestPermission();
       setPermission(perm);
 
       if (perm === "granted") {
-        toast.success("🔔 Notificações no celular ativadas com sucesso!");
-
-        // 3. Tenta obter o Token FCM do Firebase
         try {
           const messaging = await getFirebaseMessaging();
           if (messaging && registration) {
@@ -77,24 +65,19 @@ export function useMobileNotifications() {
             }
           }
         } catch (fcmErr) {
-          console.warn("Aviso ao obter FCM token (Web Push padrão ativo):", fcmErr);
+          console.warn("Aviso ao obter FCM token:", fcmErr);
         }
 
-        // 4. Dispara notificação de boas-vindas de teste no sistema
-        await sendNativeMobileNotification({
-          title: "🎉 Notificações Ativadas!",
-          body: "Você receberá alertas de mensagens e aprovações do AutoPilot em tempo real como um app no celular.",
-          tag: "welcome_notification",
-        });
-
+        toast.success("Alertas críticos ativados.");
         return true;
-      } else if (perm === "denied") {
-        toast.error("Permissão de notificação foi bloqueada nas configurações do seu navegador.");
-        return false;
+      }
+
+      if (perm === "denied") {
+        toast.error("Permissão de notificação foi bloqueada nas configurações do navegador.");
       } else {
         toast.info("Permissão de notificação não foi concedida.");
-        return false;
       }
+      return false;
     } catch (err: any) {
       console.error("Erro ao ativar notificações móveis:", err);
       toast.error("Erro ao ativar notificações: " + (err.message || "Tente novamente"));
@@ -104,67 +87,48 @@ export function useMobileNotifications() {
     }
   }, [isSupported]);
 
-  // Dispara uma notificação para proposta do AutoPilot pronta
-  const notifyProposalReady = useCallback(
+  const notifyBrainNeedsAnswer = useCallback(
+    async (contactName: string, conversationId: string, question?: string | null) => {
+      if (permission !== "granted") return false;
+
+      const cleanQuestion = String(question || "")
+        .replace(/^Brain precisa saber:\s*/i, "")
+        .trim();
+
+      return await sendNativeMobileNotification({
+        eventType: "manual_resolution_required",
+        title: `Brain precisa de você • ${contactName}`,
+        body: cleanQuestion || "O Brain precisa de uma informação sua para continuar a conversa.",
+        tag: `brain_manual_${conversationId}`,
+        data: {
+          conversationId,
+          eventType: "manual_resolution_required",
+          url: window.location.href,
+        },
+        requireInteraction: true,
+      });
+    },
+    [permission],
+  );
+
+  const notifyConversationFinalized = useCallback(
     async (contactName: string, conversationId: string) => {
       if (permission !== "granted") return false;
 
       return await sendNativeMobileNotification({
-        title: `🤖 Proposta da IA: ${contactName}`,
-        body: "A IA preparou uma resposta com áudios e textos. Toque para revisar e aprovar antes do envio!",
-        tag: `approval_${conversationId}`,
-        data: { conversationId, url: window.location.href },
-        requireInteraction: true,
+        eventType: "workflow_finalized",
+        title: `Conversa finalizada • ${contactName}`,
+        body: "Todos os objetivos foram concluídos. A IA foi desligada automaticamente neste chat.",
+        tag: `workflow_finalized_${conversationId}`,
+        data: {
+          conversationId,
+          eventType: "workflow_finalized",
+          url: window.location.href,
+        },
       });
     },
-    [permission]
+    [permission],
   );
-
-  // Dispara uma notificação para nova mensagem do cliente (quando não estiver no chat)
-  const notifyClientMessage = useCallback(
-    async (contactName: string, messageText: string, conversationId: string) => {
-      if (permission !== "granted") return false;
-
-      return await sendNativeMobileNotification({
-        title: contactName,
-        body: messageText || "Nova mensagem recebida",
-        tag: `msg_${conversationId}`,
-        data: { conversationId, url: window.location.href },
-      });
-    },
-    [permission]
-  );
-
-  // Dispara notificação crítica de hand-off da Rifa
-  const notifyHandoffRaffle = useCallback(
-    async (contactName: string, conversationId: string) => {
-      if (permission !== "granted") return false;
-
-      return await sendNativeMobileNotification({
-        title: `🚨 Rifa Atingida: ${contactName}`,
-        body: "Momento da Rifa atingido após áudios pessoais! Assuma o fechamento agora.",
-        tag: `handoff_${conversationId}`,
-        data: { conversationId, url: window.location.href },
-        requireInteraction: true,
-      });
-    },
-    [permission]
-  );
-
-  // Teste manual de disparo de notificação
-  const sendTestNotification = useCallback(async () => {
-    if (permission !== "granted") {
-      const ok = await requestPermission();
-      if (!ok) return;
-    }
-
-    await sendNativeMobileNotification({
-      title: "🤖 Teste do AutoPilot (Larissa)",
-      body: "Notificação móvel funcionando perfeitamente! Vibração e alerta nativo ativos.",
-      tag: `test_${Date.now()}`,
-    });
-    toast.success("Notificação de teste disparada no sistema!");
-  }, [permission, requestPermission]);
 
   return {
     permission,
@@ -172,9 +136,7 @@ export function useMobileNotifications() {
     fcmToken,
     isLoading,
     requestPermission,
-    notifyProposalReady,
-    notifyClientMessage,
-    notifyHandoffRaffle,
-    sendTestNotification,
+    notifyBrainNeedsAnswer,
+    notifyConversationFinalized,
   };
 }
