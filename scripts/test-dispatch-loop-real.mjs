@@ -232,7 +232,7 @@ test("CENÁRIO A — TEXT: loop REAL de runBrainOrchestration executa dispatch d
 
   assert.equal(result.handled, true, "Ciclo deve ser tratado com sucesso");
   assert.equal(result.sentToMeta, true, "sentToMeta deve ser true");
-  assert.equal(result.blockLegacyFallback, true, "Fallback legado deve ser bloqueado");
+  assert.equal("blockLegacyFallback" in result, false, "Resultado não deve expor flag de fallback legado");
 
   // Prova que executou o loop real de dispatch de balões de ponta a ponta
   assert.equal(metaDispatches.length, 2, "Meta mock deve receber exatamente 2 balões");

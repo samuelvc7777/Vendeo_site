@@ -6764,7 +6764,6 @@ export interface OrchestrationResult {
   handled: boolean;
   skippedDuplicate?: boolean;
   sentToMeta?: boolean;
-  blockLegacyFallback?: boolean; // SINAL EXPLÍCITO: Quando true, bloqueia terminantemente qualquer fallback para o legado
   decision?: OrchestratorDecision;
   durationMs?: number;
   tokens?: number;
@@ -6860,7 +6859,7 @@ export async function runBrainOrchestration(
 
   if (convErr) {
     console.error(`[Brain] Erro ao buscar conversa ${conversationId}:`, convErr);
-    return { handled: false, blockLegacyFallback: true, error: convErr.message };
+    return { handled: false, error: convErr.message };
   }
 
   let stageRules = convRow?.stage_completed_rules || {};
@@ -6945,7 +6944,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: "Falha de infraestrutura no claim atômico (rpc_error_fail_closed)",
       };
     }
@@ -6965,7 +6964,7 @@ export async function runBrainOrchestration(
           },
         },
       });
-      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "technical_retry_exhausted" };
+      return { handled: false, sentToMeta: false, error: "technical_retry_exhausted" };
     }
     console.log(
       `[Orchestrator] Lock ativo detectado (${claimLockRes.activeCycleToken || "outro ciclo"}) para ${conversationId}. Abortando execução concorrente.`
@@ -6973,7 +6972,7 @@ export async function runBrainOrchestration(
     return {
       handled: false,
       sentToMeta: false,
-      blockLegacyFallback: true,
+
       error: "Lock ativo concorrente",
     };
   }
@@ -6987,7 +6986,7 @@ export async function runBrainOrchestration(
     .maybeSingle();
   if (claimedReadError || claimedConversation?.stage_completed_rules?.active_cycle_token !== correlationId) {
     await releaseExperimentalCycleAtomic({ supabase, conversationId, cycleToken: correlationId, processingStatus: "failed", lastError: "claim_state_unavailable" });
-    return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "claim_state_unavailable" };
+    return { handled: false, sentToMeta: false, error: "claim_state_unavailable" };
   }
   stageRules = claimedConversation.stage_completed_rules;
   orchState = stageRules.orchestration || orchState;
@@ -7051,7 +7050,7 @@ export async function runBrainOrchestration(
     return {
       handled: false,
       sentToMeta: false,
-      blockLegacyFallback: true,
+
       error: executionSlotError ? "brain_capacity_unavailable" : "global_capacity_busy",
     };
   }
@@ -7160,7 +7159,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: "Ciclo preemptado por nova mensagem inbound recebida antes do ACK (newer_revision_detected)",
       };
     } else if (ackRes.reason === "cycle_token_mismatch") {
@@ -7170,7 +7169,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: "Ciclo preemptado por perda de custódia inicial (cycle_token_mismatch)",
       };
     } else {
@@ -7189,7 +7188,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: `Falha de infraestrutura ao reconhecer preempção (fail_closed: ${ackRes.reason})`,
       };
     }
@@ -7219,7 +7218,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: stageRules.cancel_current_cycle === true
           ? "Cancelado pelo operador"
           : `runtime_status_blocks_automatic_cycle:${runtimeStatus}`,
@@ -7255,14 +7254,14 @@ export async function runBrainOrchestration(
         supabase, conversationId, cycleToken: correlationId,
         processingStatus: "brain_late", lastError: "late_turn_lookup_failed", cycleRecord: currentCycle,
       });
-      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_turn_lookup_failed" };
+      return { handled: false, sentToMeta: false, error: "late_turn_lookup_failed" };
     }
     if (lateTurnForResume && (!lateTurnForResume.provider_turn_id || !lateProviderSessionId || !Array.isArray(lateTurnForResume.inbound_message_ids) || lateTurnForResume.inbound_message_ids.length === 0)) {
       await releaseExperimentalCycleAtomic({
         supabase, conversationId, cycleToken: correlationId,
         processingStatus: "brain_late", lastError: "late_turn_recovery_reference_invalid", cycleRecord: currentCycle,
       });
-      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_turn_recovery_reference_invalid" };
+      return { handled: false, sentToMeta: false, error: "late_turn_recovery_reference_invalid" };
     }
     const lateTurnInboundIds = new Set<string>(
       lateTurnForResume && Array.isArray(lateTurnForResume.inbound_message_ids)
@@ -7456,7 +7455,7 @@ export async function runBrainOrchestration(
         markProcessedIds: staleMessageIds,
         cycleRecord: currentCycle,
       });
-      return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };
+      return { handled: true, skippedDuplicate: true, trace: currentCycle.trace };
     }
 
     // REGRA MANDATÓRIA: A IA só deve responder a áudios e textos substantivos.
@@ -7486,7 +7485,7 @@ export async function runBrainOrchestration(
         markProcessedIds: [...staleMessageIds, ...unactionableIds],
         cycleRecord: currentCycle,
       });
-      return { handled: true, skippedDuplicate: true, blockLegacyFallback: true, trace: currentCycle.trace };
+      return { handled: true, skippedDuplicate: true, trace: currentCycle.trace };
     }
 
     // SNAPSHOT IMUTÁVEL DO CICLO: Claims all pending messages
@@ -7533,14 +7532,14 @@ export async function runBrainOrchestration(
           return {
             handled: false,
             sentToMeta: false,
-            blockLegacyFallback: true,
+
             error: "Ciclo preemptado antes do claim de mensagens",
           };
         }
         return {
           handled: false,
           sentToMeta: false,
-          blockLegacyFallback: true,
+
           error: `Falha ao reivindicar mensagens (${claimMsgsRes.reason})`,
         };
       }
@@ -7591,7 +7590,7 @@ export async function runBrainOrchestration(
         return {
           handled: false,
           sentToMeta: false,
-          blockLegacyFallback: true,
+
           error: `Ciclo preemptado por perda de lock para ciclo concorrente (${releaseRes.activeToken || "desconhecido"})`,
         };
       }
@@ -7620,7 +7619,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: `Ciclo preemptado por nova mensagem inbound (${reasonLabel})`,
       };
     }
@@ -8359,7 +8358,7 @@ export async function runBrainOrchestration(
           currentCycle.trace.push("late_agent_result_discarded");
           console.warn(`[Brain] late_agent_result_discarded cycle=${correlationId} conversation=${conversationId}`);
           await revokeCurrentMemoryScope();
-          return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
+          return { handled: false, sentToMeta: false, error: "late_agent_result_discarded", trace: currentCycle.trace };
         }
 
         if (openAiBrainTurn.success && lateTurnForResume?.id) {
@@ -8784,7 +8783,7 @@ export async function runBrainOrchestration(
                     metadata: { sessionId: providerSessionId, turnId: providerTurnId },
                   },
                 });
-                return { handled: true, sentToMeta: false, blockLegacyFallback: true, error: "brain_late", trace: currentCycle.trace };
+                return { handled: true, sentToMeta: false, error: "brain_late", trace: currentCycle.trace };
               }
             }
           }
@@ -9386,7 +9385,7 @@ export async function runBrainOrchestration(
       currentCycle.trace.push("late_agent_result_discarded");
       console.warn(`[Brain] late_agent_result_discarded cycle=${correlationId} conversation=${conversationId}`);
       await revokeCurrentMemoryScope();
-      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "late_agent_result_discarded", trace: currentCycle.trace };
+      return { handled: false, sentToMeta: false, error: "late_agent_result_discarded", trace: currentCycle.trace };
     }
     const freshnessAfterBrain = await checkFreshnessGate({
       supabase,
@@ -9489,7 +9488,7 @@ export async function runBrainOrchestration(
         });
         usageTerminalEventPublished = true;
       }
-      return { handled: false, sentToMeta: false, blockLegacyFallback: true, error: "Cancelado pelo operador" };
+      return { handled: false, sentToMeta: false, error: "Cancelado pelo operador" };
     }
 
     // 2. Preempção por novo ciclo concorrente ou expiração de lock (Stale Lock / Zombie Cycle Prevention)
@@ -9502,7 +9501,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: `Ciclo preemptado por perda de lock (${recheckRules.active_cycle_token || "lock_expirado"})`,
       };
     }
@@ -9560,7 +9559,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: false,
-        blockLegacyFallback: true,
+
         error: "GREETING_REPEAT_GUARD_DISPATCH_BLOCKED",
         trace: currentCycle.trace,
       };
@@ -9809,7 +9808,7 @@ export async function runBrainOrchestration(
           return {
             handled: false,
             sentToMeta: false,
-            blockLegacyFallback: true,
+
             error: `Decisão do Brain não persistida; despacho bloqueado (${decisionPersisted.reason || "erro técnico"}).`,
           };
         }
@@ -9825,7 +9824,7 @@ export async function runBrainOrchestration(
         return {
           handled: false,
           sentToMeta: false,
-          blockLegacyFallback: true,
+
           error: "Decisão do Brain sem session_id persistível; despacho bloqueado.",
         };
       }
@@ -9987,7 +9986,6 @@ export async function runBrainOrchestration(
             return {
               handled: false,
               sentToMeta: false,
-              blockLegacyFallback: true,
               error: `Decisão WAIT do Brain não persistida (${waitingDecision.reason || "erro técnico"}).`,
             };
           }
@@ -10003,7 +10001,7 @@ export async function runBrainOrchestration(
           return {
             handled: false,
             sentToMeta: false,
-            blockLegacyFallback: true,
+
             error: "Decisão WAIT do Brain sem session_id persistível; ciclo bloqueado.",
           };
         }
@@ -10322,7 +10320,7 @@ export async function runBrainOrchestration(
           return {
             handled: false,
             sentToMeta: possibleSend,
-            blockLegacyFallback: true,
+
             error: "lost_lock_before_atomic_commit",
           };
         }
@@ -10596,7 +10594,7 @@ export async function runBrainOrchestration(
       return {
         handled: true,
         sentToMeta: hasConfirmedDelivery,
-        blockLegacyFallback: true,
+
         decision,
         durationMs,
         tokens: totalTokens,
@@ -10686,7 +10684,7 @@ export async function runBrainOrchestration(
       return {
         handled: false,
         sentToMeta: possibleSend,
-        blockLegacyFallback: true,
+
         error: err.message || "Ciclo preemptado",
       };
     }
@@ -10739,7 +10737,7 @@ export async function runBrainOrchestration(
     return {
       handled: false,
       sentToMeta: possibleSend,
-      blockLegacyFallback: true,
+
       error: err.message || "Erro na orquestração do Brain",
     };
   } finally {

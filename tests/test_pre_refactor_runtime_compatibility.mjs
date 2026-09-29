@@ -72,7 +72,7 @@ test("resultado do Agent mantém authority antes do TTL e superseded continua fa
   assert.ok(firstAuthorityGate >= 0, "o gate de authority deve existir depois do Agent");
   assert.ok(canonicalPersistence > firstAuthorityGate, "decisão + ações + outbox só persistem depois da validação de ownership");
   assert.match(brainSource, /late_agent_result_discarded/);
-  assert.match(brainSource, /blockLegacyFallback: true/);
+  assert.doesNotMatch(brainSource, /blockLegacyFallback/);
 });
 
 test("nenhuma outbox é criada por ciclo sem ownership", () => {
