@@ -6005,33 +6005,6 @@ async function callModelOrOpenAi(
   throw new Error(`BRAIN_MODEL_FAILED: Falha na execução do modelo oficial ${primaryModel} (${lastError?.message || "falha desconhecida"})`);
 }
 
-async function waitForHumanSendDelay({
-  supabase, conversationId, seconds, cycleId, phase, label, detail,
-  currentBalloon, totalBalloons, audioDurationSeconds, currentResponsePreview,
-}: {
-  supabase: any; conversationId: string; seconds: number; cycleId: string;
-  phase: "typing" | "recording_audio"; label: string; detail: string;
-  currentBalloon: number; totalBalloons: number; audioDurationSeconds?: number; currentResponsePreview?: string;
-}) {
-  const deadline = Date.now() + Math.max(0, seconds) * 1000;
-  while (Date.now() < deadline) {
-    const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-    await publishAutoPilotState(supabase, conversationId, {
-      cycleId, status: "processing",
-      activity: activity(phase, label, detail, {
-        cycleId, currentBalloon, totalBalloons, countdownSeconds: remaining,
-        audioDurationSeconds, currentResponsePreview,
-      }),
-      appendEvent: false,
-    });
-    const { data } = await supabase.from("instagram_conversations")
-      .select("ai_auto_respond, stage_completed_rules").eq("id", conversationId).maybeSingle();
-    if (data?.ai_auto_respond === false || data?.stage_completed_rules?.cancel_current_cycle === true) return false;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(100, deadline - Date.now()))));
-  }
-  return true;
-}
-
 function safeOperationalConsoleText(value: unknown, maxLength = 500): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   return value.trim()

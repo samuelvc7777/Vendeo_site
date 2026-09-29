@@ -230,29 +230,6 @@ function AvatarWithFallback({
 }
 
 /**
- * Player de Áudio Estilo Instagram Direct
- * Suporta reprodução de notas de voz nativas (.m4a, .mp3, .wav)
- * com visualizador de onda sonora interativo e controle de progresso.
- */
-function DirectAudioPlayer({
-  src,
-  isMine,
-}: {
-  src?: string;
-  isMine: boolean;
-}) {
-  if (!src || src.trim().length === 0) {
-    return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-zinc-400 select-none">
-        <span>🎙️ Mensagem de voz</span>
-      </div>
-    );
-  }
-
-  return <InstagramAudioMessage audioUrl={src} isMine={isMine} />;
-}
-
-/**
  * Visualizador de Imagem do Instagram Direct
  * Renderiza a foto em alta qualidade com prévia responsiva e suporte a zoom.
  */
@@ -299,18 +276,6 @@ function DirectImage({
       <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity">
         <Maximize2 className="w-3.5 h-3.5" />
       </div>
-    </div>
-  );
-}
-
-/**
- * Card Visual de Mensagem de Voz (Áudio) do Instagram
- * Renderiza o reprodutor oficial de nota de voz com áudio persistido no Supabase
- */
-function InstagramVoiceMessageCard({ isMine }: { isMine: boolean }) {
-  return (
-    <div className="flex items-center gap-2 py-1 px-2 text-xs text-zinc-400 select-none">
-      <span>🎙️ Mensagem de voz</span>
     </div>
   );
 }
