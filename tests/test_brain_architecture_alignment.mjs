@@ -180,19 +180,14 @@ test("decisão canônica é persistida antes do dispatcher e backend não ressus
   assert.doesNotMatch(source, /responsibleSubagent|delegate_mission|CANONICAL_SUBAGENTS/);
 });
 
-test("inbox mant?m a linha normal e mostra uma segunda linha operacional da IA", () => {
+test("inbox mantém a linha operacional da IA sem depender do hook legado removido", () => {
   const source = fs.readFileSync(
     new URL("../src/presentation/components/chat/InstagramDirect.tsx", import.meta.url),
     "utf8",
   );
-  const hook = fs.readFileSync(
-    new URL("../src/presentation/hooks/useBrainInboxOverview.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(source, /useBrainInboxOverview/);
+  assert.doesNotMatch(source, /useBrainInboxOverview/);
+  assert.match(source, /const brainInboxOverview = useMemo/);
   assert.match(source, />IA<\/span>/);
   assert.match(source, /Objetivo/);
   assert.match(source, /actionTypes/);
-  assert.match(hook, /1_000/);
-  assert.match(hook, /visibilitychange/);
 });
