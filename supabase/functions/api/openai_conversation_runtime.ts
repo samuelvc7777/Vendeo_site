@@ -1,5 +1,7 @@
+import OpenAI from "npm:openai@7.23.0";
 import {
   getDefaultOpenAIClient,
+  setDefaultOpenAIClient,
   setDefaultOpenAIKey,
   startOpenAIConversationsSession,
 } from "npm:@openai/agents@0.18.0";
@@ -16,12 +18,18 @@ const BOOTSTRAP_DB_PAGE_SIZE = 500;
 const BOOTSTRAP_OPENAI_BATCH_SIZE = 20;
 const LARISSA_TIMEZONE = "America/Sao_Paulo";
 
+function configureOpenAiRuntimeClient(apiKey: string): void {
+  const normalizedKey = apiKey.trim();
+  setDefaultOpenAIKey(normalizedKey);
+  setDefaultOpenAIClient(new OpenAI({ apiKey: normalizedKey }));
+}
+
 async function ensureOpenAiRuntimeKey(supabase: any): Promise<void> {
   const envKey =
     (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_API_KEY") : process.env.OPENAI_API_KEY)
     || "";
   if (envKey.trim()) {
-    setDefaultOpenAIKey(envKey.trim());
+    configureOpenAiRuntimeClient(envKey);
     return;
   }
 
@@ -35,7 +43,7 @@ async function ensureOpenAiRuntimeKey(supabase: any): Promise<void> {
   if (error || !dbKey) {
     throw new Error("openai_runtime_api_key_missing");
   }
-  setDefaultOpenAIKey(dbKey);
+  configureOpenAiRuntimeClient(dbKey);
 }
 
 function formatBootstrapTimestamp(value: unknown): string {
