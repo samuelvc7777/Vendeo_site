@@ -655,6 +655,8 @@ export async function resolveOpenAiConversationId(params: {
   apiKey: string;
 }): Promise<OpenAiConversationLink> {
   const { supabase, conversationId, apiKey } = params;
+  configureOpenAiRuntimeClient(apiKey);
+
   const { data: existing, error: readError } = await supabase
     .from("openai_conversation_links")
     .select("openai_conversation_id, status")
