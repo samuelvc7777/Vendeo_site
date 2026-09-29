@@ -89,7 +89,7 @@ export function isAutoPilotWorking(state?: AutoPilotChatState | null): boolean {
       // Fase completed NUNCA é zumbi! Representa o histórico preservado da última resposta enviada.
       // Continua disponível até a IA começar a responder outra mensagem.
     } else {
-      // Fases ativas de geração (sol, atria, reanalyzing): se tiver mais de 90s sem atualização, é zumbi
+      // Fases ativas de geração: se tiver mais de 90s sem atualização, é zumbi
       if (updatedAtMs > 0 && Date.now() - updatedAtMs > 90_000) {
         return false;
       }
@@ -148,9 +148,6 @@ function formatConsoleModel(model: string | null): string | null {
   const labels: Record<string, string> = {
     "gpt-6-luna": "GPT-6 Luna",
     "gpt-6-sol": "GPT-6 Sol",
-    "gpt-5.6-luna": "GPT-5.6 Luna (legado)",
-    "gpt-5.6-terra": "GPT-5.6 Terra (legado)",
-    "gpt-5.6-sol": "GPT-5.6 Sol (legado)",
   };
   return labels[model] || model;
 }
@@ -1009,7 +1006,7 @@ function getValidThought(raw?: string | null): string | null {
   if (trimmed.length < 2) return null;
   if (/^[\s.·…\-–—_~*#]+$/.test(trimmed)) return null;
 
-  // Se o pensamento contiver JSON cru ou chaves técnicas da persona/Atria
+  // Se o pensamento contiver JSON cru ou chaves técnicas antigas da persona
   if (trimmed.startsWith("{") || trimmed.includes('"analise_do_pretendente"') || trimmed.includes('"responses"')) {
     try {
       const parsed = JSON.parse(trimmed);
@@ -1390,7 +1387,7 @@ export function AutoPilotActivityIndicator({
     const thoughtsKey = validBrainThought || "";
 
     if (
-      (currentPhase && currentPhase !== lastPhaseRef.current && ["brain", "atria", "sol", "search", "typing"].includes(currentPhase)) ||
+      (currentPhase && currentPhase !== lastPhaseRef.current && ["brain", "sol", "search", "typing"].includes(currentPhase)) ||
       (thoughtsKey && thoughtsKey !== lastThoughtsRef.current)
     ) {
       lastPhaseRef.current = currentPhase;

@@ -14,7 +14,6 @@ import {
 } from "../src/presentation/components/chat/brain-turn-view-model.ts";
 
 const uiSource = readFileSync(new URL("../src/presentation/components/chat/AutoPilotActivityIndicator.tsx", import.meta.url), "utf8");
-const assistantModalSource = readFileSync(new URL("../src/presentation/components/chat/AiAssistantModal.tsx", import.meta.url), "utf8");
 const orchestratorSource = readFileSync(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
 
 const event = (turnId, name, timestamp, extra = {}) => ({
@@ -147,21 +146,19 @@ test("ciclos diferentes na mesma sessão mantêm identidades de turno distintas"
   assert.deepEqual(new Set(turns.map((turn) => turn.cycleId)), new Set(["cycle-a", "cycle-b"]));
 });
 
-test("rótulos de compatibilidade Atria são apresentados como Brain", () => {
+test("identidades históricas antigas são sanitizadas como Brain", () => {
   assert.doesNotMatch(orchestratorSource, /["']Atria (?:avaliou|respondeu)["']/);
   assert.match(orchestratorSource, /["']Brain (?:avaliou|respondeu)["']/);
-  assert.doesNotMatch(assistantModalSource, /Atria(?: Dawn| elaborando| avaliou| respondeu| pensando|-ASI)/i);
   assert.equal(formatVisibleBrainIdentity("Atria avaliou · Atria respondeu"), "Brain avaliou · Brain respondeu");
   assert.equal(formatVisibleBrainIdentity("Atria-Dawn-Preview"), "Brain");
-  assert.equal(formatBrainPhase("atria"), "Raciocinando");
+  assert.equal(formatBrainPhase("atria"), "Etapa atualizada");
   assert.match(uiSource, /formatVisibleBrainIdentity\(state\.activity\.label\)/);
 });
 
-test("estado legado atria e atriaThought permanece compatível sem vazar a identidade antiga", () => {
-  const legacy = { phase: "atria", atriaThought: "Atria respondeu e concluiu o turno." };
-  assert.equal(formatBrainPhase(legacy.phase), "Raciocinando");
-  assert.equal(formatVisibleBrainIdentity(legacy.atriaThought), "Brain respondeu e concluiu o turno.");
-  assert.match(uiSource, /activity\?\.atriaThought/);
+test("texto histórico antigo permanece sanitizado sem registrar fase ativa obsoleta", () => {
+  const historical = { phase: "atria", atriaThought: "Atria respondeu e concluiu o turno." };
+  assert.equal(formatBrainPhase(historical.phase), "Etapa atualizada");
+  assert.equal(formatVisibleBrainIdentity(historical.atriaThought), "Brain respondeu e concluiu o turno.");
 });
 
 test("G: status desconhecido usa texto seguro na camada principal", () => {

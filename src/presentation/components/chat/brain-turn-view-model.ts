@@ -234,7 +234,6 @@ const PHASE_LABELS: Record<string, string> = {
   search: "Consultando informações",
   reanalyzing: "Revisando a resposta",
   brain: "Brain processando",
-  atria: "Raciocinando",
   sol: "Preparando a resposta",
   checklist: "Conferindo a resposta",
   validating: "Validando a ação",
