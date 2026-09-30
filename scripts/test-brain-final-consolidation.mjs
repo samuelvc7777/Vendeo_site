@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   normalizeObjectiveEvidence,
   objectiveEvidenceExists,
@@ -84,8 +85,9 @@ test("turno tardio só retoma inbounds originais e deixa mensagens novas para re
   assert.deepEqual(selection.deferredIds, ["in-new-b"]);
 });
 
-test("mensagem inbound pendente bloqueia o dispatcher antes de chamar o provedor", async () => {
-  let dispatchCalls = 0;
+test("inbound pendente mantém lote ainda não iniciado bloqueado na claim atômica", async () => {
+  let rpcCalls = 0;
+  let providerCalls = 0;
   const supabase = {
     from() {
       return {
@@ -96,18 +98,33 @@ test("mensagem inbound pendente bloqueia o dispatcher antes de chamar o provedor
         },
       };
     },
-    rpc: async () => { dispatchCalls++; return { data: { success: true }, error: null }; },
+    rpc: async () => {
+      rpcCalls++;
+      return { data: { success: false, reason: "pending_inbound_requires_brain_review" }, error: null };
+    },
   };
   const result = await runDurableOutboxDispatcher({
     supabase,
     conversationId: "conv-a",
-    outboxMap: { action: { id: "action", status: "pending", cycleId: "cycle-a" } },
+    outboxMap: { action: { id: "action", status: "pending", cycleId: "cycle-a", content: "oi", messageType: "text" } },
     targetCycleId: "cycle-a",
-    runtime: { dispatchMessage: async () => { dispatchCalls++; } },
+    runtime: { sendMetaTextMessage: async () => { providerCalls++; return { message_id: "msg-provider" }; } },
   });
   assert.equal(result.dispatchedCount, 0);
   assert.ok(result.errors.includes("pending_inbound_requires_brain_review"));
-  assert.equal(dispatchCalls, 0);
+  assert.equal(rpcCalls, 1);
+  assert.equal(providerCalls, 0);
+});
+
+test("lote já iniciado atravessa inbound novo e revisão concorrente", () => {
+  const sql = fs.readFileSync(
+    new URL("../supabase/migrations/20260930033410_allow_started_outbox_batch_during_new_inbound.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(sql, /queued\.entry->>'status' = 'sent'/);
+  assert.equal((sql.match(/AND NOT v_batch_started/g) || []).length, 2);
+  assert.match(sql, /pending_inbound_requires_brain_review/);
+  assert.match(sql, /brain_review_in_progress/);
 });
 
 test("Brain suporta KEEP, CANCEL e REPLACE sem deixar backend escolher significado", () => {

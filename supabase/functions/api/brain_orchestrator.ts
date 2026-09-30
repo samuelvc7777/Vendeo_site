@@ -3790,6 +3790,14 @@ export async function runDurableOutboxDispatcher(
     blockedCount: 0,
     errors: [],
   };
+  const recordBrainReviewBlock = (reason?: string) => {
+    if (
+      reason === "pending_inbound_requires_brain_review" ||
+      reason === "brain_review_in_progress"
+    ) {
+      if (!result.errors.includes(reason)) result.errors.push(reason);
+    }
+  };
 
   // 1. Carrega estado atual da outbox da conversa
   let outboxMap: Record<string, OutboxEntry> = providedOutboxMap || {};
@@ -3802,29 +3810,12 @@ export async function runDurableOutboxDispatcher(
     result.errors.push("conversation_not_found");
     return result;
   }
-  const rules = convRow.stage_completed_rules || {};
-  const orchestration = rules.orchestration || {};
-  const activeCycleToken = rules.active_cycle_token;
-  if (activeCycleToken && targetCycleId !== activeCycleToken) {
-    result.pendingCount++;
-    result.blockedCount++;
-    result.errors.push("brain_review_in_progress");
-    return result;
-  }
-  const pendingInboundIds = Object.entries(orchestration.messageLedger || {})
-    .filter(([, status]) => status === "pending")
-    .map(([messageId]) => messageId);
-  if (pendingInboundIds.length > 0) {
-    // Nova entrada pendente precisa passar pelo Brain antes de qualquer ação antiga maturar.
-    result.pendingCount += pendingInboundIds.length;
-    result.blockedCount++;
-    result.errors.push("pending_inbound_requires_brain_review");
-    return result;
-  }
-
+  // A decisão atômica sobre pausar ou continuar um lote pertence à RPC.
+  // Se o lote já começou (ao menos uma ação "sent"), ele pode terminar mesmo
+  // com inbound novo ou outro ciclo do Brain em revisão. Lotes ainda não
+  // iniciados continuam fail-closed até o Brain revisar o novo contexto.
   if (!providedOutboxMap || Object.keys(providedOutboxMap).length === 0) {
-    const rules = convRow.stage_completed_rules || {};
-    const orch = rules.orchestration || {};
+    const orch = convRow.stage_completed_rules?.orchestration || {};
     outboxMap = orch.outbox || {};
   }
 
@@ -3897,6 +3888,7 @@ export async function runDurableOutboxDispatcher(
       if (sendingCheck.reason === "sending_stale_uncertain" || sendingCheck.isUncertain) {
         Object.assign(entry, sendingCheck.entry || {}, { status: "dispatch_uncertain" });
       } else {
+        recordBrainReviewBlock(sendingCheck.reason);
         result.blockedCount++;
         blockedCycleKeys.add(entryCycleKey);
         continue;
@@ -4001,7 +3993,8 @@ export async function runDurableOutboxDispatcher(
           blockedCycleKeys.add(entryCycleKey);
           continue;
         }
-        // Outro motivo (ex: sending_active por outro worker)
+        // Outro motivo (ex: revisão do Brain ou sending_active por outro worker)
+        recordBrainReviewBlock(claimRes.reason);
         result.blockedCount++;
         blockedCycleKeys.add(entryCycleKey);
         continue;
@@ -7751,8 +7744,17 @@ export async function runBrainOrchestration(
       }
 
       const currentObjective = stageChecklistForRouter.currentObjective;
+      const startedOutboxCycleIds = new Set(
+        Object.values(outboxMap)
+          .filter((entry: any) => entry?.status === "sent" && entry?.cycleId)
+          .map((entry: any) => String(entry.cycleId))
+      );
       const pendingOutboundActions = Object.values(outboxMap)
-        .filter((entry: any) => entry && ["pending", "waiting_delay"].includes(entry.status))
+        .filter((entry: any) =>
+          entry &&
+          ["pending", "waiting_delay"].includes(entry.status) &&
+          !startedOutboxCycleIds.has(String(entry.cycleId || ""))
+        )
         .map((entry: any) => ({
           actionId: String(entry.payload?.brainActionId || ""),
           actionIndex: Number.isInteger(entry.actionIndex) ? entry.actionIndex : 0,

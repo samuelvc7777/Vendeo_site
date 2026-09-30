@@ -33,6 +33,7 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     "## ESTADO OPERACIONAL AUTORITATIVO DESTE TURNO",
     "Este bloco é estado interno do Vendeo, não é mensagem do pretendente.",
     "A Conversation da OpenAI é a fonte do histórico conversacional vivo. Não peça ao backend o histórico bruto.",
+    "Na cronologia, DATA/HORA ORIGINAL vence a ordem de sincronização.",
     `ETAPA_ATUAL=${params.currentStageId || "identificacao"}`,
     `PROXIMA_ETAPA_CONFIGURADA=${params.nextStageId || "nenhuma"}${params.nextStageName ? ` ("${params.nextStageName}")` : ""}`,
     `ETAPA_FINAL=${params.isFinalStage === true}`,
