@@ -56,10 +56,10 @@ export function SalesView() {
   const [inspectingTicket, setInspectingTicket] = useState<RaffleTicket | null>(null);
 
   return (
-    <div className="flex-1 overflow-y-auto h-full min-h-0 bg-black text-white relative no-scrollbar">
+    <div className="flex-1 overflow-y-auto h-full min-h-0 bg-zinc-50 dark:bg-black text-zinc-950 dark:text-white relative no-scrollbar">
       {/* SELETOR DE ABAS PRINCIPAIS: RIFAS vs ROUPAS */}
-      <div className="sticky top-0 z-30 bg-black/95 backdrop-blur-md px-3 pt-2.5 pb-2 border-b border-[#1e232e]">
-        <div className="grid grid-cols-2 p-1 rounded-2xl bg-[#12151b] border border-[#232d3d]">
+      <div className="sticky top-0 z-30 bg-white/95 dark:bg-black/95 backdrop-blur-md px-3 pt-2.5 pb-2 border-b border-zinc-200 dark:border-[#1e232e]">
+        <div className="grid grid-cols-2 p-1 rounded-2xl bg-zinc-100 dark:bg-[#12151b] border border-zinc-200 dark:border-[#232d3d]">
           {/* Aba 1: Rifas */}
           <button
             type="button"
@@ -67,7 +67,7 @@ export function SalesView() {
             className={`py-2 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
               salesSection === "raffles"
                 ? "bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md shadow-amber-500/20"
-                : "text-[#8e8e93] hover:text-white"
+                : "text-zinc-500 dark:text-[#8e8e93] hover:text-zinc-950 dark:hover:text-white"
             }`}
           >
             <Sparkles className="w-4 h-4" />
@@ -81,7 +81,7 @@ export function SalesView() {
             className={`py-2 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
               salesSection === "clothes"
                 ? "bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-md shadow-pink-500/20"
-                : "text-[#8e8e93] hover:text-white"
+                : "text-zinc-500 dark:text-[#8e8e93] hover:text-zinc-950 dark:hover:text-white"
             }`}
           >
             <ShoppingBag className="w-4 h-4" />
@@ -96,18 +96,18 @@ export function SalesView() {
       ) : (
         <>
           {isLoading && !activeRaffle ? (
-            <div className="py-20 flex flex-col items-center justify-center text-white space-y-3">
+            <div className="py-20 flex flex-col items-center justify-center text-zinc-950 dark:text-white space-y-3">
               <Loader2 className="w-8 h-8 animate-spin text-amber-400" />
-              <p className="text-xs text-[#a8a8a8]">Carregando módulo de rifas...</p>
+              <p className="text-xs text-zinc-600 dark:text-[#a8a8a8]">Carregando módulo de rifas...</p>
             </div>
           ) : !activeRaffle ? (
-            <div className="py-20 flex flex-col items-center justify-center text-white p-6 text-center space-y-4">
-              <div className="w-16 h-16 rounded-2xl bg-[#1c1c1e] border border-[#262626] flex items-center justify-center text-amber-400">
+            <div className="py-20 flex flex-col items-center justify-center text-zinc-950 dark:text-white p-6 text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] flex items-center justify-center text-amber-400">
                 <Sparkles className="w-8 h-8" />
               </div>
               <div>
-                <h2 className="text-base font-bold text-white">Nenhuma Rifa Cadastrada</h2>
-                <p className="text-xs text-[#737373] max-w-xs mt-1">
+                <h2 className="text-base font-bold text-zinc-950 dark:text-white">Nenhuma Rifa Cadastrada</h2>
+                <p className="text-xs text-zinc-500 dark:text-[#737373] max-w-xs mt-1">
                   Cadastre sua primeira rifa para começar a marcar números e vincular aos clientes do Instagram.
                 </p>
               </div>

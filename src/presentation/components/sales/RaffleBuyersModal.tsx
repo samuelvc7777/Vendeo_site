@@ -113,26 +113,26 @@ export function RaffleBuyersModal({
   return (
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
       <div
-        className="w-full max-w-lg bg-[#121212] border border-[#262626] rounded-t-2xl sm:rounded-2xl p-5 text-white flex flex-col max-h-[85vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="w-full max-w-lg bg-white dark:bg-[#121212] border border-zinc-200 dark:border-[#262626] rounded-t-2xl sm:rounded-2xl p-5 text-zinc-950 dark:text-white flex flex-col max-h-[85vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150"
         role="dialog"
         aria-modal="true"
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-3.5 border-b border-[#262626] shrink-0">
+        <div className="flex items-center justify-between pb-3.5 border-b border-zinc-200 dark:border-[#262626] shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-[#0095f6]/20 border border-[#0095f6]/40 flex items-center justify-center text-[#0095f6]">
               <Users className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Compradores da Rifa</h2>
-              <p className="text-[11px] text-[#737373]">
+              <h2 className="text-sm font-bold text-zinc-950 dark:text-white">Compradores da Rifa</h2>
+              <p className="text-[11px] text-zinc-500 dark:text-[#737373]">
                 {buyerGroups.length} participantes • {tickets.filter((t) => t.status !== "available").length} cotas adquiridas
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-[#737373] hover:text-white hover:bg-[#262626] transition-colors"
+            className="p-1.5 rounded-lg text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-[#262626] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -141,13 +141,13 @@ export function RaffleBuyersModal({
         {/* Busca */}
         <div className="pt-3 pb-2 shrink-0">
           <div className="relative">
-            <Search className="w-3.5 h-3.5 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar por comprador ou número..."
-              className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#0095f6]"
+              className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl pl-8 pr-3 py-1.5 text-xs text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] focus:outline-none focus:border-[#0095f6]"
             />
           </div>
         </div>
@@ -155,10 +155,10 @@ export function RaffleBuyersModal({
         {/* Lista de Compradores */}
         <div className="flex-1 overflow-y-auto space-y-2.5 py-2">
           {filteredGroups.length === 0 ? (
-            <div className="h-40 flex flex-col items-center justify-center text-center p-4 text-[#737373]">
+            <div className="h-40 flex flex-col items-center justify-center text-center p-4 text-zinc-500 dark:text-[#737373]">
               <Users className="w-8 h-8 stroke-1 text-[#3a3a3c] mb-2" />
-              <p className="text-xs font-semibold text-white">Nenhum comprador ainda</p>
-              <p className="text-[11px] text-[#737373] mt-0.5">
+              <p className="text-xs font-semibold text-zinc-950 dark:text-white">Nenhum comprador ainda</p>
+              <p className="text-[11px] text-zinc-500 dark:text-[#737373] mt-0.5">
                 Selecione os números na grade para registrar a primeira venda.
               </p>
             </div>
@@ -166,7 +166,7 @@ export function RaffleBuyersModal({
             filteredGroups.map((group) => (
               <div
                 key={group.buyerKey}
-                className="p-3 rounded-xl bg-[#18181b] border border-[#262626] flex flex-col gap-2"
+                className="p-3 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#262626] flex flex-col gap-2"
               >
                 {/* Dados do Comprador */}
                 <div className="flex items-center justify-between">
@@ -175,15 +175,15 @@ export function RaffleBuyersModal({
                       <img
                         src={group.avatar}
                         alt={group.name}
-                        className="w-8 h-8 rounded-full object-cover border border-[#262626]"
+                        className="w-8 h-8 rounded-full object-cover border border-zinc-200 dark:border-[#262626]"
                       />
                     ) : (
-                      <div className="w-8 h-8 rounded-full bg-[#262626] flex items-center justify-center text-[#737373]">
+                      <div className="w-8 h-8 rounded-full bg-zinc-200 dark:bg-[#262626] flex items-center justify-center text-zinc-500 dark:text-[#737373]">
                         <User className="w-4 h-4" />
                       </div>
                     )}
                     <div className="min-w-0">
-                      <p className="text-xs font-bold text-white truncate">
+                      <p className="text-xs font-bold text-zinc-950 dark:text-white truncate">
                         {group.name}
                       </p>
                       {group.username && (
@@ -218,7 +218,7 @@ export function RaffleBuyersModal({
                     <button
                       onClick={() => handleRelease(group)}
                       disabled={releasingGroup === group.buyerKey}
-                      className="p-1 rounded-lg text-[#737373] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                      className="p-1 rounded-lg text-zinc-500 dark:text-[#737373] hover:text-red-400 hover:bg-red-500/10 transition-colors"
                       title="Liberar cotas deste comprador"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -228,7 +228,7 @@ export function RaffleBuyersModal({
 
                 {/* Números Comprados */}
                 <div className="flex flex-wrap items-center gap-1 pt-1">
-                  <span className="text-[10px] text-[#737373] mr-1">
+                  <span className="text-[10px] text-zinc-500 dark:text-[#737373] mr-1">
                     {group.tickets.length} cotas (
                     {group.totalValue.toLocaleString("pt-BR", {
                       style: "currency",
@@ -239,7 +239,7 @@ export function RaffleBuyersModal({
                   {group.tickets.map((t) => (
                     <span
                       key={t.id}
-                      className="px-1.5 py-0.5 rounded-md bg-[#222225] border border-[#2b2b2e] text-white font-mono text-[10px]"
+                      className="px-1.5 py-0.5 rounded-md bg-zinc-100 dark:bg-[#222225] border border-zinc-200 dark:border-[#2b2b2e] text-zinc-950 dark:text-white font-mono text-[10px]"
                     >
                       {formatTicketNumber(t.number, raffle.totalNumbers)}
                     </span>

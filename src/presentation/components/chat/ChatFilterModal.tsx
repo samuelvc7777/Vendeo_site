@@ -44,16 +44,16 @@ export function ChatFilterModal({
   if (!isOpen) return null;
 
   const isTinder = platform === "tinder";
-  const activeAccent = isTinder ? "text-[#fe3c72]" : "text-white";
+  const activeAccent = isTinder ? "text-[#fe3c72]" : "text-zinc-950 dark:text-white";
   const activeBgBorder = isTinder
     ? "bg-[#fe3c72]/15 border-[#fe3c72]/50"
-    : "bg-white/15 border-white/40";
+    : "bg-zinc-900 border-zinc-900 dark:bg-white/15 dark:border-white/40";
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-200">
-      <div className="w-full sm:max-w-md bg-[#121212] border border-[#262626] rounded-t-2xl sm:rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[88vh]">
+      <div className="w-full sm:max-w-md bg-white dark:bg-[#121212] border border-zinc-200 dark:border-[#262626] rounded-t-2xl sm:rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[88vh]">
         {/* Header do Modal */}
-        <div className="px-5 py-4 border-b border-[#262626] flex items-center justify-between bg-[#161616]">
+        <div className="px-5 py-4 border-b border-zinc-200 dark:border-[#262626] flex items-center justify-between bg-white dark:bg-[#161616]">
           <div className="flex items-center gap-2.5">
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center shadow-md ${
@@ -65,7 +65,7 @@ export function ChatFilterModal({
               <SlidersHorizontal className="w-4 h-4 text-white stroke-[2.2]" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
+              <h3 className="text-sm font-bold text-zinc-950 dark:text-white tracking-tight flex items-center gap-2">
                 Filtros e Ordenação
                 <span
                   className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border flex items-center gap-1 ${
@@ -78,14 +78,14 @@ export function ChatFilterModal({
                   {isTinder ? "Tinder" : "Instagram"}
                 </span>
               </h3>
-              <p className="text-[11px] text-[#a8a8a8]">
+              <p className="text-[11px] text-zinc-600 dark:text-[#a8a8a8]">
                 Personalize a ordem e os filtros das conversas
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-[#a8a8a8] hover:text-white p-1.5 rounded-full hover:bg-[#262626] transition-colors cursor-pointer"
+            className="text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-[#262626] transition-colors cursor-pointer"
             aria-label="Fechar modal"
           >
             <X className="w-5 h-5" />
@@ -96,7 +96,7 @@ export function ChatFilterModal({
         <div className="p-5 overflow-y-auto space-y-5 text-xs">
           {/* SEÇÃO 1: ORDENAÇÃO TEMPORAL */}
           <div className="space-y-2.5">
-            <label className="text-[11px] uppercase tracking-wider font-bold text-[#8e8e8e] px-0.5 flex items-center gap-1.5">
+            <label className="text-[11px] uppercase tracking-wider font-bold text-zinc-500 dark:text-[#8e8e8e] px-0.5 flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5" />
               Ordem das Mensagens
             </label>
@@ -108,21 +108,21 @@ export function ChatFilterModal({
                 onClick={() => onSortOrderChange("recentes")}
                 className={`w-full p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer active:scale-[0.99] ${
                   sortOrder === "recentes"
-                    ? `${activeBgBorder} text-white font-semibold`
-                    : "bg-[#1c1c1e] border-[#262626] text-[#a8a8a8] hover:text-white hover:border-[#333]"
+                    ? `${activeBgBorder} ${isTinder ? "text-[#fe3c72]" : "text-white"} font-semibold`
+                    : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-[#333]"
                 }`}
               >
                 <div className="flex items-center gap-3">
                   <div
                     className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      sortOrder === "recentes" ? (isTinder ? "bg-[#fe3c72]/25 text-[#fe3c72]" : "bg-white/20 text-white") : "bg-[#262626] text-[#8e8e8e]"
+                      sortOrder === "recentes" ? (isTinder ? "bg-[#fe3c72]/25 text-[#fe3c72]" : "bg-white/15 text-white") : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#8e8e8e]"
                     }`}
                   >
                     <Clock className="w-4 h-4 stroke-[2]" />
                   </div>
                   <div>
-                    <h4 className="text-xs font-bold text-white">Mais recentes primeiro</h4>
-                    <p className="text-[11px] text-[#8e8e8e]">Conversas e respostas novas no topo (padrão)</p>
+                    <h4 className="text-xs font-bold text-zinc-950 dark:text-white">Mais recentes primeiro</h4>
+                    <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e]">Conversas e respostas novas no topo (padrão)</p>
                   </div>
                 </div>
 
@@ -139,21 +139,21 @@ export function ChatFilterModal({
                 onClick={() => onSortOrderChange("antigas")}
                 className={`w-full p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer active:scale-[0.99] ${
                   sortOrder === "antigas"
-                    ? `${activeBgBorder} text-white font-semibold`
-                    : "bg-[#1c1c1e] border-[#262626] text-[#a8a8a8] hover:text-white hover:border-[#333]"
+                    ? `${activeBgBorder} ${isTinder ? "text-[#fe3c72]" : "text-white"} font-semibold`
+                    : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-[#333]"
                 }`}
               >
                 <div className="flex items-center gap-3">
                   <div
                     className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      sortOrder === "antigas" ? (isTinder ? "bg-[#fe3c72]/25 text-[#fe3c72]" : "bg-white/20 text-white") : "bg-[#262626] text-[#8e8e8e]"
+                      sortOrder === "antigas" ? (isTinder ? "bg-[#fe3c72]/25 text-[#fe3c72]" : "bg-white/15 text-white") : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#8e8e8e]"
                     }`}
                   >
                     <History className="w-4 h-4 stroke-[2]" />
                   </div>
                   <div>
-                    <h4 className="text-xs font-bold text-white">Mais antigas primeiro</h4>
-                    <p className="text-[11px] text-[#8e8e8e]">Prioriza responder contatos que aguardam há mais tempo</p>
+                    <h4 className="text-xs font-bold text-zinc-950 dark:text-white">Mais antigas primeiro</h4>
+                    <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e]">Prioriza responder contatos que aguardam há mais tempo</p>
                   </div>
                 </div>
 
@@ -167,8 +167,8 @@ export function ChatFilterModal({
           </div>
 
           {/* SEÇÃO 2: FILTRAR POR STATUS */}
-          <div className="space-y-2.5 pt-2 border-t border-[#262626]">
-            <label className="text-[11px] uppercase tracking-wider font-bold text-[#8e8e8e] px-0.5 flex items-center gap-1.5">
+          <div className="space-y-2.5 pt-2 border-t border-zinc-200 dark:border-[#262626]">
+            <label className="text-[11px] uppercase tracking-wider font-bold text-zinc-500 dark:text-[#8e8e8e] px-0.5 flex items-center gap-1.5">
               <SlidersHorizontal className="w-3.5 h-3.5" />
               Filtrar por Status da Conversa
             </label>
@@ -190,13 +190,13 @@ export function ChatFilterModal({
                       onClick={() => onInstaFilterChange(item.id as InstagramFilter)}
                       className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
                         selected
-                          ? "bg-white/15 border-white/40 text-white font-semibold"
-                          : "bg-[#1c1c1e] border-[#262626] text-[#a8a8a8] hover:text-white"
+                          ? "bg-zinc-900 border-zinc-900 text-white dark:bg-white/15 dark:border-white/40 font-semibold"
+                          : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                       }`}
                     >
                       <div>
-                        <span className="text-xs font-semibold text-white">{item.label}</span>
-                        <p className="text-[10px] text-[#8e8e8e]">{item.desc}</p>
+                        <span className="text-xs font-semibold text-zinc-950 dark:text-white">{item.label}</span>
+                        <p className="text-[10px] text-zinc-500 dark:text-[#8e8e8e]">{item.desc}</p>
                       </div>
                       {selected && (
                         <div className="w-4 h-4 rounded-full bg-white text-black flex items-center justify-center">
@@ -227,13 +227,13 @@ export function ChatFilterModal({
                       onClick={() => onTinderFilterChange(item.id as TinderFilter)}
                       className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
                         selected
-                          ? "bg-[#fe3c72]/15 border-[#fe3c72]/50 text-white font-semibold"
-                          : "bg-[#1c1c1e] border-[#262626] text-[#a8a8a8] hover:text-white"
+                          ? "bg-[#fe3c72]/15 border-[#fe3c72]/50 text-[#fe3c72] dark:text-white font-semibold"
+                          : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                       }`}
                     >
                       <div>
-                        <span className="text-xs font-semibold text-white">{item.label}</span>
-                        <p className="text-[10px] text-[#8e8e8e]">{item.desc}</p>
+                        <span className="text-xs font-semibold text-zinc-950 dark:text-white">{item.label}</span>
+                        <p className="text-[10px] text-zinc-500 dark:text-[#8e8e8e]">{item.desc}</p>
                       </div>
                       {selected && (
                         <div className="w-4 h-4 rounded-full bg-[#fe3c72] text-white flex items-center justify-center">
@@ -249,11 +249,11 @@ export function ChatFilterModal({
         </div>
 
         {/* Rodapé com Ações */}
-        <div className="p-4 border-t border-[#262626] bg-[#161616] flex items-center gap-2 shrink-0">
+        <div className="p-4 border-t border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#161616] flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={onReset}
-            className="py-2.5 px-3.5 rounded-xl bg-[#262626] text-[#a8a8a8] hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+            className="py-2.5 px-3.5 rounded-xl bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             Restaurar
@@ -262,10 +262,10 @@ export function ChatFilterModal({
           <button
             type="button"
             onClick={onClose}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-white text-xs font-bold shadow-md transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-1.5 ${
+            className={`flex-1 py-2.5 px-4 rounded-xl text-zinc-950 dark:text-white text-xs font-bold shadow-md transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-1.5 ${
               isTinder
                 ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] hover:opacity-95"
-                : "bg-white text-black hover:bg-zinc-200"
+                : "bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
             }`}
           >
             <Check className="w-4 h-4 stroke-[2.5]" />

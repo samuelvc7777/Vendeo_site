@@ -170,16 +170,16 @@ export function EditClothingSaleModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-lg bg-[#121214] border border-[#27272a] rounded-t-3xl sm:rounded-2xl p-5 text-white max-h-[92dvh] flex flex-col shadow-2xl">
+      <div className="w-full max-w-lg bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-[#27272a] rounded-t-3xl sm:rounded-2xl p-5 text-zinc-950 dark:text-white max-h-[92dvh] flex flex-col shadow-2xl">
         {/* Cabeçalho */}
-        <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
+        <div className="flex items-center justify-between pb-3 border-b border-zinc-200 dark:border-[#27272a]">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-pink-500/20 border border-pink-500/40 flex items-center justify-center text-pink-400">
               <ShoppingBag className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Editar Registro de Venda</h2>
-              <p className="text-[11px] text-[#a1a1aa]">{sale.customerName}</p>
+              <h2 className="text-sm font-bold text-zinc-950 dark:text-white">Editar Registro de Venda</h2>
+              <p className="text-[11px] text-zinc-600 dark:text-[#a1a1aa]">{sale.customerName}</p>
             </div>
           </div>
 
@@ -202,7 +202,7 @@ export function EditClothingSaleModal({
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-[#71717a] hover:text-white hover:bg-[#27272a] transition-colors"
+              className="p-1.5 rounded-lg text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-[#27272a] transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -212,14 +212,14 @@ export function EditClothingSaleModal({
         {/* Formulário de edição */}
         <form onSubmit={handleSave} className="flex-1 overflow-y-auto py-3.5 space-y-4 no-scrollbar">
           {errorMessage && (
-            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300">
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-700 dark:text-red-300">
               {errorMessage}
             </div>
           )}
 
           {/* STATUS DO PEDIDO */}
           <div className="space-y-1.5">
-            <label className="block text-[11px] font-medium text-[#a1a1aa]">
+            <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa]">
               Status do Pedido
             </label>
             <div className="grid grid-cols-4 gap-1.5">
@@ -238,7 +238,7 @@ export function EditClothingSaleModal({
                   className={`py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                     status === item.key
                       ? "bg-pink-500 text-white shadow-md shadow-pink-500/30"
-                      : "bg-[#18181b] border border-[#27272a] text-[#71717a] hover:text-white"
+                      : "bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white"
                   }`}
                 >
                   {item.label}
@@ -249,30 +249,30 @@ export function EditClothingSaleModal({
 
           {/* ESTOQUE E FRETE */}
           <div className="grid grid-cols-2 gap-2">
-            <div className="p-3 rounded-xl bg-[#18181b] border border-[#27272a]">
-              <span className="text-[11px] text-[#a1a1aa] block mb-1">Em Estoque?</span>
+            <div className="p-3 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a]">
+              <span className="text-[11px] text-zinc-600 dark:text-[#a1a1aa] block mb-1">Em Estoque?</span>
               <button
                 type="button"
                 onClick={() => setInStock(!inStock)}
                 className={`w-full py-1.5 rounded-lg text-xs font-bold transition-all ${
                   inStock
-                    ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-300"
-                    : "bg-amber-500/20 border border-amber-500/50 text-amber-300"
+                    ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-700 dark:text-emerald-300"
+                    : "bg-amber-500/20 border border-amber-500/50 text-amber-700 dark:text-amber-300"
                 }`}
               >
                 {inStock ? "Sim (Pronta Entrega)" : "Não (Sob Encomenda)"}
               </button>
             </div>
 
-            <div className="p-3 rounded-xl bg-[#18181b] border border-[#27272a]">
-              <span className="text-[11px] text-[#a1a1aa] block mb-1">Frete Pago?</span>
+            <div className="p-3 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a]">
+              <span className="text-[11px] text-zinc-600 dark:text-[#a1a1aa] block mb-1">Frete Pago?</span>
               <button
                 type="button"
                 onClick={() => setShippingPaid(!shippingPaid)}
                 className={`w-full py-1.5 rounded-lg text-xs font-bold transition-all ${
                   shippingPaid
-                    ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-300"
-                    : "bg-rose-500/20 border border-rose-500/50 text-rose-300"
+                    ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-700 dark:text-emerald-300"
+                    : "bg-rose-500/20 border border-rose-500/50 text-rose-700 dark:text-rose-300"
                 }`}
               >
                 {shippingPaid ? "Frete Pago" : "Frete Pendente"}
@@ -283,31 +283,31 @@ export function EditClothingSaleModal({
           {/* DADOS BÁSICOS */}
           <div className="space-y-2">
             <div>
-              <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                 Nome do Cliente
               </label>
               <input
                 type="text"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white"
+                className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   CPF
                 </label>
                 <input
                   type="text"
                   value={customerCpf}
                   onChange={(e) => setCustomerCpf(formatCpf(e.target.value))}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white font-mono"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white font-mono"
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Telefone / WhatsApp *
                 </label>
                 <input
@@ -317,44 +317,44 @@ export function EditClothingSaleModal({
                   onChange={(e) => setCustomerPhone(formatPhone(e.target.value))}
                   maxLength={15}
                   placeholder="(11) 99999-9999"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white font-mono focus:outline-none focus:border-pink-500"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                 Peça / Produto
               </label>
               <input
                 type="text"
                 value={productDescription}
                 onChange={(e) => setProductDescription(e.target.value)}
-                className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white"
+                className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Valor Vendido (R$)
                 </label>
                 <input
                   type="text"
                   value={saleAmount}
                   onChange={(e) => setSaleAmount(e.target.value)}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-emerald-400 font-bold font-mono"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-emerald-400 font-bold font-mono"
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Valor Frete (R$)
                 </label>
                 <input
                   type="text"
                   value={shippingCost}
                   onChange={(e) => setShippingCost(e.target.value)}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white font-mono"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white font-mono"
                 />
               </div>
             </div>
@@ -362,63 +362,63 @@ export function EditClothingSaleModal({
             {/* Endereço */}
             <div className="grid grid-cols-3 gap-2">
               <div className="col-span-2">
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">Rua</label>
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">Rua</label>
                 <input
                   type="text"
                   value={street}
                   onChange={(e) => setStreet(e.target.value)}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">Número</label>
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">Número</label>
                 <input
                   type="text"
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">Bairro</label>
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">Bairro</label>
                 <input
                   type="text"
                   value={neighborhood}
                   onChange={(e) => setNeighborhood(e.target.value)}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">Cidade</label>
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">Cidade</label>
                 <input
                   type="text"
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">UF</label>
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">UF</label>
                 <input
                   type="text"
                   maxLength={2}
                   value={state}
                   onChange={(e) => setState(e.target.value.toUpperCase())}
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white uppercase"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white uppercase"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">Observações</label>
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">Observações</label>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={2}
-                className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white resize-none"
+                className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white resize-none"
               />
             </div>
           </div>
@@ -427,7 +427,7 @@ export function EditClothingSaleModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-[#18181b] border border-[#27272a] text-xs font-bold text-[#a1a1aa] hover:text-white"
+              className="px-4 py-2 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] text-xs font-bold text-zinc-600 dark:text-[#a1a1aa] hover:text-zinc-950 dark:hover:text-white"
             >
               Cancelar
             </button>

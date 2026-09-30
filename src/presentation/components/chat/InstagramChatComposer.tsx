@@ -78,13 +78,13 @@ export const InstagramChatComposer = memo(
 
     return (
       <form onSubmit={handleSubmit} className="p-3 flex items-center gap-2">
-        <div className="flex-1 bg-[#1c1c1e] border border-[#262626] rounded-full px-3.5 py-2 flex items-center gap-2.5">
+        <div className="flex-1 bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-full px-3.5 py-2 flex items-center gap-2.5">
           {/* Botão de abrir Pastas e Cofre Flutuante de Respostas Rápidas / Mídias */}
           <button
             type="button"
             onClick={onOpenVault}
             disabled={isUploadingMedia}
-            className="text-[#a8a8a8] hover:text-[#0095f6] active:scale-90 transition-all cursor-pointer p-0.5 disabled:opacity-40"
+            className="text-zinc-600 dark:text-[#a8a8a8] hover:text-[#0095f6] active:scale-90 transition-all cursor-pointer p-0.5 disabled:opacity-40"
             title="Abrir Pastas e Respostas Rápidas (Cofre)"
             aria-label="Abrir cofre de respostas e pastas"
           >
@@ -108,7 +108,7 @@ export const InstagramChatComposer = memo(
 
           {/* Ícone de mandar outros arquivos / documentos */}
           <label
-            className="text-[#a8a8a8] hover:text-white active:scale-90 transition-all cursor-pointer p-0.5"
+            className="text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-90 transition-all cursor-pointer p-0.5"
             title="Enviar documento ou mídia"
           >
             <Paperclip className="w-5 h-5 stroke-[1.8]" />
@@ -134,12 +134,12 @@ export const InstagramChatComposer = memo(
             onChange={(e) => setInputText(e.target.value)}
             placeholder={placeholderText}
             disabled={isUploadingMedia}
-            className="flex-1 bg-transparent text-sm text-white placeholder-[#737373] focus:outline-none disabled:opacity-50"
+            className="flex-1 bg-transparent text-sm text-zinc-950 dark:text-white placeholder-[#737373] focus:outline-none disabled:opacity-50"
           />
 
           {/* Spinner de Upload quando estiver enviando mídia */}
           {isUploadingMedia && (
-            <div className="p-0.5 text-zinc-400" title="Enviando...">
+            <div className="p-0.5 text-zinc-600 dark:text-zinc-400" title="Enviando...">
               <Loader2 className="w-4 h-4 animate-spin" />
             </div>
           )}
@@ -159,7 +159,7 @@ export const InstagramChatComposer = memo(
               onClick={onStartRecording}
               disabled={isUploadingMedia}
               title="Gravar mensagem de voz"
-              className="text-[#a8a8a8] hover:text-white active:scale-90 transition-all p-0.5 cursor-pointer disabled:opacity-40"
+              className="text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-90 transition-all p-0.5 cursor-pointer disabled:opacity-40"
               aria-label="Gravar áudio"
             >
               <Mic className="w-5 h-5 stroke-[1.8]" />

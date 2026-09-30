@@ -40,7 +40,7 @@ export function InstagramAudioMessage({
 }: InstagramAudioMessageProps) {
   if (!audioUrl || audioUrl.trim().length === 0) {
     return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-zinc-300 select-none">
+      <div className="flex items-center gap-2 py-1 px-2 text-xs text-zinc-700 dark:text-zinc-300 select-none">
         <span>🎙️ Mensagem de voz</span>
       </div>
     );
@@ -249,7 +249,7 @@ export function InstagramAudioMessage({
                         : "bg-[#0095f6]"
                       : isMine
                         ? "bg-white/40"
-                        : "bg-zinc-600"
+                        : "bg-zinc-400 dark:bg-zinc-600"
                   }`}
                 />
               );
@@ -261,7 +261,7 @@ export function InstagramAudioMessage({
               className={
                 isMine
                   ? "text-white/85 font-mono"
-                  : "text-zinc-400 font-mono"
+                  : "text-zinc-600 dark:text-zinc-400 font-mono"
               }
             >
               {formatDuration(playing || currentTime > 0 ? currentTime : duration)}
@@ -275,7 +275,7 @@ export function InstagramAudioMessage({
                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-tight transition-colors cursor-pointer ${
                   isMine
                     ? "bg-white/20 text-white hover:bg-white/30"
-                    : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                    : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-700"
                 }`}
                 title="Alterar velocidade de reprodução"
               >
@@ -289,7 +289,7 @@ export function InstagramAudioMessage({
       {/* Barra de Ações Rápidas: Baixar Áudio + Transcrever */}
       <div
         className={`mt-2 pt-1.5 border-t ${
-          isMine ? "border-white/15" : "border-zinc-800"
+          isMine ? "border-white/15" : "border-zinc-200 dark:border-zinc-800"
         } flex items-center justify-between gap-1.5`}
       >
         {/* Botão de Download em Destaque */}
@@ -300,7 +300,7 @@ export function InstagramAudioMessage({
           className={`text-[10px] font-semibold flex items-center gap-1.5 px-2 py-1 rounded-md transition-all active:scale-95 cursor-pointer disabled:opacity-50 ${
             isMine
               ? "bg-white/20 text-white hover:bg-white/30"
-              : "bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 border border-zinc-700/50"
+              : "bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-300 dark:hover:bg-zinc-700 border border-zinc-300 dark:border-zinc-700/50"
           }`}
           title="Baixar arquivo de áudio"
           aria-label="Baixar áudio"
@@ -326,7 +326,7 @@ export function InstagramAudioMessage({
             className={`text-[10px] font-semibold flex items-center gap-1 px-2 py-1 rounded-md transition-all active:scale-95 cursor-pointer ${
               isMine
                 ? "bg-white/20 text-white hover:bg-white/30"
-                : "bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700 border border-zinc-700/50"
+                : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-300 dark:hover:bg-zinc-700 border border-zinc-300 dark:border-zinc-700/50"
             }`}
             title="Transcrever áudio na nuvem com Groq Whisper Large v3"
           >
@@ -340,7 +340,7 @@ export function InstagramAudioMessage({
       {currentTranscript && (
         <div
           className={`mt-1.5 pt-1.5 border-t ${
-            isMine ? "border-white/15" : "border-zinc-800/60"
+            isMine ? "border-zinc-200 dark:border-white/15" : "border-zinc-200 dark:border-zinc-800/60"
           } text-left select-text`}
         >
           <div className="flex items-center justify-between gap-1 mb-1">
@@ -361,7 +361,7 @@ export function InstagramAudioMessage({
               className={`p-0.5 rounded transition-colors cursor-pointer ${
                 isMine
                   ? "hover:bg-white/20 text-white/80"
-                  : "hover:bg-zinc-800 text-zinc-400"
+                  : "hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
               }`}
               title={isExpanded ? "Ocultar texto" : "Exibir texto"}
             >
@@ -375,7 +375,7 @@ export function InstagramAudioMessage({
           {isExpanded && (
             <p
               className={`text-[11px] leading-relaxed italic break-words [word-break:break-word] ${
-                isMine ? "text-white/95" : "text-zinc-200"
+                isMine ? "text-white/95" : "text-zinc-800 dark:text-zinc-200"
               }`}
             >
               &ldquo;{currentTranscript}&rdquo;
@@ -387,7 +387,7 @@ export function InstagramAudioMessage({
       {isTranscribing && (
         <div
           className={`mt-1.5 pt-1.5 border-t ${
-            isMine ? "border-white/15" : "border-zinc-800/60"
+            isMine ? "border-zinc-200 dark:border-white/15" : "border-zinc-200 dark:border-zinc-800/60"
           } flex items-center gap-1.5 text-[10px] ${
             isMine ? "text-white/80" : "text-[#0095f6]"
           }`}

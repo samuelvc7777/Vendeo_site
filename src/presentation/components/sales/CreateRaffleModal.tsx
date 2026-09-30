@@ -75,26 +75,26 @@ export function CreateRaffleModal({
   return (
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
       <div
-        className="w-full max-w-lg bg-[#121212] border border-[#262626] rounded-t-2xl sm:rounded-2xl p-5 text-white flex flex-col max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150"
+        className="w-full max-w-lg bg-white dark:bg-[#121212] border border-zinc-200 dark:border-[#262626] rounded-t-2xl sm:rounded-2xl p-5 text-zinc-950 dark:text-white flex flex-col max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150"
         role="dialog"
         aria-modal="true"
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
+        <div className="flex items-center justify-between pb-4 border-b border-zinc-200 dark:border-[#262626]">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500/20 to-yellow-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Cadastrar Nova Rifa</h2>
-              <p className="text-xs text-[#a8a8a8]">
+              <h2 className="text-base font-bold text-zinc-950 dark:text-white">Cadastrar Nova Rifa</h2>
+              <p className="text-xs text-zinc-600 dark:text-[#a8a8a8]">
                 Configure os números, prêmio e datas de vigência
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-[#737373] hover:text-white hover:bg-[#262626] transition-colors"
+            className="p-1.5 rounded-lg text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-[#262626] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -110,17 +110,17 @@ export function CreateRaffleModal({
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           {/* Título */}
           <div>
-            <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+            <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
               Título da Rifa / Prêmio *
             </label>
             <div className="relative">
-              <Tag className="w-4 h-4 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+              <Tag className="w-4 h-4 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Ex: Rifa da Moto Honda Fan 160cc ou iPhone 15"
-                className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors"
+                className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl pl-9 pr-3 py-2.5 text-sm text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors"
                 required
               />
             </div>
@@ -128,7 +128,7 @@ export function CreateRaffleModal({
 
           {/* Descrição */}
           <div>
-            <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+            <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
               Descrição / Regras do Sorteio
             </label>
             <textarea
@@ -136,13 +136,13 @@ export function CreateRaffleModal({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Descreva os detalhes, prêmio extra para maior comprador, data estimada..."
               rows={2}
-              className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3 py-2 text-sm text-white placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors resize-none"
+              className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl px-3 py-2 text-sm text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors resize-none"
             />
           </div>
 
           {/* Foto / Imagem do Prêmio */}
           <div>
-            <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+            <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
               Foto / Banner do Prêmio (URL)
             </label>
             <div className="flex gap-2 items-center mb-2">
@@ -151,10 +151,10 @@ export function CreateRaffleModal({
                 value={imageUrl}
                 onChange={(e) => setImageUrl(e.target.value)}
                 placeholder="https://exemplo.com/foto-moto.jpg"
-                className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3 py-2 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors font-mono"
+                className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors font-mono"
               />
               {imageUrl && (
-                <div className="w-10 h-10 rounded-lg overflow-hidden border border-[#38383a] shrink-0 bg-black">
+                <div className="w-10 h-10 rounded-lg overflow-hidden border border-zinc-300 dark:border-[#38383a] shrink-0 bg-zinc-50 dark:bg-black">
                   <img
                     src={imageUrl}
                     alt="Preview"
@@ -191,7 +191,7 @@ export function CreateRaffleModal({
                   key={p.label}
                   type="button"
                   onClick={() => setImageUrl(p.url)}
-                  className="px-2 py-1 rounded-md bg-[#18181b] border border-[#262626] text-[10px] text-[#a8a8a8] hover:text-white hover:border-[#38383a] transition-all"
+                  className="px-2 py-1 rounded-md bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#262626] text-[10px] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#38383a] transition-all"
                 >
                   {p.label}
                 </button>
@@ -201,7 +201,7 @@ export function CreateRaffleModal({
 
           {/* Quantidade de Números */}
           <div>
-            <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+            <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
               Quantidade de Números (Cotas) *
             </label>
             <div className="flex flex-wrap gap-2 mb-2">
@@ -213,7 +213,7 @@ export function CreateRaffleModal({
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                     totalNumbers === count
                       ? "bg-[#0095f6] border-[#0095f6] text-white shadow-sm"
-                      : "bg-[#1c1c1e] border-[#262626] text-[#a8a8a8] hover:text-white hover:border-[#38383a]"
+                      : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#38383a]"
                   }`}
                 >
                   {count} cotas
@@ -221,14 +221,14 @@ export function CreateRaffleModal({
               ))}
             </div>
             <div className="relative">
-              <Ticket className="w-4 h-4 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+              <Ticket className="w-4 h-4 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="number"
                 min={10}
                 max={5000}
                 value={totalNumbers}
                 onChange={(e) => setTotalNumbers(Number(e.target.value))}
-                className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl pl-9 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#0095f6] transition-colors"
+                className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl pl-9 pr-3 py-2.5 text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-[#0095f6] transition-colors"
                 required
               />
             </div>
@@ -236,22 +236,22 @@ export function CreateRaffleModal({
 
           {/* Valor por Cota */}
           <div>
-            <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+            <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
               Valor por Cota (R$) *
             </label>
             <div className="relative">
-              <DollarSign className="w-4 h-4 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+              <DollarSign className="w-4 h-4 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="number"
                 step="0.50"
                 min={1}
                 value={pricePerNumber}
                 onChange={(e) => setPricePerNumber(Number(e.target.value))}
-                className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl pl-9 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#0095f6] transition-colors"
+                className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl pl-9 pr-3 py-2.5 text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-[#0095f6] transition-colors"
                 required
               />
             </div>
-            <p className="mt-1 text-[11px] text-[#737373]">
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-[#737373]">
               Arrecadação potencial máxima:{" "}
               <span className="font-semibold text-emerald-400">
                 {(totalNumbers * pricePerNumber).toLocaleString("pt-BR", {
@@ -265,32 +265,32 @@ export function CreateRaffleModal({
           {/* Datas de Início e Fim */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+              <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
                 Data de Início
               </label>
               <div className="relative">
-                <Calendar className="w-4 h-4 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+                <Calendar className="w-4 h-4 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="date"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl pl-9 pr-2 py-2 text-xs text-white focus:outline-none focus:border-[#0095f6] transition-colors"
+                  className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl pl-9 pr-2 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-[#0095f6] transition-colors"
                   required
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#e5e5e5] mb-1.5">
+              <label className="block text-xs font-semibold text-zinc-800 dark:text-[#e5e5e5] mb-1.5">
                 Data de Fim / Sorteio
               </label>
               <div className="relative">
-                <Calendar className="w-4 h-4 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+                <Calendar className="w-4 h-4 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="date"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl pl-9 pr-2 py-2 text-xs text-white focus:outline-none focus:border-[#0095f6] transition-colors"
+                  className="w-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl pl-9 pr-2 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-[#0095f6] transition-colors"
                   required
                 />
               </div>
@@ -298,11 +298,11 @@ export function CreateRaffleModal({
           </div>
 
           {/* Botões */}
-          <div className="pt-3 flex items-center justify-end gap-2 border-t border-[#262626]">
+          <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-200 dark:border-[#262626]">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 rounded-xl border border-[#262626] text-xs font-medium text-[#a8a8a8] hover:text-white hover:bg-[#262626] transition-colors"
+              className="px-4 py-2.5 rounded-xl border border-zinc-200 dark:border-[#262626] text-xs font-medium text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-[#262626] transition-colors"
             >
               Cancelar
             </button>

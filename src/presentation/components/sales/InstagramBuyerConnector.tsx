@@ -89,7 +89,7 @@ export function InstagramBuyerConnector({
 
   return (
     <div className="px-3 pt-2">
-      <div className="bg-[#101318] border border-[#1e2836] rounded-2xl p-3.5 shadow-lg space-y-3">
+      <div className="bg-zinc-50 dark:bg-[#101318] border border-zinc-200 dark:border-[#1e2836] rounded-2xl p-3.5 shadow-lg space-y-3">
         {/* Cabeçalho do Vínculo */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -97,13 +97,13 @@ export function InstagramBuyerConnector({
               <AtSign className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
+              <h3 className="text-xs font-bold text-zinc-950 dark:text-white flex items-center gap-1.5">
                 Vincular ao Instagram
                 <span className="text-[9px] px-1.5 py-0.2 rounded-md bg-[#0095f6]/15 text-[#0095f6] font-mono">
                   @cliente
                 </span>
               </h3>
-              <p className="text-[10px] text-[#737373]">
+              <p className="text-[10px] text-zinc-500 dark:text-[#737373]">
                 Selecione o comprador para registrar as cotas
               </p>
             </div>
@@ -112,7 +112,7 @@ export function InstagramBuyerConnector({
           {activeBuyer && (
             <button
               onClick={() => onSelectBuyer(null)}
-              className="text-[11px] font-semibold text-[#737373] hover:text-white flex items-center gap-1 transition-colors"
+              className="text-[11px] font-semibold text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white flex items-center gap-1 transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               Trocar @
@@ -122,7 +122,7 @@ export function InstagramBuyerConnector({
 
         {/* COMPRADOR ATIVO SELECIONADO */}
         {activeBuyer ? (
-          <div className="p-3 rounded-xl bg-[#141c26] border border-[#0095f6]/40 flex items-center justify-between">
+          <div className="p-3 rounded-xl bg-blue-50 dark:bg-[#141c26] border border-[#0095f6]/40 flex items-center justify-between">
             <div className="flex items-center gap-2.5 min-w-0">
               {activeBuyer.avatar ? (
                 <img
@@ -131,13 +131,13 @@ export function InstagramBuyerConnector({
                   className="w-9 h-9 rounded-full object-cover ring-2 ring-[#0095f6] shrink-0"
                 />
               ) : (
-                <div className="w-9 h-9 rounded-full bg-[#1c2738] flex items-center justify-center text-[#0095f6] shrink-0">
+                <div className="w-9 h-9 rounded-full bg-blue-100 dark:bg-[#1c2738] flex items-center justify-center text-[#0095f6] shrink-0">
                   <User className="w-4 h-4" />
                 </div>
               )}
               <div className="min-w-0">
                 <div className="flex items-center gap-1">
-                  <span className="text-xs font-black text-white font-mono">
+                  <span className="text-xs font-black text-zinc-950 dark:text-white font-mono">
                     @{activeBuyer.username || activeBuyer.name}
                   </span>
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 font-bold">
@@ -145,7 +145,7 @@ export function InstagramBuyerConnector({
                   </span>
                 </div>
                 {activeBuyer.name && activeBuyer.name !== activeBuyer.username && (
-                  <p className="text-[10px] text-[#8e8e93] truncate">
+                  <p className="text-[10px] text-zinc-500 dark:text-[#8e8e93] truncate">
                     {activeBuyer.name}
                   </p>
                 )}
@@ -153,7 +153,7 @@ export function InstagramBuyerConnector({
             </div>
 
             <div className="text-right shrink-0">
-              <span className="text-[10px] text-[#737373] block">Pronto p/ marcar</span>
+              <span className="text-[10px] text-zinc-500 dark:text-[#737373] block">Pronto p/ marcar</span>
               <span className="text-[11px] text-[#0095f6] font-bold">
                 {selectedNumbers.length}{" "}
                 {selectedNumbers.length === 1 ? "cota" : "cotas"}
@@ -171,13 +171,13 @@ export function InstagramBuyerConnector({
                 onChange={(e) => setSearchTerm(e.target.value)}
                 onKeyDown={handleManualInputEnter}
                 placeholder="Digite o @ ou pesquise o nome do cliente..."
-                className="w-full bg-[#161a22] border border-[#2b3545] rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-[#606e82] focus:outline-none focus:border-[#0095f6] transition-colors"
+                className="w-full bg-white dark:bg-[#161a22] border border-zinc-300 dark:border-[#2b3545] rounded-xl pl-9 pr-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#606e82] focus:outline-none focus:border-[#0095f6] transition-colors"
               />
             </div>
 
             {/* Sugestões Rápidas de Clientes do Direct */}
             <div className="space-y-1">
-              <span className="text-[10px] font-semibold text-[#606e82] block">
+              <span className="text-[10px] font-semibold text-zinc-500 dark:text-[#606e82] block">
                 Conversas Recentes do Direct:
               </span>
               <div
@@ -197,7 +197,7 @@ export function InstagramBuyerConnector({
                       });
                       setSearchTerm("");
                     }}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#161a22] border border-[#2b3545] text-left hover:border-[#0095f6] hover:bg-[#1a2332] active:scale-95 transition-all shrink-0 cursor-pointer"
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#161a22] border border-zinc-300 dark:border-[#2b3545] text-left hover:border-[#0095f6] hover:bg-blue-100 dark:hover:bg-[#1a2332] active:scale-95 transition-all shrink-0 cursor-pointer"
                   >
                     {conv.avatar ? (
                       <img
@@ -206,12 +206,12 @@ export function InstagramBuyerConnector({
                         className="w-5 h-5 rounded-full object-cover shrink-0"
                       />
                     ) : (
-                      <div className="w-5 h-5 rounded-full bg-[#262626] flex items-center justify-center shrink-0">
-                        <User className="w-3 h-3 text-[#737373]" />
+                      <div className="w-5 h-5 rounded-full bg-zinc-200 dark:bg-[#262626] flex items-center justify-center shrink-0">
+                        <User className="w-3 h-3 text-zinc-500 dark:text-[#737373]" />
                       </div>
                     )}
                     <div className="min-w-0">
-                      <span className="text-[11px] font-bold text-white font-mono truncate block max-w-[90px]">
+                      <span className="text-[11px] font-bold text-zinc-950 dark:text-white font-mono truncate block max-w-[90px]">
                         @{conv.username}
                       </span>
                     </div>
@@ -243,11 +243,11 @@ export function InstagramBuyerConnector({
 
         {/* BARRA DE AÇÃO QUANDO NÚMEROS ESTÃO SELECIONADOS */}
         {selectedNumbers.length > 0 && (
-          <div className="pt-2 border-t border-[#1e2836] space-y-2.5 animate-in fade-in duration-150">
+          <div className="pt-2 border-t border-zinc-200 dark:border-[#1e2836] space-y-2.5 animate-in fade-in duration-150">
             {/* Resumo de Cotas e Valor */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[11px] text-[#8e8e93]">Cotas:</span>
+                <span className="text-[11px] text-zinc-500 dark:text-[#8e8e93]">Cotas:</span>
                 {selectedNumbers.slice(0, 6).map((num) => (
                   <span
                     key={num}
@@ -257,7 +257,7 @@ export function InstagramBuyerConnector({
                   </span>
                 ))}
                 {selectedNumbers.length > 6 && (
-                  <span className="text-[10px] text-[#737373]">
+                  <span className="text-[10px] text-zinc-500 dark:text-[#737373]">
                     +{selectedNumbers.length - 6} mais
                   </span>
                 )}
@@ -286,7 +286,7 @@ export function InstagramBuyerConnector({
                 type="button"
                 disabled={!activeBuyer || isSubmitting}
                 onClick={() => onConfirmPurchase("reserved")}
-                className="py-2 px-2.5 rounded-xl bg-[#161a22] border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
+                className="py-2 px-2.5 rounded-xl bg-white dark:bg-[#161a22] border border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
               >
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
                 <span>Reservar</span>
@@ -331,7 +331,7 @@ export function InstagramBuyerConnector({
                 <button
                   type="button"
                   onClick={onClearSelection}
-                  className="text-[10px] text-[#737373] hover:text-white"
+                  className="text-[10px] text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
                 >
                   Desmarcar cotas
                 </button>

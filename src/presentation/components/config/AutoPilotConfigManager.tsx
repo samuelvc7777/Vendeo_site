@@ -171,62 +171,69 @@ export function AutoPilotConfigManager() {
 
   if (isLoading || !config) {
     return (
-      <div className="p-4 rounded-2xl bg-[#141414] border border-[#262626] animate-pulse space-y-3">
-        <div className="h-5 bg-zinc-800 rounded w-1/3" />
-        <div className="h-10 bg-zinc-800/60 rounded" />
+      <div className="p-4 rounded-2xl bg-zinc-100 dark:bg-[#141414] border border-zinc-200 dark:border-[#262626] animate-pulse space-y-3">
+        <div className="h-5 bg-zinc-200 dark:bg-zinc-800 rounded w-1/3" />
+        <div className="h-10 bg-zinc-200/70 dark:bg-zinc-800/60 rounded" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Cabeçalho da Seção */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-md shrink-0">
-            <Bot className="w-4 h-4" />
+      <div className="rounded-[22px] border border-purple-200/80 dark:border-purple-500/15 bg-gradient-to-br from-purple-50 via-white to-fuchsia-50/50 dark:from-purple-500/[0.08] dark:via-white/[0.025] dark:to-fuchsia-500/[0.06] p-3.5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-purple-500 to-fuchsia-500 text-white shadow-md shadow-purple-500/20">
+              <Bot className="h-4.5 w-4.5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-purple-600 dark:text-purple-400">
+                  Brain
+                </p>
+                <span className="rounded-full border border-purple-200 dark:border-purple-500/20 bg-white/70 dark:bg-purple-500/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide text-purple-700 dark:text-purple-300">
+                  Autônomo
+                </span>
+              </div>
+              <h3 className="mt-0.5 text-[13px] font-black text-zinc-950 dark:text-white">
+                Piloto Automático
+              </h3>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+                Controle central de respostas, filas, tempo e hand-off.
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-1.5 flex-wrap">
-              Piloto Automático Inteligente
-              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30">
-                IA Autônoma
-              </span>
-            </h3>
-            <p className="text-[11px] text-zinc-400">
-              Atendimento autônomo, cronograma por etapas, fila sequencial e hand-off.
-            </p>
+
+          {/* Chave Mestra Geral */}
+          <div className="flex items-center justify-between gap-2 rounded-2xl border border-zinc-200/80 dark:border-white/10 bg-white/70 dark:bg-black/20 px-3 py-2 shadow-sm sm:justify-end">
+            <span
+              className={`text-[9px] font-black uppercase tracking-wide ${
+                config.isEnabledGlobally
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : "text-zinc-500 dark:text-zinc-400"
+              }`}
+            >
+              {config.isEnabledGlobally ? "Piloto ligado" : "Piloto desligado"}
+            </span>
+
+            <label className="relative inline-flex items-center cursor-pointer" title="Ligar ou desligar o Piloto Automático globalmente">
+              <input
+                type="checkbox"
+                checked={config.isEnabledGlobally}
+                onChange={(e) => handleToggleGlobal(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-zinc-200 dark:bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+            </label>
           </div>
-        </div>
-
-        {/* Chave Mestra Geral com Badge Visual */}
-        <div className="flex items-center justify-between sm:justify-end gap-2.5 w-full sm:w-auto pt-1 sm:pt-0 border-t border-zinc-800/40 sm:border-t-0">
-          <span
-            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border transition-all ${
-              config.isEnabledGlobally
-                ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/35 animate-pulse"
-                : "bg-zinc-800 text-zinc-400 border-zinc-700"
-            }`}
-          >
-            {config.isEnabledGlobally ? "🟢 LIGADA (Ativa)" : "⚪ DESLIGADA (Parada)"}
-          </span>
-
-          <label className="relative inline-flex items-center cursor-pointer" title="Ligar ou desligar o Piloto Automático globalmente">
-            <input
-              type="checkbox"
-              checked={config.isEnabledGlobally}
-              onChange={(e) => handleToggleGlobal(e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-          </label>
         </div>
       </div>
 
       <div className={`rounded-xl border px-3 py-2.5 text-[11px] leading-relaxed ${
         config.isEnabledGlobally
-          ? "border-emerald-500/20 bg-emerald-500/5 text-zinc-400"
-          : "border-amber-500/25 bg-amber-500/5 text-zinc-400"
+          ? "border-emerald-500/20 bg-emerald-500/5 text-zinc-600 dark:text-zinc-400"
+          : "border-amber-500/25 bg-amber-500/5 text-zinc-600 dark:text-zinc-400"
       }`}>
         <div className="flex items-start gap-2">
           <Info className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${config.isEnabledGlobally ? "text-emerald-400" : "text-amber-400"}`} />
@@ -237,23 +244,23 @@ export function AutoPilotConfigManager() {
       </div>
 
       {/* Card: OpenAI — Brain da Larissa */}
-      <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-purple-500/20 space-y-3">
+      <div className="rounded-[20px] border border-purple-200/80 dark:border-purple-500/15 bg-white/90 dark:bg-white/[0.035] p-4 space-y-3 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+          <span className="text-xs font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
             <Bot className="w-3.5 h-3.5 text-purple-400 shrink-0" />
             OpenAI — Brain da Larissa
           </span>
-          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 self-start sm:self-auto">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 self-start sm:self-auto">
             {openAiMaskedKey ? "OpenAI conectada" : "OpenAI não configurada"}
           </span>
         </div>
 
-        <p className="text-[11px] text-zinc-400 leading-relaxed">
+        <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
           O Brain oficial da Larissa usa o mesmo Agent OpenAI remoto. Escolha aqui o modelo aplicado ao Agent.
         </p>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-300 font-medium flex items-center gap-1">
+          <label className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium flex items-center gap-1">
             <Key className="w-3 h-3 text-amber-400" />
             Chave da API OpenAI
           </label>
@@ -263,7 +270,7 @@ export function AutoPilotConfigManager() {
               placeholder="sk-proj-..."
               value={openAiKey}
               onChange={(e) => setOpenAiKey(e.target.value)}
-              className="min-h-11 min-w-0 w-full flex-1 rounded-xl border border-white/10 bg-[#121214] px-3 py-2 text-xs text-white placeholder-zinc-600 outline-none transition focus:border-purple-500"
+              className="min-h-11 min-w-0 w-full flex-1 rounded-xl border border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-[#121214] px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 outline-none transition focus:border-purple-500"
             />
             <button
               type="button"
@@ -280,7 +287,7 @@ export function AutoPilotConfigManager() {
         </div>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-300 font-medium block">Modelo do Brain</label>
+          <label className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium block">Modelo do Brain</label>
           <select
             value={openAiModel}
             onChange={(e) => {
@@ -291,7 +298,7 @@ export function AutoPilotConfigManager() {
                 setIsOpenAiReasoningDirty(true);
               }
             }}
-            className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
+            className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-purple-500"
           >
             <option value="" disabled>Selecione um modelo GPT-6</option>
             <option value="gpt-6-luna">GPT-6 Luna — Mais econômico</option>
@@ -304,8 +311,8 @@ export function AutoPilotConfigManager() {
         </div>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-300 font-medium block">Esforço de raciocínio</label>
-          <select value={openAiReasoningEffort} onChange={(e) => { setOpenAiReasoningEffort(e.target.value); setIsOpenAiReasoningDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
+          <label className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium block">Esforço de raciocínio</label>
+          <select value={openAiReasoningEffort} onChange={(e) => { setOpenAiReasoningEffort(e.target.value); setIsOpenAiReasoningDirty(true); }} className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-purple-500">
             <option value="none" disabled={openAiModel === "gpt-6.1-sol"}>None — mínimo tempo de raciocínio</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
@@ -317,8 +324,8 @@ export function AutoPilotConfigManager() {
         </div>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-300 font-medium block">Nível de verbosidade</label>
-          <select value={openAiVerbosity} onChange={(e) => { setOpenAiVerbosity(e.target.value); setIsOpenAiVerbosityDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
+          <label className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium block">Nível de verbosidade</label>
+          <select value={openAiVerbosity} onChange={(e) => { setOpenAiVerbosity(e.target.value); setIsOpenAiVerbosityDirty(true); }} className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-purple-500">
             <option value="low">Low — respostas mais concisas</option>
             <option value="medium">Medium — equilíbrio</option>
             <option value="high">High — máximo de detalhe suportado</option>
@@ -328,34 +335,34 @@ export function AutoPilotConfigManager() {
       </div>
 
       {/* Card 0: Operação 100% Automática Direta */}
-      <div className="flex flex-col gap-3 rounded-xl border border-white/5 bg-[#1a1a1d] p-3.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-[20px] border border-zinc-200/80 dark:border-white/10 bg-white/90 dark:bg-white/[0.035] p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-purple-500/20 flex items-center justify-center text-purple-400">
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
-            <span className="text-xs font-bold text-white block">
+            <span className="text-xs font-bold text-zinc-950 dark:text-white block">
               Disparo 100% Automático
             </span>
-            <span className="text-[10.5px] text-zinc-400">
+            <span className="text-[10.5px] text-zinc-600 dark:text-zinc-400">
               A IA responde e envia mensagens diretamente sem exigir aprovação manual.
             </span>
           </div>
         </div>
-        <span className="self-start shrink-0 rounded-lg border border-purple-500/30 bg-purple-500/20 px-2.5 py-1 text-[10px] font-bold text-purple-300 sm:self-auto">
+        <span className="self-start shrink-0 rounded-lg border border-purple-500/30 bg-purple-500/20 px-2.5 py-1 text-[10px] font-bold text-purple-700 dark:text-purple-300 sm:self-auto">
           100% Autônomo
         </span>
       </div>
 
       {/* Notificações móveis */}
-      <div className="space-y-3 rounded-xl border border-white/5 bg-[#1a1a1d] p-3.5">
+      <div className="space-y-3 rounded-[20px] border border-zinc-200/80 dark:border-white/10 bg-white dark:bg-[#17171b] p-4 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 space-y-0.5">
-            <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
               <BellRing className="w-3.5 h-3.5 text-purple-400" />
               Notificações no celular
             </span>
-            <p className="text-[11px] text-zinc-400 leading-relaxed">
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
               Alertas somente quando o Brain precisar de uma informação sua ou quando uma conversa for finalizada.
             </p>
           </div>
@@ -369,7 +376,7 @@ export function AutoPilotConfigManager() {
             disabled={mobileNotifications.remoteRegistered || mobileNotifications.isLoading}
             className={`min-h-11 w-full shrink-0 rounded-xl px-4 py-2 text-xs font-bold shadow-sm transition-all sm:w-auto ${
               mobileNotifications.remoteRegistered
-                ? "bg-emerald-600/30 text-emerald-200 cursor-default"
+                ? "bg-emerald-600/30 text-emerald-800 dark:text-emerald-200 cursor-default"
                 : "bg-purple-600 hover:bg-purple-500 text-white animate-pulse"
             }`}
           >
@@ -379,18 +386,18 @@ export function AutoPilotConfigManager() {
       </div>
 
       {/* Card 1: Tempo de Espera (Debounce da Última Mensagem) */}
-      <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-white/5 space-y-3">
+      <div className="rounded-[20px] border border-zinc-200/80 dark:border-white/10 bg-white dark:bg-[#17171b] p-4 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+          <span className="text-xs font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
             <Clock className="w-3.5 h-3.5 text-purple-400" />
             Tempo de Espera antes de Responder:
           </span>
-          <span className="text-xs font-bold text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-lg">
+          <span className="text-xs font-bold text-purple-700 dark:text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-lg">
             {config.responseDelayMinutes} min
           </span>
         </div>
 
-        <p className="text-[11px] text-zinc-400 leading-relaxed">
+        <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
           A IA aguarda este intervalo contado a partir da <strong>última mensagem</strong>. Novas mensagens podem reiniciar o quiet period, mas nunca passam do teto absoluto do lote configurado abaixo.
         </p>
 
@@ -408,7 +415,7 @@ export function AutoPilotConfigManager() {
                 } ${
                   isSelected
                     ? "bg-purple-600 text-white shadow-sm border border-purple-400"
-                    : "bg-[#121214] hover:bg-[#262629] text-zinc-300 border border-white/5"
+                    : "bg-zinc-50 dark:bg-[#121214] hover:bg-zinc-100 dark:hover:bg-[#262629] text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-white/5"
                 }`}
               >
                 {preset.label}
@@ -417,10 +424,10 @@ export function AutoPilotConfigManager() {
           })}
         </div>
 
-        <div className="pt-2 border-t border-white/5 space-y-2">
+        <div className="pt-2 border-t border-zinc-200 dark:border-white/5 space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-white">Teto máximo do lote</span>
-            <span className="text-[11px] font-bold text-amber-300">{config.maxDebounceWindowMinutes} min</span>
+            <span className="text-[11px] font-semibold text-zinc-950 dark:text-white">Teto máximo do lote</span>
+            <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300">{config.maxDebounceWindowMinutes} min</span>
           </div>
           <p className="text-[10px] text-zinc-500 leading-relaxed">
             Contado da primeira mensagem do lote. Ao atingir esse limite o Brain responde mesmo que continuem chegando novos balões.
@@ -435,7 +442,7 @@ export function AutoPilotConfigManager() {
                   type="button"
                   onClick={() => handleUpdate({ maxDebounceWindowMinutes: effectiveValue })}
                   className={`px-2 py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
-                    isSelected ? "bg-amber-500/20 text-amber-200 border border-amber-500/40" : "bg-[#121214] text-zinc-400 border border-white/5"
+                    isSelected ? "bg-amber-500/20 text-amber-800 dark:text-amber-200 border border-amber-500/40" : "bg-zinc-50 dark:bg-[#121214] text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-white/5"
                   }`}
                 >
                   {preset.label}
@@ -447,14 +454,14 @@ export function AutoPilotConfigManager() {
       </div>
 
       {/* Card 2: Parada Crítica da Rifa (Hand-off) */}
-      <div className="p-3.5 rounded-xl bg-[#1a1a1d] border border-white/5 space-y-2">
+      <div className="rounded-[20px] border border-amber-200/80 dark:border-amber-500/15 bg-amber-50/60 dark:bg-[#18150f] p-4 space-y-2 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-0.5">
-            <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
               <Trophy className="w-3.5 h-3.5 text-amber-400" />
               Pausar e Notificar no Momento da Rifa
             </span>
-            <p className="text-[11px] text-zinc-400 leading-relaxed">
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
               Após enviar os 2 áudios pessoais sobre a Larissa e atingir o passo do áudio da rifa, a IA <strong>desliga sozinha</strong> naquele chat e toca um alerta para você assumir.
             </p>
           </div>
@@ -465,7 +472,7 @@ export function AutoPilotConfigManager() {
               onChange={(e) => handleUpdate({ handOffAtRaffleStep: e.target.checked })}
               className="sr-only peer"
             />
-            <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+            <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
           </label>
         </div>
       </div>

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { MobileContainer } from "@/presentation/components/layout/MobileContainer";
+import { ThemeProvider } from "@/presentation/context/ThemeContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,6 +23,15 @@ export const viewport: Viewport = {
   themeColor: "#020617",
 };
 
+const themeInitializerScript = `
+  try {
+    const saved = localStorage.getItem("vendeo-theme");
+    const theme = saved === "light" ? "light" : "dark";
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  } catch {}
+`;
+
 export const metadata: Metadata = {
   title: "Vendeo | Marketplace Mobile Fluido",
   description: "Compre e venda de forma rápida, segura e com sensação de app nativo na web.",
@@ -41,10 +51,16 @@ export default function RootLayout({
   return (
     <html
       lang="pt-BR"
-      className={`${geistSans.variable} ${geistMono.variable} h-full overflow-hidden antialiased bg-slate-950`}
+      suppressHydrationWarning
+      className={`${geistSans.variable} ${geistMono.variable} h-full overflow-hidden antialiased`}
     >
-      <body className="h-full overflow-hidden flex flex-col bg-slate-950 text-slate-100 selection:bg-emerald-500 selection:text-white">
-        <MobileContainer>{children}</MobileContainer>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitializerScript }} />
+      </head>
+      <body className="h-full overflow-hidden flex flex-col selection:bg-emerald-500 selection:text-white">
+        <ThemeProvider>
+          <MobileContainer>{children}</MobileContainer>
+        </ThemeProvider>
       </body>
     </html>
   );

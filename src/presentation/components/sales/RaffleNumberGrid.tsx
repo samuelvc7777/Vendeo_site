@@ -224,24 +224,24 @@ export function RaffleNumberGrid({
   };
 
   return (
-    <div className="flex flex-col bg-black">
+    <div className="flex flex-col bg-zinc-50 dark:bg-black">
       {/* BARRA DE FERRAMENTAS: BUSCA, ATALHOS E SELEÇÃO EM LOTE */}
-      <div className="p-3 border-b border-[#262626] space-y-2.5 bg-[#0a0a0a]">
+      <div className="p-3 border-b border-zinc-200 dark:border-[#262626] space-y-2.5 bg-zinc-50 dark:bg-[#0a0a0a]">
         {/* Linha Principal: Busca + Botões Rápidos + Alternador de Lote */}
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-zinc-500 dark:text-[#737373] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Buscar cota ou nome do cliente..."
-              className="w-full bg-[#18181b] border border-[#262626] rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors"
+              className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#262626] rounded-xl pl-8 pr-7 py-1.5 text-xs text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] focus:outline-none focus:border-[#0095f6] transition-colors"
             />
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#737373] hover:text-white"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -255,7 +255,7 @@ export function RaffleNumberGrid({
             className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all shrink-0 cursor-pointer ${
               isBatchPanelOpen
                 ? "bg-[#0095f6] border-[#0095f6] text-white shadow-md shadow-[#0095f6]/30"
-                : "bg-[#18181b] border-[#2b2b2e] text-[#a8a8a8] hover:text-white hover:border-[#38383a]"
+                : "bg-white dark:bg-[#18181b] border-zinc-200 dark:border-[#2b2b2e] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#38383a]"
             }`}
             title="Digitar múltiplos números ou selecionar intervalos"
           >
@@ -268,21 +268,21 @@ export function RaffleNumberGrid({
           <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => onSelectRandom(1)}
-              className="px-2 py-1.5 rounded-lg bg-[#18181b] border border-[#262626] text-[11px] font-semibold text-[#a8a8a8] hover:text-white hover:border-[#38383a] active:scale-95 transition-all"
+              className="px-2 py-1.5 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#262626] text-[11px] font-semibold text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#38383a] active:scale-95 transition-all"
               title="Selecionar 1 cota aleatória livre"
             >
               +1
             </button>
             <button
               onClick={() => onSelectRandom(5)}
-              className="px-2 py-1.5 rounded-lg bg-[#18181b] border border-[#262626] text-[11px] font-semibold text-[#a8a8a8] hover:text-white hover:border-[#38383a] active:scale-95 transition-all"
+              className="px-2 py-1.5 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#262626] text-[11px] font-semibold text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#38383a] active:scale-95 transition-all"
               title="Selecionar 5 cotas aleatórias livres"
             >
               +5
             </button>
             <button
               onClick={() => onSelectRandom(10)}
-              className="px-2 py-1.5 rounded-lg bg-[#18181b] border border-[#262626] text-[11px] font-semibold text-[#a8a8a8] hover:text-white hover:border-[#38383a] active:scale-95 transition-all"
+              className="px-2 py-1.5 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#262626] text-[11px] font-semibold text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#38383a] active:scale-95 transition-all"
               title="Selecionar 10 cotas aleatórias livres"
             >
               +10
@@ -292,24 +292,24 @@ export function RaffleNumberGrid({
 
         {/* PAINEL EXPANSÍVEL: SELEÇÃO EM LOTE / DIGITAÇÃO DE MÚLTIPLOS NÚMEROS */}
         {isBatchPanelOpen && (
-          <div className="p-3 rounded-xl bg-[#12151c] border border-[#0095f6]/30 space-y-2.5 animate-in fade-in slide-in-from-top-2 duration-150 shadow-inner">
+          <div className="p-3 rounded-xl bg-blue-50 dark:bg-[#12151c] border border-[#0095f6]/30 space-y-2.5 animate-in fade-in slide-in-from-top-2 duration-150 shadow-inner">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <Layers className="w-4 h-4 text-[#0095f6]" />
-                <span className="text-xs font-bold text-white">
+                <span className="text-xs font-bold text-zinc-950 dark:text-white">
                   Digitar Múltiplos Números ou Intervalos
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setIsBatchPanelOpen(false)}
-                className="text-[#737373] hover:text-white"
+                className="text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            <p className="text-[11px] text-[#8e8e93]">
+            <p className="text-[11px] text-zinc-500 dark:text-[#8e8e93]">
               Digite os números separados por vírgula ou use traço para intervalos. Exemplo:{" "}
               <span className="font-mono text-[#0095f6] font-semibold">
                 05, 12, 18, 25-30
@@ -329,7 +329,7 @@ export function RaffleNumberGrid({
                   if (e.key === "Enter") handleProcessBatchInput();
                 }}
                 placeholder="Ex: 5, 12, 28, 40-45"
-                className="flex-1 bg-[#18181b] border border-[#2b3545] rounded-xl px-3 py-2 text-xs text-white placeholder-[#737373] font-mono focus:outline-none focus:border-[#0095f6]"
+                className="flex-1 bg-white dark:bg-[#18181b] border border-zinc-300 dark:border-[#2b3545] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] font-mono focus:outline-none focus:border-[#0095f6]"
               />
               <button
                 type="button"
@@ -342,19 +342,19 @@ export function RaffleNumberGrid({
             </div>
 
             {/* Atalhos rápidos de quantidade extra */}
-            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-[#1f2633]">
-              <span className="text-[10px] text-[#737373] mr-1">Mais atalhos:</span>
+            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-zinc-200 dark:border-[#1f2633]">
+              <span className="text-[10px] text-zinc-500 dark:text-[#737373] mr-1">Mais atalhos:</span>
               <button
                 type="button"
                 onClick={() => onSelectRandom(20)}
-                className="px-2 py-1 rounded-lg bg-[#18181b] border border-[#2b3545] text-[11px] text-[#a8a8a8] hover:text-white active:scale-95 cursor-pointer"
+                className="px-2 py-1 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-300 dark:border-[#2b3545] text-[11px] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-95 cursor-pointer"
               >
                 +20 aleatórios
               </button>
               <button
                 type="button"
                 onClick={() => onSelectRandom(50)}
-                className="px-2 py-1 rounded-lg bg-[#18181b] border border-[#2b3545] text-[11px] text-[#a8a8a8] hover:text-white active:scale-95 cursor-pointer"
+                className="px-2 py-1 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-300 dark:border-[#2b3545] text-[11px] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-95 cursor-pointer"
               >
                 +50 aleatórios
               </button>
@@ -363,7 +363,7 @@ export function RaffleNumberGrid({
                   <button
                     type="button"
                     onClick={() => onSelectSequential(5)}
-                    className="px-2 py-1 rounded-lg bg-[#18181b] border border-[#2b3545] text-[11px] text-[#a8a8a8] hover:text-white active:scale-95 cursor-pointer"
+                    className="px-2 py-1 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-300 dark:border-[#2b3545] text-[11px] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-95 cursor-pointer"
                     title="Seleciona os próximos 5 números livres em ordem sequencial"
                   >
                     Próx. 5 seguidos
@@ -371,7 +371,7 @@ export function RaffleNumberGrid({
                   <button
                     type="button"
                     onClick={() => onSelectSequential(10)}
-                    className="px-2 py-1 rounded-lg bg-[#18181b] border border-[#2b3545] text-[11px] text-[#a8a8a8] hover:text-white active:scale-95 cursor-pointer"
+                    className="px-2 py-1 rounded-lg bg-white dark:bg-[#18181b] border border-zinc-300 dark:border-[#2b3545] text-[11px] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-95 cursor-pointer"
                     title="Seleciona os próximos 10 números livres em ordem sequencial"
                   >
                     Próx. 10 seguidos
@@ -385,8 +385,8 @@ export function RaffleNumberGrid({
               <div
                 className={`p-2 rounded-lg text-xs flex items-center gap-1.5 animate-in fade-in duration-100 ${
                   batchFeedback.type === "success"
-                    ? "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300"
-                    : "bg-red-500/15 border border-red-500/40 text-red-300"
+                    ? "bg-emerald-500/15 border border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                    : "bg-red-500/15 border border-red-500/40 text-red-700 dark:text-red-300"
                 }`}
               >
                 {batchFeedback.type === "success" ? (
@@ -418,8 +418,8 @@ export function RaffleNumberGrid({
               onClick={() => setFilter(item.key)}
               className={`px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                 filter === item.key
-                  ? "bg-white text-black font-bold shadow-sm"
-                  : "bg-[#18181b] text-[#8e8e93] hover:text-white hover:bg-[#222225]"
+                  ? "bg-zinc-900 text-white dark:bg-white dark:text-black font-bold shadow-sm"
+                  : "bg-white dark:bg-[#18181b] text-zinc-500 dark:text-[#8e8e93] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-[#222225]"
               }`}
             >
               {item.label}
@@ -430,10 +430,10 @@ export function RaffleNumberGrid({
         {/* Abas de Chunks (se tiver mais de 100 cotas e não estiver buscando) */}
         {totalChunks > 1 && !searchQuery && (
           <div
-            className="flex items-center gap-1 overflow-x-auto pt-1 no-scrollbar scrollbar-none border-t border-[#1f1f23]"
+            className="flex items-center gap-1 overflow-x-auto pt-1 no-scrollbar scrollbar-none border-t border-zinc-200 dark:border-[#1f1f23]"
             style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
           >
-            <span className="text-[10px] text-[#737373] shrink-0 mr-1">Blocos:</span>
+            <span className="text-[10px] text-zinc-500 dark:text-[#737373] shrink-0 mr-1">Blocos:</span>
             {chunkRanges.map((chunk, idx) => (
               <button
                 key={idx}
@@ -441,7 +441,7 @@ export function RaffleNumberGrid({
                 className={`px-2.5 py-1 rounded-md text-[11px] font-mono whitespace-nowrap transition-all cursor-pointer ${
                   activeChunk === idx
                     ? "bg-[#0095f6] text-white font-bold"
-                    : "bg-[#18181b] text-[#737373] hover:text-white"
+                    : "bg-white dark:bg-[#18181b] text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 {chunk.label}
@@ -452,9 +452,9 @@ export function RaffleNumberGrid({
       </div>
 
       {/* Legenda Visual Rápida */}
-      <div className="px-4 py-1.5 bg-[#0e0e10] border-b border-[#1c1c1e] flex items-center justify-between text-[10px] text-[#8e8e93]">
+      <div className="px-4 py-1.5 bg-zinc-50 dark:bg-[#0e0e10] border-b border-zinc-200 dark:border-[#1c1c1e] flex items-center justify-between text-[10px] text-zinc-500 dark:text-[#8e8e93]">
         <div className="flex items-center gap-1">
-          <span className="w-2.5 h-2.5 rounded-sm bg-[#18181b] border border-[#2b2b2e]" />
+          <span className="w-2.5 h-2.5 rounded-sm bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#2b2b2e]" />
           <span>Livre</span>
         </div>
         <div className="flex items-center gap-1">
@@ -474,10 +474,10 @@ export function RaffleNumberGrid({
       {/* GRADE DE NÚMEROS (com padding inferior pb-40 para nunca cobrir com a barra de ação) */}
       <div className="p-3.5 pb-44">
         {visibleNumbers.length === 0 ? (
-          <div className="h-48 flex flex-col items-center justify-center text-center p-4 text-[#737373]">
+          <div className="h-48 flex flex-col items-center justify-center text-center p-4 text-zinc-500 dark:text-[#737373]">
             <Search className="w-8 h-8 stroke-1 text-[#3a3a3c] mb-2" />
-            <p className="text-xs font-semibold text-white">Nenhum número encontrado</p>
-            <p className="text-[11px] text-[#737373] mt-0.5">
+            <p className="text-xs font-semibold text-zinc-950 dark:text-white">Nenhum número encontrado</p>
+            <p className="text-[11px] text-zinc-500 dark:text-[#737373] mt-0.5">
               Tente mudar o filtro de status ou o termo de busca.
             </p>
           </div>
@@ -492,7 +492,7 @@ export function RaffleNumberGrid({
 
               // Determina estilos visuais
               let buttonStyle =
-                "bg-[#18181b] border-[#2b2b2e] text-[#e5e5e5] hover:border-[#525252] hover:bg-[#222225]";
+                "bg-white dark:bg-[#18181b] border-zinc-200 dark:border-[#2b2b2e] text-zinc-800 dark:text-[#e5e5e5] hover:border-zinc-400 dark:hover:border-[#525252] hover:bg-zinc-200 dark:hover:bg-[#222225]";
               let indicator = null;
 
               if (isSelected) {
@@ -501,7 +501,7 @@ export function RaffleNumberGrid({
                 indicator = <Check className="w-3.5 h-3.5 text-white stroke-[3]" />;
               } else if (isPaid) {
                 buttonStyle =
-                  "bg-emerald-950/50 border-emerald-500/60 text-emerald-200 hover:bg-emerald-900/60 shadow-sm";
+                  "bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-500/60 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 shadow-sm";
                 indicator = (
                   <span className="text-[8.5px] truncate max-w-[48px] text-emerald-400 font-mono font-bold leading-none mt-0.5">
                     @{ticket.buyer?.username || ticket.buyer?.name?.split(" ")[0] || "pago"}
@@ -509,7 +509,7 @@ export function RaffleNumberGrid({
                 );
               } else if (isReserved) {
                 buttonStyle =
-                  "bg-amber-950/50 border-amber-500/60 text-amber-200 hover:bg-amber-900/60 shadow-sm";
+                  "bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-500/60 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 shadow-sm";
                 indicator = (
                   <span className="text-[8.5px] truncate max-w-[48px] text-amber-400 font-mono font-bold leading-none mt-0.5 flex items-center gap-0.5">
                     <Clock className="w-2.5 h-2.5 shrink-0" />

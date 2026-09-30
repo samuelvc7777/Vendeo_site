@@ -26,6 +26,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { brainOperatorFetch, checkBrainOperatorSession } from "@/infrastructure/http/brainOperatorApi";
+import { BrainConsultationPanel } from "./BrainConsultationPanel";
 import { AutoPilotActivityPhase, AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
 import {
   brainTurnUiReducer,
@@ -195,22 +196,22 @@ function OpenAiUsagePanel({ metadata }: { metadata: Record<string, unknown> }) {
   ] as const;
 
   return (
-    <section className="mt-3 rounded-lg border border-cyan-900/50 bg-cyan-950/10 p-2.5" aria-label="Uso da OpenAI neste turno">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300">Uso da OpenAI</div>
-      <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-[10px] text-zinc-300">
+    <section className="mt-3 rounded-lg border border-cyan-200 dark:border-cyan-900/50 bg-cyan-50 dark:bg-cyan-950/10 p-2.5" aria-label="Uso da OpenAI neste turno">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-cyan-700 dark:text-cyan-300">Uso da OpenAI</div>
+      <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-[10px] text-zinc-700 dark:text-zinc-300">
         <span>{modelNames}{reasoningEffort ? ` · raciocínio ${reasoningEffort}` : ""}</span>
         <span>{requests === null ? "Solicitações indisponíveis" : `${formatUsageTokens(requests)} solicitações`}</span>
       </div>
-      <div className="mt-2 space-y-1 border-t border-zinc-800 pt-2">
-        {tokenRows.map(([label, value]) => <div key={label} className={`flex justify-between gap-3 text-[10px] ${label.startsWith("↳") ? "pl-2 text-zinc-500" : "text-zinc-300"}`}><span>{label}</span><span>{formatUsageTokens(value)}</span></div>)}
+      <div className="mt-2 space-y-1 border-t border-zinc-200 dark:border-zinc-800 pt-2">
+        {tokenRows.map(([label, value]) => <div key={label} className={`flex justify-between gap-3 text-[10px] ${label.startsWith("↳") ? "pl-2 text-zinc-500" : "text-zinc-700 dark:text-zinc-300"}`}><span>{label}</span><span>{formatUsageTokens(value)}</span></div>)}
       </div>
-      <div className="mt-2 flex flex-wrap justify-between gap-x-3 border-t border-zinc-800 pt-2 text-[10px] text-zinc-300">
+      <div className="mt-2 flex flex-wrap justify-between gap-x-3 border-t border-zinc-200 dark:border-zinc-800 pt-2 text-[10px] text-zinc-700 dark:text-zinc-300">
         <span>Acerto de cache</span><span>{cacheHitRate === null ? "Indisponível" : `${cacheHitRate.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}</span>
       </div>
-      <div className="mt-2 border-t border-zinc-800 pt-2">
+      <div className="mt-2 border-t border-zinc-200 dark:border-zinc-800 pt-2">
         <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Custo estimado · tarifa padrão</div>
-        <div className="mt-0.5 text-[12px] font-medium text-zinc-100">{usd === null ? "Indisponível" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}</div>
-        {brl !== null && <div className="text-[10px] text-zinc-400">≈ R$ {brl.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>}
+        <div className="mt-0.5 text-[12px] font-medium text-zinc-900 dark:text-zinc-100">{usd === null ? "Indisponível" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}</div>
+        {brl !== null && <div className="text-[10px] text-zinc-600 dark:text-zinc-400">≈ R$ {brl.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>}
         {fx !== null && <div className="mt-0.5 text-[9px] text-zinc-600">Câmbio estimado: R${fx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}/US$</div>}
         {usage.cacheWriteTokens == null && <div className="mt-1 text-[10px] text-zinc-500">A gravação no cache não foi informada pela API.</div>}
         {typeof usage.serviceTier === "string" && <div className="mt-1 text-[10px] text-zinc-500">Categoria: {formatConsoleSetting(usage.serviceTier) || "Padrão"}</div>}
@@ -245,7 +246,7 @@ function ConsoleEventField({ label, children }: { label: string; children: React
   return (
     <div className="min-w-0">
       <div className="text-[9px] uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className="mt-0.5 text-[11px] leading-relaxed text-zinc-200 whitespace-pre-wrap break-words">{children}</div>
+      <div className="mt-0.5 text-[11px] leading-relaxed text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words">{children}</div>
     </div>
   );
 }
@@ -296,13 +297,13 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
   const isDiagnostic = isBrainDecision || isBrainStarted || isBrainMemory || isResponseReady;
 
   return (
-    <article className={`rounded-xl border p-3 ${isBrainDecision ? "border-purple-500/40 bg-purple-950/20" : isResponseReady ? "border-emerald-500/30 bg-emerald-950/15" : "border-zinc-800 bg-zinc-950/70"}`}>
+    <article className={`rounded-xl border p-3 ${isBrainDecision ? "border-purple-300 dark:border-purple-500/40 bg-purple-50 dark:bg-purple-950/20" : isResponseReady ? "border-emerald-300 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/15" : "border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-950/70"}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-[10px] text-zinc-500">{new Date(event.timestamp).toLocaleTimeString("pt-BR")} · evento {event.sequence ?? "—"} · {formatBrainPhase(event.phase)}</div>
-          <div className="mt-1 text-[11px] font-semibold text-zinc-100">{formatBrainEvent(event.event)}</div>
+          <div className="mt-1 text-[11px] font-semibold text-zinc-900 dark:text-zinc-100">{formatBrainEvent(event.event)}</div>
         </div>
-        {isBrainDecision && <BrainCircuit className="h-4 w-4 shrink-0 text-purple-300" />}
+        {isBrainDecision && <BrainCircuit className="h-4 w-4 shrink-0 text-purple-700 dark:text-purple-300" />}
       </div>
 
       {isBrainStarted && (
@@ -363,8 +364,8 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
       {isBrainDecision && (
         <div className="mt-3 space-y-3">
           {contextWindow && (
-            <details className="rounded-lg border border-cyan-900/50 bg-cyan-950/10 p-2.5 text-[10px] text-zinc-300">
-              <summary className="cursor-pointer font-semibold uppercase tracking-wider text-cyan-300">Contexto enviado ao Brain</summary>
+            <details className="rounded-lg border border-cyan-200 dark:border-cyan-900/50 bg-cyan-50 dark:bg-cyan-950/10 p-2.5 text-[10px] text-zinc-700 dark:text-zinc-300">
+              <summary className="cursor-pointer font-semibold uppercase tracking-wider text-cyan-700 dark:text-cyan-300">Contexto enviado ao Brain</summary>
               <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <ConsoleEventField label="Mensagens candidatas">{eventMetadataNumber(contextWindow, "candidateCount")}</ConsoleEventField>
                 <ConsoleEventField label="Após deduplicação">{eventMetadataNumber(contextWindow, "deduplicatedCount")}</ConsoleEventField>
@@ -387,14 +388,14 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
                 {contextWindowCuts.mandatoryTokenOverflow === true && <ConsoleEventField label="Observação de limite">As mensagens obrigatórias excederam o limite de contexto</ConsoleEventField>}
               </div>
               {contextWindowMessages.length > 0 && (
-                <details className="mt-2 border-t border-zinc-800 pt-2">
+                <details className="mt-2 border-t border-zinc-200 dark:border-zinc-800 pt-2">
                   <summary className="cursor-pointer">Mensagens incluídas ({contextWindowMessages.length})</summary>
                   {Array.isArray(contextWindow.finalMandatoryMessageIds) && contextWindow.finalMandatoryMessageIds.length > 0 && (
-                    <div className="mt-2 break-all text-cyan-300">Obrigatórias preservadas: {contextWindow.finalMandatoryMessageIds.filter((id): id is string => typeof id === "string").join(" · ")}</div>
+                    <div className="mt-2 break-all text-cyan-700 dark:text-cyan-300">Obrigatórias preservadas: {contextWindow.finalMandatoryMessageIds.filter((id): id is string => typeof id === "string").join(" · ")}</div>
                   )}
                   <ol className="mt-2 space-y-1">
                     {contextWindowMessages.map((item, index) => (
-                      <li key={`${String(item.id || "message")}-${index}`} className="break-all text-zinc-400">
+                      <li key={`${String(item.id || "message")}-${index}`} className="break-all text-zinc-600 dark:text-zinc-400">
                         {typeof item.sender === "string" ? item.sender : "Mensagem"}
                         {typeof item.timestamp === "string" ? ` · ${item.timestamp}` : ""}
                         {typeof item.id === "string" ? ` · ${item.id}` : ""}
@@ -404,9 +405,9 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
                 </details>
               )}
               {contextWindowPreviews.length > 0 && (
-                <div className="mt-2 border-t border-zinc-800 pt-2">
+                <div className="mt-2 border-t border-zinc-200 dark:border-zinc-800 pt-2">
                   <div className="text-[9px] uppercase tracking-wide text-zinc-500">Prévia segura · últimas mensagens</div>
-                  <ol className="mt-1 space-y-1 text-zinc-300">
+                  <ol className="mt-1 space-y-1 text-zinc-700 dark:text-zinc-300">
                     {contextWindowPreviews.map((item, index) => (
                       <li key={`${String(item.id || "preview")}-${index}`}>
                         {typeof item.sender === "string" ? item.sender : "Mensagem"}: “{typeof item.text === "string" ? item.text : ""}”
@@ -417,7 +418,7 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
               )}
             </details>
           )}
-          <div className="rounded-lg bg-black/20 p-2 text-[10px] text-zinc-300">
+          <div className="rounded-lg bg-black/20 p-2 text-[10px] text-zinc-700 dark:text-zinc-300">
             {hasDivergence ? (
               <div className="space-y-1">
                 <div>
@@ -486,7 +487,7 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
           {proposedResponses.length > 0 && (
             <div>
               <div className="mb-1 text-[9px] uppercase tracking-wide text-zinc-500">Brain propôs</div>
-              <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-zinc-200">
+              <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-zinc-800 dark:text-zinc-200">
                 {proposedResponses.map((response, index) => <li key={`${index}-${response}`}>{response}</li>)}
               </ol>
             </div>
@@ -511,9 +512,9 @@ function ConsoleCycleEventCard({ event }: { event: BrainOperationalEvent }) {
         <div className="mt-3">
           <div className="mb-1 text-[9px] uppercase tracking-wide text-emerald-300/80">Resposta final autorizada · ainda não significa que foi enviada</div>
           {eventMetadataText(metadata, "payloadType") === "audio" ? (
-            <div className="text-[11px] text-zinc-200">Áudio autorizado para envio</div>
+            <div className="text-[11px] text-zinc-800 dark:text-zinc-200">Áudio autorizado para envio</div>
           ) : responses.length > 0 ? (
-            <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-zinc-100">
+            <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-zinc-900 dark:text-zinc-100">
               {responses.map((response, index) => <li key={`${index}-${response}`}>{response}</li>)}
             </ol>
           ) : null}
@@ -567,11 +568,11 @@ function formatDeliveryActionStatus(action: BrainDecisionAction): string {
 }
 
 function deliveryStatusTone(status: DeliveryProjection["status"]): string {
-  if (status === "fully_sent") return "border-emerald-400/25 bg-emerald-400/[0.05] text-emerald-200";
-  if (status === "failed") return "border-rose-400/25 bg-rose-400/[0.06] text-rose-100";
-  if (status === "uncertain" || status === "partially_sent") return "border-amber-400/25 bg-amber-400/[0.06] text-amber-100";
-  if (status === "sending") return "border-emerald-400/20 bg-emerald-400/[0.04] text-emerald-100";
-  return "border-zinc-700 bg-zinc-900/60 text-zinc-300";
+  if (status === "fully_sent") return "border-emerald-400/25 bg-emerald-400/[0.05] text-emerald-800 dark:text-emerald-200";
+  if (status === "failed") return "border-rose-400/25 bg-rose-400/[0.06] text-rose-900 dark:text-rose-100";
+  if (status === "uncertain" || status === "partially_sent") return "border-amber-400/25 bg-amber-400/[0.06] text-amber-900 dark:text-amber-100";
+  if (status === "sending") return "border-emerald-400/20 bg-emerald-400/[0.04] text-emerald-900 dark:text-emerald-100";
+  return "border-zinc-300 dark:border-zinc-700 bg-zinc-100/70 dark:bg-zinc-900/60 text-zinc-700 dark:text-zinc-300";
 }
 
 function eventDotTone(event: string): string {
@@ -589,8 +590,8 @@ function ProviderErrorDetails({ value }: { value: Record<string, unknown> }) {
   const subcode = value.subcode;
   const message = typeof value.message === "string" ? value.message : "Falha sem mensagem detalhada.";
   return (
-    <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.05] p-2 text-xs text-zinc-200">
-      <div className="font-medium text-rose-100">
+    <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.05] p-2 text-xs text-zinc-800 dark:text-zinc-200">
+      <div className="font-medium text-rose-900 dark:text-rose-100">
         {provider}{httpStatus !== null ? ` HTTP ${httpStatus}` : ""}
         {code !== undefined ? ` · código ${String(code)}` : ""}
         {subcode !== undefined ? ` · subcódigo ${String(subcode)}` : ""}
@@ -647,20 +648,20 @@ function BrainTurnTimeline({
   const delivery = turn.delivery;
   const deliveryActions = turn.deliveryActions || [];
   const statusTone = turn.status === "stale"
-    ? "border-zinc-700 bg-zinc-800/50 text-zinc-400"
+    ? "border-zinc-300 dark:border-zinc-700 bg-zinc-800/50 text-zinc-600 dark:text-zinc-400"
     : turn.status === "running"
-    ? "border-purple-400/30 bg-purple-400/10 text-purple-200"
+    ? "border-purple-400/30 bg-purple-400/10 text-purple-800 dark:text-purple-200"
     : turn.status === "waiting_human"
-    ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+    ? "border-amber-400/30 bg-amber-400/10 text-amber-800 dark:text-amber-200"
     : turn.status === "completed"
-    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-800 dark:text-emerald-200"
     : turn.status === "cancelled"
-    ? "border-zinc-600 bg-zinc-800/70 text-zinc-300"
-    : "border-rose-400/30 bg-rose-400/10 text-rose-200";
+    ? "border-zinc-600 bg-zinc-200/70 dark:bg-zinc-800/70 text-zinc-700 dark:text-zinc-300"
+    : "border-rose-400/30 bg-rose-400/10 text-rose-800 dark:text-rose-200";
   const turnEvents = turn.events;
 
   return (
-    <article id={`brain-turn-${turnNumber}`} data-turn-id={turn.id} className={`overflow-hidden rounded-2xl border ${active ? "border-purple-400/35 bg-[#111018] shadow-lg shadow-purple-950/20" : "border-zinc-800 bg-zinc-900/50"}`}>
+    <article id={`brain-turn-${turnNumber}`} data-turn-id={turn.id} className={`overflow-hidden rounded-2xl border ${active ? "border-purple-300 dark:border-purple-400/35 bg-purple-50 dark:bg-[#111018] shadow-sm dark:shadow-lg dark:shadow-purple-950/20" : "border-zinc-200 dark:border-zinc-800 bg-zinc-900/50"}`}>
       <div className="flex items-stretch">
         <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 sm:px-4">
           <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${statusTone}`}>
@@ -668,11 +669,11 @@ function BrainTurnTimeline({
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <h3 className="text-sm font-semibold text-zinc-100">Turno {turnNumber}</h3>
+              <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Turno {turnNumber}</h3>
               <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusTone}`}>{turn.provisional && active ? "Iniciando" : formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}</span>
-              {active && <span className="text-[11px] font-semibold uppercase tracking-wide text-purple-300">Agora</span>}
+              {active && <span className="text-[11px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-300">Agora</span>}
             </div>
-            <p className="mt-1 text-xs leading-5 text-zinc-400">
+            <p className="mt-1 text-xs leading-5 text-zinc-600 dark:text-zinc-400">
               {formatConsoleTime(turn.startedAt)}
               {delivery?.actionCount ? ` · ${delivery.label}` : ""}
               {model ? ` · ${model.replace(/^GPT-[^ ]+ /, "")}` : ""}
@@ -684,14 +685,14 @@ function BrainTurnTimeline({
           aria-label={`${expanded ? "Recolher" : "Abrir"} detalhes do Turno ${turnNumber}`}
           aria-expanded={expanded}
           onClick={() => onToggleTurn(turn.id)}
-          className="flex min-h-14 w-14 shrink-0 items-center justify-center border-l border-zinc-800 text-zinc-300 transition-colors hover:bg-zinc-800/70 active:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-purple-300"
+          className="flex min-h-14 w-14 shrink-0 items-center justify-center border-l border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors hover:bg-zinc-800/70 active:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-purple-300"
         >
           {expanded ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
         </button>
       </div>
 
       {expanded && (
-        <div className="border-t border-zinc-800 px-3 pb-4 pt-3 sm:px-4">
+        <div className="border-t border-zinc-200 dark:border-zinc-800 px-3 pb-4 pt-3 sm:px-4">
           {delivery && delivery.actionCount > 0 && (
             <section aria-label="Estado de entrega" className={`mb-4 rounded-xl border p-3 ${deliveryStatusTone(delivery.status)}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -710,41 +711,36 @@ function BrainTurnTimeline({
           )}
           {decision && (
             <section className="mb-4 rounded-xl border border-purple-400/20 bg-purple-400/[0.06] p-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-purple-200"><BrainCircuit className="h-4 w-4" />Decisão</div>
-              {decisionSummary && <p className="mt-2 line-clamp-3 text-sm leading-6 text-zinc-200">{decisionSummary}</p>}
+              <div className="flex items-center gap-2 text-xs font-semibold text-purple-800 dark:text-purple-200"><BrainCircuit className="h-4 w-4" />Decisão</div>
+              {decisionSummary && <p className="mt-2 line-clamp-3 text-sm leading-6 text-zinc-800 dark:text-zinc-200">{decisionSummary}</p>}
               {objectiveLabel && (
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                  <span className="text-zinc-400">Objetivo deste turno</span><span className="rounded-full bg-zinc-800 px-2.5 py-1 text-zinc-200">{objectiveLabel}</span>
-                  {objectiveStatus && <span className={objectiveStatus === "Concluído" ? "text-emerald-300" : "text-zinc-400"}>{objectiveStatus === "Concluído" ? "✓ " : ""}{objectiveStatus}</span>}
+                  <span className="text-zinc-600 dark:text-zinc-400">Objetivo deste turno</span><span className="rounded-full bg-zinc-200 dark:bg-zinc-800 px-2.5 py-1 text-zinc-800 dark:text-zinc-200">{objectiveLabel}</span>
+                  {objectiveStatus && <span className={objectiveStatus === "Concluído" ? "text-emerald-700 dark:text-emerald-300" : "text-zinc-600 dark:text-zinc-400"}>{objectiveStatus === "Concluído" ? "✓ " : ""}{objectiveStatus}</span>}
                 </div>
               )}
               {plannedResponses.length > 0 && (
-                <details className="mt-3 text-sm text-zinc-300">
-                  <summary className="min-h-11 cursor-pointer py-2 font-medium text-emerald-200">Ver resposta planejada</summary>
+                <details className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">
+                  <summary className="min-h-11 cursor-pointer py-2 font-medium text-emerald-800 dark:text-emerald-200">Ver resposta planejada</summary>
                   <ul className="space-y-2 pb-2">{plannedResponses.map((response, index) => <li key={`${index}-${response}`} className="rounded-lg bg-black/20 px-3 py-2 leading-5">{response}</li>)}</ul>
                 </details>
               )}
-              {decisionSummary && <details className="mt-1 text-sm text-zinc-300"><summary className="min-h-11 cursor-pointer py-2 font-medium text-zinc-400">Ver detalhes do raciocínio</summary><p className="pb-2 leading-6">{decisionSummary}</p></details>}
+              {decisionSummary && <details className="mt-1 text-sm text-zinc-700 dark:text-zinc-300"><summary className="min-h-11 cursor-pointer py-2 font-medium text-zinc-600 dark:text-zinc-400">Ver detalhes do raciocínio</summary><p className="pb-2 leading-6">{decisionSummary}</p></details>}
             </section>
           )}
 
           {turn.status === "waiting_human" && manualResolution.authenticated && (
-            <section className="mb-4 rounded-xl border border-amber-400/30 bg-amber-400/[0.07] p-3">
-              <h4 className="text-sm font-semibold text-amber-100">O Brain precisa de uma informação</h4>
-              <p className="mt-1 break-words text-sm leading-5 text-zinc-300">{manualResolution.question || "Uma informação factual para continuar."}</p>
-              <label className="mt-3 block text-xs font-medium text-zinc-300" htmlFor={`manual-resolution-${turn.id}`}>Sua resposta</label>
-              <textarea id={`manual-resolution-${turn.id}`} value={manualResolution.answer} onChange={(event) => onManualResolutionChange(event.target.value)} rows={2} maxLength={1000} placeholder="Digite a informação solicitada" className="mt-1.5 min-h-16 w-full resize-y rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 outline-none focus:border-amber-300" disabled={manualResolution.submitting} />
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-xs text-zinc-400">Salvar esta informação para próximas sessões?</span>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => onManualResolution(false)} disabled={manualResolution.submitting || !manualResolution.answer.trim()} className="min-h-11 flex-1 rounded-xl border border-zinc-700 px-4 text-sm text-zinc-200 disabled:opacity-50">{manualResolution.submitting ? "Retomando…" : "Usar só nesta sessão"}</button>
-                  <button type="button" onClick={() => onManualResolution(true)} disabled={manualResolution.submitting || !manualResolution.answer.trim()} className="min-h-11 flex-1 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{manualResolution.submitting ? "Retomando…" : "Salvar e retomar"}</button>
-                </div>
-              </div>
-            </section>
+            <BrainConsultationPanel
+              turnId={turn.turnId || turn.id}
+              question={manualResolution.question || "Uma informação factual para continuar."}
+              answer={manualResolution.answer}
+              submitting={manualResolution.submitting}
+              onAnswerChange={onManualResolutionChange}
+              onSubmit={onManualResolution}
+            />
           )}
 
-          {turn.status === "failed" && <p className="mb-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-3 text-sm leading-5 text-rose-100">O Brain terminou com um problema. Abra os detalhes técnicos do evento para consultar a causa registrada.</p>}
+          {turn.status === "failed" && <p className="mb-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-3 text-sm leading-5 text-rose-900 dark:text-rose-100">O Brain terminou com um problema. Abra os detalhes técnicos do evento para consultar a causa registrada.</p>}
           <ol className="space-y-0">
             {turnEvents.map((event, index) => {
               const isLast = index === turnEvents.length - 1;
@@ -753,30 +749,30 @@ function BrainTurnTimeline({
               const linkedAction = event.actionId ? failedActions.find((action) => action.id === event.actionId) : undefined;
               return (
                 <li key={`${turn.id}-${event.sequence}-${event.event}`} className="relative flex gap-3">
-                  {!isLast && <span aria-hidden="true" className="absolute bottom-0 left-[7px] top-4 w-px bg-zinc-800" />}
+                  {!isLast && <span aria-hidden="true" className="absolute bottom-0 left-[7px] top-4 w-px bg-zinc-200 dark:bg-zinc-800" />}
                   <span className={`relative mt-1.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${eventDotTone(event.event)}`} />
                   <div className={`min-w-0 flex-1 pb-4 ${isLast ? "pb-1" : ""}`}>
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-100">{label}</span></div>
-                    {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-300">{description}</p>}
-                    {linkedAction && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-2.5"><span className="text-sm text-rose-100">Ação {linkedAction.action_index + 1}: {linkedAction.action_type === "audio" ? "áudio" : "mensagem"} não enviada</span><button type="button" onClick={() => onRetryAction(linkedAction.id)} disabled={Boolean(retryingActionId)} className="min-h-11 rounded-lg bg-rose-300 px-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{retryingActionId === linkedAction.id ? "Enviando…" : "Enviar manualmente"}</button></div>}
-                    <details className="mt-1 text-xs text-zinc-400">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{label}</span></div>
+                    {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-700 dark:text-zinc-300">{description}</p>}
+                    {linkedAction && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-2.5"><span className="text-sm text-rose-900 dark:text-rose-100">Ação {linkedAction.action_index + 1}: {linkedAction.action_type === "audio" ? "áudio" : "mensagem"} não enviada</span><button type="button" onClick={() => onRetryAction(linkedAction.id)} disabled={Boolean(retryingActionId)} className="min-h-11 rounded-lg bg-rose-300 px-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{retryingActionId === linkedAction.id ? "Enviando…" : "Enviar manualmente"}</button></div>}
+                    <details className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
                       <summary className="min-h-10 cursor-pointer py-2 font-medium">Ver detalhes técnicos</summary>
-                      <div className="space-y-2 rounded-xl border border-zinc-800 bg-black/30 p-3">
+                      <div className="space-y-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 p-3">
                         {event.metadata && event.metadata.providerError && typeof event.metadata.providerError === "object"
                           ? <ProviderErrorDetails value={event.metadata.providerError as Record<string, unknown>} />
                           : null}
                         <dl className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
-                          <div><dt className="text-zinc-500">ID do turno</dt><dd className="break-all font-mono text-zinc-300">{event.turnId || turn.turnId || "Não informado"}</dd></div>
-                          <div><dt className="text-zinc-500">ID da sessão</dt><dd className="break-all font-mono text-zinc-300">{event.sessionId || turn.sessionId || "Não informado"}</dd></div>
-                          <div><dt className="text-zinc-500">ID do ciclo</dt><dd className="break-all font-mono text-zinc-300">{event.cycleId || turn.cycleId || "Não informado"}</dd></div>
-                          {event.decisionId && <div><dt className="text-zinc-500">ID da decisão</dt><dd className="break-all font-mono text-zinc-300">{event.decisionId}</dd></div>}
-                          <div><dt className="text-zinc-500">Etapa registrada</dt><dd className="break-all font-mono text-zinc-300">{formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span></dd></div>
-                          <div><dt className="text-zinc-500">Estado registrado</dt><dd className="break-all font-mono text-zinc-300">{formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}</dd></div>
-                          {event.actionId && <div><dt className="text-zinc-500">ID da ação</dt><dd className="break-all font-mono text-zinc-300">{event.actionId}</dd></div>}
-                          <div className="sm:col-span-2"><dt className="text-zinc-500">Data e hora</dt><dd className="break-all font-mono text-zinc-300">{event.timestamp}</dd></div>
+                          <div><dt className="text-zinc-500">ID do turno</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.turnId || turn.turnId || "Não informado"}</dd></div>
+                          <div><dt className="text-zinc-500">ID da sessão</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.sessionId || turn.sessionId || "Não informado"}</dd></div>
+                          <div><dt className="text-zinc-500">ID do ciclo</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.cycleId || turn.cycleId || "Não informado"}</dd></div>
+                          {event.decisionId && <div><dt className="text-zinc-500">ID da decisão</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.decisionId}</dd></div>}
+                          <div><dt className="text-zinc-500">Etapa registrada</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span></dd></div>
+                          <div><dt className="text-zinc-500">Estado registrado</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}</dd></div>
+                          {event.actionId && <div><dt className="text-zinc-500">ID da ação</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.actionId}</dd></div>}
+                          <div className="sm:col-span-2"><dt className="text-zinc-500">Data e hora</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.timestamp}</dd></div>
                         </dl>
                         <ConsoleCycleEventCard event={event} />
-                        {event.metadata && Object.keys(event.metadata).length > 0 && <details><summary className="min-h-10 cursor-pointer py-2">Dados completos do evento</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2 text-[11px] leading-5 text-zinc-300">{formatVisibleBrainIdentity(JSON.stringify(event.metadata, null, 2))}</pre></details>}
+                        {event.metadata && Object.keys(event.metadata).length > 0 && <details><summary className="min-h-10 cursor-pointer py-2">Dados completos do evento</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2 text-[11px] leading-5 text-zinc-700 dark:text-zinc-300">{formatVisibleBrainIdentity(JSON.stringify(event.metadata, null, 2))}</pre></details>}
                       </div>
                     </details>
                   </div>
@@ -881,17 +877,17 @@ function BrainOperationalConsole({
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/80 p-2 backdrop-blur-sm sm:p-6" role="dialog" aria-modal="true" aria-label="Console operacional do Brain">
-      <div className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-[#0b0b0f] text-zinc-100 shadow-2xl">
-        <header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-purple-400/25 bg-purple-400/10 text-purple-200"><BrainCircuit className="h-5 w-5" /></span><div className="min-w-0"><h2 className="truncate text-base font-semibold">Console do Brain</h2><p className="text-xs text-zinc-400">Acompanhe o turno atual e consulte o histórico</p></div></div>
-          <button type="button" onClick={onClose} aria-label="Fechar console" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"><X className="h-5 w-5" /></button>
+      <div className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-300 dark:border-zinc-700 bg-[#0b0b0f] text-zinc-900 dark:text-zinc-100 shadow-2xl">
+        <header className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-purple-400/25 bg-purple-400/10 text-purple-800 dark:text-purple-200"><BrainCircuit className="h-5 w-5" /></span><div className="min-w-0"><h2 className="truncate text-base font-semibold">Console do Brain</h2><p className="text-xs text-zinc-600 dark:text-zinc-400">Acompanhe o turno atual e consulte o histórico</p></div></div>
+          <button type="button" onClick={onClose} aria-label="Fechar console" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"><X className="h-5 w-5" /></button>
         </header>
-        {operationsAccessDenied && <div className="border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-100">Entre como operador para carregar a linha do tempo e liberar ações autorizadas. <a href={`/operator?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="ml-1 font-semibold underline underline-offset-2">Entrar como operador</a></div>}
-        {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
+        {operationsAccessDenied && <div className="border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-900 dark:text-amber-100">Entre como operador para carregar a linha do tempo e liberar ações autorizadas. <a href={`/operator?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="ml-1 font-semibold underline underline-offset-2">Entrar como operador</a></div>}
+        {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-900 dark:text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
         <div ref={scrollContainerRef} onScroll={(event) => { const element = event.currentTarget; followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88; }} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5">
-          {activeTurn && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
+          {activeTurn && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
           {turns.some((turn) => turn !== activeTurn) && <section aria-label="Histórico de turnos"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">Histórico</h3><div className="space-y-2">{turns.filter((turn) => turn !== activeTurn).map((turn) => <BrainTurnTimeline key={turn.id} turn={turn} turnNumber={turns.length - turns.indexOf(turn)} expanded={uiState.expandedTurnIds.has(turn.id)} active={false} failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} />)}</div></section>}
-          {turns.length === 0 && !operationsAccessDenied && <div className="rounded-2xl border border-dashed border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
+          {turns.length === 0 && !operationsAccessDenied && <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
         </div>
       </div>
     </div>
@@ -1590,7 +1586,7 @@ export function AutoPilotActivityIndicator({
           ? "IA iniciando..."
           : copy.title}</span>
         {state.isEnabled && isWorking && <TypingDots compact />}
-        {operationsAccessDenied && <a href="/operator?returnTo=%2F" onClick={(event) => event.stopPropagation()} className="ml-1 shrink-0 text-amber-300 underline underline-offset-2" title="Entrar como operador para ver eventos do Brain">Operador</a>}
+        {operationsAccessDenied && <a href="/operator?returnTo=%2F" onClick={(event) => event.stopPropagation()} className="ml-1 shrink-0 text-amber-700 dark:text-amber-300 underline underline-offset-2" title="Entrar como operador para ver eventos do Brain">Operador</a>}
       </span>
     );
   }
@@ -1598,18 +1594,18 @@ export function AutoPilotActivityIndicator({
   // VARIANTE BANNER (Topo estático opcional)
   if (variant === "banner") {
     return (
-      <div className="mx-1 mb-2 overflow-hidden rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-950/40 via-cyan-950/30 to-slate-900/50 p-2.5 text-emerald-100 shadow-md backdrop-blur-md transition-all duration-300">
+      <div className="mx-1 mb-2 overflow-hidden rounded-xl border border-emerald-300 dark:border-emerald-500/30 bg-gradient-to-r from-emerald-50 via-cyan-50 to-slate-50 dark:from-emerald-950/40 dark:via-cyan-950/30 dark:to-slate-900/50 p-2.5 text-emerald-900 dark:text-emerald-100 shadow-md backdrop-blur-md transition-all duration-300">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15">
               <ActivityIcon state={state} className="h-4 w-4 text-emerald-400" />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-[11px] font-bold text-emerald-200">
+              <div className="flex items-center gap-2 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
                 <span>{copy.title}</span>
                 <TypingDots compact />
               </div>
-              <p className="truncate text-[10px] text-zinc-400">{copy.detail}</p>
+              <p className="truncate text-[10px] text-zinc-600 dark:text-zinc-400">{copy.detail}</p>
             </div>
           </div>
 
@@ -1617,7 +1613,7 @@ export function AutoPilotActivityIndicator({
             <button
               type="button"
               onClick={() => setIsThinkingExpanded(!isThinkingExpanded)}
-              className="flex items-center gap-1 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-medium text-cyan-300 hover:bg-cyan-500/20 active:scale-95 transition-all cursor-pointer shrink-0"
+              className="flex items-center gap-1 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-medium text-cyan-700 dark:text-cyan-300 hover:bg-cyan-500/20 active:scale-95 transition-all cursor-pointer shrink-0"
               title="Alternar visão de pensamento da IA"
             >
               <BrainCircuit className="h-3 w-3 text-cyan-400" />
@@ -1636,7 +1632,7 @@ export function AutoPilotActivityIndicator({
 
   return (
     <div className="w-full min-w-0 select-none animate-in fade-in slide-in-from-bottom-2 duration-200">
-      <div className="min-w-0 overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0d0d11]/95 p-3 text-zinc-100 shadow-2xl shadow-black/90 backdrop-blur-2xl transition-all duration-300">
+      <div className="min-w-0 overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0d0d11]/95 p-3 text-zinc-900 dark:text-zinc-100 shadow-2xl shadow-black/90 backdrop-blur-2xl transition-all duration-300">
         
         {/* Cabeçalho do HUD Flutuante */}
         <div className="flex min-w-0 flex-col gap-2.5">
@@ -1645,40 +1641,40 @@ export function AutoPilotActivityIndicator({
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border transition-all duration-300",
                 isBrainActive
-                  ? "bg-purple-500/20 border-purple-500/50 text-purple-300 shadow-sm shadow-purple-500/20"
+                  ? "bg-purple-500/20 border-purple-500/50 text-purple-700 dark:text-purple-300 shadow-sm shadow-purple-500/20"
                   : isTypingOrSending
-                  ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300 shadow-sm shadow-emerald-500/20"
+                  ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-700 dark:text-emerald-300 shadow-sm shadow-emerald-500/20"
                   : isCompleted
                   ? "bg-emerald-500/15 border-emerald-500/35 text-emerald-400"
-                  : "bg-zinc-800/80 border-zinc-700 text-zinc-400"
+                  : "bg-zinc-200/80 dark:bg-zinc-800/80 border-zinc-300 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400"
               )}
             >
               <ActivityIcon state={state} className="h-4 w-4" />
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-zinc-100 truncate">
+                <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
                   {copy.title}
                 </span>
                 {!isCompleted && isWorking && <TypingDots compact />}
               </div>
-              <p className="text-[10px] text-zinc-400 truncate">
+              <p className="text-[10px] text-zinc-600 dark:text-zinc-400 truncate">
                 {copy.detail}
               </p>
             </div>
           </div>
 
           {/* Badges de Contagem & Controles Rápidos */}
-          <div className="flex min-w-0 w-full flex-wrap items-center gap-1.5 border-t border-zinc-800/70 pt-2">
+          <div className="flex min-w-0 w-full flex-wrap items-center gap-1.5 border-t border-zinc-200 dark:border-zinc-800/70 pt-2">
             {isEditing ? (
-              <span className="font-mono text-[10px] font-bold text-cyan-300 bg-cyan-500/20 px-2 py-0.5 rounded-full border border-cyan-500/40 animate-pulse flex items-center gap-1">
+              <span className="font-mono text-[10px] font-bold text-cyan-700 dark:text-cyan-300 bg-cyan-500/20 px-2 py-0.5 rounded-full border border-cyan-500/40 animate-pulse flex items-center gap-1">
                 <Pause className="h-2.5 w-2.5" />
                 <span>Pausado p/ edição</span>
               </span>
             ) : (
               remainingSeconds > 0 || hasLiveScheduledWait
             ) && (
-              <span className="font-mono text-[11px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/40 animate-pulse">
+              <span className="font-mono text-[11px] font-bold text-amber-700 dark:text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/40 animate-pulse">
                 {remainingSeconds > 0
                   ? remainingSeconds >= 60
                     ? `${Math.floor(remainingSeconds / 60)}m ${String(remainingSeconds % 60).padStart(2, "0")}s`
@@ -1693,7 +1689,7 @@ export function AutoPilotActivityIndicator({
                 type="button"
                 onClick={handleManualRetryOnce}
                 disabled={isRetryingManual}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-700 dark:text-amber-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
                 title="Autorizar exatamente uma nova tentativa manual para este lote"
               >
                 {isRetryingManual ? (
@@ -1720,7 +1716,7 @@ export function AutoPilotActivityIndicator({
                 type="button"
                 onClick={handleSendNow}
                 disabled={isSendingNow}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
                 title="Ignorar o tempo de espera e responder agora"
               >
                 <FastForward className="h-3 w-3" />
@@ -1734,7 +1730,7 @@ export function AutoPilotActivityIndicator({
                 type="button"
                 onClick={handleCancelAction}
                 disabled={isCancelling}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-700 dark:text-rose-300 text-[10px] font-semibold active:scale-95 transition-all cursor-pointer disabled:opacity-50"
                 title="Cancelar apenas o ciclo atual; a IA continuará ligada para próximas mensagens"
               >
                 <StopCircle className="h-3 w-3" />
@@ -1742,7 +1738,7 @@ export function AutoPilotActivityIndicator({
               </button>
             )}
 
-            <button type="button" onClick={() => setIsConsoleOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-700 text-zinc-300 text-[10px] hover:bg-zinc-800" title="Abrir console operacional">
+            <button type="button" onClick={() => setIsConsoleOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 text-[10px] hover:bg-zinc-200 dark:hover:bg-zinc-800" title="Abrir console operacional">
               <Maximize2 className="h-3 w-3" />
               <span className="whitespace-nowrap">Abrir console</span>
             </button>
@@ -1755,8 +1751,8 @@ export function AutoPilotActivityIndicator({
                 className={cn(
                   "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-semibold active:scale-95 transition-all cursor-pointer border",
                   isThinkingExpanded
-                    ? "bg-zinc-800/80 text-zinc-300 border-zinc-700 hover:bg-zinc-700"
-                    : "bg-purple-500/15 text-purple-300 border-purple-500/35 hover:bg-purple-500/25"
+                    ? "bg-zinc-200/80 dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 border-zinc-300 dark:border-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-700"
+                    : "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/35 hover:bg-purple-500/25"
                 )}
                 title="Alternar visão de raciocínio do Brain"
               >
@@ -1774,15 +1770,15 @@ export function AutoPilotActivityIndicator({
 
         {/* Stepper Cognitivo do Brain - Fluxo Canônico Brain -> Envio */}
         {(isWorking || hasUnresolvedDelivery) && (
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/50 rounded-xl border border-zinc-800/70 mt-2.5 text-[10px]">
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/50 rounded-xl border border-zinc-200 dark:border-zinc-800/70 mt-2.5 text-[10px]">
             {/* Etapa 1: Brain */}
             <div
               className={cn(
                 "flex items-center justify-center gap-1 py-1 px-1.5 rounded-lg font-medium transition-all text-center truncate",
                 isBrainActive
-                  ? "bg-purple-500/20 text-purple-200 border border-purple-500/50 font-bold animate-pulse"
+                  ? "bg-purple-500/20 text-purple-800 dark:text-purple-200 border border-purple-500/50 font-bold animate-pulse"
                   : isBrainDone
-                  ? "bg-purple-500/10 text-purple-300 border border-purple-500/25"
+                  ? "bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/25"
                   : "text-zinc-500"
               )}
             >
@@ -1798,13 +1794,13 @@ export function AutoPilotActivityIndicator({
               className={cn(
                 "flex items-center justify-center gap-1 py-1 px-1.5 rounded-lg font-medium transition-all text-center truncate",
                 isSendingActive
-                  ? "bg-emerald-500/20 text-emerald-200 border border-emerald-500/50 font-bold animate-pulse"
+                  ? "bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 border border-emerald-500/50 font-bold animate-pulse"
                   : isSendingDone
-                  ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/25"
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25"
                   : deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain"
-                  ? "bg-rose-500/10 text-rose-200 border border-rose-500/30"
+                  ? "bg-rose-500/10 text-rose-800 dark:text-rose-200 border border-rose-500/30"
                   : deliveryProjection.status === "partially_sent"
-                  ? "bg-amber-500/10 text-amber-200 border border-amber-500/30"
+                  ? "bg-amber-500/10 text-amber-800 dark:text-amber-200 border border-amber-500/30"
                   : "text-zinc-500"
               )}
             >
@@ -1814,36 +1810,36 @@ export function AutoPilotActivityIndicator({
               {isSendingDone && !isTypingOrSending && (
                 <Check className="h-2.5 w-2.5 text-emerald-400 shrink-0 ml-0.5" />
               )}
-              {(deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain") && <AlertTriangle className="h-2.5 w-2.5 text-rose-300 shrink-0 ml-0.5" />}
-              {deliveryProjection.status === "partially_sent" && <AlertTriangle className="h-2.5 w-2.5 text-amber-300 shrink-0 ml-0.5" />}
+              {(deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain") && <AlertTriangle className="h-2.5 w-2.5 text-rose-700 dark:text-rose-300 shrink-0 ml-0.5" />}
+              {deliveryProjection.status === "partially_sent" && <AlertTriangle className="h-2.5 w-2.5 text-amber-700 dark:text-amber-300 shrink-0 ml-0.5" />}
             </div>
-            {hasUnresolvedDelivery && deliveryProjection.actionCount > 0 && <p className={`col-span-2 px-1 text-center text-[9px] ${deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain" ? "text-rose-200" : "text-zinc-400"}`}>{deliveryProjection.label}</p>}
+            {hasUnresolvedDelivery && deliveryProjection.actionCount > 0 && <p className={`col-span-2 px-1 text-center text-[9px] ${deliveryProjection.status === "failed" || deliveryProjection.status === "uncertain" ? "text-rose-800 dark:text-rose-200" : "text-zinc-600 dark:text-zinc-400"}`}>{deliveryProjection.label}</p>}
           </div>
         )}
 
         {showOperationalSummary && (
           <div className="mt-2.5 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-1.5 text-[10px]">
-            <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
+            <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 px-2 py-1.5 min-w-0">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500">Objetivo</div>
-              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-200" title={currentObjectiveLabel || "Nenhum objetivo pendente"}>
+              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-800 dark:text-zinc-200" title={currentObjectiveLabel || "Nenhum objetivo pendente"}>
                 {currentObjectiveLabel || "Nenhum pendente"}
               </div>
             </div>
-            <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
+            <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 px-2 py-1.5 min-w-0">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500">Plano</div>
-              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-200" title={planLabel}>{planLabel}</div>
+              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-800 dark:text-zinc-200" title={planLabel}>{planLabel}</div>
             </div>
-            <div className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-1.5 min-w-0">
+            <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 px-2 py-1.5 min-w-0">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500">Próxima ação</div>
-              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-200" title={nextOperationalAction}>{nextOperationalAction}</div>
+              <div className="line-clamp-2 break-words font-medium leading-tight text-zinc-800 dark:text-zinc-200" title={nextOperationalAction}>{nextOperationalAction}</div>
             </div>
           </div>
         )}
 
         {/* Prévia da Mensagem e Cadência de Digitação */}
         {isTypingOrSending && currentPreview && (
-          <div className="mt-2.5 pt-2.5 border-t border-zinc-800/80">
-            <div className="flex items-center justify-between gap-2 mb-1.5 text-[10px] font-semibold text-zinc-400">
+          <div className="mt-2.5 pt-2.5 border-t border-zinc-200 dark:border-zinc-800/80">
+            <div className="flex items-center justify-between gap-2 mb-1.5 text-[10px] font-semibold text-zinc-600 dark:text-zinc-400">
               <span className="flex items-center gap-1.5 text-emerald-400">
                 <MessageSquare className="h-3 w-3" />
                 <span>
@@ -1878,7 +1874,7 @@ export function AutoPilotActivityIndicator({
             </div>
 
             {isAudioPreview ? (
-              <div className="flex items-center gap-2 p-2.5 rounded-xl bg-zinc-900 border border-emerald-500/30 text-emerald-300 text-xs">
+              <div className="flex items-center gap-2 p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-900 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs">
                 <Mic className="h-4 w-4 animate-pulse text-emerald-400" />
                 <span className="font-semibold text-[11px]">
                   Áudio gravado da Larissa sendo enviado...
@@ -1889,7 +1885,7 @@ export function AutoPilotActivityIndicator({
                 <textarea
                   value={editedText}
                   onChange={(e) => setEditedText(e.target.value)}
-                  className="w-full rounded-xl bg-black border border-cyan-500/50 p-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 resize-none min-h-[55px]"
+                  className="w-full rounded-xl bg-white dark:bg-black border border-cyan-500/50 p-2 text-xs text-zinc-950 dark:text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 resize-none min-h-[55px]"
                   placeholder="Edite a resposta aqui antes do envio..."
                   rows={2}
                 />
@@ -1897,7 +1893,7 @@ export function AutoPilotActivityIndicator({
                   <button
                     type="button"
                     onClick={handleCancelEdit}
-                    className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300 text-[10px] hover:bg-zinc-700 active:scale-95 cursor-pointer flex items-center gap-1"
+                    className="px-2 py-1 rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-[10px] hover:bg-zinc-300 dark:hover:bg-zinc-700 active:scale-95 cursor-pointer flex items-center gap-1"
                   >
                     <X className="h-3 w-3" />
                     <span>Cancelar</span>
@@ -1905,7 +1901,7 @@ export function AutoPilotActivityIndicator({
                   <button
                     type="button"
                     onClick={handleSaveEdit}
-                    className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[10px] active:scale-95 cursor-pointer flex items-center gap-1 shadow-sm"
+                    className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-zinc-950 dark:text-white font-bold text-[10px] active:scale-95 cursor-pointer flex items-center gap-1 shadow-sm"
                   >
                     <Check className="h-3 w-3" />
                     <span>Salvar Edição</span>
@@ -1913,7 +1909,7 @@ export function AutoPilotActivityIndicator({
                 </div>
               </div>
             ) : (
-              <div className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800/90 text-xs text-zinc-200 leading-relaxed font-normal whitespace-pre-wrap select-text">
+              <div className="p-2.5 rounded-xl bg-zinc-100/90 dark:bg-zinc-900/90 border border-zinc-800/90 text-xs text-zinc-800 dark:text-zinc-200 leading-relaxed font-normal whitespace-pre-wrap select-text">
                 {currentPreview}
               </div>
             )}
@@ -1922,24 +1918,24 @@ export function AutoPilotActivityIndicator({
 
         {/* Pensamento Reativo do Brain (Estilo Antigravity) */}
         {shouldShowReasoningSection && isThinkingExpanded && (
-          <div className="mt-2.5 space-y-2 border-t border-zinc-800/80 pt-2.5 text-xs animate-in fade-in duration-200">
+          <div className="mt-2.5 space-y-2 border-t border-zinc-200 dark:border-zinc-800/80 pt-2.5 text-xs animate-in fade-in duration-200">
             {/* Bloco Brain (Raciocínio & Decisão) */}
             {(isBrainActive || validBrainThought) && (
               <div
                 className={cn(
                   "rounded-xl border p-2.5 transition-all duration-200",
                   isBrainActive
-                    ? "border-purple-500/40 bg-purple-950/20 shadow-inner"
-                    : "border-purple-500/25 bg-purple-950/15"
+                    ? "border-purple-300 dark:border-purple-500/40 bg-purple-50 dark:bg-purple-950/20 shadow-inner"
+                    : "border-purple-200 dark:border-purple-500/25 bg-purple-50/70 dark:bg-purple-950/15"
                 )}
               >
                 <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-purple-300 text-[10px] uppercase tracking-wider">
+                  <div className="flex items-center gap-1.5 font-bold text-purple-700 dark:text-purple-300 text-[10px] uppercase tracking-wider">
                     <BrainCircuit className="h-3.5 w-3.5 text-purple-400" />
                     <span>Brain • Raciocínio & Decisão</span>
                   </div>
                   {isBrainActive ? (
-                    <span className="text-[9px] font-semibold text-purple-300 bg-purple-500/20 px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse">
+                    <span className="text-[9px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/20 px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse">
                       <Loader2 className="h-2.5 w-2.5 animate-spin" />
                       {validBrainThought ? "Raciocinando ao vivo..." : "Processando..."}
                     </span>
@@ -1959,7 +1955,7 @@ export function AutoPilotActivityIndicator({
                 {validBrainThought ? (
                   <div
                     ref={brainThoughtRef}
-                    className="text-[11px] leading-relaxed text-zinc-300 whitespace-pre-wrap font-sans max-h-40 overflow-y-auto pr-1 select-text scrollbar-thin scrollbar-thumb-zinc-700"
+                    className="text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap font-sans max-h-40 overflow-y-auto pr-1 select-text scrollbar-thin scrollbar-thumb-zinc-700"
                   >
                     {validBrainThought}
                     {isBrainActive && (
@@ -1969,7 +1965,7 @@ export function AutoPilotActivityIndicator({
                 ) : isBrainActive ? (
                   <p className="text-[11px] leading-relaxed text-purple-200/80 italic">
                     {phase === "search" ? (
-                      <span className="flex items-center gap-1 text-purple-300">
+                      <span className="flex items-center gap-1 text-purple-700 dark:text-purple-300">
                         <Search className="h-3 w-3 animate-spin" />
                         Consultando memórias remotas e contexto para fundamentar a decisão...
                       </span>

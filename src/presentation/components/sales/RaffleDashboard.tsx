@@ -53,7 +53,7 @@ export function RaffleDashboard({
   };
 
   return (
-    <div className="bg-[#0c0c0e] border-b border-[#222225] p-3 space-y-2.5">
+    <div className="bg-zinc-50 dark:bg-[#0c0c0e] border-b border-zinc-200 dark:border-[#222225] p-3 space-y-2.5">
       {/* Linha 1: Seletor de Rifa + Botões de Ação */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex-1 min-w-0">
@@ -62,15 +62,15 @@ export function RaffleDashboard({
               value={activeRaffle.id}
               onChange={(e) => onSelectRaffle(e.target.value)}
               aria-label="Selecionar rifa ativa"
-              className="w-full appearance-none bg-[#18181b] border border-[#2b2b2e] rounded-xl px-3 py-1.5 pr-8 text-xs font-bold text-white truncate focus:outline-none focus:border-[#0095f6] cursor-pointer"
+              className="w-full appearance-none bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#2b2b2e] rounded-xl px-3 py-1.5 pr-8 text-xs font-bold text-zinc-950 dark:text-white truncate focus:outline-none focus:border-[#0095f6] cursor-pointer"
             >
               {raffles.map((r) => (
-                <option key={r.id} value={r.id} className="bg-[#18181b] text-white">
+                <option key={r.id} value={r.id} className="bg-white dark:bg-[#18181b] text-zinc-950 dark:text-white">
                   {r.title} ({r.totalNumbers} cotas)
                 </option>
               ))}
             </select>
-            <ChevronDown className="w-3.5 h-3.5 text-[#737373] absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <ChevronDown className="w-3.5 h-3.5 text-zinc-500 dark:text-[#737373] absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           </div>
         </div>
 
@@ -78,7 +78,7 @@ export function RaffleDashboard({
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={onOpenEditModal}
-            className="p-1.5 rounded-xl bg-[#18181b] border border-[#2b2b2e] text-[#a8a8a8] hover:text-white hover:border-[#3a3a3d] transition-all cursor-pointer"
+            className="p-1.5 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#2b2b2e] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#3a3a3d] transition-all cursor-pointer"
             title="Editar rifa"
           >
             <Pencil className="w-3.5 h-3.5" />
@@ -86,7 +86,7 @@ export function RaffleDashboard({
 
           <button
             onClick={onDeleteRaffle}
-            className="p-1.5 rounded-xl bg-[#18181b] border border-[#2b2b2e] text-[#737373] hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/10 transition-all cursor-pointer"
+            className="p-1.5 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#2b2b2e] text-zinc-500 dark:text-[#737373] hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/10 transition-all cursor-pointer"
             title="Excluir rifa"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -94,7 +94,7 @@ export function RaffleDashboard({
 
           <button
             onClick={onOpenBuyersModal}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[#18181b] border border-[#2b2b2e] text-xs font-semibold text-[#a8a8a8] hover:text-white hover:border-[#3a3a3d] transition-all cursor-pointer"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#2b2b2e] text-xs font-semibold text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white hover:border-zinc-400 dark:hover:border-[#3a3a3d] transition-all cursor-pointer"
             title="Ver compradores da rifa"
           >
             <Users className="w-3.5 h-3.5 text-[#0095f6]" />
@@ -112,7 +112,7 @@ export function RaffleDashboard({
       </div>
 
       {/* Linha 2: Card Resumo da Rifa (Título, Preço e Progresso) */}
-      <div className="p-3 rounded-2xl bg-[#141416] border border-[#222225] space-y-2">
+      <div className="p-3 rounded-2xl bg-white dark:bg-[#141416] border border-zinc-200 dark:border-[#222225] space-y-2">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-0.5">
@@ -136,18 +136,18 @@ export function RaffleDashboard({
                   : "Sorteada"}
               </span>
             </div>
-            <h2 className="text-sm sm:text-base font-black text-white truncate">
+            <h2 className="text-sm sm:text-base font-black text-zinc-950 dark:text-white truncate">
               {activeRaffle.title}
             </h2>
             {activeRaffle.description && (
-              <p className="text-[11px] text-[#737373] line-clamp-1 mt-0.5">
+              <p className="text-[11px] text-zinc-500 dark:text-[#737373] line-clamp-1 mt-0.5">
                 {activeRaffle.description}
               </p>
             )}
           </div>
 
           <div className="text-right shrink-0">
-            <span className="text-xs text-[#737373] block leading-none">Valor da Cota</span>
+            <span className="text-xs text-zinc-500 dark:text-[#737373] block leading-none">Valor da Cota</span>
             <span className="text-sm sm:text-base font-black text-amber-400">
               {activeRaffle.pricePerNumber.toLocaleString("pt-BR", {
                 style: "currency",
@@ -160,17 +160,17 @@ export function RaffleDashboard({
         {/* Barra de Progresso e Percentual */}
         <div className="space-y-1 pt-1">
           <div className="flex items-center justify-between text-[11px]">
-            <span className="text-[#a8a8a8] font-medium flex items-center gap-1">
+            <span className="text-zinc-600 dark:text-[#a8a8a8] font-medium flex items-center gap-1">
               <Flame className="w-3 h-3 text-amber-400 fill-amber-400" />
               Progresso de Vendas
             </span>
-            <span className="font-bold text-white">
+            <span className="font-bold text-zinc-950 dark:text-white">
               {stats.paid} de {stats.total} cotas (
               <span className="text-emerald-400">{stats.percentSold}%</span>)
             </span>
           </div>
 
-          <div className="w-full bg-[#1c1c1e] h-2 rounded-full overflow-hidden border border-[#2b2b2e]">
+          <div className="w-full bg-zinc-100 dark:bg-[#1c1c1e] h-2 rounded-full overflow-hidden border border-zinc-200 dark:border-[#2b2b2e]">
             <div
               className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 shadow-sm transition-all duration-500"
               style={{ width: `${stats.percentSold}%` }}
@@ -179,7 +179,7 @@ export function RaffleDashboard({
         </div>
 
         {/* Datas */}
-        <div className="flex items-center justify-between pt-1 border-t border-[#1e1e22] text-[10px] text-[#737373]">
+        <div className="flex items-center justify-between pt-1 border-t border-zinc-200 dark:border-[#1e1e22] text-[10px] text-zinc-500 dark:text-[#737373]">
           <span className="flex items-center gap-1">
             <Calendar className="w-3 h-3" />
             Início: {formatDate(activeRaffle.startDate)}
@@ -191,8 +191,8 @@ export function RaffleDashboard({
       {/* Linha 3: Métricas em 4 Cards Compactos */}
       <div className="grid grid-cols-4 gap-2">
         {/* Total Arrecadado */}
-        <div className="bg-[#141416] border border-[#222225] rounded-xl p-2 flex flex-col justify-between">
-          <span className="text-[10px] text-[#737373] font-medium leading-none">Arrecadado</span>
+        <div className="bg-white dark:bg-[#141416] border border-zinc-200 dark:border-[#222225] rounded-xl p-2 flex flex-col justify-between">
+          <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-medium leading-none">Arrecadado</span>
           <span className="text-xs font-black text-emerald-400 mt-1 truncate">
             {stats.totalRevenue.toLocaleString("pt-BR", {
               style: "currency",
@@ -203,35 +203,35 @@ export function RaffleDashboard({
         </div>
 
         {/* Cotas Pagas */}
-        <div className="bg-[#141416] border border-[#222225] rounded-xl p-2 flex flex-col justify-between">
-          <span className="text-[10px] text-[#737373] font-medium leading-none flex items-center gap-1">
+        <div className="bg-white dark:bg-[#141416] border border-zinc-200 dark:border-[#222225] rounded-xl p-2 flex flex-col justify-between">
+          <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-medium leading-none flex items-center gap-1">
             <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
             Pagas
           </span>
-          <span className="text-xs font-bold text-white mt-1">
-            {stats.paid} <span className="text-[10px] text-[#737373] font-normal">cotas</span>
+          <span className="text-xs font-bold text-zinc-950 dark:text-white mt-1">
+            {stats.paid} <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-normal">cotas</span>
           </span>
         </div>
 
         {/* Cotas Reservadas */}
-        <div className="bg-[#141416] border border-[#222225] rounded-xl p-2 flex flex-col justify-between">
-          <span className="text-[10px] text-[#737373] font-medium leading-none flex items-center gap-1">
+        <div className="bg-white dark:bg-[#141416] border border-zinc-200 dark:border-[#222225] rounded-xl p-2 flex flex-col justify-between">
+          <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-medium leading-none flex items-center gap-1">
             <Clock className="w-2.5 h-2.5 text-amber-400" />
             Reservadas
           </span>
           <span className="text-xs font-bold text-amber-400 mt-1">
-            {stats.reserved} <span className="text-[10px] text-[#737373] font-normal">cotas</span>
+            {stats.reserved} <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-normal">cotas</span>
           </span>
         </div>
 
         {/* Cotas Livres */}
-        <div className="bg-[#141416] border border-[#222225] rounded-xl p-2 flex flex-col justify-between">
-          <span className="text-[10px] text-[#737373] font-medium leading-none flex items-center gap-1">
+        <div className="bg-white dark:bg-[#141416] border border-zinc-200 dark:border-[#222225] rounded-xl p-2 flex flex-col justify-between">
+          <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-medium leading-none flex items-center gap-1">
             <CircleDot className="w-2.5 h-2.5 text-[#0095f6]" />
             Livres
           </span>
           <span className="text-xs font-bold text-[#0095f6] mt-1">
-            {stats.available} <span className="text-[10px] text-[#737373] font-normal">cotas</span>
+            {stats.available} <span className="text-[10px] text-zinc-500 dark:text-[#737373] font-normal">cotas</span>
           </span>
         </div>
       </div>

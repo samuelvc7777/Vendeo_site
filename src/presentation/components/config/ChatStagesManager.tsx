@@ -408,37 +408,46 @@ export function ChatStagesManager({
 
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Cabeçalho da Seção */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <Layers className="w-4 h-4 text-sky-400" />
-            Funil de Conversão & Checklists (Check-ups)
-          </h3>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Defina as etapas sequenciais das conversas. Cada etapa herda os arquivos da pasta do cofre vinculada.
-          </p>
-        </div>
+      <div className="rounded-[22px] border border-sky-200/80 dark:border-sky-500/15 bg-gradient-to-br from-sky-50 via-white to-violet-50/50 dark:from-sky-500/[0.07] dark:via-white/[0.025] dark:to-violet-500/[0.06] p-3.5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 text-white shadow-md shadow-sky-500/20">
+              <Layers className="h-4.5 w-4.5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-sky-600 dark:text-sky-400">
+                Arquitetura da conversa
+              </p>
+              <h3 className="mt-0.5 text-[13px] font-black text-zinc-950 dark:text-white">
+                Etapas & Checkpoints
+              </h3>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+                Organize o caminho que o Brain percorre em cada conversa.
+              </p>
+            </div>
+          </div>
 
-        <button
-          type="button"
-          onClick={openCreateModal}
-          className="w-full sm:w-auto py-2 sm:py-1.5 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-semibold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all shadow-md shadow-sky-500/20 min-h-[38px] sm:min-h-0 cursor-pointer"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Nova Etapa</span>
-        </button>
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-2xl bg-zinc-950 px-4 text-xs font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-zinc-800 active:scale-95 dark:bg-white dark:text-black dark:hover:bg-zinc-200 sm:w-auto"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Nova etapa</span>
+          </button>
+        </div>
       </div>
 
       {/* Lista de Etapas */}
       {stages.length === 0 ? (
-        <div className="p-6 rounded-xl border border-dashed border-zinc-800 text-center space-y-3 bg-zinc-900/30">
-          <div className="w-10 h-10 rounded-full bg-zinc-800/80 text-zinc-400 flex items-center justify-center mx-auto">
+        <div className="p-6 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-center space-y-3 bg-zinc-100/60 dark:bg-zinc-900/30">
+          <div className="w-10 h-10 rounded-full bg-zinc-200/80 dark:bg-zinc-800/80 text-zinc-600 dark:text-zinc-400 flex items-center justify-center mx-auto">
             <Layers className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-sm font-medium text-zinc-300">Nenhuma etapa cadastrada ainda</p>
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Nenhuma etapa cadastrada ainda</p>
             <p className="text-xs text-zinc-500 mt-1 max-w-sm mx-auto">
               Crie etapas como &ldquo;1. Conexão & Apresentação&rdquo;, &ldquo;2. Semeadura da Rifa&rdquo; e vincule às suas pastas do cofre.
             </p>
@@ -446,7 +455,7 @@ export function ChatStagesManager({
           <button
             type="button"
             onClick={openCreateModal}
-            className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-white transition-colors"
+            className="px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-xs font-semibold text-zinc-950 dark:text-white transition-colors"
           >
             Criar Primeira Etapa
           </button>
@@ -470,7 +479,7 @@ export function ChatStagesManager({
             return (
               <div
                 key={stage.id}
-                className="rounded-xl bg-[#18181b] border border-[#27272a] hover:border-zinc-700 transition-all overflow-hidden"
+                className="rounded-[20px] bg-white/90 dark:bg-white/[0.035] border border-zinc-200/90 dark:border-white/10 hover:border-sky-300 dark:hover:border-sky-500/25 transition-all overflow-hidden shadow-sm"
               >
                 {/* Linha Principal da Etapa */}
                 <div className="p-3 sm:p-3.5 space-y-2.5">
@@ -486,12 +495,12 @@ export function ChatStagesManager({
                       />
 
                       <div className="min-w-0 flex-1 flex items-center gap-2">
-                        <h4 className="text-sm font-bold text-white truncate">{stage.name}</h4>
+                        <h4 className="text-sm font-bold text-zinc-950 dark:text-white truncate">{stage.name}</h4>
                         {isLast && (
                           <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
                             finalizesWorkflow
-                              ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
-                              : "bg-sky-500/15 text-sky-300 border-sky-500/30"
+                              ? "bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/30"
+                              : "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30"
                           }`}>
                             {finalizesWorkflow ? "Final" : "Continua aberta"}
                           </span>
@@ -500,12 +509,12 @@ export function ChatStagesManager({
                     </div>
 
                     {/* Lado Direito: Ações (Reordenar, Editar, Excluir) */}
-                    <div className="flex items-center justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t border-zinc-800/40 sm:border-t-0">
+                    <div className="flex items-center justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t border-zinc-200 dark:border-zinc-800/40 sm:border-t-0">
                       <button
                         type="button"
                         disabled={isFirst}
                         onClick={() => onMoveUp(stage.id)}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform cursor-pointer"
+                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform cursor-pointer"
                         title="Mover para cima"
                         aria-label="Mover para cima"
                       >
@@ -516,7 +525,7 @@ export function ChatStagesManager({
                         type="button"
                         disabled={isLast}
                         onClick={() => onMoveDown(stage.id)}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform cursor-pointer"
+                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform cursor-pointer"
                         title="Mover para baixo"
                         aria-label="Mover para baixo"
                       >
@@ -526,7 +535,7 @@ export function ChatStagesManager({
                       <button
                         type="button"
                         onClick={() => openEditModal(stage)}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-800 text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-0.5 cursor-pointer"
+                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-0.5 cursor-pointer"
                         title="Editar etapa"
                         aria-label="Editar etapa"
                       >
@@ -540,7 +549,7 @@ export function ChatStagesManager({
                             onDeleteStage(stage.id);
                           }
                         }}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-800 text-zinc-300 hover:text-red-400 active:scale-90 transition-all cursor-pointer"
+                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-red-400 active:scale-90 transition-all cursor-pointer"
                         title="Excluir etapa"
                         aria-label="Excluir etapa"
                       >
@@ -550,30 +559,30 @@ export function ChatStagesManager({
                   </div>
 
                   {/* Linha 2: Metadados do Cofre */}
-                  <div className="flex items-center gap-3 text-xs text-zinc-400 pl-0 sm:pl-7 flex-wrap">
-                    <span className="flex items-center gap-1 truncate text-zinc-300">
+                  <div className="flex items-center gap-3 text-xs text-zinc-600 dark:text-zinc-400 pl-0 sm:pl-7 flex-wrap">
+                    <span className="flex items-center gap-1 truncate text-zinc-700 dark:text-zinc-300">
                       <Folder className="w-3 h-3 text-sky-400 shrink-0" />
                       <span className="truncate max-w-[160px] sm:max-w-none">{folderName}</span>
                     </span>
                     <span>•</span>
-                    <span className="text-zinc-400">{itemCount} itens no cofre</span>
+                    <span className="text-zinc-600 dark:text-zinc-400">{itemCount} itens no cofre</span>
                   </div>
 
                   {/* Linha 3: Barra de Acesso aos Checkpoints da Etapa */}
-                  <div className="pt-2 border-t border-zinc-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <button
                       type="button"
                       onClick={() => toggleStageGoals(stage.id)}
-                      className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 border border-zinc-800/80 transition-colors text-xs font-semibold active:scale-95 cursor-pointer"
+                      className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg bg-zinc-100/90 dark:bg-zinc-900/90 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-800/80 transition-colors text-xs font-semibold active:scale-95 cursor-pointer"
                     >
                       <div className="flex items-center gap-1.5">
                         <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                         <span>Checkpoints da Etapa ({stageGoals.length})</span>
                       </div>
                       {isGoalsExpanded ? (
-                        <ChevronUp className="w-3.5 h-3.5 text-zinc-400 ml-0.5" />
+                        <ChevronUp className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-400 ml-0.5" />
                       ) : (
-                        <ChevronDown className="w-3.5 h-3.5 text-zinc-400 ml-0.5" />
+                        <ChevronDown className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-400 ml-0.5" />
                       )}
                     </button>
 
@@ -590,11 +599,11 @@ export function ChatStagesManager({
 
                 {/* Seção Expandida: Checkpoints / Objetivos da Etapa */}
                 {isGoalsExpanded && (
-                  <div className="border-t border-[#27272a] bg-zinc-950/40 p-3 sm:p-3.5 space-y-3 animate-fade-in">
+                  <div className="border-t border-zinc-200 dark:border-[#27272a] bg-zinc-100/80 dark:bg-zinc-950/40 p-3 sm:p-3.5 space-y-3 animate-fade-in">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                        <span className="text-xs font-bold text-white">
+                        <span className="text-xs font-bold text-zinc-950 dark:text-white">
                           Checkpoints / Objetivos da Etapa
                         </span>
                         <span className="text-[11px] text-zinc-500">
@@ -614,8 +623,8 @@ export function ChatStagesManager({
                     </div>
 
                     {stageGoals.length === 0 ? (
-                      <div className="p-4 rounded-xl border border-dashed border-zinc-800 text-center">
-                        <p className="text-xs text-zinc-400">
+                      <div className="p-4 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-center">
+                        <p className="text-xs text-zinc-600 dark:text-zinc-400">
                           Nenhum checkpoint conversacional definido para esta etapa.
                         </p>
                         <p className="text-[11px] text-zinc-500 mt-0.5">
@@ -633,8 +642,8 @@ export function ChatStagesManager({
                               key={goal.id}
                               className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
                                 goal.enabled
-                                  ? "bg-zinc-900/80 border-zinc-800"
-                                  : "bg-zinc-900/30 border-zinc-800/50 opacity-60"
+                                  ? "bg-zinc-100/80 dark:bg-zinc-900/80 border-zinc-200 dark:border-zinc-800"
+                                  : "bg-zinc-100/60 dark:bg-zinc-900/30 border-zinc-200 dark:border-zinc-800/50 opacity-60"
                               }`}
                             >
                               <div className="flex items-start gap-2 min-w-0 flex-1">
@@ -643,43 +652,43 @@ export function ChatStagesManager({
                                 </span>
                                 <div className="min-w-0 flex-1 space-y-1.5">
                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="text-xs font-bold text-zinc-100">
+                                    <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
                                       {goal.label}
                                     </span>
                                     {goal.kind === "action" ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30">
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-medium border border-amber-500/30">
                                         Ação Obrigatória
                                       </span>
                                     ) : goal.kind === "conversation_state" ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 text-[10px] font-medium border border-purple-500/30">
+                                      <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 text-[10px] font-medium border border-purple-500/30">
                                         Estado da Conversa
                                       </span>
                                     ) : (
-                                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
+                                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
                                         Fato do Contato
                                       </span>
                                     )}
                                     {goal.kind === "action" ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-amber-200 text-[10px] font-mono border border-zinc-700/50">
+                                      <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-amber-800 dark:text-amber-200 text-[10px] font-mono border border-zinc-300 dark:border-zinc-700/50">
                                         {goal.actionType === "send_audio" ? "enviar áudio" : goal.actionType || "ação"}
                                       </span>
                                     ) : (
-                                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[10px] font-mono border border-zinc-700/50">
+                                      <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 text-[10px] font-mono border border-zinc-300 dark:border-zinc-700/50">
                                         {goal.memoryEntity || "self"}.{goal.memoryField}
                                       </span>
                                     )}
                                     {goal.enabled ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[10px] font-bold border border-sky-500/30">
+                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[10px] font-bold border border-sky-500/30">
                                         Checkpoint Obrigatório
                                       </span>
                                     ) : (
-                                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 text-[10px]">
+                                      <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-500 text-[10px]">
                                         Inativo (Ignorado)
                                       </span>
                                     )}
                                   </div>
                                   {goal.description && (
-                                    <div className="p-2 rounded-lg bg-zinc-950/70 border border-zinc-800/80 text-[11px] text-zinc-300 break-words leading-relaxed">
+                                    <div className="p-2 rounded-lg bg-white/90 dark:bg-zinc-950/70 border border-zinc-200 dark:border-zinc-800/80 text-[11px] text-zinc-700 dark:text-zinc-300 break-words leading-relaxed">
                                       <span className="font-semibold text-sky-400">Missão do Checkpoint: </span>
                                       {goal.description}
                                     </div>
@@ -688,7 +697,7 @@ export function ChatStagesManager({
                               </div>
 
                               {/* Ações do Objetivo: barra dedicada com touch targets mínimos de 34px */}
-                              <div className="flex items-center justify-between sm:justify-end gap-1.5 pt-2 border-t border-zinc-800/60 sm:border-t-0 sm:pt-0 shrink-0 w-full sm:w-auto">
+                              <div className="flex items-center justify-between sm:justify-end gap-1.5 pt-2 border-t border-zinc-200 dark:border-zinc-800/60 sm:border-t-0 sm:pt-0 shrink-0 w-full sm:w-auto">
                                 <span className="sm:hidden text-[10px] text-zinc-500 font-medium">
                                   Prioridade & Ações
                                 </span>
@@ -700,7 +709,7 @@ export function ChatStagesManager({
                                     className={`p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg border transition-all active:scale-95 cursor-pointer ${
                                       goal.enabled
                                         ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20"
-                                        : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:bg-zinc-700"
+                                        : "bg-zinc-200 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-300 dark:hover:bg-zinc-700"
                                     }`}
                                     title={goal.enabled ? "Desativar objetivo" : "Ativar objetivo"}
                                     aria-label={goal.enabled ? "Desativar objetivo" : "Ativar objetivo"}
@@ -713,7 +722,7 @@ export function ChatStagesManager({
                                     type="button"
                                     disabled={isFirstGoal}
                                     onClick={() => handleMoveGoalUp(stage.id, goal.id)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-800 border border-zinc-700/60 text-zinc-300 hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700/60 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
                                     title="Subir prioridade"
                                     aria-label="Subir prioridade"
                                   >
@@ -725,7 +734,7 @@ export function ChatStagesManager({
                                     type="button"
                                     disabled={isLastGoal}
                                     onClick={() => handleMoveGoalDown(stage.id, goal.id)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-800 border border-zinc-700/60 text-zinc-300 hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700/60 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
                                     title="Descer prioridade"
                                     aria-label="Descer prioridade"
                                   >
@@ -736,7 +745,7 @@ export function ChatStagesManager({
                                   <button
                                     type="button"
                                     onClick={() => openEditGoalModal(stage.id, goal)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-800 border border-zinc-700/60 text-zinc-300 hover:text-sky-400 transition-all active:scale-95 cursor-pointer"
+                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700/60 text-zinc-700 dark:text-zinc-300 hover:text-sky-400 transition-all active:scale-95 cursor-pointer"
                                     title="Editar objetivo"
                                     aria-label="Editar objetivo"
                                   >
@@ -747,7 +756,7 @@ export function ChatStagesManager({
                                   <button
                                     type="button"
                                     onClick={() => handleDeleteGoal(stage.id, goal.id)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-red-950/30 border border-red-900/40 text-[#f87171] hover:bg-red-900/40 hover:text-white transition-all active:scale-95 cursor-pointer"
+                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-[#f87171] hover:bg-red-100 dark:hover:bg-red-900/40 transition-all active:scale-95 cursor-pointer"
                                     title="Excluir objetivo"
                                     aria-label="Excluir objetivo"
                                   >
@@ -770,17 +779,17 @@ export function ChatStagesManager({
 
       {/* Modal de Criação / Edição de Etapa */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-[#18181b] border border-[#27272a] rounded-2xl shadow-2xl p-4 sm:p-5 space-y-4 overscroll-contain">
-            <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
-              <h4 className="text-base font-bold text-white flex items-center gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/40 dark:bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-white dark:bg-[#141416] border border-white/70 dark:border-white/10 rounded-[28px] shadow-[0_30px_90px_-30px_rgba(0,0,0,0.65)] p-4 sm:p-5 space-y-4 overscroll-contain">
+            <div className="flex items-center justify-between border-b border-zinc-200 dark:border-[#27272a] pb-3">
+              <h4 className="text-base font-bold text-zinc-950 dark:text-white flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-sky-400" />
                 {editingStage ? "Editar Etapa" : "Nova Etapa do Funil"}
               </h4>
               <button
                 type="button"
                 onClick={closeModal}
-                className="p-2 sm:p-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer transition-colors"
+                className="p-2 sm:p-1 rounded-lg text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white cursor-pointer transition-colors"
                 aria-label="Fechar"
               >
                 <X className="w-4 h-4" />
@@ -790,7 +799,7 @@ export function ChatStagesManager({
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Nome da Etapa */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Nome da Etapa *
                 </label>
                 <input
@@ -799,13 +808,13 @@ export function ChatStagesManager({
                   placeholder="Ex: 1. Apresentação & Fotos da Rotina"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               {/* Descrição / Orientação da Etapa */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Descrição / Orientação para a Persona
                 </label>
                 <textarea
@@ -813,20 +822,20 @@ export function ChatStagesManager({
                   placeholder="Ex: Conhecer o pretendente naturalmente, criar conexão inicial e entender seu estilo de vida."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
                 />
               </div>
 
               {/* Pasta do Cofre (Opcional) */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 flex items-center justify-between">
                   <span>Pasta do Cofre de Arquivos (Opcional)</span>
                   <span className="text-[10px] text-zinc-500">Opcional</span>
                 </label>
                 <select
                   value={selectedFolderId}
                   onChange={(e) => setSelectedFolderId(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-sky-500 cursor-pointer"
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-sky-500 cursor-pointer"
                 >
                   <option value="">
                     Nenhuma pasta vinculada (opcional)
@@ -844,7 +853,7 @@ export function ChatStagesManager({
 
               {/* Cor da Etapa */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Cor de Identificação
                 </label>
                 <div className="flex items-center gap-2.5 flex-wrap">
@@ -868,7 +877,7 @@ export function ChatStagesManager({
 
               {/* Descrição / Observações */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Descrição / Orientações (opcional)
                 </label>
                 <textarea
@@ -876,16 +885,16 @@ export function ChatStagesManager({
                   placeholder="Ex: Mandar fotos de rotina no hospital e estabelecer conexão acolhedora..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
                 />
               </div>
 
               {/* Botões de Ação */}
-              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-[#27272a]">
+              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
                 <button
                   type="button"
                   onClick={closeModal}
-                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white transition-colors cursor-pointer text-center"
+                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center"
                 >
                   Cancelar
                 </button>
@@ -908,17 +917,17 @@ export function ChatStagesManager({
 
       {/* Modal de Criação / Edição de Objetivo Semântico (Goal) */}
       {isGoalModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-[#18181b] border border-[#27272a] rounded-2xl shadow-2xl p-4 sm:p-5 space-y-4 overscroll-contain">
-            <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
-              <h4 className="text-base font-bold text-white flex items-center gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/40 dark:bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-white dark:bg-[#141416] border border-white/70 dark:border-white/10 rounded-[28px] shadow-[0_30px_90px_-30px_rgba(0,0,0,0.65)] p-4 sm:p-5 space-y-4 overscroll-contain">
+            <div className="flex items-center justify-between border-b border-zinc-200 dark:border-[#27272a] pb-3">
+              <h4 className="text-base font-bold text-zinc-950 dark:text-white flex items-center gap-2">
                 <Target className="w-4 h-4 text-sky-400" />
                 {editingGoal ? "Editar Objetivo" : "Novo Objetivo da Conversa"}
               </h4>
               <button
                 type="button"
                 onClick={closeGoalModal}
-                className="p-2 sm:p-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer transition-colors"
+                className="p-2 sm:p-1 rounded-lg text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white cursor-pointer transition-colors"
                 aria-label="Fechar"
               >
                 <X className="w-4 h-4" />
@@ -928,7 +937,7 @@ export function ChatStagesManager({
             <form onSubmit={handleGoalSubmit} className="space-y-3.5">
               {/* Rótulo do Goal */}
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Rótulo do Objetivo *
                 </label>
                 <input
@@ -937,13 +946,13 @@ export function ChatStagesManager({
                   placeholder="Ex: Idade, Cidade onde mora, Profissão"
                   value={goalLabel}
                   onChange={(e) => setGoalLabel(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               {/* Tipo de Objetivo: Fato vs Estado Conversacional */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Tipo Conceitual de Objetivo *
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -955,14 +964,14 @@ export function ChatStagesManager({
                     }}
                     className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
                       goalKind === "fact"
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                        : "bg-zinc-900 border-zinc-700/60 text-zinc-400 hover:text-zinc-200"
+                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                        : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                     }`}
                   >
-                    <span className="font-semibold text-white flex items-center gap-1.5">
+                    <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
                       Fato do Contato
                     </span>
-                    <span className="text-[10px] text-zinc-400">
+                    <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
                       Dado durável (idade, cidade, profissão).
                     </span>
                   </button>
@@ -974,14 +983,14 @@ export function ChatStagesManager({
                     }}
                     className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
                       goalKind === "conversation_state"
-                        ? "bg-purple-500/15 border-purple-500/40 text-purple-300"
-                        : "bg-zinc-900 border-zinc-700/60 text-zinc-400 hover:text-zinc-200"
+                        ? "bg-purple-500/15 border-purple-500/40 text-purple-700 dark:text-purple-300"
+                        : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                     }`}
                   >
-                    <span className="font-semibold text-white flex items-center gap-1.5">
+                    <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
                       Estado da Conversa
                     </span>
-                    <span className="text-[10px] text-zinc-400">
+                    <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
                       Dinâmica qualitativa (reciprocidade, profundidade).
                     </span>
                   </button>
@@ -994,14 +1003,14 @@ export function ChatStagesManager({
                     }}
                     className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
                       goalKind === "action"
-                        ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
-                        : "bg-zinc-900 border-zinc-700/60 text-zinc-400 hover:text-zinc-200"
+                        ? "bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300"
+                        : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                     }`}
                   >
-                    <span className="font-semibold text-white flex items-center gap-1.5">
+                    <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
                       Ação Obrigatória
                     </span>
-                    <span className="text-[10px] text-zinc-400">
+                    <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
                       Missão que precisa ser executada pelo Brain.
                     </span>
                   </button>
@@ -1011,11 +1020,11 @@ export function ChatStagesManager({
               {goalKind === "action" ? (
                 <div className="space-y-2.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
                   <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-200">Ação que o Brain precisa executar *</label>
+                    <label className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Ação que o Brain precisa executar *</label>
                     <select
                       value={goalActionType}
                       onChange={(e) => setGoalActionType(e.target.value as NonNullable<ConversationGoal["actionType"]>)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-amber-500"
                     >
                       <option value="send_audio">Enviar áudio vinculado ao objetivo</option>
                       <option value="send_raffle_details" disabled>Enviar foto + detalhes da rifa — estrutura preparada</option>
@@ -1023,7 +1032,7 @@ export function ChatStagesManager({
                       <option value="operator_handoff" disabled>Finalizar e avisar operador — estrutura preparada</option>
                     </select>
                   </div>
-                  <p className="text-[10px] leading-relaxed text-zinc-400">
+                  <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-400">
                     O áudio é vinculado a este objetivo no Cofre de Áudios. O objetivo só será concluído após o provedor confirmar o envio.
                     Se o contexto estiver sensível, o Brain pode adiar, mas a missão permanece pendente para os próximos turnos.
                   </p>
@@ -1031,7 +1040,7 @@ export function ChatStagesManager({
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-300">
+                    <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                       Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}
                     </label>
                     <input
@@ -1040,7 +1049,7 @@ export function ChatStagesManager({
                       placeholder={goalKind === "fact" ? "self" : "conversation"}
                       value={goalMemoryEntity}
                       onChange={(e) => setGoalMemoryEntity(e.target.value)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
+                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
                     />
                     <p className="text-[10px] text-zinc-500">
                       {goalKind === "fact" ? 'Padrão: "self" (o pretendente)' : 'Padrão: "conversation"'}
@@ -1048,7 +1057,7 @@ export function ChatStagesManager({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-300">
+                    <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                       Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}
                     </label>
                     <input
@@ -1057,7 +1066,7 @@ export function ChatStagesManager({
                       placeholder={goalKind === "fact" ? "age, city, job" : "slug do estado"}
                       value={goalMemoryField}
                       onChange={(e) => setGoalMemoryField(e.target.value)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
+                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
                     />
                     <p className="text-[10px] text-zinc-500">
                       {goalKind === "fact" ? "Campo salvo na ContactMemory" : "Avaliado pelo contexto e histórico"}
@@ -1068,7 +1077,7 @@ export function ChatStagesManager({
 
               {/* Descrição / Orientação para a IA */}
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-300">
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   Orientação para a IA (Opcional)
                 </label>
                 <textarea
@@ -1076,15 +1085,15 @@ export function ChatStagesManager({
                   placeholder="Ex: Descobrir a idade naturalmente quando falar de estudos ou trabalho, sem parecer interrogatório..."
                   value={goalDescription}
                   onChange={(e) => setGoalDescription(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
                 />
               </div>
 
               {/* Status do Checkpoint: Todo ativo é obrigatório no fluxo sequencial */}
-              <div className="pt-1 flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800">
+              <div className="pt-1 flex items-center justify-between p-3 rounded-xl bg-zinc-100/70 dark:bg-zinc-900/60 border border-zinc-200 dark:border-zinc-800">
                 <div className="space-y-0.5">
-                  <span className="text-xs font-semibold text-zinc-200">Status do Checkpoint</span>
-                  <p className="text-[10px] text-zinc-400">
+                  <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Status do Checkpoint</span>
+                  <p className="text-[10px] text-zinc-600 dark:text-zinc-400">
                     No fluxo determinístico, todos os checkpoints ativos são obrigatórios e executados em ordem sequencial.
                   </p>
                 </div>
@@ -1096,20 +1105,20 @@ export function ChatStagesManager({
                     onChange={(e) => {
                       setGoalEnabled(e.target.checked);
                     }}
-                    className="w-4 h-4 rounded text-emerald-500 bg-zinc-900 border-zinc-700 focus:ring-0 focus:ring-offset-0"
+                    className="w-4 h-4 rounded text-emerald-500 bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700 focus:ring-0 focus:ring-offset-0"
                   />
-                  <span className="text-xs font-medium text-zinc-300">
+                  <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
                     {goalEnabled ? "Ativo (Obrigatório)" : "Inativo (Pular)"}
                   </span>
                 </label>
               </div>
 
               {/* Botões do Modal */}
-              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-[#27272a]">
+              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
                 <button
                   type="button"
                   onClick={closeGoalModal}
-                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white transition-colors cursor-pointer text-center"
+                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center"
                 >
                   Cancelar
                 </button>

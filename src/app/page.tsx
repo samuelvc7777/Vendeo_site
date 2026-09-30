@@ -18,21 +18,21 @@ export default function Home() {
   return (
     <ErrorBoundary>
       <LoadingProvider>
-        <div className="flex flex-col h-full w-full overflow-hidden bg-black text-white relative">
+        <div className="flex flex-col h-full w-full overflow-hidden bg-white dark:bg-black text-zinc-950 dark:text-white relative">
         {/* Banner Fino e Elegante de Status de Conexão */}
         <NetworkBanner />
 
         {/* Header Fixo (apenas na aba Vendas) */}
         {currentTab === "vendas" && (
-          <header className="shrink-0 px-4 py-3 bg-black border-b border-[#262626] flex items-center justify-between z-10">
+          <header className="shrink-0 px-4 py-3 bg-white/95 dark:bg-black border-b border-zinc-200 dark:border-[#262626] flex items-center justify-between z-10 backdrop-blur-xl">
             <div className="flex items-center gap-2">
-              <h1 className="text-base font-bold tracking-tight text-white">Vendeo</h1>
+              <h1 className="text-base font-bold tracking-tight text-zinc-950 dark:text-white">Vendeo</h1>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 font-bold flex items-center gap-1">
                 <Sparkles className="w-2.5 h-2.5" />
                 Rifas
               </span>
             </div>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#1c1c1e] border border-[#262626] text-[#a8a8a8] font-semibold">
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] text-zinc-600 dark:text-[#a8a8a8] font-semibold">
               Área de Vendas
             </span>
           </header>

@@ -177,28 +177,28 @@ export function CreateClothingSaleModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-lg bg-[#121214] border border-[#27272a] rounded-t-3xl sm:rounded-2xl p-5 text-white max-h-[92dvh] flex flex-col shadow-2xl">
+      <div className="w-full max-w-lg bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-[#27272a] rounded-t-3xl sm:rounded-2xl p-5 text-zinc-950 dark:text-white max-h-[92dvh] flex flex-col shadow-2xl">
         {/* Cabeçalho */}
-        <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
+        <div className="flex items-center justify-between pb-3 border-b border-zinc-200 dark:border-[#27272a]">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-pink-500/20 to-purple-500/20 border border-pink-500/40 flex items-center justify-center text-pink-400">
               <ShoppingBag className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white flex items-center gap-1.5">
+              <h2 className="text-sm font-bold text-zinc-950 dark:text-white flex items-center gap-1.5">
                 Nova Venda de Roupa
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 font-semibold">
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-700 dark:text-pink-300 font-semibold">
                   Moda
                 </span>
               </h2>
-              <p className="text-[11px] text-[#a1a1aa]">
+              <p className="text-[11px] text-zinc-600 dark:text-[#a1a1aa]">
                 Cadastre o cliente, endereço e detalhes da peça vendida
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-[#71717a] hover:text-white hover:bg-[#27272a] transition-colors"
+            className="p-1.5 rounded-lg text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-[#27272a] transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -207,20 +207,20 @@ export function CreateClothingSaleModal({
         {/* Formulário com rolagem */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto py-3.5 space-y-4 no-scrollbar">
           {errorMessage && (
-            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300">
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-700 dark:text-red-300">
               {errorMessage}
             </div>
           )}
 
           {/* SEÇÃO 1: CLIENTE */}
           <div className="space-y-2.5">
-            <h3 className="text-xs font-bold text-[#e4e4e7] flex items-center gap-1.5">
+            <h3 className="text-xs font-bold text-zinc-800 dark:text-[#e4e4e7] flex items-center gap-1.5">
               <User className="w-3.5 h-3.5 text-pink-400" />
               Dados do Cliente
             </h3>
 
             <div>
-              <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                 Nome do Cliente *
               </label>
               <input
@@ -229,13 +229,13 @@ export function CreateClothingSaleModal({
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="Ex: Larissa Silva"
-                className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   CPF do Cliente
                 </label>
                 <input
@@ -244,12 +244,12 @@ export function CreateClothingSaleModal({
                   onChange={handleCpfChange}
                   maxLength={14}
                   placeholder="000.000.000-00"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Telefone / WhatsApp *
                 </label>
                 <div className="relative">
@@ -261,7 +261,7 @@ export function CreateClothingSaleModal({
                     onChange={handlePhoneChange}
                     maxLength={15}
                     placeholder="(11) 99999-9999"
-                    className="w-full bg-[#18181b] border border-[#27272a] rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
+                    className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl pl-8 pr-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
                   />
                 </div>
               </div>
@@ -269,15 +269,15 @@ export function CreateClothingSaleModal({
           </div>
 
           {/* SEÇÃO 2: ENDEREÇO DE ENTREGA */}
-          <div className="space-y-2.5 pt-2 border-t border-[#27272a]">
-            <h3 className="text-xs font-bold text-[#e4e4e7] flex items-center gap-1.5">
+          <div className="space-y-2.5 pt-2 border-t border-zinc-200 dark:border-[#27272a]">
+            <h3 className="text-xs font-bold text-zinc-800 dark:text-[#e4e4e7] flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5 text-pink-400" />
               Endereço de Envio
             </h3>
 
             <div className="grid grid-cols-3 gap-2">
               <div className="col-span-1">
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   CEP
                 </label>
                 <div className="relative">
@@ -288,7 +288,7 @@ export function CreateClothingSaleModal({
                     onBlur={handleCepBlur}
                     maxLength={9}
                     placeholder="00000-000"
-                    className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
+                    className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
                   />
                   {isLoadingCep && (
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-pink-400 absolute right-2.5 top-1/2 -translate-y-1/2" />
@@ -297,7 +297,7 @@ export function CreateClothingSaleModal({
               </div>
 
               <div className="col-span-2">
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Rua / Logradouro *
                 </label>
                 <input
@@ -306,14 +306,14 @@ export function CreateClothingSaleModal({
                   value={street}
                   onChange={(e) => setStreet(e.target.value)}
                   placeholder="Ex: Av. Paulista"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Número
                 </label>
                 <input
@@ -321,12 +321,12 @@ export function CreateClothingSaleModal({
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
                   placeholder="Ex: 1500"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
                 />
               </div>
 
               <div className="col-span-2">
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Complemento / Apto
                 </label>
                 <input
@@ -334,14 +334,14 @@ export function CreateClothingSaleModal({
                   value={complement}
                   onChange={(e) => setComplement(e.target.value)}
                   placeholder="Apto 42, Bloco B"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Bairro
                 </label>
                 <input
@@ -349,12 +349,12 @@ export function CreateClothingSaleModal({
                   value={neighborhood}
                   onChange={(e) => setNeighborhood(e.target.value)}
                   placeholder="Centro"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Cidade *
                 </label>
                 <input
@@ -363,12 +363,12 @@ export function CreateClothingSaleModal({
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
                   placeholder="São Paulo"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   UF
                 </label>
                 <input
@@ -377,21 +377,21 @@ export function CreateClothingSaleModal({
                   value={state}
                   onChange={(e) => setState(e.target.value.toUpperCase())}
                   placeholder="SP"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] font-mono uppercase focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] font-mono uppercase focus:outline-none focus:border-pink-500"
                 />
               </div>
             </div>
           </div>
 
           {/* SEÇÃO 3: PRODUTO, VALOR, FRETE E ESTOQUE */}
-          <div className="space-y-2.5 pt-2 border-t border-[#27272a]">
-            <h3 className="text-xs font-bold text-[#e4e4e7] flex items-center gap-1.5">
+          <div className="space-y-2.5 pt-2 border-t border-zinc-200 dark:border-[#27272a]">
+            <h3 className="text-xs font-bold text-zinc-800 dark:text-[#e4e4e7] flex items-center gap-1.5">
               <Package className="w-3.5 h-3.5 text-pink-400" />
               Produto, Valores e Estoque
             </h3>
 
             <div>
-              <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                 Peça / Descrição da Roupa *
               </label>
               <input
@@ -400,13 +400,13 @@ export function CreateClothingSaleModal({
                 value={productDescription}
                 onChange={(e) => setProductDescription(e.target.value)}
                 placeholder="Ex: Vestido Midi Canelado Preto (Tam M)"
-                className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
+                className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Valor Vendido (R$) *
                 </label>
                 <input
@@ -415,12 +415,12 @@ export function CreateClothingSaleModal({
                   value={saleAmount}
                   onChange={(e) => setSaleAmount(e.target.value)}
                   placeholder="149,90"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white font-bold text-emerald-400 placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white font-bold text-emerald-400 placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                   Valor do Frete (R$)
                 </label>
                 <input
@@ -428,29 +428,29 @@ export function CreateClothingSaleModal({
                   value={shippingCost}
                   onChange={(e) => setShippingCost(e.target.value)}
                   placeholder="25,00"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
+                  className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] font-mono focus:outline-none focus:border-pink-500"
                 />
               </div>
             </div>
 
             {/* TOGGLE 1: O PRODUTO ESTÁ EM ESTOQUE? */}
-            <div className="p-3 rounded-xl bg-[#18181b] border border-[#27272a] flex items-center justify-between">
+            <div className="p-3 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] flex items-center justify-between">
               <div>
-                <span className="text-xs font-bold text-white block">
+                <span className="text-xs font-bold text-zinc-950 dark:text-white block">
                   Produto em Estoque?
                 </span>
-                <span className="text-[10px] text-[#a1a1aa]">
+                <span className="text-[10px] text-zinc-600 dark:text-[#a1a1aa]">
                   {inStock ? "Pronta entrega imediata" : "Sob encomenda / Produção"}
                 </span>
               </div>
-              <div className="flex items-center gap-1 bg-[#121214] p-1 rounded-xl border border-[#27272a]">
+              <div className="flex items-center gap-1 bg-zinc-50 dark:bg-[#121214] p-1 rounded-xl border border-zinc-200 dark:border-[#27272a]">
                 <button
                   type="button"
                   onClick={() => setInStock(true)}
                   className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
                     inStock
                       ? "bg-emerald-500 text-black shadow-sm"
-                      : "text-[#71717a] hover:text-white"
+                      : "text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white"
                   }`}
                 >
                   Sim (Estoque)
@@ -461,7 +461,7 @@ export function CreateClothingSaleModal({
                   className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
                     !inStock
                       ? "bg-amber-500 text-black shadow-sm"
-                      : "text-[#71717a] hover:text-white"
+                      : "text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white"
                   }`}
                 >
                   Não (Encomenda)
@@ -470,23 +470,23 @@ export function CreateClothingSaleModal({
             </div>
 
             {/* TOGGLE 2: O FRETE FOI PAGO? */}
-            <div className="p-3 rounded-xl bg-[#18181b] border border-[#27272a] flex items-center justify-between">
+            <div className="p-3 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] flex items-center justify-between">
               <div>
-                <span className="text-xs font-bold text-white block">
+                <span className="text-xs font-bold text-zinc-950 dark:text-white block">
                   Frete foi Pago?
                 </span>
-                <span className="text-[10px] text-[#a1a1aa]">
+                <span className="text-[10px] text-zinc-600 dark:text-[#a1a1aa]">
                   {shippingPaid ? "Cliente já pagou o frete" : "Frete pendente de pagamento"}
                 </span>
               </div>
-              <div className="flex items-center gap-1 bg-[#121214] p-1 rounded-xl border border-[#27272a]">
+              <div className="flex items-center gap-1 bg-zinc-50 dark:bg-[#121214] p-1 rounded-xl border border-zinc-200 dark:border-[#27272a]">
                 <button
                   type="button"
                   onClick={() => setShippingPaid(true)}
                   className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
                     shippingPaid
                       ? "bg-emerald-500 text-black shadow-sm"
-                      : "text-[#71717a] hover:text-white"
+                      : "text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white"
                   }`}
                 >
                   Pago
@@ -497,7 +497,7 @@ export function CreateClothingSaleModal({
                   className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
                     !shippingPaid
                       ? "bg-rose-500 text-white shadow-sm"
-                      : "text-[#71717a] hover:text-white"
+                      : "text-zinc-500 dark:text-[#71717a] hover:text-zinc-950 dark:hover:text-white"
                   }`}
                 >
                   Pendente
@@ -507,7 +507,7 @@ export function CreateClothingSaleModal({
 
             {/* Observações adicionais */}
             <div>
-              <label className="block text-[11px] font-medium text-[#a1a1aa] mb-1">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-[#a1a1aa] mb-1">
                 Observações (opcional)
               </label>
               <textarea
@@ -515,7 +515,7 @@ export function CreateClothingSaleModal({
                 onChange={(e) => setNotes(e.target.value)}
                 rows={2}
                 placeholder="Ex: Embalar para presente, mandar brinde..."
-                className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3 py-2 text-xs text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500 resize-none"
+                className="w-full bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white placeholder-[#71717a] focus:outline-none focus:border-pink-500 resize-none"
               />
             </div>
           </div>
@@ -525,7 +525,7 @@ export function CreateClothingSaleModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-[#18181b] border border-[#27272a] text-xs font-bold text-[#a1a1aa] hover:text-white transition-colors"
+              className="px-4 py-2 rounded-xl bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#27272a] text-xs font-bold text-zinc-600 dark:text-[#a1a1aa] hover:text-zinc-950 dark:hover:text-white transition-colors"
             >
               Cancelar
             </button>

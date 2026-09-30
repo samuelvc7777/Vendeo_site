@@ -51,6 +51,7 @@ export function RaffleCheckoutDrawer({
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearchingBuyer, setIsSearchingBuyer] = useState(false);
   const [copiedMessage, setCopiedMessage] = useState(false);
+  const [copiedNumbers, setCopiedNumbers] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const totalNumbers = raffle.totalNumbers;
@@ -87,6 +88,16 @@ export function RaffleCheckoutDrawer({
     setTimeout(() => setCopiedMessage(false), 2500);
   };
 
+  const handleCopyNumbers = async () => {
+    try {
+      await navigator.clipboard.writeText(formattedNumbersList);
+      setCopiedNumbers(true);
+      setTimeout(() => setCopiedNumbers(false), 2200);
+    } catch {
+      setErrorMessage("Não foi possível copiar os números para a área de transferência.");
+    }
+  };
+
   const handleConfirm = async (status: "reserved" | "paid") => {
     if (!activeBuyer) {
       setIsSearchingBuyer(true);
@@ -107,10 +118,10 @@ export function RaffleCheckoutDrawer({
 
   return (
     <div className="fixed bottom-14 left-0 right-0 z-40 p-2 sm:p-3 pointer-events-none pb-[calc(env(safe-area-inset-bottom,0px)+3.5rem)]">
-      <div className="max-w-md mx-auto bg-[#0d1117]/95 backdrop-blur-xl border border-[#233044] rounded-2xl shadow-[0_-8px_30px_rgba(0,0,0,0.8)] p-3 pointer-events-auto text-white space-y-2.5 animate-in slide-in-from-bottom-3 duration-200">
+      <div className="max-w-md mx-auto bg-white/95 dark:bg-[#0d1117]/95 backdrop-blur-xl border border-zinc-200 dark:border-[#233044] rounded-2xl shadow-[0_-8px_30px_rgba(0,0,0,0.8)] p-3 pointer-events-auto text-zinc-950 dark:text-white space-y-2.5 animate-in slide-in-from-bottom-3 duration-200">
         
         {/* LINHA 1: RESUMO DE COTAS SELECIONADAS + VALOR + CHIPS COM REMOÇÃO INDIVIDUAL */}
-        <div className="flex items-center justify-between border-b border-[#1e293b] pb-2">
+        <div className="flex items-center justify-between border-b border-zinc-200 dark:border-[#1e293b] pb-2">
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded-lg bg-[#0095f6] text-white text-[11px] font-black tracking-wide flex items-center gap-1 shadow-sm shadow-[#0095f6]/40">
               <span>{selectedNumbers.length}</span>
@@ -124,14 +135,34 @@ export function RaffleCheckoutDrawer({
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={onClearSelection}
-            className="text-[11px] font-semibold text-[#8e8e93] hover:text-white flex items-center gap-1 transition-colors active:scale-95 cursor-pointer"
-          >
-            <X className="w-3.5 h-3.5" />
-            Limpar
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleCopyNumbers}
+              className={`text-[11px] font-semibold flex items-center gap-1 rounded-lg px-2 py-1 transition-all active:scale-95 cursor-pointer ${
+                copiedNumbers
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                  : "text-[#0095f6] hover:bg-[#0095f6]/10"
+              }`}
+              title="Copiar números selecionados"
+            >
+              {copiedNumbers ? (
+                <Check className="w-3.5 h-3.5" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+              {copiedNumbers ? "Copiado" : "Copiar números"}
+            </button>
+
+            <button
+              type="button"
+              onClick={onClearSelection}
+              className="text-[11px] font-semibold text-zinc-500 dark:text-[#8e8e93] hover:text-zinc-950 dark:hover:text-white flex items-center gap-1 transition-colors active:scale-95 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              Limpar
+            </button>
+          </div>
         </div>
 
         {/* CHIPS HORIZONTAIS DOS NÚMEROS SELECIONADOS */}
@@ -148,7 +179,7 @@ export function RaffleCheckoutDrawer({
               <button
                 type="button"
                 onClick={() => onRemoveNumber(num)}
-                className="hover:text-white transition-colors cursor-pointer"
+                className="hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer"
                 title={`Desmarcar cota ${formatTicketNumber(num, totalNumbers)}`}
               >
                 <X className="w-3 h-3" />
@@ -166,7 +197,7 @@ export function RaffleCheckoutDrawer({
 
         {/* LINHA 2: CLIENTE DO INSTAGRAM VINCULADO OU SELETOR */}
         {activeBuyer ? (
-          <div className="p-2 rounded-xl bg-[#141b26] border border-[#2b394d] flex items-center justify-between">
+          <div className="p-2 rounded-xl bg-blue-50 dark:bg-[#141b26] border border-zinc-300 dark:border-[#2b394d] flex items-center justify-between">
             <div className="flex items-center gap-2 min-w-0">
               {activeBuyer.avatar ? (
                 <img
@@ -175,12 +206,12 @@ export function RaffleCheckoutDrawer({
                   className="w-7 h-7 rounded-full object-cover ring-1 ring-[#0095f6] shrink-0"
                 />
               ) : (
-                <div className="w-7 h-7 rounded-full bg-[#1c2738] flex items-center justify-center text-[#0095f6] shrink-0">
+                <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-[#1c2738] flex items-center justify-center text-[#0095f6] shrink-0">
                   <User className="w-3.5 h-3.5" />
                 </div>
               )}
               <div className="min-w-0">
-                <span className="text-xs font-bold text-white font-mono truncate block">
+                <span className="text-xs font-bold text-zinc-950 dark:text-white font-mono truncate block">
                   @{activeBuyer.username || activeBuyer.name}
                 </span>
               </div>
@@ -202,7 +233,7 @@ export function RaffleCheckoutDrawer({
               <button
                 type="button"
                 onClick={() => onSelectBuyer(null)}
-                className="text-[10px] text-[#737373] hover:text-white px-1.5 py-1 rounded transition-colors cursor-pointer"
+                className="text-[10px] text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white px-1.5 py-1 rounded transition-colors cursor-pointer"
               >
                 Trocar @
               </button>
@@ -214,7 +245,7 @@ export function RaffleCheckoutDrawer({
               <button
                 type="button"
                 onClick={() => setIsSearchingBuyer(true)}
-                className="w-full py-2 px-3 rounded-xl bg-[#161f2e] border border-[#0095f6]/50 text-[#0095f6] font-bold text-xs flex items-center justify-between hover:bg-[#1c283c] active:scale-98 transition-all cursor-pointer"
+                className="w-full py-2 px-3 rounded-xl bg-blue-50 dark:bg-[#161f2e] border border-[#0095f6]/50 text-[#0095f6] font-bold text-xs flex items-center justify-between hover:bg-blue-100 dark:hover:bg-[#1c283c] active:scale-98 transition-all cursor-pointer"
               >
                 <div className="flex items-center gap-2">
                   <AtSign className="w-4 h-4" />
@@ -223,23 +254,23 @@ export function RaffleCheckoutDrawer({
                 <ChevronRight className="w-4 h-4" />
               </button>
             ) : (
-              <div className="space-y-2 p-2 rounded-xl bg-[#141b26] border border-[#2b394d]">
+              <div className="space-y-2 p-2 rounded-xl bg-blue-50 dark:bg-[#141b26] border border-zinc-300 dark:border-[#2b394d]">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-white flex items-center gap-1">
+                  <span className="text-[11px] font-bold text-zinc-950 dark:text-white flex items-center gap-1">
                     <AtSign className="w-3.5 h-3.5 text-[#0095f6]" />
                     Selecionar @ do Cliente
                   </span>
                   <button
                     type="button"
                     onClick={() => setIsSearchingBuyer(false)}
-                    className="text-[#737373] hover:text-white"
+                    className="text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
                 <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-[#737373] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <Search className="w-3.5 h-3.5 text-zinc-500 dark:text-[#737373] absolute left-2.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={searchTerm}
@@ -253,7 +284,7 @@ export function RaffleCheckoutDrawer({
                       }
                     }}
                     placeholder="Digite o @ ou nome do comprador..."
-                    className="w-full bg-[#0d1117] border border-[#2b3545] rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#0095f6]"
+                    className="w-full bg-white dark:bg-[#0d1117] border border-zinc-300 dark:border-[#2b3545] rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] focus:outline-none focus:border-[#0095f6]"
                   />
                 </div>
 
@@ -276,7 +307,7 @@ export function RaffleCheckoutDrawer({
                         setSearchTerm("");
                         setIsSearchingBuyer(false);
                       }}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#0d1117] border border-[#2b3545] text-left hover:border-[#0095f6] shrink-0 active:scale-95 transition-all cursor-pointer"
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white dark:bg-[#0d1117] border border-zinc-300 dark:border-[#2b3545] text-left hover:border-[#0095f6] shrink-0 active:scale-95 transition-all cursor-pointer"
                     >
                       {conv.avatar ? (
                         <img
@@ -285,11 +316,11 @@ export function RaffleCheckoutDrawer({
                           className="w-4 h-4 rounded-full object-cover shrink-0"
                         />
                       ) : (
-                        <div className="w-4 h-4 rounded-full bg-[#262626] flex items-center justify-center shrink-0">
-                          <User className="w-2.5 h-2.5 text-[#737373]" />
+                        <div className="w-4 h-4 rounded-full bg-zinc-200 dark:bg-[#262626] flex items-center justify-center shrink-0">
+                          <User className="w-2.5 h-2.5 text-zinc-500 dark:text-[#737373]" />
                         </div>
                       )}
-                      <span className="text-[10px] font-bold text-white font-mono truncate max-w-[80px]">
+                      <span className="text-[10px] font-bold text-zinc-950 dark:text-white font-mono truncate max-w-[80px]">
                         @{conv.username}
                       </span>
                     </button>
@@ -321,7 +352,7 @@ export function RaffleCheckoutDrawer({
             type="button"
             disabled={isSubmitting}
             onClick={() => handleConfirm("reserved")}
-            className="py-2.5 px-3 rounded-xl bg-[#171e2a] border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
+            className="py-2.5 px-3 rounded-xl bg-amber-50 dark:bg-[#171e2a] border border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
           >
             <Clock className="w-3.5 h-3.5 text-amber-400" />
             <span>Reservar ({selectedNumbers.length})</span>

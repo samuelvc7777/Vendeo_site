@@ -217,7 +217,7 @@ function AvatarWithFallback({
 
   return (
     <div
-      className={`relative rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-[#1c1c1e] select-none ${sizeClassName} ${ringClassName}`}
+      className={`relative rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-zinc-100 dark:bg-[#1c1c1e] select-none ${sizeClassName} ${ringClassName}`}
     >
       <Image
         src={photoToDisplay}
@@ -249,7 +249,7 @@ function DirectImage({
 
   if (error) {
     return (
-      <div className="p-3 rounded-xl bg-zinc-900 text-xs text-zinc-400 flex items-center gap-2">
+      <div className="p-3 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-xs text-zinc-600 dark:text-zinc-400 flex items-center gap-2">
         <AlertCircle className="w-4 h-4 text-amber-400" />
         <span>Foto indisponível</span>
       </div>
@@ -259,10 +259,10 @@ function DirectImage({
   return (
     <div
       onClick={() => onExpand(src)}
-      className="relative rounded-xl overflow-hidden cursor-pointer group bg-zinc-900 my-1 max-w-[260px] max-h-[340px]"
+      className="relative rounded-xl overflow-hidden cursor-pointer group bg-zinc-100 dark:bg-zinc-900 my-1 max-w-[260px] max-h-[340px]"
     >
       {!loaded && (
-        <div className="w-[220px] h-[220px] flex items-center justify-center bg-zinc-800 animate-pulse">
+        <div className="w-[220px] h-[220px] flex items-center justify-center bg-zinc-200 dark:bg-zinc-800 animate-pulse">
           <Loader2 className="w-5 h-5 text-zinc-500 animate-spin" />
         </div>
       )}
@@ -275,7 +275,7 @@ function DirectImage({
           loaded ? "block" : "hidden"
         }`}
       />
-      <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-zinc-950 dark:text-white opacity-0 group-hover:opacity-100 transition-opacity">
         <Maximize2 className="w-3.5 h-3.5" />
       </div>
     </div>
@@ -290,13 +290,13 @@ function InstagramSharedMediaCard({ isMine }: { isMine: boolean }) {
   return (
     <div className="flex items-center gap-3 py-1.5 px-1 min-w-[210px] max-w-[260px] select-none">
       <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#f09433] via-[#e6683c] via-[#dc2743] via-[#cc2366] to-[#bc1888] flex items-center justify-center shrink-0 shadow-md">
-        <Camera className="w-5 h-5 text-white stroke-[2.2]" />
+        <Camera className="w-5 h-5 text-zinc-950 dark:text-white stroke-[2.2]" />
       </div>
       <div className="leading-tight flex-1">
-        <span className="text-xs font-semibold text-white block tracking-tight">
+        <span className="text-xs font-semibold text-zinc-950 dark:text-white block tracking-tight">
           Foto do Instagram
         </span>
-        <span className="text-[10px] text-zinc-400 block mt-0.5">
+        <span className="text-[10px] text-zinc-600 dark:text-zinc-400 block mt-0.5">
           Mídia compartilhada
         </span>
       </div>
@@ -357,9 +357,9 @@ function MessageCountdown({
       title={remaining > 0 ? `Envio elegível em ${label}` : waitingForEligibility ? "Aguardando liberação do dispatcher" : "Envio em andamento"}
     >
       {sendingNow ? (
-        <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-300 shrink-0" />
+        <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-700 dark:text-amber-300 shrink-0" />
       ) : (
-        <Clock className="w-2.5 h-2.5 animate-pulse text-amber-300 shrink-0" />
+        <Clock className="w-2.5 h-2.5 animate-pulse text-amber-700 dark:text-amber-300 shrink-0" />
       )}
       <span>{label}</span>
     </span>
@@ -3843,13 +3843,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (!activeChat) return null;
 
     return (
-      <div className="absolute inset-0 z-30 flex flex-col h-full w-full bg-black text-white overflow-hidden animate-in fade-in duration-150">
+      <div className="absolute inset-0 z-30 flex flex-col h-full w-full bg-white dark:bg-black text-zinc-950 dark:text-white overflow-hidden animate-in fade-in duration-150">
           {/* Header do Chat */}
-        <div className="h-14 px-3.5 border-b border-[#262626] flex items-center justify-between bg-black shrink-0 z-10">
+        <div className="h-14 px-3.5 border-b border-zinc-200 dark:border-[#262626] flex items-center justify-between bg-white dark:bg-black shrink-0 z-10">
           <div className="flex items-center gap-3">
             <button
               onClick={handleCloseChat}
-              className="text-white hover:opacity-70 active:scale-90 transition-all cursor-pointer p-1"
+              className="text-zinc-950 dark:text-white hover:opacity-70 active:scale-90 transition-all cursor-pointer p-1"
               aria-label="Voltar para lista de conversas"
             >
               <ArrowLeft className="w-6 h-6 stroke-[2.2]" />
@@ -3873,7 +3873,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
               <div className="leading-tight">
                 <div className="flex items-center gap-1">
-                  <span className="text-sm font-semibold tracking-tight text-white group-hover:underline">
+                  <span className="text-sm font-semibold tracking-tight text-zinc-950 dark:text-white group-hover:underline">
                     {activeChat.fullName}
                   </span>
                   {isTinderChat && (
@@ -3881,7 +3881,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   )}
                 </div>
                 {!isTinderChat ? (
-                  <span className="text-[11px] text-[#a8a8a8] block">
+                  <span className="text-[11px] text-zinc-600 dark:text-[#a8a8a8] block">
                     @{activeChat.username}
                   </span>
                 ) : (
@@ -3902,8 +3902,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 activeChat.isRestricted
                   ? isTinderChat
                     ? "bg-[#fe3c72]/20 text-[#fe3c72] border border-[#fe3c72]/40 hover:bg-[#fe3c72]/30"
-                    : "bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30"
-                  : "bg-[#1c1c1e] text-[#a8a8a8] hover:text-white border border-[#2e2e30]"
+                    : "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 hover:bg-amber-500/30"
+                  : "bg-zinc-100 dark:bg-[#1c1c1e] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white border border-zinc-200 dark:border-[#2e2e30]"
               }`}
               title={
                 activeChat.isRestricted
@@ -3921,7 +3921,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     ? isTinderChat
                       ? "text-[#fe3c72]"
                       : "text-amber-400"
-                    : "text-[#a8a8a8]"
+                    : "text-zinc-600 dark:text-[#a8a8a8]"
                 }`}
               />
               <span className="hidden sm:inline">
@@ -3939,7 +3939,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 type="button"
                 onClick={handleManualSyncChat}
                 disabled={isManualSyncing}
-                className="px-2.5 py-1.5 rounded-full bg-[#1c1c1e] hover:bg-[#2c2c2e] text-[#a8a8a8] hover:text-white border border-[#2e2e30] text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shrink-0 disabled:opacity-50"
+                className="px-2.5 py-1.5 rounded-full bg-zinc-100 dark:bg-[#1c1c1e] hover:bg-zinc-200 dark:hover:bg-[#2c2c2e] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white border border-zinc-200 dark:border-[#2e2e30] text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shrink-0 disabled:opacity-50"
                 title="Sincronizar mensagens recentes com o Instagram oficial"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isManualSyncing ? "animate-spin text-purple-400" : ""}`} />
@@ -3961,8 +3961,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 }}
                 className={`px-2.5 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shrink-0 ${
                   autoPilot.chatStates[activeChat.id]?.isEnabled
-                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25"
-                    : "bg-[#1c1c1e] text-[#a8a8a8] border-[#2e2e30] hover:text-white hover:bg-[#2c2c2e]"
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25"
+                    : "bg-zinc-100 dark:bg-[#1c1c1e] text-zinc-600 dark:text-[#a8a8a8] border-zinc-200 dark:border-[#2e2e30] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-[#2c2c2e]"
                 }`}
                 title={autoPilot.chatStates[activeChat.id]?.isEnabled ? "Desativar IA nesta conversa" : "Ativar IA nesta conversa"}
               >
@@ -3996,7 +3996,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               className={`mx-1 mb-2 px-3.5 py-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs animate-in fade-in duration-150 select-none ${
                 isTinderChat
                   ? "bg-[#fe3c72]/10 border-[#fe3c72]/30 text-[#fe3c72]"
-                  : "bg-amber-500/10 border-amber-500/30 text-amber-200"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
               }`}
             >
               <div className="flex items-center gap-2">
@@ -4016,8 +4016,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 onClick={() => handleToggleRestricted(activeChat)}
                 className={`text-[11px] font-bold underline cursor-pointer shrink-0 ${
                   isTinderChat
-                    ? "text-[#fe3c72] hover:text-white"
-                    : "text-amber-400 hover:text-white"
+                    ? "text-[#fe3c72] hover:text-zinc-950 dark:hover:text-white"
+                    : "text-amber-400 hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Desrestringir
@@ -4032,14 +4032,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             if (currentChatState.status === "waiting_human") {
               return (
-                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-amber-500/15 border-amber-500/40 text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-amber-500/15 border-amber-500/40 text-amber-900 dark:text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="flex items-start gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
                       <AlertTriangle className="w-4 h-4 text-amber-400" />
                     </div>
                     <div>
-                      <h5 className="text-xs font-bold text-amber-200">A IA precisa da sua resposta</h5>
-                      <p className="text-[11px] text-zinc-300 mt-0.5 leading-snug">
+                      <h5 className="text-xs font-bold text-amber-800 dark:text-amber-200">A IA precisa da sua resposta</h5>
+                      <p className="text-[11px] text-zinc-700 dark:text-zinc-300 mt-0.5 leading-snug">
                         {currentChatState.pauseReason || "O Brain aguarda esta informação. O mesmo turno será retomado depois da sua resposta."}
                       </p>
                     </div>
@@ -4064,16 +4064,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             // 1. Banner de Hand-off da Rifa atingida (Alerta de Assunção de Venda)
             if (currentChatState.status === "paused_handoff") {
               return (
-                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-purple-500/15 border-amber-500/40 text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-purple-500/15 border-amber-500/40 text-amber-900 dark:text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="flex items-start gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
                       <Trophy className="w-4 h-4 text-amber-400" />
                     </div>
                     <div>
-                      <h5 className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
+                      <h5 className="text-xs font-bold text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
                         🎯 Etapa da Rifa Atingida! Assuma a conversa
                       </h5>
-                      <p className="text-[11px] text-zinc-300 mt-0.5 leading-snug">
+                      <p className="text-[11px] text-zinc-700 dark:text-zinc-300 mt-0.5 leading-snug">
                         A IA enviou os 2 áudios da Larissa sobre si mesma e pausou o piloto automaticamente. Agora é sua vez de fechar a venda da rifa!
                       </p>
                     </div>
@@ -4092,16 +4092,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             // 2. Banner de Guardrail de Segurança (Foto/Mídia ou conteúdo sensível)
             if (currentChatState.status === "paused_guardrail") {
               return (
-                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-rose-500/15 border-rose-500/40 text-rose-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-rose-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-rose-500/15 border-rose-500/40 text-rose-900 dark:text-rose-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-rose-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="flex items-start gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-rose-500/20 border border-rose-500/40 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
                       <AlertTriangle className="w-4 h-4 text-rose-400" />
                     </div>
                     <div>
-                      <h5 className="text-xs font-bold text-rose-200 flex items-center gap-1.5">
+                      <h5 className="text-xs font-bold text-rose-800 dark:text-rose-200 flex items-center gap-1.5">
                         ⚠️ Piloto Automático Pausado por Segurança
                       </h5>
-                      <p className="text-[11px] text-zinc-300 mt-0.5 leading-snug">
+                      <p className="text-[11px] text-zinc-700 dark:text-zinc-300 mt-0.5 leading-snug">
                         {currentChatState.pauseReason || "O cliente enviou uma foto ou mídia não tratável automaticamente. Responda manualmente ou autorize o piloto."}
                       </p>
                     </div>
@@ -4120,7 +4120,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             // 3. Aprovação pendente (caso exista)
             if (currentChatState.isEnabled && (currentChatState.status as string) === "waiting_approval") {
               return (
-                <div className="mx-1 mb-2 px-3 py-1.5 rounded-lg bg-purple-500/15 border border-purple-500/35 text-purple-200 text-[11px] flex items-center gap-2 animate-pulse">
+                <div className="mx-1 mb-2 px-3 py-1.5 rounded-lg bg-purple-500/15 border border-purple-500/35 text-purple-800 dark:text-purple-200 text-[11px] flex items-center gap-2 animate-pulse">
                   <Sparkles className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                   <span>🤖 <strong>Aprovação Pendente:</strong> a IA preparou uma resposta com áudios/textos. Revise e aprove ou edite antes do envio.</span>
                 </div>
@@ -4146,7 +4146,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               ringClassName={isTinderChat ? "ring-3 ring-[#fe3c72]" : ""}
             />
             <div>
-              <h3 className="text-base font-bold text-white flex items-center justify-center gap-1.5 group-hover:underline">
+              <h3 className="text-base font-bold text-zinc-950 dark:text-white flex items-center justify-center gap-1.5 group-hover:underline">
                 {activeChat.fullName}
                 {isTinderChat && (
                   <Flame className="w-4 h-4 text-[#fe3c72] fill-[#fe3c72]" />
@@ -4174,7 +4174,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   {/* Divisor de Data Estilo Instagram (Exibido na troca de dia ou início do chat) */}
                   {showDateDivider && dateLabel && (
                     <div className="flex items-center justify-center my-3.5 w-full select-none">
-                      <span className="text-[11px] font-medium text-[#8e8e8e] tracking-tight">
+                      <span className="text-[11px] font-medium text-zinc-500 dark:text-[#8e8e8e] tracking-tight">
                         {dateLabel}
                       </span>
                     </div>
@@ -4197,7 +4197,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               setReplyingToMessage(msg);
                               setTimeout(() => composerRef.current?.focus(), 60);
                             }}
-                            className="self-center opacity-70 sm:opacity-0 sm:group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 text-zinc-400 hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
+                            className="self-center opacity-70 sm:opacity-0 sm:group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
                             title="Responder a esta mensagem"
                             aria-label="Responder a mensagem"
                           >
@@ -4252,7 +4252,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             ? isTinderChat
                               ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white rounded-br-[4px]"
                               : "bg-[#0095f6] text-white rounded-br-[4px]"
-                            : "bg-[#262626] text-white rounded-bl-[4px]"
+                            : "bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white rounded-bl-[4px]"
                         } ${msg.status === "failed" ? "border border-red-500/50 bg-red-950/30" : ""}`}
                       >
                         {/* Bloco de Mensagem Respondida (Quote Reply estilo Instagram) */}
@@ -4261,11 +4261,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-2 text-xs flex flex-col text-left min-w-0 max-w-full overflow-hidden ${
                               msg.isMine
                                 ? "bg-black/25 border-white/90 text-white/95"
-                                : "bg-white/10 border-white/40 text-zinc-200"
+                                : "bg-zinc-200/70 dark:bg-white/10 border-zinc-300 dark:border-white/40 text-zinc-800 dark:text-zinc-200"
                             }`}
                           >
-                            <div className="flex items-center gap-1 text-[10px] font-bold text-white/90 min-w-0">
-                              <Reply className="w-3 h-3 shrink-0 text-white/70" />
+                            <div className={`flex items-center gap-1 text-[10px] font-bold min-w-0 ${msg.isMine ? "text-white/90" : "text-zinc-600 dark:text-white/90"}`}>
+                              <Reply className={`w-3 h-3 shrink-0 ${msg.isMine ? "text-white/70" : "text-zinc-500 dark:text-white/70"}`} />
                               <span className="truncate block">
                                 {msg.isMine
                                   ? (msg.replyTo.senderName && msg.replyTo.senderName !== "Você"
@@ -4310,8 +4310,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                                 }}
                               />
                             ) : (
-                              <div className="flex items-center gap-2 py-1 px-2 text-xs text-zinc-300 select-none">
-                                <Mic className="w-4 h-4 text-zinc-400" />
+                              <div className="flex items-center gap-2 py-1 px-2 text-xs text-zinc-700 dark:text-zinc-300 select-none">
+                                <Mic className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
                                 <span>🎙️ Mensagem de voz</span>
                               </div>
                             );
@@ -4330,7 +4330,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               onExpand={(url) => setExpandedImageUrl(url)}
                             />
                             {msg.text.replace(/^\[image:[^\]]+\]\s*/, "") && (
-                              <p className="px-2 py-1 text-xs text-white/95">
+                              <p className={`px-2 py-1 text-xs ${msg.isMine ? "text-white/95" : "text-zinc-800 dark:text-white/95"}`}>
                                 {msg.text.replace(/^\[image:[^\]]+\]\s*/, "")}
                               </p>
                             )}
@@ -4350,7 +4350,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         {/* Horário da Mensagem (Timestamp estilo Instagram com contador regressivo) */}
                         <div
                           className={`flex items-center gap-1.5 mt-1.5 select-none text-[10px] font-mono leading-none ${
-                            msg.isMine ? "justify-end text-white/75" : "justify-start text-zinc-400"
+                            msg.isMine ? "justify-end text-white/75" : "justify-start text-zinc-600 dark:text-zinc-400"
                           }`}
                         >
                           <span>
@@ -4374,7 +4374,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         </div>
 
                         {msg.liked && (
-                          <span className="absolute -bottom-2 -right-1 bg-[#262626] rounded-full p-1 border border-black shadow-md">
+                          <span className="absolute -bottom-2 -right-1 bg-white dark:bg-[#262626] rounded-full p-1 border border-zinc-200 dark:border-black shadow-md">
                             <Heart className="w-3 h-3 text-red-500 fill-red-500" />
                           </span>
                         )}
@@ -4437,7 +4437,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                       return (
                         <div className="flex items-center justify-end gap-1 mt-1 mr-1 select-none animate-in fade-in duration-200">
-                          <span className="text-[11px] font-normal text-[#8e8e8e]">
+                          <span className="text-[11px] font-normal text-zinc-500 dark:text-[#8e8e8e]">
                             {seenTimeText ? `Visto às ${seenTimeText}` : "Visto"}
                           </span>
                         </div>
@@ -4486,12 +4486,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* Input Fixo no Rodapé: Idêntico em ambos os chats, com suporte a Gravação de Áudio */}
         {isRecording ? (
-          <div className="p-3 bg-black border-t border-[#262626] flex items-center justify-between gap-3 shrink-0 z-10 animate-in fade-in duration-200">
+          <div className="p-3 bg-white dark:bg-black border-t border-zinc-200 dark:border-[#262626] flex items-center justify-between gap-3 shrink-0 z-10 animate-in fade-in duration-200">
             {/* Botão Cancelar (Lixeira) */}
             <button
               type="button"
               onClick={() => handleStopRecording(false)}
-              className="w-9 h-9 rounded-full bg-zinc-800 text-zinc-400 hover:text-red-400 active:scale-90 flex items-center justify-center transition-all cursor-pointer"
+              className="w-9 h-9 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-red-400 active:scale-90 flex items-center justify-center transition-all cursor-pointer"
               title="Cancelar gravação"
               aria-label="Cancelar gravação de áudio"
             >
@@ -4499,9 +4499,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </button>
 
             {/* Visualizador de Gravação Ativa com Timer */}
-            <div className="flex-1 bg-[#1c1c1e] border border-red-500/40 rounded-full px-4 py-2 flex items-center gap-3 shadow-inner">
+            <div className="flex-1 bg-zinc-100 dark:bg-[#1c1c1e] border border-red-500/40 rounded-full px-4 py-2 flex items-center gap-3 shadow-inner">
               <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
-              <span className="text-xs font-medium text-white/90">Gravando áudio...</span>
+              <span className="text-xs font-medium text-zinc-800 dark:text-white/90">Gravando áudio...</span>
               <span className="ml-auto font-mono text-xs text-red-400 font-bold tracking-wider">
                 {Math.floor(recordingSeconds / 60)}:{(recordingSeconds % 60).toString().padStart(2, "0")}
               </span>
@@ -4519,27 +4519,27 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </button>
           </div>
         ) : (
-          <div className="bg-black border-t border-[#262626] shrink-0 z-10">
+          <div className="bg-white dark:bg-black border-t border-zinc-200 dark:border-[#262626] shrink-0 z-10">
             {/* Prévia de Foto Pendente para envio */}
             {pendingImage && (
-              <div className="mx-3 mt-2.5 p-2 bg-[#1c1c1e] border border-[#262626] rounded-xl flex items-center gap-3 animate-in fade-in duration-150">
+              <div className="mx-3 mt-2.5 p-2 bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl flex items-center gap-3 animate-in fade-in duration-150">
                 <img
                   src={pendingImage.previewUrl}
                   alt="Prévia da foto selecionada"
-                  className="w-12 h-12 rounded-lg object-cover border border-[#333] shrink-0"
+                  className="w-12 h-12 rounded-lg object-cover border border-zinc-200 dark:border-[#333] shrink-0"
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-white truncate">
+                  <p className="text-xs font-medium text-zinc-950 dark:text-white truncate">
                     {pendingImage.file.name}
                   </p>
-                  <p className="text-[10px] text-zinc-400">
+                  <p className="text-[10px] text-zinc-600 dark:text-zinc-400">
                     Foto pronta para enviar · {(pendingImage.file.size / 1024).toFixed(0)} KB
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={cancelPendingImage}
-                  className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer"
+                  className="p-1.5 rounded-full text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer"
                   title="Remover foto selecionada"
                   aria-label="Cancelar foto"
                 >
@@ -4550,7 +4550,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {/* Card de Resposta a Mensagem Específica (Instagram Reply Bar) */}
             {replyingToMessage && (
-              <div className="mx-3 mt-2 px-3.5 py-2 bg-[#1c1c1e] border-l-2 border-[#0095f6] rounded-r-xl flex items-center justify-between gap-3 animate-in fade-in duration-150 select-none">
+              <div className="mx-3 mt-2 px-3.5 py-2 bg-zinc-100 dark:bg-[#1c1c1e] border-l-2 border-[#0095f6] rounded-r-xl flex items-center justify-between gap-3 animate-in fade-in duration-150 select-none">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#0095f6]">
                     <Reply className="w-3.5 h-3.5 shrink-0" />
@@ -4558,7 +4558,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       Respondendo a {activeChat.fullName || activeChat.username}
                     </span>
                   </div>
-                  <p className="text-xs text-zinc-300 truncate mt-0.5 font-normal">
+                  <p className="text-xs text-zinc-700 dark:text-zinc-300 truncate mt-0.5 font-normal">
                     {(replyingToMessage.text || "").startsWith("[audio:") || replyingToMessage.mediaType === "audio"
                       ? "🎙️ Mensagem de voz"
                       : (replyingToMessage.text || "").startsWith("[image:") || replyingToMessage.mediaType === "image"
@@ -4569,7 +4569,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <button
                   type="button"
                   onClick={() => setReplyingToMessage(null)}
-                  className="p-1 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer"
+                  className="p-1 rounded-full text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer"
                   title="Cancelar resposta"
                   aria-label="Cancelar resposta"
                 >
@@ -4695,17 +4695,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   };
 
   return (
-    <div className="relative flex flex-col h-full w-full bg-black text-white overflow-hidden">
+    <div className="relative flex flex-col h-full w-full bg-white dark:bg-black text-zinc-950 dark:text-white overflow-hidden">
       {/* 1. LISTA DE CONVERSAS (OCULTA QUANDO O CHAT ESTIVER ABERTO PARA GARANTIR RIGOROSAMENTE UM ÚNICO SCROLL) */}
       <div className={`flex flex-col h-full w-full overflow-hidden ${activeChat ? "hidden" : ""}`}>
         {/* ABAS SUPERIORES: INSTAGRAM E TINDER */}
-        <div className="shrink-0 flex items-center border-b border-[#262626] bg-black px-4">
+        <div className="shrink-0 flex items-center border-b border-zinc-200 dark:border-[#262626] bg-white dark:bg-black px-4">
           <button
             onClick={() => setChatPlatform("instagram")}
             className={`flex-1 py-3 text-xs font-bold tracking-wide flex items-center justify-center gap-2 border-b-2 transition-all cursor-pointer ${
               chatPlatform === "instagram"
-                ? "text-white border-white"
-                : "text-[#737373] border-transparent hover:text-white"
+                ? "text-zinc-950 dark:text-white border-zinc-950 dark:border-white"
+                : "text-zinc-500 dark:text-[#737373] border-transparent hover:text-zinc-950 dark:hover:text-white"
             }`}
           >
             <Camera className="w-4 h-4" />
@@ -4717,7 +4717,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             className={`flex-1 py-3 text-xs font-bold tracking-wide flex items-center justify-center gap-2 border-b-2 transition-all cursor-pointer ${
               chatPlatform === "tinder"
                 ? "text-[#fe3c72] border-[#fe3c72]"
-                : "text-[#737373] border-transparent hover:text-white"
+                : "text-zinc-500 dark:text-[#737373] border-transparent hover:text-zinc-950 dark:hover:text-white"
             }`}
           >
             <Flame
@@ -4730,7 +4730,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
           {/* Indicador de Realtime WebSocket */}
           {/* Ações Rápidas: Notificações Móveis e Realtime WebSocket */}
-          <div className="ml-2 pl-2 border-l border-[#262626] flex items-center shrink-0 gap-2">
+          <div className="ml-2 pl-2 border-l border-zinc-200 dark:border-[#262626] flex items-center shrink-0 gap-2">
             {/* Botão Notificações Móveis Push */}
             <button
               type="button"
@@ -4742,8 +4742,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               disabled={mobileNotifications.remoteRegistered || mobileNotifications.isLoading}
               className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
                 mobileNotifications.remoteRegistered
-                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300 cursor-default"
-                  : "bg-amber-500/15 border-amber-500/30 text-amber-300 hover:bg-amber-500/25 animate-pulse cursor-pointer"
+                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 cursor-default"
+                  : "bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 animate-pulse cursor-pointer"
               }`}
               title={
                 mobileNotifications.remoteRegistered
@@ -4766,7 +4766,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </button>
 
             <div
-              className="flex items-center gap-1.5 py-1 text-[10px] text-[#a8a8a8] select-none"
+              className="flex items-center gap-1.5 py-1 text-[10px] text-zinc-600 dark:text-[#a8a8a8] select-none"
               title={isRealtimeConnected ? "Supabase Realtime WebSocket conectado" : "Sincronizando..."}
             >
               <span
@@ -4774,7 +4774,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   isRealtimeConnected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
                 }`}
               />
-              <span className="font-mono text-[9px] font-semibold text-zinc-400 hidden xs:inline">
+              <span className="font-mono text-[9px] font-semibold text-zinc-600 dark:text-zinc-400 hidden xs:inline">
                 {isRealtimeConnected ? "LIVE" : "SYNC"}
               </span>
             </div>
@@ -4789,7 +4789,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           if (pendingChats.length === 0) return null;
 
           return (
-            <div className="bg-gradient-to-r from-purple-950/70 via-indigo-950/60 to-purple-950/70 border-b border-purple-500/30 px-3.5 py-2 text-xs text-purple-200 flex items-center justify-between gap-2 shrink-0 animate-in fade-in duration-200">
+            <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 dark:from-purple-950/70 dark:via-indigo-950/60 dark:to-purple-950/70 border-b border-purple-200 dark:border-purple-500/30 px-3.5 py-2 text-xs text-purple-800 dark:text-purple-200 flex items-center justify-between gap-2 shrink-0 animate-in fade-in duration-200">
               <div className="flex items-center gap-2 truncate">
                 <Sparkles className="w-3.5 h-3.5 text-purple-400 shrink-0 animate-pulse" />
                 <span className="truncate">
@@ -4824,9 +4824,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={`Pesquisar no ${chatPlatform === "instagram" ? "Instagram" : "Tinder"}`}
-              className="w-full bg-[#262626] text-white text-xs placeholder-[#8e8e8e] rounded-xl pl-9 pr-4 py-2 focus:outline-none"
+              className="w-full bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white text-xs placeholder-zinc-400 dark:placeholder-[#8e8e8e] rounded-xl pl-9 pr-4 py-2 focus:outline-none"
             />
-            <Search className="w-3.5 h-3.5 text-[#8e8e8e] absolute left-3 top-2.5" />
+            <Search className="w-3.5 h-3.5 text-zinc-500 dark:text-[#8e8e8e] absolute left-3 top-2.5" />
           </div>
 
           <button
@@ -4836,8 +4836,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               isFilterActive
                 ? chatPlatform === "tinder"
                   ? "bg-[#fe3c72]/20 text-[#fe3c72] border-[#fe3c72]/50 shadow-sm"
-                  : "bg-white/20 text-white border-white/40 shadow-sm"
-                : "bg-[#262626] text-[#8e8e8e] hover:text-white border-[#383838]"
+                  : "bg-zinc-900 text-white border-zinc-900 shadow-sm dark:bg-white/20 dark:border-white/40"
+                : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white border-zinc-300 dark:border-[#383838]"
             }`}
             title="Filtros e ordenação"
             aria-label="Abrir filtros e ordenação"
@@ -4862,40 +4862,40 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none select-none animate-in fade-in duration-150">
               <button
                 onClick={() => setInstaFilter("todos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 ${
+                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 border ${
                   instaFilter === "todos"
-                    ? "bg-white text-black font-bold shadow-sm"
-                    : "bg-[#262626] text-[#e0e0e0] hover:text-white"
+                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Todos
               </button>
               <button
                 onClick={() => setInstaFilter("nao_respondidos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 ${
+                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 border ${
                   instaFilter === "nao_respondidos"
-                    ? "bg-white text-black font-bold shadow-sm"
-                    : "bg-[#262626] text-[#e0e0e0] hover:text-white"
+                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Não respondidos
               </button>
               <button
                 onClick={() => setInstaFilter("respondidos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 ${
+                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 border ${
                   instaFilter === "respondidos"
-                    ? "bg-white text-black font-bold shadow-sm"
-                    : "bg-[#262626] text-[#e0e0e0] hover:text-white"
+                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Respondidos
               </button>
               <button
                 onClick={() => setInstaFilter("pedidos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 ${
+                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
                   instaFilter === "pedidos"
-                    ? "bg-white text-black font-bold shadow-sm"
-                    : "bg-[#262626] text-[#e0e0e0] hover:text-white"
+                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 <span>Pedidos</span>
@@ -4903,8 +4903,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   <span
                     className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold leading-none ${
                       instaFilter === "pedidos"
-                        ? "bg-black text-white"
-                        : "bg-[#383838] text-white"
+                        ? "bg-zinc-900 text-white dark:bg-black dark:text-white"
+                        : "bg-zinc-200 dark:bg-[#383838] text-zinc-700 dark:text-white"
                     }`}
                   >
                     {pedidosCount}
@@ -4915,15 +4915,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {/* SUB-FILTRO DA PASTA DE PEDIDOS E CONTAS RESTRINGIDAS (ESTILO INSTAGRAM) */}
             {instaFilter === "pedidos" && (
-              <div className="p-3 rounded-2xl bg-[#141414] border border-[#262626] space-y-2.5 animate-in fade-in duration-150">
+              <div className="p-3 rounded-2xl bg-zinc-100 dark:bg-[#141414] border border-zinc-200 dark:border-[#262626] space-y-2.5 animate-in fade-in duration-150">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setPedidosSubFilter("todos_pedidos")}
                     className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                       pedidosSubFilter === "todos_pedidos"
-                        ? "bg-[#2c2c2e] text-white border border-[#444]"
-                        : "text-[#8e8e8e] hover:text-white"
+                        ? "bg-zinc-200 dark:bg-[#2c2c2e] text-zinc-950 dark:text-white border border-zinc-300 dark:border-[#444]"
+                        : "text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white"
                     }`}
                   >
                     Todos os pedidos {pedidosCount > 0 ? `(${pedidosCount})` : ""}
@@ -4933,15 +4933,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     onClick={() => setPedidosSubFilter("restringidos")}
                     className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
                       pedidosSubFilter === "restringidos"
-                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                        : "text-[#8e8e8e] hover:text-white"
+                        ? "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40"
+                        : "text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white"
                     }`}
                   >
                     <ShieldAlert className="w-3.5 h-3.5" />
                     Restringidos {restringidosCount > 0 ? `(${restringidosCount})` : ""}
                   </button>
                 </div>
-                <p className="text-[11px] text-[#8e8e8e] leading-relaxed">
+                <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e] leading-relaxed">
                   {pedidosSubFilter === "restringidos"
                     ? "Contas que você restringiu. As mensagens delas não aparecem na caixa de entrada principal e elas não saberão quando você estiver online ou ler as mensagens."
                     : "Mensagens de pessoas que não estão conectadas com você. A pessoa só saberá que você visualizou quando você aceitar ou responder."}
@@ -4959,7 +4959,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
                   tinderFilter === "todos"
                     ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-[#262626] text-[#a8a8a8] hover:text-white"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Todos
@@ -4969,7 +4969,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
                   tinderFilter === "novos"
                     ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-[#262626] text-[#a8a8a8] hover:text-white"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Matchs novos
@@ -4979,7 +4979,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
                   tinderFilter === "sua_vez"
                     ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-[#262626] text-[#a8a8a8] hover:text-white"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Sua vez
@@ -4989,7 +4989,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
                   tinderFilter === "vez_deles"
                     ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-[#262626] text-[#a8a8a8] hover:text-white"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 Vez deles
@@ -4999,7 +4999,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
                   tinderFilter === "restritos"
                     ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-[#262626] text-[#a8a8a8] hover:text-white"
+                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
                 }`}
               >
                 <ShieldAlert className="w-3.5 h-3.5" />
@@ -5008,8 +5008,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   <span
                     className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold leading-none ${
                       tinderFilter === "restritos"
-                        ? "bg-black/40 text-white"
-                        : "bg-[#383838] text-white"
+                        ? "bg-black/40 text-zinc-950 dark:text-white"
+                        : "bg-zinc-200 dark:bg-[#383838] text-zinc-950 dark:text-white"
                     }`}
                   >
                     {tinderRestritosCount}
@@ -5020,12 +5020,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {/* BANNER EXPLICATIVO DE MATCHES RESTRINGIDOS (DO JEITO DO TINDER) */}
             {tinderFilter === "restritos" && (
-              <div className="p-3 rounded-2xl bg-[#1c1417] border border-[#fe3c72]/30 space-y-1.5 animate-in fade-in duration-150">
+              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-[#1c1417] border border-[#fe3c72]/30 space-y-1.5 animate-in fade-in duration-150">
                 <div className="flex items-center gap-2 text-xs font-bold text-[#fe3c72]">
                   <ShieldAlert className="w-4 h-4 text-[#fe3c72]" />
                   <span>Matches Restritos</span>
                 </div>
-                <p className="text-[11px] text-[#a8a8a8] leading-relaxed">
+                <p className="text-[11px] text-zinc-600 dark:text-[#a8a8a8] leading-relaxed">
                   Matches que você restringiu. As conversas não aparecem no seu feed principal do Tinder e ficam guardadas aqui com discrição.
                 </p>
               </div>
@@ -5035,8 +5035,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* FILTRO DE IA - Exclusivo Instagram Direct */}
         {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && (
-          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-[#202020] bg-zinc-950/40 -mx-4 px-4">
-            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-400 shrink-0 mr-1">
+          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
+            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
               <Bot className="w-3.5 h-3.5 text-emerald-400" />
               <span>IA:</span>
             </div>
@@ -5046,13 +5046,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               onClick={() => setAiFilter("todas")}
               className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
                 aiFilter === "todas"
-                  ? "bg-zinc-100 text-black border-zinc-100 shadow-sm"
-                  : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+                  ? "bg-white text-zinc-950 border-zinc-200 shadow-sm dark:bg-zinc-100 dark:text-black dark:border-zinc-100"
+                  : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
               }`}
             >
               <span>Todas</span>
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                aiFilter === "todas" ? "bg-black/15 text-black" : "bg-zinc-800 text-zinc-300"
+                aiFilter === "todas" ? "bg-black/15 text-black" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
               }`}>
                 {platformConversations.length}
               </span>
@@ -5064,13 +5064,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
                 aiFilter === "com_ia"
                   ? "bg-emerald-500 text-black font-bold border-emerald-400 shadow-sm"
-                  : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+                  : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
               }`}
             >
               <Bot className="w-3 h-3" />
               <span>Com IA</span>
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                aiFilter === "com_ia" ? "bg-black/20 text-black" : "bg-zinc-800 text-emerald-300"
+                aiFilter === "com_ia" ? "bg-black/20 text-black" : "bg-zinc-200 dark:bg-zinc-800 text-emerald-700 dark:text-emerald-300"
               }`}>
                 {aiEnabledCount}
               </span>
@@ -5081,14 +5081,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               onClick={() => setAiFilter("sem_ia")}
               className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
                 aiFilter === "sem_ia"
-                  ? "bg-zinc-600 text-white font-bold border-zinc-500 shadow-sm"
-                  : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+                  ? "bg-zinc-800 text-white dark:bg-zinc-600 font-bold border-zinc-700 dark:border-zinc-500 shadow-sm"
+                  : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
               }`}
             >
               <BotOff className="w-3 h-3" />
               <span>Sem IA</span>
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                aiFilter === "sem_ia" ? "bg-black/30 text-white" : "bg-zinc-800 text-zinc-300"
+                aiFilter === "sem_ia" ? "bg-zinc-200/80 dark:bg-black/30 text-zinc-950 dark:text-white" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
               }`}>
                 {aiDisabledCount}
               </span>
@@ -5098,8 +5098,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* FILTRO DE ETAPAS DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
         {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && stages.length > 0 && (
-          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-[#202020] bg-zinc-950/40 -mx-4 px-4">
-            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-400 shrink-0 mr-1">
+          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
+            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
               <Layers className="w-3.5 h-3.5 text-sky-400" />
               <span>Etapa:</span>
             </div>
@@ -5120,11 +5120,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   type="button"
                   onClick={() => setStageFilter((prev) => (prev === stg.id ? "todas" : stg.id))}
                   style={{
-                    backgroundColor: isSelected ? stgColor : "#222",
-                    color: isSelected ? "#fff" : "#a1a1aa",
-                    borderColor: isSelected ? stgColor : "transparent",
+                    backgroundColor: isSelected ? stgColor : undefined,
+                    borderColor: isSelected ? stgColor : undefined,
                   }}
-                  className="px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border shadow-sm"
+                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border shadow-sm ${
+                    isSelected
+                      ? "text-white"
+                      : "bg-white dark:bg-[#222] text-zinc-600 dark:text-[#a1a1aa] border-zinc-200 dark:border-transparent"
+                  }`}
                 >
                   <span
                     className="w-1.5 h-1.5 rounded-full shrink-0"
@@ -5136,7 +5139,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   {countInStage > 0 && (
                     <span
                       className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                        isSelected ? "bg-black/30 text-white" : "bg-zinc-800 text-zinc-300"
+                        isSelected ? "bg-white/80 text-zinc-900 dark:bg-black/30 dark:text-white" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
                       }`}
                     >
                       {countInStage}
@@ -5160,15 +5163,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
                     isSelected
                       ? "bg-amber-500 text-black font-bold border-amber-400 shadow-sm"
-                      : "bg-[#222] text-[#8e8e8e] border-transparent hover:text-white"
+                      : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
                   }`}
                 >
-                  <Trophy className="w-3 h-3 text-amber-300" />
+                  <Trophy className="w-3 h-3 text-amber-700 dark:text-amber-300" />
                   <span>Finalizados</span>
                   {convertedCount > 0 && (
                     <span
                       className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                        isSelected ? "bg-black/30 text-white" : "bg-zinc-800 text-amber-300"
+                        isSelected ? "bg-zinc-200/80 dark:bg-black/30 text-zinc-950 dark:text-white" : "bg-zinc-200 dark:bg-zinc-800 text-amber-700 dark:text-amber-300"
                       }`}
                     >
                       {convertedCount}
@@ -5195,11 +5198,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <div className="py-16 text-center space-y-2.5">
               {chatPlatform === "tinder" ? (
                 <>
-                  <div className="w-12 h-12 rounded-full bg-[#1c1c1e] flex items-center justify-center mx-auto text-[#fe3c72]">
+                  <div className="w-12 h-12 rounded-full bg-zinc-100 dark:bg-[#1c1c1e] flex items-center justify-center mx-auto text-[#fe3c72]">
                     <Flame className="w-6 h-6 stroke-[1.8]" />
                   </div>
-                  <p className="text-sm font-semibold text-white">Nenhum match encontrado</p>
-                  <p className="text-xs text-[#737373] max-w-xs mx-auto leading-relaxed">
+                  <p className="text-sm font-semibold text-zinc-950 dark:text-white">Nenhum match encontrado</p>
+                  <p className="text-xs text-zinc-500 dark:text-[#737373] max-w-xs mx-auto leading-relaxed">
                     {tinderSession?.isConnected
                       ? "Nenhum match corresponde ao filtro selecionado."
                       : "Conecte sua conta do Tinder na aba Config para carregar seus matches reais."}
@@ -5211,8 +5214,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <Camera className="w-6 h-6 stroke-[2]" />
                   </div>
                   <div className="space-y-1">
-                    <p className="text-sm font-bold text-white">Conecte seu Instagram Direct</p>
-                    <p className="text-xs text-[#737373] max-w-xs mx-auto leading-relaxed">
+                    <p className="text-sm font-bold text-zinc-950 dark:text-white">Conecte seu Instagram Direct</p>
+                    <p className="text-xs text-zinc-500 dark:text-[#737373] max-w-xs mx-auto leading-relaxed">
                       Vincule sua conta oficial da Meta para receber e responder conversas reais do Direct de forma segura e profissional.
                     </p>
                   </div>
@@ -5226,11 +5229,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 </div>
               ) : chatPlatform === "instagram" && isInstagramConnected === null ? (
                 <div className="py-10 text-center space-y-2">
-                  <div className="w-7 h-7 mx-auto rounded-full border-2 border-zinc-700 border-t-zinc-300 animate-spin" />
-                  <p className="text-xs text-[#737373]">Verificando conexão do Instagram...</p>
+                  <div className="w-7 h-7 mx-auto rounded-full border-2 border-zinc-300 dark:border-zinc-700 border-t-zinc-300 animate-spin" />
+                  <p className="text-xs text-zinc-500 dark:text-[#737373]">Verificando conexão do Instagram...</p>
                 </div>
               ) : (
-                <p className="text-xs text-[#737373]">Nenhuma conversa encontrada neste filtro.</p>
+                <p className="text-xs text-zinc-500 dark:text-[#737373]">Nenhuma conversa encontrada neste filtro.</p>
               )}
             </div>
           ) : (
@@ -5245,10 +5248,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <React.Fragment key={conv.id}>
                   {showDateDivider && dateLabel && (
                     <div className="pt-4 pb-1.5 px-2 flex items-center gap-3 select-none">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-[#8e8e8e]">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-[#8e8e8e]">
                         {dateLabel}
                       </span>
-                      <div className="h-px bg-[#262626] flex-1" />
+                      <div className="h-px bg-zinc-100 dark:bg-[#262626] flex-1" />
                     </div>
                   )}
 
@@ -5278,7 +5281,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   cancelLongPress();
                   setSelectedChatForActionSheet(conv);
                 }}
-                className="flex items-center justify-between py-2.5 px-2 rounded-xl hover:bg-[#121212] transition-colors cursor-pointer active:scale-[0.99] select-none"
+                className="flex items-center justify-between py-2.5 px-2 rounded-xl hover:bg-zinc-50 dark:hover:bg-[#121212] transition-colors cursor-pointer active:scale-[0.99] select-none"
               >
                 <div className="flex items-center gap-3.5 min-w-0 flex-1">
                   <div
@@ -5302,7 +5305,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <h4
                         className={`text-sm tracking-tight truncate ${
-                          isConversationUnread(conv) ? "font-bold text-white" : "font-normal text-white"
+                          isConversationUnread(conv) ? "font-bold text-zinc-950 dark:text-white" : "font-normal text-zinc-950 dark:text-white"
                         }`}
                       >
                         {conv.fullName}
@@ -5321,7 +5324,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               Sua vez
                             </span>
                           ) : (
-                            <span className="text-[9px] bg-[#222] text-[#8e8e8e] border border-[#333] font-medium px-1.5 py-0.5 rounded-full shrink-0 leading-none">
+                            <span className="text-[9px] bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border border-zinc-200 dark:border-[#333] font-medium px-1.5 py-0.5 rounded-full shrink-0 leading-none">
                               Vez deles
                             </span>
                           )}
@@ -5330,7 +5333,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                       {/* BADGES DO INSTAGRAM */}
                       {conv.type === "instagram" && isChatRestricted(conv) && (
-                        <span className="text-[9px] bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
+                        <span className="text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
                           <ShieldAlert className="w-2.5 h-2.5" />
                           Restrito
                         </span>
@@ -5340,8 +5343,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       {conv.type === "instagram" && (() => {
                         if (conv.isConverted) {
                           return (
-                            <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
-                              <Trophy className="w-2.5 h-2.5 text-amber-300" />
+                            <span className="text-[9px] bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
+                              <Trophy className="w-2.5 h-2.5 text-amber-700 dark:text-amber-300" />
                               Finalizado
                             </span>
                           );
@@ -5369,7 +5372,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
 
                     </div>
-                    <div className="flex items-center text-xs text-[#a8a8a8] mt-0.5 min-w-0">
+                    <div className="flex items-center text-xs text-zinc-600 dark:text-[#a8a8a8] mt-0.5 min-w-0">
                       {(() => {
                         const isLastMessageSeen =
                           conv.lastSender === "me" &&
@@ -5384,17 +5387,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           <>
                             <span className="flex min-w-0 flex-1 items-center">
                               {isLastMessageSeen ? (
-                                <span className="text-[#8e8e8e] font-normal truncate">Visto</span>
+                                <span className="text-zinc-500 dark:text-[#8e8e8e] font-normal truncate">Visto</span>
                               ) : (
                                 <span
-                                  className={isConversationUnread(conv) ? "truncate text-white font-semibold" : "truncate text-[#a8a8a8]"}
+                                  className={isConversationUnread(conv) ? "truncate text-zinc-950 dark:text-white font-semibold" : "truncate text-zinc-600 dark:text-[#a8a8a8]"}
                                 >
                                   {conv.lastMessage}
                                 </span>
                               )}
                             </span>
                             {timestamp && (
-                              <span className="text-[#737373] shrink-0 text-xs ml-1 font-normal">
+                              <span className="text-zinc-500 dark:text-[#737373] shrink-0 text-xs ml-1 font-normal">
                                 {"\u2022"} {formatMessageTime(timestamp)}
                               </span>
                             )}
@@ -5409,14 +5412,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                       const toneClass =
                         ai.status === "failed" ? "text-red-400" :
-                        ai.status === "uncertain" ? "text-orange-300" :
-                        ai.status === "waiting_human" ? "text-violet-300" :
-                        ai.status === "waiting_delay" || ai.status === "queued" ? "text-amber-300" :
-                        ai.status === "sending" ? "text-emerald-300" :
-                        ai.status === "processing" ? "text-sky-300" :
+                        ai.status === "uncertain" ? "text-orange-700 dark:text-orange-300" :
+                        ai.status === "waiting_human" ? "text-violet-700 dark:text-violet-300" :
+                        ai.status === "waiting_delay" || ai.status === "queued" ? "text-amber-700 dark:text-amber-300" :
+                        ai.status === "sending" ? "text-emerald-700 dark:text-emerald-300" :
+                        ai.status === "processing" ? "text-sky-700 dark:text-sky-300" :
                         ai.status === "completed" ? "text-emerald-400" :
-                        ai.status === "idle" ? "text-cyan-300" :
-                        "text-[#737373]";
+                        ai.status === "idle" ? "text-cyan-700 dark:text-cyan-300" :
+                        "text-zinc-500 dark:text-[#737373]";
                       const dotClass =
                         ai.status === "failed" ? "bg-red-400" :
                         ai.status === "uncertain" ? "bg-orange-300" :
@@ -5453,13 +5456,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           {objectiveText && (
                             <>
                               <span className="text-[#525252]">·</span>
-                              <span className="truncate text-[#8e8e8e]">{objectiveText}</span>
+                              <span className="truncate text-zinc-500 dark:text-[#8e8e8e]">{objectiveText}</span>
                             </>
                           )}
                           {actionText && (ai.status === "sending" || ai.status === "completed") && (
                             <>
                               <span className="text-[#525252]">·</span>
-                              <span className="truncate text-[#737373]">{actionText}</span>
+                              <span className="truncate text-zinc-500 dark:text-[#737373]">{actionText}</span>
                             </>
                           )}
                         </div>
@@ -5510,7 +5513,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     if (!isReplied) {
                       return (
                         <span title="Visualizada (Pendente de resposta)" className="flex items-center justify-center shrink-0">
-                          <Bell className="w-3.5 h-3.5 text-[#737373] stroke-[1.8]" />
+                          <Bell className="w-3.5 h-3.5 text-zinc-500 dark:text-[#737373] stroke-[1.8]" />
                         </span>
                       );
                     }
@@ -5582,7 +5585,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           onClick={() => setSelectedChatForActionSheet(null)}
         >
           <div
-            className="w-full sm:max-w-sm bg-[#161618] border border-[#2a2a2c] rounded-t-3xl sm:rounded-2xl overflow-hidden shadow-2xl p-4 space-y-3 pb-[calc(1.2rem+env(safe-area-inset-bottom,0px))] animate-in slide-in-from-bottom duration-200"
+            className="w-full sm:max-w-sm bg-white dark:bg-[#161618] border border-zinc-200 dark:border-[#2a2a2c] rounded-t-3xl sm:rounded-2xl overflow-hidden shadow-2xl p-4 space-y-3 pb-[calc(1.2rem+env(safe-area-inset-bottom,0px))] animate-in slide-in-from-bottom duration-200"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Cabeçalho do contato */}
@@ -5593,17 +5596,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 sizeClassName="w-11 h-11"
               />
               <div className="min-w-0 flex-1">
-                <h3 className="text-sm font-bold text-white truncate">
+                <h3 className="text-sm font-bold text-zinc-950 dark:text-white truncate">
                   {selectedChatForActionSheet.fullName}
                 </h3>
-                <p className="text-xs text-[#8e8e8e] truncate">
+                <p className="text-xs text-zinc-500 dark:text-[#8e8e8e] truncate">
                   @{selectedChatForActionSheet.username}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedChatForActionSheet(null)}
-                className="w-8 h-8 rounded-full bg-[#242426] text-[#8e8e8e] hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+                className="w-8 h-8 rounded-full bg-zinc-100 dark:bg-[#242426] text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white flex items-center justify-center cursor-pointer transition-colors"
                 aria-label="Fechar opções"
               >
                 <X className="w-4 h-4" />
@@ -5624,11 +5627,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   selectedChatForActionSheet.isRestricted
                     ? selectedChatForActionSheet.type === "tinder"
                       ? "bg-[#fe3c72]/15 border border-[#fe3c72]/40 text-[#fe3c72] hover:bg-[#fe3c72]/25"
-                      : "bg-amber-500/15 border border-amber-500/40 text-amber-200 hover:bg-amber-500/25"
-                    : "bg-[#202022] border border-[#2c2c2e] text-white hover:bg-[#28282b]"
+                      : "bg-amber-500/15 border border-amber-500/40 text-amber-800 dark:text-amber-200 hover:bg-amber-500/25"
+                    : "bg-white dark:bg-[#202022] border border-zinc-200 dark:border-[#2c2c2e] text-zinc-950 dark:text-white hover:bg-zinc-100 dark:hover:bg-[#28282b]"
                 }`}
               >
-                <div className="w-9 h-9 rounded-lg bg-black/40 flex items-center justify-center shrink-0">
+                <div className="w-9 h-9 rounded-lg bg-zinc-100 dark:bg-black/40 flex items-center justify-center shrink-0">
                   {selectedChatForActionSheet.isRestricted ? (
                     <ShieldCheck className="w-5 h-5 text-emerald-400" />
                   ) : (
@@ -5651,7 +5654,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       ? "Restringir match"
                       : "Restringir conta"}
                   </p>
-                  <p className="text-[11px] text-[#8e8e8e] truncate">
+                  <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e] truncate">
                     {selectedChatForActionSheet.isRestricted
                       ? selectedChatForActionSheet.type === "tinder"
                         ? "Mover de volta para os matches principais"
@@ -5667,9 +5670,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               <button
                 type="button"
                 onClick={() => handleToggleUnreadStatus(selectedChatForActionSheet)}
-                className="w-full p-3 rounded-xl bg-[#202022] border border-[#2c2c2e] hover:bg-[#28282b] text-white flex items-center gap-3 transition-all cursor-pointer active:scale-98 text-left"
+                className="w-full p-3 rounded-xl bg-white dark:bg-[#202022] border border-zinc-200 dark:border-[#2c2c2e] hover:bg-zinc-100 dark:hover:bg-[#28282b] text-zinc-950 dark:text-white flex items-center gap-3 transition-all cursor-pointer active:scale-98 text-left"
               >
-                <div className="w-9 h-9 rounded-lg bg-black/40 flex items-center justify-center shrink-0">
+                <div className="w-9 h-9 rounded-lg bg-zinc-100 dark:bg-black/40 flex items-center justify-center shrink-0">
                   {isConversationUnread(selectedChatForActionSheet) ? (
                     <Bell className="w-4 h-4 text-emerald-400" />
                   ) : (
@@ -5682,7 +5685,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       ? "Marcar como lida"
                       : "Marcar como não lida"}
                   </p>
-                  <p className="text-[11px] text-[#8e8e8e] truncate">
+                  <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e] truncate">
                     {isConversationUnread(selectedChatForActionSheet)
                       ? "Remover destaque de mensagem pendente"
                       : "Destacar com bolinha azul para responder depois"}
@@ -5699,14 +5702,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   setSelectedProfileForModal(target);
                   setIsProfileModalOpen(true);
                 }}
-                className="w-full p-3 rounded-xl bg-[#202022] border border-[#2c2c2e] hover:bg-[#28282b] text-white flex items-center gap-3 transition-all cursor-pointer active:scale-98 text-left"
+                className="w-full p-3 rounded-xl bg-white dark:bg-[#202022] border border-zinc-200 dark:border-[#2c2c2e] hover:bg-zinc-100 dark:hover:bg-[#28282b] text-zinc-950 dark:text-white flex items-center gap-3 transition-all cursor-pointer active:scale-98 text-left"
               >
-                <div className="w-9 h-9 rounded-lg bg-black/40 flex items-center justify-center shrink-0">
-                  <User className="w-4 h-4 text-[#a8a8a8]" />
+                <div className="w-9 h-9 rounded-lg bg-zinc-100 dark:bg-black/40 flex items-center justify-center shrink-0">
+                  <User className="w-4 h-4 text-zinc-600 dark:text-[#a8a8a8]" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold">Ver perfil completo</p>
-                  <p className="text-[11px] text-[#8e8e8e] truncate">
+                  <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e] truncate">
                     Visualizar dados do usuário e fotos
                   </p>
                 </div>
@@ -5717,7 +5720,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <button
               type="button"
               onClick={() => setSelectedChatForActionSheet(null)}
-              className="w-full py-3 rounded-xl bg-[#222226] hover:bg-[#2a2a2e] text-white text-xs font-bold transition-all cursor-pointer active:scale-98 border border-[#303034]"
+              className="w-full py-3 rounded-xl bg-zinc-100 dark:bg-[#222226] hover:bg-zinc-200 dark:hover:bg-[#2a2a2e] text-zinc-950 dark:text-white text-xs font-bold transition-all cursor-pointer active:scale-98 border border-zinc-200 dark:border-[#303034]"
             >
               Cancelar
             </button>

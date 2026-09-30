@@ -7,6 +7,7 @@ import {
   authorizeManualAutopilotRetryAtomic,
   releaseExperimentalCycleAtomic,
   runDurableOutboxDispatcher,
+  resolveConfiguredOpenAiModel,
 } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
 import { enrichBrainDecisionActionRows, enrichBrainTurnEventRows } from "./brain_event_enrichment.ts";
@@ -4514,6 +4515,205 @@ serve(async (req: Request) => {
         return new Response(JSON.stringify({ success: result.dispatchedCount > 0 || queuedForBrainReview, queuedForBrainReview, result }), { status: result.dispatchedCount > 0 ? 200 : queuedForBrainReview ? 202 : 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       } catch (error: any) {
         return new Response(JSON.stringify({ success: false, error: error?.message || "Falha ao enviar a ação." }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    if ((path === "/autopilot/brain-consultation" || path === "/api/autopilot/brain-consultation") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
+        return new Response(JSON.stringify({ success: false, error: "A consulta privada exige uma sessão autenticada do operador." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      try {
+        const body = await req.json().catch(() => ({}));
+        const turnId = String(body?.turnId || "").trim();
+        const operatorMessage = String(body?.message || "").trim().slice(0, 3000);
+        const consultationHistory = Array.isArray(body?.history)
+          ? body.history
+              .slice(-12)
+              .map((item: any) => ({
+                role: item?.role === "brain" ? "assistant" : "user",
+                content: String(item?.content || "").trim().slice(0, 2500),
+              }))
+              .filter((item: any) => item.content)
+          : [];
+
+        if (!turnId || !operatorMessage) {
+          return new Response(JSON.stringify({ success: false, error: "turnId e message são obrigatórios." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: waitingTurn, error: turnError } = await supabase
+          .from("brain_turns")
+          .select("id, conversation_id, session_id, status, inbound_message_ids")
+          .eq("id", turnId)
+          .maybeSingle();
+
+        if (turnError || !waitingTurn?.id || waitingTurn.status !== "waiting_manual") {
+          return new Response(JSON.stringify({ success: false, error: "Este turno não está aguardando o operador." }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const conversationId = String(waitingTurn.conversation_id || "");
+
+        const [
+          manualDecisionResult,
+          recentMessagesResult,
+          sessionFactsResult,
+          personaFactsResult,
+        ] = await Promise.all([
+          supabase
+            .from("brain_decisions")
+            .select("payload")
+            .eq("turn_id", turnId)
+            .eq("decision_type", "manual_resolution")
+            .order("version", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          supabase
+            .from("instagram_messages")
+            .select("id, sender_id, is_mine, text, created_at, timestamp, audio_transcript, media_type")
+            .eq("conversation_id", conversationId)
+            .order("created_at", { ascending: false })
+            .limit(40),
+          supabase
+            .from("manual_facts")
+            .select("question, fact, permanent, created_at")
+            .eq("conversation_id", conversationId)
+            .eq("session_id", waitingTurn.session_id)
+            .order("created_at", { ascending: false })
+            .limit(20),
+          supabase
+            .from("persona_memory")
+            .select("category, key, value, updated_at")
+            .eq("persona_id", "larissa")
+            .order("updated_at", { ascending: false })
+            .limit(40),
+        ]);
+
+        const manualRequest = manualDecisionResult.data?.payload?.manualResolution || {};
+        const manualQuestion = String(manualRequest.question || body?.question || "Informação necessária para continuar").trim();
+        const manualContext = String(manualRequest.context || "").trim();
+
+        const recentMessages = Array.isArray(recentMessagesResult.data)
+          ? [...recentMessagesResult.data].reverse().map((row: any) => {
+              const isMine = Boolean(row?.is_mine || row?.sender_id === "me" || row?.sender_id === "larissa");
+              const transcript = String(row?.audio_transcript || "").trim();
+              const text = String(row?.text || "").trim();
+              const content = transcript
+                ? `${text && !text.startsWith("[audio:") ? `${text} · ` : ""}[áudio transcrito: ${transcript}]`
+                : text;
+              return content ? `${isMine ? "Larissa" : "Contato"}: ${content}` : null;
+            }).filter(Boolean)
+          : [];
+
+        const sessionFacts = Array.isArray(sessionFactsResult.data)
+          ? sessionFactsResult.data.map((row: any) => `- ${String(row?.question || "Fato")}: ${String(row?.fact || "")}`).filter((line: string) => !line.endsWith(": "))
+          : [];
+
+        const personaFacts = Array.isArray(personaFactsResult.data)
+          ? personaFactsResult.data
+              .map((row: any) => `- [${String(row?.category || "memória")}] ${String(row?.key || "")}: ${String(row?.value || "")}`)
+              .filter((line: string) => !line.endsWith(": "))
+          : [];
+
+        const openAiKey = await getOpenAiApiKey(supabase);
+        if (!openAiKey) {
+          return new Response(JSON.stringify({ success: false, error: "OpenAI não está configurada para a consulta privada." }), {
+            status: 503,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const model = await resolveConfiguredOpenAiModel(supabase);
+        const systemPrompt = [
+          "Você é o modo CONSULTA PRIVADA do Brain do Vendeo.",
+          "Sua conversa é exclusivamente com o operador humano. Nada do que você disser será enviado ao contato.",
+          "Ajude o operador a entender contexto, recuperar fatos, identificar o que é conhecido versus inferência e pensar em caminhos de resposta.",
+          "Não invente fatos sobre Larissa ou sobre o contato. Quando algo não estiver sustentado pelo contexto, diga claramente que é incerto.",
+          "Se sugerir mensagens ao contato, preserve o estilo natural da conversa, mas apresente como opções para o operador escolher.",
+          "Em temas políticos: não deduza ideologia a partir de sinais ambíguos e não recomende fingir alinhamento. Aponte apenas declarações explícitas, incertezas e perguntas neutras de esclarecimento.",
+          "Seja direto e útil. Responda em português do Brasil.",
+          "",
+          `PEDIDO QUE BLOQUEOU O TURNO: ${manualQuestion}`,
+          manualContext ? `CONTEXTO DO PEDIDO: ${manualContext}` : "",
+          "",
+          "ÚLTIMAS MENSAGENS DA CONVERSA:",
+          recentMessages.length ? recentMessages.join("\n") : "(sem mensagens disponíveis)",
+          "",
+          "FATOS MANUAIS DESTA SESSÃO:",
+          sessionFacts.length ? sessionFacts.join("\n") : "(nenhum)",
+          "",
+          "MEMÓRIA DISPONÍVEL DA LARISSA:",
+          personaFacts.length ? personaFacts.join("\n") : "(nenhuma memória relevante carregada)",
+        ].filter(Boolean).join("\n");
+
+        const oaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${openAiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: systemPrompt },
+              ...consultationHistory,
+              { role: "user", content: operatorMessage },
+            ],
+          }),
+          signal: AbortSignal.timeout(35_000),
+        });
+
+        if (!oaiResponse.ok) {
+          const detail = (await oaiResponse.text()).slice(0, 500);
+          console.error("[Brain Consultation] OpenAI error:", oaiResponse.status, detail);
+          return new Response(JSON.stringify({ success: false, error: "O Brain não conseguiu responder à consulta agora." }), {
+            status: 502,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const oaiData = await oaiResponse.json();
+        const answer = String(
+          oaiData?.choices?.[0]?.message?.content ||
+          oaiData?.choices?.[0]?.message?.reasoning_content ||
+          "",
+        ).trim();
+
+        if (!answer) {
+          return new Response(JSON.stringify({ success: false, error: "O Brain retornou uma consulta vazia." }), {
+            status: 502,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          answer,
+          model,
+          turnId,
+          conversationId,
+          context: {
+            recentMessages: recentMessages.length,
+            sessionFacts: sessionFacts.length,
+            personaFacts: personaFacts.length,
+          },
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (error: any) {
+        console.error("[Brain Consultation] Falha:", error?.message || error);
+        return new Response(JSON.stringify({ success: false, error: error?.message || "Falha na consulta privada com o Brain." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
     }
 
