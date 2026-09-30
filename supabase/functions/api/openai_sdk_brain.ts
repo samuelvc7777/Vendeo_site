@@ -729,6 +729,53 @@ async function cleanupSdkConversationTechnicalItems(params: {
   }
 }
 
+async function cleanupUnfinishedSdkConversationExecutions(params: {
+  supabase: any;
+  client: any;
+  conversationId: string;
+  openAiConversationId: string;
+}): Promise<number> {
+  const { data, error } = await params.supabase
+    .from("brain_turns")
+    .select("id, created_at, runtime_metadata")
+    .eq("conversation_id", params.conversationId)
+    .order("created_at", { ascending: true })
+    .limit(100);
+
+  if (error) {
+    console.warn("[OpenAI SDK] stale technical execution lookup failed:", error.message || error);
+    return 0;
+  }
+
+  const staleRows = (data || []).filter((row: any) => {
+    const metadata = row?.runtime_metadata || {};
+    return metadata.runtime === "agents_sdk_conversation"
+      && String(metadata.openAiConversationId || "") === params.openAiConversationId
+      && Boolean(metadata.markerItemId)
+      && !metadata.technicalCleanupCompletedAt;
+  });
+
+  let cleanupAttempts = 0;
+  for (const row of staleRows) {
+    const metadata = row.runtime_metadata || {};
+    const executionKey = String(metadata.executionKey || "").trim();
+    const markerItemId = String(metadata.markerItemId || "").trim();
+    if (!executionKey || !markerItemId) continue;
+
+    cleanupAttempts++;
+    await cleanupSdkConversationTechnicalItems({
+      supabase: params.supabase,
+      client: params.client,
+      executionKey,
+      turnId: String(row.id),
+      openAiConversationId: params.openAiConversationId,
+      markerItemId,
+    });
+  }
+
+  return cleanupAttempts;
+}
+
 async function markSdkExecutionAttempt(
   supabase: any,
   executionKey: string,
@@ -1271,26 +1318,79 @@ export async function runOpenAiSdkBrainTurn(
     telemetry.durationMs = Date.now() - startedAt;
     return { success: true, plan: normalized.plan, telemetry };
   } catch (error) {
+    const errorMessage = String((error as Error)?.message || error);
+    const missingToolOutput = /No tool output found for function call/i.test(errorMessage);
     telemetry.status = "failed";
     telemetry.durationMs = Date.now() - startedAt;
+
     if (executionPrepared && executionKey && executionTurnId) {
       try {
         await failSdkExecution(params.supabase, executionKey, executionTurnId, error);
       } catch {}
+
+      // Qualquer falha do provider pode acontecer depois de ele gravar tool calls,
+      // reasoning ou outros itens t├®cnicos na Conversation. Se esses itens ficarem
+      // sem o par de tool output, a Conversation inteira fica envenenada e todos
+      // os ciclos seguintes falham com o mesmo call_id.
+      try {
+        if (missingToolOutput) {
+          const cleanupAttempts = await cleanupUnfinishedSdkConversationExecutions({
+            supabase: params.supabase,
+            client,
+            conversationId: params.conversationId,
+            openAiConversationId: link.openAiConversationId,
+          });
+          console.warn(
+            `[OpenAI SDK] missing_tool_output_repair cleanup_attempts=${cleanupAttempts} conversationId=${params.conversationId}`,
+          );
+        } else if (executionMarkerItemId) {
+          await cleanupSdkConversationTechnicalItems({
+            supabase: params.supabase,
+            client,
+            executionKey,
+            turnId: executionTurnId,
+            openAiConversationId: link.openAiConversationId,
+            markerItemId: executionMarkerItemId,
+          });
+        }
+      } catch (cleanupError) {
+        console.warn(
+          "[OpenAI SDK] failed run technical cleanup exception:",
+          String((cleanupError as Error)?.message || cleanupError),
+        );
+      }
     }
+
     try {
       await params.supabase
         .from("openai_conversation_links")
         .update({
-          last_error: String((error as Error)?.message || error).slice(0, 1000),
+          last_error: errorMessage.slice(0, 1000),
           updated_at: new Date().toISOString(),
         })
         .eq("conversation_id", params.conversationId);
     } catch {}
+
+    // Recupera uma ├║nica vez depois de limpar TODOS os runs t├®cnicos incompletos
+    // desta Conversation. O guard impede loop infinito se a causa externa persistir.
+    if (missingToolOutput && (params.technicalRepairCount || 0) < 1) {
+      console.warn(
+        `[OpenAI SDK] retrying_after_missing_tool_output_repair conversationId=${params.conversationId}`,
+      );
+      const repaired = await runOpenAiSdkBrainTurn({
+        ...params,
+        technicalRepairCount: (params.technicalRepairCount || 0) + 1,
+      });
+      if (repaired.success) {
+        repaired.telemetry.executionRecovered = true;
+      }
+      return repaired;
+    }
+
     return {
       success: false,
       plan: null,
-      error: String((error as Error)?.message || error),
+      error: errorMessage,
       telemetry,
     };
   }
