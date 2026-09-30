@@ -49,11 +49,11 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     for (const objective of params.stageObjectives) {
       const value = objective.value == null ? "" : ` value=${JSON.stringify(objective.value)}`;
       const evidence = objective.evidenceMessageId ? ` evidence=${objective.evidenceMessageId}` : "";
-      lines.push(`- ${objective.id}: ${objective.status} required=${objective.required !== false}${value}${evidence}${objective.description ? ` | ${objective.description}` : ""}`);
+      lines.push(`- ${objective.id}: ${objective.status} required=${objective.required !== false} label=${JSON.stringify(objective.label)}${value}${evidence}`);
     }
   }
 
-  if (params.nextObjectives?.length) {
+  if (params.nextObjectives?.length && !params.stageObjectives?.length) {
     lines.push("PROXIMOS_OBJETIVOS:");
     for (const objective of params.nextObjectives) {
       lines.push(`- ${objective.id}: ${objective.label}${objective.description ? ` | ${objective.description}` : ""}`);
@@ -73,6 +73,24 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     for (const evidence of params.candidateEvidence) {
       lines.push(`- objective=${evidence.objectiveId} message=${evidence.evidenceMessageId} summary=${evidence.summary}`);
     }
+  }
+
+  if (params.audioPrefetchComplete && params.prefetchedAudioCandidateGroups?.length) {
+    lines.push("COFRE_AUDIO_PREAUTORIZADO_DA_ETAPA:");
+    for (const group of params.prefetchedAudioCandidateGroups) {
+      if (!group.candidates.length) {
+        lines.push(`- objective=${group.objectiveId}: nenhum_audio_elegivel`);
+        continue;
+      }
+      for (const candidate of group.candidates) {
+        lines.push(
+          `- objective=${group.objectiveId} audio_id=${candidate.audioId} titulo=${JSON.stringify(candidate.title)} quando_usar=${JSON.stringify(candidate.whenToUse)} transcricao=${JSON.stringify(candidate.transcript)}`
+        );
+      }
+    }
+    lines.push(
+      "COFRE_PREFETCH_RULE: o catálogo acima já foi validado pelo backend para TODOS os objetivos desta etapa. NÃO chame cofre_audio_search neste turno. Se um áudio listado for semanticamente adequado, use diretamente esse audio_id em outboundActions; se o objetivo mostrar nenhum_audio_elegivel, responda sem áudio."
+    );
   }
 
   const repliedInbounds = (params.currentInboundMessages || []).filter((message) =>
@@ -912,7 +930,7 @@ export async function runOpenAiSdkBrainTurn(
     personaMemoryToolEnabled: false,
     contactMemoryToolEnabled: false,
     conversationMemoryToolEnabled: false,
-    audioSearchToolEnabled: true,
+    audioSearchToolEnabled: params.audioPrefetchComplete !== true,
     webSearchEnabled: true,
     webSearchCallCount: 0,
     webSearchDuplicateCallCount: 0,
@@ -923,6 +941,17 @@ export async function runOpenAiSdkBrainTurn(
     agentSessionReasoningRequested: params.reasoningEffort || null,
     agentSessionReasoningActual: params.reasoningEffort || null,
   };
+
+  if (params.prefetchedAudioCandidateGroups?.length) {
+    telemetry.authorizedCandidateAudiosByObjective = params.prefetchedAudioCandidateGroups.map((group) => ({
+      objectiveId: group.objectiveId,
+      candidates: group.candidates.map((candidate) => ({ ...candidate })),
+    }));
+    telemetry.authorizedCandidateAudios = params.prefetchedAudioCandidateGroups.flatMap(
+      (group) => group.candidates.map((candidate) => ({ ...candidate, objectiveId: candidate.objectiveId || group.objectiveId })),
+    );
+    telemetry.audioToolCandidatesCount = telemetry.authorizedCandidateAudios.length;
+  }
 
   if (!apiKey) {
     telemetry.status = "failed";
@@ -1156,6 +1185,7 @@ export async function runOpenAiSdkBrainTurn(
     model,
     modelSettings: {
       ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
       promptCacheOptions: {
         mode: "implicit",
         ttl: "30m",
@@ -1164,7 +1194,9 @@ export async function runOpenAiSdkBrainTurn(
         service_tier: serviceTier,
       },
     },
-    tools: [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })],
+    tools: params.audioPrefetchComplete
+      ? [webSearchTool({ searchContextSize: "low", externalWebAccess: true })]
+      : [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })],
     resetToolChoice: true,
   });
   try {

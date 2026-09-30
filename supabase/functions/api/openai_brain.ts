@@ -821,6 +821,9 @@ export function validateConversationBrainPlan(
   if (plan.action === "send_audio") {
     plan.action = "reply";
   }
+  if ((!plan.liveStatePatch || typeof plan.liveStatePatch !== "object") && typeof plan.currentTopic === "string" && plan.currentTopic.trim()) {
+    plan.liveStatePatch = { currentTopic: plan.currentTopic.trim() };
+  }
   if (plan.action === "wait") {
     return { valid: true };
   }
@@ -1521,6 +1524,7 @@ export interface RunOpenAiBrainParams {
   model?: string;
   serviceTier?: "auto" | "default" | "flex";
   reasoningEffort?: string;
+  verbosity?: "low" | "medium" | "high";
   signal?: AbortSignal;
   runtime?: any;
   strictOpenAiPilot?: boolean;
@@ -1531,6 +1535,18 @@ export interface RunOpenAiBrainParams {
   technicalRepairCount?: number;
   schemaFeedback?: string;
   recoveredAudioToolState?: RecoveredAudioToolState;
+  prefetchedAudioCandidateGroups?: Array<{
+    objectiveId: string;
+    candidates: Array<{
+      audioId: string;
+      objectiveId?: string;
+      title: string;
+      transcript: string;
+      whenToUse: string;
+      duration?: number;
+    }>;
+  }>;
+  audioPrefetchComplete?: boolean;
   recentGreetingState?: RecentGreetingState;
   greetingRepeatFeedback?: string;
   recentStyleStateSnippet?: string;

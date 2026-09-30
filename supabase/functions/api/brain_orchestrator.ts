@@ -4954,6 +4954,129 @@ export async function listEligiblePersonaAudios(params: {
     .sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), "pt-BR"));
 }
 
+export async function listEligiblePersonaAudiosForObjectives(params: {
+  supabase: any;
+  conversationId: string;
+  objectiveIds: string[];
+}): Promise<Array<PersonaAudioAsset & { alreadySentInConversation: boolean; already_sent?: boolean }>> {
+  const { supabase, conversationId } = params;
+  const objectiveIds = Array.from(new Set(
+    (params.objectiveIds || []).map((id) => String(id || "").trim()).filter(Boolean),
+  ));
+  if (objectiveIds.length === 0) return [];
+
+  let audios: PersonaAudioAsset[] = [];
+  try {
+    const { data: audioRows, error: audioRowsError } = await supabase
+      .from("persona_audios")
+      .select("*")
+      .eq("enabled", true)
+      .in("objective_id", objectiveIds)
+      .order("title", { ascending: true });
+    if (audioRowsError) throw new Error(`audio_prefetch_catalog_failed: ${audioRowsError.message || audioRowsError}`);
+
+    if (Array.isArray(audioRows)) {
+      audios = audioRows.map((r: any) => ({
+        id: r.id,
+        objectiveId: r.objective_id || r.objectiveId || undefined,
+        title: r.title,
+        audioUrl: r.audio_url || r.audioUrl,
+        duration: r.duration != null ? Number(r.duration) : undefined,
+        transcript: r.transcript || r.full_transcript || "",
+        usageInstruction: r.usage_instruction || r.when_to_use || r.usageInstruction || "",
+        enabled: r.enabled ?? true,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      }));
+    }
+  } catch (error) {
+    if (!(supabase as any)?.__mockPersonaAudios) throw error;
+  }
+
+  if (audios.length === 0 && (supabase as any)?.__mockPersonaAudios) {
+    const allowed = new Set(objectiveIds);
+    audios = (supabase as any).__mockPersonaAudios.filter((audio: any) =>
+      allowed.has(String(audio.objective_id || audio.objectiveId || ""))
+    );
+  }
+
+  const sentAudioIds = new Set<string>();
+  try {
+    const { data: histRows } = await supabase
+      .from("audio_delivery_history")
+      .select("audio_id")
+      .eq("conversation_id", conversationId);
+    for (const row of histRows || []) {
+      if (row?.audio_id) sentAudioIds.add(String(row.audio_id));
+    }
+  } catch {}
+
+  try {
+    const { data: convRow } = await supabase
+      .from("instagram_conversations")
+      .select("stage_completed_rules")
+      .eq("id", conversationId)
+      .maybeSingle();
+    const convHist = convRow?.stage_completed_rules?.audio_delivery_history || [];
+    if (Array.isArray(convHist)) {
+      convHist.forEach((h: any) => sentAudioIds.add(String(h.audioId || h.id)));
+    }
+    const deliveredAudios = convRow?.stage_completed_rules?.orchestration?.deliveredAudios || [];
+    if (Array.isArray(deliveredAudios)) {
+      deliveredAudios.forEach((id: any) => sentAudioIds.add(typeof id === "string" ? id : String(id?.id)));
+    }
+  } catch {}
+
+  try {
+    const { data: msgRows } = await supabase
+      .from("instagram_messages")
+      .select("metadata")
+      .eq("conversation_id", conversationId)
+      .limit(100);
+    for (const m of msgRows || []) {
+      const meta = m?.metadata;
+      if (meta && typeof meta === "object") {
+        const audioId = meta.audio_id || meta.audioId || meta.vault_audio_id;
+        if (audioId) sentAudioIds.add(String(audioId));
+      }
+    }
+  } catch {}
+
+  try {
+    const { data: jobRows } = await supabase
+      .from("outbox_jobs")
+      .select("payload, action")
+      .eq("conversation_id", conversationId)
+      .limit(50);
+    for (const job of jobRows || []) {
+      const audioId =
+        job?.payload?.audioId ||
+        job?.payload?.audio_id ||
+        job?.action?.audioId ||
+        job?.action?.audio_id;
+      if (audioId) sentAudioIds.add(String(audioId));
+    }
+  } catch {}
+
+  if ((supabase as any)?.__mockAudioHistory) {
+    for (const history of (supabase as any).__mockAudioHistory as any[]) {
+      if (history.conversationId === conversationId || history.conversation_id === conversationId) {
+        sentAudioIds.add(String(history.audioId || history.audio_id));
+      }
+    }
+  }
+
+  return audios
+    .filter((audio) => audio.enabled !== false)
+    .filter((audio) => !sentAudioIds.has(String(audio.id)))
+    .map((audio) => ({
+      ...audio,
+      alreadySentInConversation: false,
+      already_sent: false,
+    }))
+    .sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), "pt-BR"));
+}
+
 /** Compatibilidade para chamadores antigos: intent/query não filtram o catálogo. */
 export async function searchPersonaAudios(params: {
   supabase: any;
@@ -7712,6 +7835,50 @@ export async function runBrainOrchestration(
             console.warn("[Brain] Falha ao recuperar candidatos de áudio; o Brain continuará sem o estado anterior.", recoveryError);
           }
         }
+        let prefetchedAudioCandidateGroups: NonNullable<Parameters<typeof runOpenAiBrainTurn>[0]["prefetchedAudioCandidateGroups"]> = [];
+        let audioPrefetchComplete = false;
+        if (useSdkConversationRuntime) {
+          const stageObjectiveIds = Array.from(new Set(
+            (stageChecklistForRouter.goals || [])
+              .map((goal) => String(goal.id || "").trim())
+              .filter(Boolean),
+          ));
+          if (stageObjectiveIds.length > 0) {
+            try {
+              const prefetchedAssets = await listEligiblePersonaAudiosForObjectives({
+                supabase,
+                conversationId,
+                objectiveIds: stageObjectiveIds,
+              });
+              const grouped = new Map<string, NonNullable<Parameters<typeof runOpenAiBrainTurn>[0]["prefetchedAudioCandidateGroups"]>[number]["candidates"]>(
+                stageObjectiveIds.map((objectiveId) => [objectiveId, []]),
+              );
+              for (const asset of prefetchedAssets) {
+                const objectiveId = String(asset.objectiveId || "").trim();
+                if (!objectiveId || !grouped.has(objectiveId)) continue;
+                grouped.get(objectiveId)!.push({
+                  audioId: String(asset.id),
+                  objectiveId,
+                  title: String(asset.title || ""),
+                  transcript: String(asset.transcript || ""),
+                  whenToUse: String(asset.usageInstruction || ""),
+                  ...(asset.duration != null ? { duration: Number(asset.duration) } : {}),
+                });
+              }
+              prefetchedAudioCandidateGroups = Array.from(grouped, ([objectiveId, candidates]) => ({
+                objectiveId,
+                candidates,
+              }));
+              audioPrefetchComplete = true;
+              currentCycle.trace.push("audio_prefetch_complete=true");
+              currentCycle.trace.push(`audio_prefetch_candidate_count=${prefetchedAssets.length}`);
+            } catch (audioPrefetchError) {
+              currentCycle.trace.push("audio_prefetch_complete=false");
+              console.warn("[Brain] Falha no prefetch do Cofre; mantendo tool fallback.", audioPrefetchError);
+            }
+          }
+        }
+
         // Turnos antigos ainda marcados como brain_late terminam no runtime legado.
         // Novos turnos usam Agents SDK + Conversations por padrão.
         const runOpenAiBrainProvider = useSdkConversationRuntime
@@ -7737,6 +7904,9 @@ export async function runBrainOrchestration(
           model: configuredAgentModel,
           serviceTier: configuredServiceTier,
           reasoningEffort: agentSettings.get("openai_brain_reasoning_effort") || undefined,
+          verbosity: (["low", "medium", "high"].includes(agentSettings.get("openai_brain_verbosity") || "")
+            ? agentSettings.get("openai_brain_verbosity")
+            : undefined) as "low" | "medium" | "high" | undefined,
           replyTargets,
           currentStageId,
           nextStageId: stageChecklistForRouter.nextStageId,
@@ -7779,6 +7949,8 @@ export async function runBrainOrchestration(
           recentStyleStateSnippet: recentStyleSnippet,
           recentGreetingState,
           recoveredAudioToolState,
+          prefetchedAudioCandidateGroups,
+          audioPrefetchComplete,
           memoryScopeId: currentMemoryScopeId,
           recentQuestionIntentsSnippet: useSdkConversationRuntime
             ? ""
