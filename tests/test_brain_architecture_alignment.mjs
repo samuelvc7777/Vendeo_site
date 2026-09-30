@@ -6,6 +6,7 @@ import { computeBoundedDebounce } from "../supabase/functions/api/debounce_polic
 import {
   fetchSessionRecoveryBootstrap,
   validateConversationBrainPlan,
+  validateResponseGenerationInvariant,
 } from "../supabase/functions/api/openai_brain.ts";
 
 function basicPlan(outboundActions) {
@@ -19,7 +20,6 @@ function basicPlan(outboundActions) {
       newQuestionBudget: 1,
       responseShape: "natural",
       directQuestions: [],
-      maxBalloons: Math.max(1, outboundActions.length),
     },
   };
 }
@@ -106,6 +106,20 @@ test("cadência explícita é obrigatória depois de texto e primeira ação é 
   assert.equal(validResult.valid, true, validResult.error);
   assert.equal(valid.outboundActions[0].delayBeforeSendSeconds, 0);
   assert.equal(valid.outboundActions[1].delayBeforeSendSeconds, 4);
+});
+
+test("backend aceita quantidade dinâmica de mensagens decidida pelo Brain", () => {
+  const actions = Array.from({ length: 10 }, (_, index) => ({
+    type: "text",
+    text: `balão ${index + 1}`,
+    delay_before_send: index === 0 ? 0 : 2,
+  }));
+  const plan = basicPlan(actions);
+  const contractResult = validateConversationBrainPlan(plan);
+  const generationResult = validateResponseGenerationInvariant(plan);
+  assert.equal(contractResult.valid, true, contractResult.error);
+  assert.equal(generationResult.valid, true, generationResult.error);
+  assert.equal(plan.outboundActions.length, 10);
 });
 
 test("após áudio o backend usa duração real e aceita delay zero implícito", () => {

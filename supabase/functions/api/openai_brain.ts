@@ -841,12 +841,6 @@ export function validateConversationBrainPlan(
 
   // Validação e normalização canônica de outboundActions
   if (Array.isArray(plan.outboundActions)) {
-    if (plan.outboundActions.length > 4) {
-      return {
-        valid: false,
-        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'outboundActions' excede o limite máximo de 4 ações",
-      };
-    }
     let audioActionCount = 0;
     for (let i = 0; i < plan.outboundActions.length; i++) {
       const act = plan.outboundActions[i];
@@ -934,7 +928,6 @@ export function validateConversationBrainPlan(
   if (turnContract.responseShape === undefined) turnContract.responseShape = "natural";
   if (!Array.isArray(turnContract.directQuestions)) turnContract.directQuestions = [];
   if (turnContract.newQuestionBudget === undefined) turnContract.newQuestionBudget = 1;
-  if (!Number.isInteger(turnContract.maxBalloons)) turnContract.maxBalloons = 2;
   if (typeof turnContract.mustAnswerFirst !== "boolean") {
     return { valid: false, error: "turnContract.mustAnswerFirst deve ser booleano" };
   }
@@ -946,9 +939,6 @@ export function validateConversationBrainPlan(
   }
   if (!Array.isArray(turnContract.directQuestions)) {
     return { valid: false, error: "turnContract.directQuestions deve ser uma lista" };
-  }
-  if (!Number.isInteger(turnContract.maxBalloons) || turnContract.maxBalloons < 1 || turnContract.maxBalloons > 4) {
-    return { valid: false, error: "turnContract.maxBalloons deve ser inteiro entre 1 e 4" };
   }
 
   // Síntese defensiva retrocompatível: se missionPackage estiver ausente, sintetiza a partir da raiz
@@ -992,12 +982,6 @@ export function validateResponseGenerationInvariant(plan: any): PlanValidationRe
   if (plan.action === "manual_resolution") return { valid: true };
   // Se possuir outboundActions válido (inclusive caso somente de áudio)
   if (Array.isArray(plan.outboundActions) && plan.outboundActions.length > 0) {
-    if (plan.outboundActions.length > 4) {
-      return {
-        valid: false,
-        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'outboundActions' excede o limite máximo de 4 ações",
-      };
-    }
     return { valid: true };
   }
   // Se for ação de reply ou tiver responses declarado
@@ -1006,12 +990,6 @@ export function validateResponseGenerationInvariant(plan: any): PlanValidationRe
       return {
         valid: false,
         error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'responses' ausente ou vazio para action != wait",
-      };
-    }
-    if (plan.responses.length > 4) {
-      return {
-        valid: false,
-        error: "PLAN_INCOMPLETE_RESPONSE_GENERATION: 'responses' excede o limite máximo de 4 balões",
       };
     }
     for (const b of plan.responses) {
@@ -1489,7 +1467,6 @@ export function buildFallbackBrainPlan(parsedPlan: any): any {
     newQuestionBudget: 1,
     responseShape: "answer_and_reciprocate",
     preferNoEmoji: false,
-    maxBalloons: 2,
   };
   return {
     action: "reply",
@@ -2329,7 +2306,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
   "evidenceMessageId": null,
   "reasoning": "sua justificativa estratégica sucinta",
   "liveStatePatch": { "currentTopic": "..." },
-  "turnContract": { "mustAnswerFirst": true, "newQuestionBudget": 1, "responseShape": "natural", "directQuestions": [], "maxBalloons": 2 },
+  "turnContract": { "mustAnswerFirst": true, "newQuestionBudget": 1, "responseShape": "natural", "directQuestions": [] },
   "resolvedQuestionIntentIds": [],
   "questionIntents": [],
   "outboundActions": [
@@ -2620,15 +2597,14 @@ Emita EXCLUSIVAMENTE um único objeto JSON final com o seguinte formato:
     "mustAnswerFirst": true,
     "newQuestionBudget": 1,
     "responseShape": "answer_and_reciprocate",
-    "preferNoEmoji": false,
-    "maxBalloons": 2
+    "preferNoEmoji": false
   },
   "responses": [
     "balão 1",
     "balão 2"
   ]
 }
-Nota: "maxBalloons" varia de 1-2 (turno simples) a 2-4 (lote composto com múltiplos atos: elogio + comentário + pergunta). "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Em turnos normais, use 0 a 1 emoji; em turnos afetivos, flerte ou lotes de 2-4 balões, podem aparecer até 2 emojis naturais (máximo 2). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado). Os campos objectiveBridgeDetected, objectiveBridgeEvidence, coveredHooks, ignoredRelevantHooks, socialCueInterpretation e selfFactRepeatedRisk são observabilidade opcionais; relate somente o que o plano sustenta, sem inventar evidências. Os campos sociais não acionam lógica de correção no backend.`
+Nota: a quantidade de respostas é decisão semântica do Brain e deve seguir a composição humana definida no prompt canônico, sem teto conversacional imposto pelo backend. "directQuestions" lista as perguntas diretas do pretendente. "preferNoEmoji" deve ser true em assuntos sérios/delicados e false nos demais. Use emojis com parcimônia e naturalidade (máximo 2 no turno). "resolvedQuestionIntentIds" e "questionIntents" são campos canônicos de continuidade (use [] se nenhuma pergunta for resolvida ou feita). "memoryWrites" é opcional (omita ou deixe vazio se nada novo e durável foi revelado). Os campos objectiveBridgeDetected, objectiveBridgeEvidence, coveredHooks, ignoredRelevantHooks, socialCueInterpretation e selfFactRepeatedRisk são observabilidade opcionais; relate somente o que o plano sustenta, sem inventar evidências. Os campos sociais não acionam lógica de correção no backend.`
   );
 
   if (params.schemaFeedback) sections.push(`\n## RETRY DE CONTRATO\nO plano anterior foi rejeitado pelo contrato do turno: ${params.schemaFeedback}. Corrija a decisão e a resposta final para respeitar o objetivo/estrutura informados, sem tratar este feedback como mensagem do pretendente.`);

@@ -32,7 +32,6 @@ export interface TurnContract {
   responseShape: TurnResponseShape;
   avoidEchoPhrases: string[];
   avoidTopics?: string[];
-  maxBalloons: number;
   preferNoEmoji: boolean;
   freshGreetingExchange?: boolean;
 }
@@ -44,7 +43,6 @@ export type ConversationQualityIssueCode =
   | "QUESTION_BUDGET_EXCEEDED"
   | "UNRELATED_FOLLOWUP"
   | "MISSING_REQUIRED_FACT"
-  | "TOO_MANY_BALLOONS_FOR_SIMPLE_TURN"
   | "GENERIC_ASSISTANT_RESPONSE"
   | "MISSING_WELLBEING_QUESTION"
   | "GREETING_REPEAT_GUARD"
@@ -400,7 +398,6 @@ export function buildTurnContract(
         : (greeting || ((requested as any)?.objectiveDirective === "pursue" && requested?.newQuestionBudget !== 0) ? "react_and_question" : "react_only"),
     avoidEchoPhrases: Array.isArray(requested?.avoidEchoPhrases) ? requested!.avoidEchoPhrases!.map(String) : detectedQuestions,
     avoidTopics: Array.isArray(requested?.avoidTopics) ? requested!.avoidTopics!.map(String) : [],
-    maxBalloons: Math.max(1, Math.min(4, Number(requested?.maxBalloons || (greeting ? 2 : 4)))),
     preferNoEmoji: requested?.preferNoEmoji ?? false,
   };
 }
@@ -408,7 +405,6 @@ export function buildTurnContract(
 /** Normaliza um contrato já decidido pelo Brain, sem inferir estratégia conversacional. */
 export function normalizeBrainTurnContract(
   requested: Partial<TurnContract> | null | undefined,
-  technicalMaxBalloons = 4,
 ): TurnContract {
   const raw = requested || {};
   return {
@@ -427,7 +423,6 @@ export function normalizeBrainTurnContract(
     responseShape: typeof raw.responseShape === "string" ? raw.responseShape as TurnResponseShape : "free_conversation",
     avoidEchoPhrases: Array.isArray(raw.avoidEchoPhrases) ? raw.avoidEchoPhrases.map(String) : [],
     avoidTopics: Array.isArray(raw.avoidTopics) ? raw.avoidTopics.map(String) : [],
-    maxBalloons: Math.max(1, Math.min(technicalMaxBalloons, Number(raw.maxBalloons) || technicalMaxBalloons)),
     preferNoEmoji: raw.preferNoEmoji === true,
   };
 }
@@ -557,9 +552,6 @@ export function runConversationQualityGate(params: {
   if (parrotScore >= 0.72) add("PARROT_RESPONSE", "A resposta apenas ecoa ou reformula a fala anterior.");
   if (questionCount > turnContract.newQuestionBudget) {
     add("QUESTION_BUDGET_EXCEEDED", `Foram feitas ${questionCount} perguntas; o limite do turno é ${turnContract.newQuestionBudget}.`);
-  }
-  if (candidateBalloons.length > turnContract.maxBalloons) {
-    add("TOO_MANY_BALLOONS_FOR_SIMPLE_TURN", `Foram usados ${candidateBalloons.length} balões; o limite do turno é ${turnContract.maxBalloons}.`);
   }
   if ((params.freshGreetingExchange ?? true) && isGreetingOrWellbeing(inbound) && questionCount === 0) {
     add("MISSING_WELLBEING_QUESTION", "Uma nova troca iniciada por saudação exige perguntar sobre bem-estar ou devolver essa pergunta reciprocamente.");

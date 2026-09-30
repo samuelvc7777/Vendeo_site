@@ -42,7 +42,7 @@ console.log('🧪 Conversation Quality Gate — comportamento conversacional\n')
 {
   const { contract, result } = gate('Oii, tudo bem?', ['Oii, tô bem sim, e vc?']);
   assert(result.passed, 'Resposta direta natural passa');
-  assert(contract.preferNoEmoji === false && contract.maxBalloons === 2, 'Saudação permite emoji opcional e até dois balões');
+  assert(contract.preferNoEmoji === false && !('maxBalloons' in contract), 'Contrato não impõe quantidade de balões');
 }
 
 {

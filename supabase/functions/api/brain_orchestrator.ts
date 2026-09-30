@@ -4600,7 +4600,6 @@ Quando estiver pronto para formular a resposta:
       "responseShape": "answer_only" | "answer_and_reciprocate" | "react_only" | "react_and_question" | "free_conversation",
       "avoidEchoPhrases": ["frase que não deve ser papagaiada"],
       "avoidTopics": ["checkpoint adiado"],
-      "maxBalloons": 1,
       "preferNoEmoji": true
     }
   }
@@ -4701,7 +4700,7 @@ ${formattedRecentMsgs}
    - É expressamente proibido usar ponto de exclamação (!)
    - É expressamente proibido usar reticências (...), dois pontos (:), ponto e vírgula (;) ou travessão (—).
 2. Não pergunte nada que já esteja nos fatos conhecidos.
-3. Respeite maxBalloons e newQuestionBudget do contrato. Pergunta nova não é obrigatória.
+3. Respeite newQuestionBudget do contrato. Pergunta nova não é obrigatória.
 4. Se o pretendente fez uma pergunta, RESPONDA antes de qualquer coisa.
 5. Se houver áudio autorizado e for natural enviar, use SOMENTE missionPackage.selectedAudioId. Nunca escolha outro ID.
 6. Reação pessoal vem antes de checkpoint. Não ecoe a fala dele como pergunta.
