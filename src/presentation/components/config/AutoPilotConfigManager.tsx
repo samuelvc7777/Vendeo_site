@@ -58,7 +58,7 @@ export function AutoPilotConfigManager() {
       setOpenAiMaskedKey(data.maskedKey || null);
       setOpenAiCurrentModel(data.model || null);
       setOpenAiCurrentModelLabel(data.modelLabel || null);
-      if (data.model === "gpt-6-luna" || data.model === "gpt-6-sol") setOpenAiModel(data.model);
+      if (data.model === "gpt-6-luna" || data.model === "gpt-6-sol" || data.model === "gpt-6.1-sol") setOpenAiModel(data.model);
       else setOpenAiModel("");
       if (data.reasoningEffort) setOpenAiReasoningEffort(data.reasoningEffort);
       if (data.verbosity) setOpenAiVerbosity(data.verbosity);
@@ -90,7 +90,7 @@ export function AutoPilotConfigManager() {
       setOpenAiMaskedKey(data.maskedKey || openAiMaskedKey);
       setOpenAiCurrentModel(data.model || openAiCurrentModel);
       setOpenAiCurrentModelLabel(data.modelLabel || openAiCurrentModelLabel);
-      setOpenAiModel(data.model === "gpt-6-luna" || data.model === "gpt-6-sol" ? data.model : "");
+      setOpenAiModel(data.model === "gpt-6-luna" || data.model === "gpt-6-sol" || data.model === "gpt-6.1-sol" ? data.model : "");
       setOpenAiReasoningEffort(data.reasoningEffort || openAiReasoningEffort);
       setOpenAiVerbosity(data.verbosity || openAiVerbosity);
       setIsOpenAiReasoningDirty(false);
@@ -283,12 +283,20 @@ export function AutoPilotConfigManager() {
           <label className="text-[11px] text-zinc-300 font-medium block">Modelo do Brain</label>
           <select
             value={openAiModel}
-            onChange={(e) => setOpenAiModel(e.target.value)}
+            onChange={(e) => {
+              const nextModel = e.target.value;
+              setOpenAiModel(nextModel);
+              if (nextModel === "gpt-6.1-sol" && openAiReasoningEffort === "none") {
+                setOpenAiReasoningEffort("medium");
+                setIsOpenAiReasoningDirty(true);
+              }
+            }}
             className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
           >
             <option value="" disabled>Selecione um modelo GPT-6</option>
             <option value="gpt-6-luna">GPT-6 Luna — Mais econômico</option>
             <option value="gpt-6-sol">GPT-6 Sol — Mais capacidade</option>
+            <option value="gpt-6.1-sol">GPT-6.1 Sol — Novo Sol, cache mais barato</option>
           </select>
           <span className="text-[10px] text-zinc-500">
             Modelo atual: {openAiCurrentModelLabel || openAiCurrentModel || "não identificado"}
@@ -298,7 +306,7 @@ export function AutoPilotConfigManager() {
         <div className="space-y-1.5 pt-1">
           <label className="text-[11px] text-zinc-300 font-medium block">Esforço de raciocínio</label>
           <select value={openAiReasoningEffort} onChange={(e) => { setOpenAiReasoningEffort(e.target.value); setIsOpenAiReasoningDirty(true); }} className="w-full bg-[#121214] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500">
-            <option value="none">None — mínimo tempo de raciocínio</option>
+            <option value="none" disabled={openAiModel === "gpt-6.1-sol"}>None — mínimo tempo de raciocínio</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>

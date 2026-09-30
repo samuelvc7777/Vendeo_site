@@ -148,6 +148,7 @@ function formatConsoleModel(model: string | null): string | null {
   const labels: Record<string, string> = {
     "gpt-6-luna": "GPT-6 Luna",
     "gpt-6-sol": "GPT-6 Sol",
+    "gpt-6.1-sol": "GPT-6.1 Sol",
   };
   return labels[model] || model;
 }

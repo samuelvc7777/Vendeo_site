@@ -47,6 +47,7 @@ const MODEL_PRICING_STANDARD: Record<string, {
 }> = {
   // Tarifas Standard fornecidas para esta implementação; revisar se a OpenAI alterar preços.
   "gpt-6-sol": { inputPerMillion: 2, cachedInputPerMillion: 0.2, cacheWritePerMillion: 2.5, outputPerMillion: 10 },
+  "gpt-6.1-sol": { inputPerMillion: 2, cachedInputPerMillion: 0.1, cacheWritePerMillion: 2.5, outputPerMillion: 10 },
   "gpt-6-luna": { inputPerMillion: 0.1, cachedInputPerMillion: 0.01, cacheWritePerMillion: 0.125, outputPerMillion: 0.5 },
 };
 

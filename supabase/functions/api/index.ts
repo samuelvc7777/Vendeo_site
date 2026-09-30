@@ -3267,13 +3267,14 @@ serve(async (req: Request) => {
     // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
     // ==========================================
     if (path === "/ai/openai-config") {
-      const allowedModels = ["gpt-6-luna", "gpt-6-sol"] as const;
+      const allowedModels = ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"] as const;
       // Valores suportados pelos modelos GPT-6 do Brain; `max` é o teto de esforço.
       const allowedReasoningEfforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
       const allowedVerbosityLevels = ["low", "medium", "high"] as const;
       const labels: Record<string, string> = {
         "gpt-6-luna": "GPT-6 Luna",
         "gpt-6-sol": "GPT-6 Sol",
+        "gpt-6.1-sol": "GPT-6.1 Sol",
       };
       const { data: configRows, error: configError } = await supabase
         .from("instagram_config")
@@ -3309,7 +3310,7 @@ serve(async (req: Request) => {
         const model = hasModel ? body.model : undefined;
         const reasoningEffort = hasReasoningEffort ? body.reasoningEffort : undefined;
         const verbosity = hasVerbosity ? body.verbosity : undefined;
-        if (hasModel && !allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha GPT-6 Luna ou GPT-6 Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (hasModel && !allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha GPT-6 Luna, GPT-6 Sol ou GPT-6.1 Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha none, low, medium, high, xhigh ou max." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         if (hasVerbosity && !allowedVerbosityLevels.includes(verbosity)) return new Response(JSON.stringify({ error: "Verbosity inválida. Escolha low, medium ou high (máxima)." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const suppliedKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
@@ -3321,6 +3322,11 @@ serve(async (req: Request) => {
         const targetModel = model || currentAgent.model;
         const targetReasoningEffort = reasoningEffort || currentAgent.reasoning?.effort;
         const targetVerbosity = verbosity || currentAgent.text?.verbosity;
+        if (targetModel === "gpt-6.1-sol" && targetReasoningEffort === "none") {
+          return new Response(JSON.stringify({
+            error: "GPT-6.1 Sol não suporta reasoning none. Escolha low, medium, high, xhigh ou max.",
+          }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
         const remotePatch: Record<string, any> = {};
         if (hasModel) remotePatch.model = model;
         if (hasReasoningEffort) remotePatch.reasoning = { ...(currentAgent.reasoning || {}), effort: reasoningEffort };

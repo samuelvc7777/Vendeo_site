@@ -167,6 +167,7 @@ export const OPENAI_BRAIN_DEFAULT_MODEL = "gpt-6-luna";
 export const ALLOWED_OPENAI_BRAIN_MODELS = [
   "gpt-6-luna",
   "gpt-6-sol",
+  "gpt-6.1-sol",
 ] as const;
 
 export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel?: string): Promise<string> {
