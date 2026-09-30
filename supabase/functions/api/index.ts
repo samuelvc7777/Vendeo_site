@@ -291,8 +291,9 @@ serve(async (req: Request) => {
 
   const operatorRouteAliases: Record<string, string> = {
     "/operator/brain/events": "/autopilot/brain-events",
-      "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
+    "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
     "/operator/brain/manual-resolution": "/autopilot/manual-resolution",
+    "/operator/brain/consultation": "/autopilot/brain-consultation",
     "/operator/brain/retry-once": "/autopilot/retry-once",
   };
   path = operatorRouteAliases[path] || path;
