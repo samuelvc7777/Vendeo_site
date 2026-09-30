@@ -88,7 +88,14 @@ test("nova session recebe fatos manuais permanentes mesmo sem histórico recente
   assert.match(bootstrap.text, /nunca fui aos Estados Unidos/);
 });
 
-test("cadência explícita é obrigatória depois de texto e primeira ação é zero", () => {
+test("cadência do Brain exige e preserva o tempo de toda mensagem", () => {
+  const firstMissing = basicPlan([
+    { type: "text", text: "balão um" },
+  ]);
+  const firstMissingResult = validateConversationBrainPlan(firstMissing);
+  assert.equal(firstMissingResult.valid, false);
+  assert.match(firstMissingResult.error || "", /delay_before_send é obrigatório/);
+
   const missing = basicPlan([
     { type: "text", text: "balão um", delay_before_send: 9 },
     { type: "text", text: "balão dois" },
@@ -96,16 +103,16 @@ test("cadência explícita é obrigatória depois de texto e primeira ação é 
   const missingResult = validateConversationBrainPlan(missing);
   assert.equal(missingResult.valid, false);
   assert.match(missingResult.error || "", /delay_before_send é obrigatório/);
-  assert.equal(missing.outboundActions[0].delayBeforeSendSeconds, 0);
+  assert.equal(missing.outboundActions[0].delayBeforeSendSeconds, 9);
 
   const valid = basicPlan([
-    { type: "text", text: "balão um", delay_before_send: 99 },
-    { type: "text", text: "balão dois", delay_before_send: 4 },
+    { type: "text", text: "balão um", delay_before_send: 31 },
+    { type: "text", text: "balão dois", delay_before_send: 8 },
   ]);
   const validResult = validateConversationBrainPlan(valid);
   assert.equal(validResult.valid, true, validResult.error);
-  assert.equal(valid.outboundActions[0].delayBeforeSendSeconds, 0);
-  assert.equal(valid.outboundActions[1].delayBeforeSendSeconds, 4);
+  assert.equal(valid.outboundActions[0].delayBeforeSendSeconds, 31);
+  assert.equal(valid.outboundActions[1].delayBeforeSendSeconds, 8);
 });
 
 test("backend aceita quantidade dinâmica de mensagens decidida pelo Brain", () => {
@@ -122,14 +129,28 @@ test("backend aceita quantidade dinâmica de mensagens decidida pelo Brain", () 
   assert.equal(plan.outboundActions.length, 10);
 });
 
-test("após áudio o backend usa duração real e aceita delay zero implícito", () => {
-  const plan = basicPlan([
+test("após áudio o Brain ainda precisa informar a pausa humana", () => {
+  const missing = basicPlan([
     { type: "audio", audioId: "audio_test", delay_before_send: 0 },
     { type: "text", text: "e vc?" },
   ]);
-  const result = validateConversationBrainPlan(plan);
-  assert.equal(result.valid, true, result.error);
-  assert.equal(plan.outboundActions[1].delayBeforeSendSeconds, 0);
+  const missingResult = validateConversationBrainPlan(missing);
+  assert.equal(missingResult.valid, false);
+  assert.match(missingResult.error || "", /delay_before_send é obrigatório/);
+
+  const valid = basicPlan([
+    { type: "audio", audioId: "audio_test", delay_before_send: 0 },
+    { type: "text", text: "e vc?", delay_before_send: 7 },
+  ]);
+  const validResult = validateConversationBrainPlan(valid);
+  assert.equal(validResult.valid, true, validResult.error);
+  assert.equal(valid.outboundActions[1].delayBeforeSendSeconds, 7);
+
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const stepDelay = previousAudioDuration \+ humanDelay/);
 });
 
 test("migration fecha debounce e duplicidade de profissão sem criar semântica no backend", () => {

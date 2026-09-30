@@ -866,13 +866,10 @@ export function validateConversationBrainPlan(
       if (delay !== undefined && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0 || delay > 7200)) {
         return { valid: false, error: `outboundActions[${i}].delay_before_send deve ser um número entre 0 e 7200 segundos` };
       }
-      if (i === 0) {
-        act.delayBeforeSendSeconds = 0;
-      } else if (delay === undefined && plan.outboundActions[i - 1]?.type !== "audio") {
-        return { valid: false, error: `outboundActions[${i}].delay_before_send é obrigatório após uma ação de texto` };
-      } else {
-        act.delayBeforeSendSeconds = delay ?? 0;
+      if (delay === undefined) {
+        return { valid: false, error: `outboundActions[${i}].delay_before_send é obrigatório em toda ação` };
       }
+      act.delayBeforeSendSeconds = delay;
     }
     // Normalização retrocompatível: popula responses com os textos se responses não veio
     if (!Array.isArray(plan.responses)) {

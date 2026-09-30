@@ -61,12 +61,15 @@ test("cadência do Brain é persistida exatamente; duração real do áudio agen
     id: "audio-1", title: "Áudio", audioUrl: "https://audio.test/a.mp3", duration: 38,
     transcript: "", usageInstruction: "", enabled: true,
   }, actions: [
-    { type: "text", text: "A" }, { type: "audio", audioId: "audio-1" }, { type: "text", text: "B" },
+    { type: "text", text: "A" },
+    { type: "audio", audioId: "audio-1", delayBeforeSendSeconds: 6 },
+    { type: "text", text: "B", delayBeforeSendSeconds: 7 },
   ] });
   assert.equal(Date.parse(short[1].notBefore) - nowMs, 5_000);
   assert.equal(Date.parse(long[1].notBefore) - nowMs, 14_000);
   assert.equal(withAudio[2].audioDurationSeconds, null);
-  assert.equal(Date.parse(withAudio[2].notBefore) - nowMs, 38_000);
+  assert.equal(Date.parse(withAudio[1].notBefore) - nowMs, 6_000);
+  assert.equal(Date.parse(withAudio[2].notBefore) - nowMs, 51_000);
   assert.equal(withAudio[1].audioDurationSeconds, 38);
 });
 

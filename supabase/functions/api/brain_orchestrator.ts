@@ -830,11 +830,13 @@ export function createBrainOutboxBatch(params: {
   return actions.map((action, index) => {
     const isAudio = action.type === "audio";
     const requestedDelay = Number(action.delayBeforeSendSeconds);
-    const stepDelay = index > 0 && actions[index - 1]?.type === "audio"
-      ? Math.max(0, Number(resolvedAudio?.duration) || 0)
-      : Number.isFinite(requestedDelay) && requestedDelay >= 0
+    const humanDelay = Number.isFinite(requestedDelay) && requestedDelay >= 0
       ? requestedDelay
       : 0;
+    const previousAudioDuration = index > 0 && actions[index - 1]?.type === "audio"
+      ? Math.max(0, Number(resolvedAudio?.duration) || 0)
+      : 0;
+    const stepDelay = previousAudioDuration + humanDelay;
     accumulatedDelaySeconds += stepDelay;
     const content = isAudio
       ? resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${action.audioId}]`
