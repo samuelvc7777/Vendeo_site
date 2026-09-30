@@ -118,7 +118,7 @@ test("inbound pendente mantém lote ainda não iniciado bloqueado na claim atôm
 
 test("lote já iniciado atravessa inbound novo e revisão concorrente", () => {
   const sql = fs.readFileSync(
-    new URL("../supabase/migrations/20260930033410_allow_started_outbox_batch_during_new_inbound.sql", import.meta.url),
+    new URL("../supabase/migrations/20260930034920_allow_started_outbox_batch_during_new_inbound.sql", import.meta.url),
     "utf8",
   );
   assert.match(sql, /queued\.entry->>'status' = 'sent'/);
