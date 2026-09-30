@@ -8138,11 +8138,66 @@ export async function runBrainOrchestration(
         let prefetchedAudioCandidateGroups: NonNullable<Parameters<typeof runOpenAiBrainTurn>[0]["prefetchedAudioCandidateGroups"]> = [];
         let audioPrefetchComplete = false;
         if (useSdkConversationRuntime) {
-          const stageObjectiveIds = Array.from(new Set(
-            (stageChecklistForRouter.goals || [])
+          let manualResolutionOriginObjectiveIds: string[] = [];
+          if (params.manualResolution?.turnId) {
+            try {
+              const { data: manualDecisionSnapshot, error: manualDecisionSnapshotError } = await supabase
+                .from("brain_decisions")
+                .select("payload")
+                .eq("turn_id", params.manualResolution.turnId)
+                .eq("decision_type", "manual_resolution")
+                .order("version", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (manualDecisionSnapshotError) {
+                throw new Error("manual_resolution_audio_snapshot_failed: " +
+                  (manualDecisionSnapshotError.message || manualDecisionSnapshotError));
+              }
+
+              const semanticState = manualDecisionSnapshot?.payload?.semanticState || {};
+              const originStageId = String(
+                semanticState.expectedCurrentStageId ||
+                semanticState.lastDecision?.currentPhase ||
+                "",
+              ).trim();
+
+              if (originStageId && originStageId !== currentStageId) {
+                const { data: originStage, error: originStageError } = await supabase
+                  .from("chat_stages")
+                  .select("goals")
+                  .eq("id", originStageId)
+                  .maybeSingle();
+                if (originStageError) {
+                  throw new Error("manual_resolution_origin_stage_failed: " +
+                    (originStageError.message || originStageError));
+                }
+
+                manualResolutionOriginObjectiveIds = (Array.isArray(originStage?.goals) ? originStage.goals : [])
+                  .filter((goal: any) => goal && goal.enabled !== false)
+                  .map((goal: any) => String(goal.id || "").trim())
+                  .filter(Boolean);
+
+                if (manualResolutionOriginObjectiveIds.length > 0) {
+                  currentCycle.trace.push("manual_resolution_audio_origin_stage=" + originStageId);
+                  currentCycle.trace.push(
+                    "manual_resolution_audio_origin_objectives=" + manualResolutionOriginObjectiveIds.join(","),
+                  );
+                }
+              }
+            } catch (manualAudioResumeError) {
+              console.warn(
+                "[Brain] Não foi possível preservar os candidatos de áudio da etapa de origem da resolução manual.",
+                manualAudioResumeError,
+              );
+            }
+          }
+
+          const stageObjectiveIds = Array.from(new Set([
+            ...(stageChecklistForRouter.goals || [])
               .map((goal) => String(goal.id || "").trim())
               .filter(Boolean),
-          ));
+            ...manualResolutionOriginObjectiveIds,
+          ]));
           if (stageObjectiveIds.length > 0) {
             try {
               const prefetchedAssets = await listEligiblePersonaAudiosForObjectives({
