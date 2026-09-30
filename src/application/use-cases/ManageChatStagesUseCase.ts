@@ -10,16 +10,13 @@ export class ManageChatStagesUseCase {
 
   async createStage(data: {
     name: string;
-    folderId: string;
+    folderId?: string;
     color?: string;
     icon?: string;
     description?: string;
   }): Promise<ChatStage> {
     if (!data.name.trim()) {
       throw new Error("O nome da etapa é obrigatório.");
-    }
-    if (!data.folderId) {
-      throw new Error("É necessário vincular uma pasta do cofre à etapa.");
     }
 
     const current = await this.stageRepository.getStages();
@@ -84,8 +81,12 @@ export class ManageChatStagesUseCase {
     data: {
       label: string;
       memoryEntity?: string;
-      memoryField: string;
+      memoryField?: string;
       description?: string;
+      kind?: ConversationGoal["kind"];
+      completionPolicy?: ConversationGoal["completionPolicy"];
+      actionType?: ConversationGoal["actionType"];
+      actionConfig?: ConversationGoal["actionConfig"];
       required?: boolean;
       enabled?: boolean;
     }
@@ -93,17 +94,32 @@ export class ManageChatStagesUseCase {
     if (!data.label.trim()) {
       throw new Error("O rótulo do objetivo é obrigatório.");
     }
-    if (!data.memoryField.trim()) {
-      throw new Error("O campo de memória é obrigatório.");
+    const kind = data.kind || "fact";
+    if (kind === "fact" && !data.memoryField?.trim()) {
+      throw new Error("O campo de memória é obrigatório para objetivos factuais.");
     }
+    if (kind === "action" && !data.actionType) {
+      throw new Error("O tipo da ação é obrigatório para objetivos de ação.");
+    }
+
+    const memoryEntity = kind === "action"
+      ? undefined
+      : (data.memoryEntity || (kind === "conversation_state" ? "conversation" : "self")).trim().toLowerCase();
+    const memoryField = data.memoryField?.trim().toLowerCase() || undefined;
+    const completionPolicy = data.completionPolicy
+      || (kind === "action" ? "delivery_confirmed" : "conversation_evidence");
 
     if (this.stageRepository.addGoal) {
       return this.stageRepository.addGoal(stageId, {
         title: data.label.trim(),
         label: data.label.trim(),
-        memoryEntity: (data.memoryEntity || "self").trim().toLowerCase(),
-        memoryField: data.memoryField.trim().toLowerCase(),
+        kind,
+        memoryEntity,
+        memoryField,
         description: data.description?.trim(),
+        completionPolicy,
+        actionType: data.actionType,
+        actionConfig: data.actionConfig,
         required: true,
         order: 0,
         enabled: data.enabled ?? true,
@@ -119,9 +135,13 @@ export class ManageChatStagesUseCase {
       stageId,
       title: data.label.trim(),
       label: data.label.trim(),
-      memoryEntity: (data.memoryEntity || "self").trim().toLowerCase(),
-      memoryField: data.memoryField.trim().toLowerCase(),
+      kind,
+      memoryEntity,
+      memoryField,
       description: data.description?.trim(),
+      completionPolicy,
+      actionType: data.actionType,
+      actionConfig: data.actionConfig,
       required: true,
       order: currentGoals.length,
       enabled: data.enabled ?? true,

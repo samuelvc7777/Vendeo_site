@@ -53,9 +53,12 @@ interface ChatStagesManagerProps {
     data: {
       label: string;
       memoryEntity?: string;
-      memoryField: string;
+      memoryField?: string;
       description?: string;
-      kind?: "fact" | "conversation_state";
+      kind?: ConversationGoal["kind"];
+      completionPolicy?: ConversationGoal["completionPolicy"];
+      actionType?: ConversationGoal["actionType"];
+      actionConfig?: ConversationGoal["actionConfig"];
       required?: boolean;
       enabled?: boolean;
     }
@@ -112,7 +115,8 @@ export function ChatStagesManager({
   const [editingGoal, setEditingGoal] = useState<ConversationGoal | null>(null);
 
   const [goalLabel, setGoalLabel] = useState("");
-  const [goalKind, setGoalKind] = useState<"fact" | "conversation_state">("fact");
+  const [goalKind, setGoalKind] = useState<NonNullable<ConversationGoal["kind"]>>("fact");
+  const [goalActionType, setGoalActionType] = useState<NonNullable<ConversationGoal["actionType"]>>("send_audio");
   const [goalMemoryEntity, setGoalMemoryEntity] = useState("self");
   const [goalMemoryField, setGoalMemoryField] = useState("");
   const [goalDescription, setGoalDescription] = useState("");
@@ -135,6 +139,7 @@ export function ChatStagesManager({
     setEditingGoal(null);
     setGoalLabel("");
     setGoalKind("fact");
+    setGoalActionType("send_audio");
     setGoalMemoryEntity("self");
     setGoalMemoryField("");
     setGoalDescription("");
@@ -147,6 +152,7 @@ export function ChatStagesManager({
     setEditingGoal(goal);
     setGoalLabel(goal.label || goal.title || "");
     setGoalKind(goal.kind || "fact");
+    setGoalActionType(goal.actionType || "send_audio");
     setGoalMemoryEntity(goal.memoryEntity || (goal.kind === "conversation_state" ? "conversation" : "self"));
     setGoalMemoryField(goal.memoryField || "");
     setGoalDescription(goal.description || "");
@@ -165,15 +171,27 @@ export function ChatStagesManager({
     if (!activeGoalStageId || !goalLabel.trim()) return;
 
     let finalField = goalMemoryField.trim().toLowerCase();
-    if (!finalField) {
-      if (goalKind === "conversation_state") {
-        finalField = goalLabel.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
-      } else {
-        return;
-      }
+    if (!finalField && goalKind === "conversation_state") {
+      finalField = goalLabel.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
     }
+    if (goalKind === "fact" && !finalField) return;
 
-    const finalEntity = (goalMemoryEntity || (goalKind === "conversation_state" ? "conversation" : "self")).trim().toLowerCase();
+    const finalEntity = goalKind === "action"
+      ? undefined
+      : (goalMemoryEntity || (goalKind === "conversation_state" ? "conversation" : "self")).trim().toLowerCase();
+    const completionPolicy: ConversationGoal["completionPolicy"] =
+      goalKind === "action"
+        ? (goalActionType === "operator_handoff" ? "operator_handoff" : "delivery_confirmed")
+        : "conversation_evidence";
+    const actionConfig: ConversationGoal["actionConfig"] = goalKind === "action"
+      ? {
+          ...(goalActionType === "send_raffle_details" || goalActionType === "send_raffle_numbers"
+            ? { raffleSource: "active" as const }
+            : {}),
+          ...(goalActionType === "send_raffle_numbers" ? { numbersCount: 10 } : {}),
+          finalizeWorkflowOnCompletion: goalActionType === "operator_handoff",
+        }
+      : undefined;
 
     setIsGoalSubmitting(true);
     try {
@@ -183,8 +201,11 @@ export function ChatStagesManager({
             label: goalLabel.trim(),
             kind: goalKind,
             memoryEntity: finalEntity,
-            memoryField: finalField,
+            memoryField: finalField || undefined,
             description: goalDescription.trim(),
+            completionPolicy,
+            actionType: goalKind === "action" ? goalActionType : undefined,
+            actionConfig,
             required: true,
             enabled: goalEnabled,
           });
@@ -200,8 +221,11 @@ export function ChatStagesManager({
                     label: goalLabel.trim(),
                     kind: goalKind,
                     memoryEntity: finalEntity,
-                    memoryField: finalField,
+                    memoryField: finalField || undefined,
                     description: goalDescription.trim(),
+                    completionPolicy,
+                    actionType: goalKind === "action" ? goalActionType : undefined,
+                    actionConfig,
                     required: true,
                     enabled: goalEnabled,
                   }
@@ -216,8 +240,11 @@ export function ChatStagesManager({
             label: goalLabel.trim(),
             kind: goalKind,
             memoryEntity: finalEntity,
-            memoryField: finalField,
+            memoryField: finalField || undefined,
             description: goalDescription.trim(),
+            completionPolicy,
+            actionType: goalKind === "action" ? goalActionType : undefined,
+            actionConfig,
             required: true,
             enabled: goalEnabled,
           });
@@ -233,8 +260,11 @@ export function ChatStagesManager({
               label: goalLabel.trim(),
               kind: goalKind,
               memoryEntity: finalEntity,
-              memoryField: finalField,
+              memoryField: finalField || undefined,
               description: goalDescription.trim(),
+              completionPolicy,
+              actionType: goalKind === "action" ? goalActionType : undefined,
+              actionConfig,
               required: true,
               order: currentGoals.length,
               enabled: goalEnabled,
@@ -312,78 +342,6 @@ export function ChatStagesManager({
       goals.forEach((g, i) => { g.order = i; });
       await onUpdateStage(stageId, { goals });
     }
-  };
-
-  const handleSuggestAiObjectives = async (stageId: string) => {
-    const stage = stages.find((s) => s.id === stageId);
-    if (!stage) return;
-
-    const defaultSuggestions = [
-      {
-        label: "Descobrir cidade",
-        memoryEntity: "self",
-        memoryField: "city",
-        description: "Descobrir onde o pretendente mora de forma natural",
-        required: true,
-      },
-      {
-        label: "Descobrir profissão",
-        memoryEntity: "self",
-        memoryField: "profession",
-        description: "Entender no que ele trabalha ou estuda",
-        required: true,
-      },
-      {
-        label: "Descobrir idade",
-        memoryEntity: "self",
-        memoryField: "age",
-        description: "Descobrir a faixa etária ou quantos anos tem",
-        required: false,
-      },
-      {
-        label: "Entender rotina",
-        memoryEntity: "self",
-        memoryField: "routine",
-        description: "Entender horários e dinâmica do dia a dia",
-        required: false,
-      },
-      {
-        label: "Descobrir hobbies",
-        memoryEntity: "self",
-        memoryField: "hobbies",
-        description: "Descobrir o que ele gosta de fazer no tempo livre",
-        required: false,
-      },
-      {
-        label: "Entender estilo de vida",
-        memoryEntity: "self",
-        memoryField: "lifestyle",
-        description: "Preferências de passeios, esportes e gostos pessoais",
-        required: false,
-      },
-    ];
-
-    const current = stage.goals || [];
-    const existingFields = new Set(current.map((g) => g.memoryField));
-    const toAdd = defaultSuggestions.filter((s) => !existingFields.has(s.memoryField));
-
-    if (toAdd.length === 0) {
-      toast.info("Todos os objetivos padrão já foram adicionados a esta etapa.");
-      return;
-    }
-
-    for (const sug of toAdd) {
-      if (onAddGoal) {
-        await onAddGoal(stageId, {
-          label: sug.label,
-          memoryEntity: sug.memoryEntity,
-          memoryField: sug.memoryField,
-          description: sug.description,
-          enabled: true,
-        });
-      }
-    }
-    toast.success(`✨ ${toAdd.length} objetivos sugeridos com IA adicionados!`);
   };
 
   const openCreateModal = () => {
@@ -503,6 +461,11 @@ export function ChatStagesManager({
 
             const isGoalsExpanded = !!expandedStageGoals[stage.id];
             const stageGoals = (stage.goals || []).sort((a, b) => a.order - b.order);
+            const activeStageGoals = stageGoals.filter((goal) => goal.enabled !== false);
+            const finalizesWorkflow =
+              isLast &&
+              activeStageGoals.length > 0 &&
+              activeStageGoals.every((goal) => goal.actionConfig?.finalizeWorkflowOnCompletion !== false);
 
             return (
               <div
@@ -525,8 +488,12 @@ export function ChatStagesManager({
                       <div className="min-w-0 flex-1 flex items-center gap-2">
                         <h4 className="text-sm font-bold text-white truncate">{stage.name}</h4>
                         {isLast && (
-                          <span className="shrink-0 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
-                            Final
+                          <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                            finalizesWorkflow
+                              ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                              : "bg-sky-500/15 text-sky-300 border-sky-500/30"
+                          }`}>
+                            {finalizesWorkflow ? "Final" : "Continua aberta"}
                           </span>
                         )}
                       </div>
@@ -637,15 +604,6 @@ export function ChatStagesManager({
                       <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
                         <button
                           type="button"
-                          onClick={() => handleSuggestAiObjectives(stage.id)}
-                          className="flex-1 sm:flex-initial flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold active:scale-95 transition-all min-h-[34px] sm:min-h-0 cursor-pointer"
-                          title="Sugerir checkpoints padrão com IA"
-                        >
-                          <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
-                          <span>Sugerir com IA</span>
-                        </button>
-                        <button
-                          type="button"
                           onClick={() => openAddGoalModal(stage.id)}
                           className="flex-1 sm:flex-initial flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 text-xs font-semibold active:scale-95 transition-all min-h-[34px] sm:min-h-0 cursor-pointer"
                         >
@@ -688,7 +646,11 @@ export function ChatStagesManager({
                                     <span className="text-xs font-bold text-zinc-100">
                                       {goal.label}
                                     </span>
-                                    {goal.kind === "conversation_state" ? (
+                                    {goal.kind === "action" ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30">
+                                        Ação Obrigatória
+                                      </span>
+                                    ) : goal.kind === "conversation_state" ? (
                                       <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 text-[10px] font-medium border border-purple-500/30">
                                         Estado da Conversa
                                       </span>
@@ -697,9 +659,15 @@ export function ChatStagesManager({
                                         Fato do Contato
                                       </span>
                                     )}
-                                    <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[10px] font-mono border border-zinc-700/50">
-                                      {goal.memoryEntity || "self"}.{goal.memoryField}
-                                    </span>
+                                    {goal.kind === "action" ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-amber-200 text-[10px] font-mono border border-zinc-700/50">
+                                        {goal.actionType === "send_audio" ? "enviar áudio" : goal.actionType || "ação"}
+                                      </span>
+                                    ) : (
+                                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[10px] font-mono border border-zinc-700/50">
+                                        {goal.memoryEntity || "self"}.{goal.memoryField}
+                                      </span>
+                                    )}
                                     {goal.enabled ? (
                                       <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[10px] font-bold border border-sky-500/30">
                                         Checkpoint Obrigatório
@@ -978,7 +946,7 @@ export function ChatStagesManager({
                 <label className="text-xs font-semibold text-zinc-300">
                   Tipo Conceitual de Objetivo *
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -1017,45 +985,86 @@ export function ChatStagesManager({
                       Dinâmica qualitativa (reciprocidade, profundidade).
                     </span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGoalKind("action");
+                      setGoalMemoryEntity("");
+                      setGoalMemoryField("");
+                    }}
+                    className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                      goalKind === "action"
+                        ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                        : "bg-zinc-900 border-zinc-700/60 text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    <span className="font-semibold text-white flex items-center gap-1.5">
+                      Ação Obrigatória
+                    </span>
+                    <span className="text-[10px] text-zinc-400">
+                      Missão que precisa ser executada pelo Brain.
+                    </span>
+                  </button>
                 </div>
               </div>
 
-              {/* Mapeamento de Memória: Entidade e Campo */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-zinc-300">
-                    Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}
-                  </label>
-                  <input
-                    type="text"
-                    required={goalKind === "fact"}
-                    placeholder={goalKind === "fact" ? "self" : "conversation"}
-                    value={goalMemoryEntity}
-                    onChange={(e) => setGoalMemoryEntity(e.target.value)}
-                    className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
-                  />
-                  <p className="text-[10px] text-zinc-500">
-                    {goalKind === "fact" ? 'Padrão: "self" (o pretendente)' : 'Padrão: "conversation"'}
+              {goalKind === "action" ? (
+                <div className="space-y-2.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-200">Ação que o Brain precisa executar *</label>
+                    <select
+                      value={goalActionType}
+                      onChange={(e) => setGoalActionType(e.target.value as NonNullable<ConversationGoal["actionType"]>)}
+                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="send_audio">Enviar áudio vinculado ao objetivo</option>
+                      <option value="send_raffle_details" disabled>Enviar foto + detalhes da rifa — estrutura preparada</option>
+                      <option value="send_raffle_numbers" disabled>Enviar 10 números livres — estrutura preparada</option>
+                      <option value="operator_handoff" disabled>Finalizar e avisar operador — estrutura preparada</option>
+                    </select>
+                  </div>
+                  <p className="text-[10px] leading-relaxed text-zinc-400">
+                    O áudio é vinculado a este objetivo no Cofre de Áudios. O objetivo só será concluído após o provedor confirmar o envio.
+                    Se o contexto estiver sensível, o Brain pode adiar, mas a missão permanece pendente para os próximos turnos.
                   </p>
                 </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-300">
+                      Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}
+                    </label>
+                    <input
+                      type="text"
+                      required={goalKind === "fact"}
+                      placeholder={goalKind === "fact" ? "self" : "conversation"}
+                      value={goalMemoryEntity}
+                      onChange={(e) => setGoalMemoryEntity(e.target.value)}
+                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
+                    />
+                    <p className="text-[10px] text-zinc-500">
+                      {goalKind === "fact" ? 'Padrão: "self" (o pretendente)' : 'Padrão: "conversation"'}
+                    </p>
+                  </div>
 
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-zinc-300">
-                    Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}
-                  </label>
-                  <input
-                    type="text"
-                    required={goalKind === "fact"}
-                    placeholder={goalKind === "fact" ? "age, city, job" : "slug do estado"}
-                    value={goalMemoryField}
-                    onChange={(e) => setGoalMemoryField(e.target.value)}
-                    className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
-                  />
-                  <p className="text-[10px] text-zinc-500">
-                    {goalKind === "fact" ? "Campo salvo na ContactMemory" : "Avaliado pelo contexto e histórico"}
-                  </p>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-300">
+                      Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}
+                    </label>
+                    <input
+                      type="text"
+                      required={goalKind === "fact"}
+                      placeholder={goalKind === "fact" ? "age, city, job" : "slug do estado"}
+                      value={goalMemoryField}
+                      onChange={(e) => setGoalMemoryField(e.target.value)}
+                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
+                    />
+                    <p className="text-[10px] text-zinc-500">
+                      {goalKind === "fact" ? "Campo salvo na ContactMemory" : "Avaliado pelo contexto e histórico"}
+                    </p>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Descrição / Orientação para a IA */}
               <div className="space-y-1">
@@ -1106,7 +1115,7 @@ export function ChatStagesManager({
                 </button>
                 <button
                   type="submit"
-                  disabled={isGoalSubmitting || !goalLabel.trim() || !goalMemoryField.trim()}
+                  disabled={isGoalSubmitting || !goalLabel.trim() || (goalKind === "fact" && !goalMemoryField.trim())}
                   className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center"
                 >
                   {isGoalSubmitting

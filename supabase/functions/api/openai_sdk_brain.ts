@@ -40,6 +40,8 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     `OBJETIVO_ATIVO=${params.currentObjectiveId || "nenhum"}`,
     `OBJETIVO_ATIVO_OBRIGATORIO=${params.currentObjectiveId ? params.currentObjectiveRequired !== false : false}`,
     `OBJETIVO_ATIVO_TIPO=${params.currentObjectiveKind || "desconhecido"}`,
+    `OBJETIVO_ATIVO_ACAO=${params.currentObjectiveActionType || "nenhuma"}`,
+    `OBJETIVO_ATIVO_POLITICA_CONCLUSAO=${params.currentObjectiveCompletionPolicy || "conversation_evidence"}`,
   ];
 
   if (params.currentObjectiveLabel) lines.push(`OBJETIVO_LABEL=${params.currentObjectiveLabel}`);
@@ -50,7 +52,10 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     for (const objective of params.stageObjectives) {
       const value = objective.value == null ? "" : ` value=${JSON.stringify(objective.value)}`;
       const evidence = objective.evidenceMessageId ? ` evidence=${objective.evidenceMessageId}` : "";
-      lines.push(`- ${objective.id}: ${objective.status} required=${objective.required !== false} label=${JSON.stringify(objective.label)}${value}${evidence}`);
+      const action = objective.actionType ? ` action=${objective.actionType}` : "";
+      const policy = objective.completionPolicy ? ` completion=${objective.completionPolicy}` : "";
+      const kind = objective.kind ? ` kind=${objective.kind}` : "";
+      lines.push(`- ${objective.id}: ${objective.status} required=${objective.required !== false}${kind}${action}${policy} label=${JSON.stringify(objective.label)}${value}${evidence}`);
     }
   }
 
@@ -137,9 +142,12 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   if (params.schemaFeedback) lines.push(`SCHEMA_RETRY: ${params.schemaFeedback}`);
   lines.push(
     "O backend continua autoridade de objetivos, etapas, outbox e idempotência. Você decide semanticamente a resposta.",
-    "OBJETIVO_ATIVO é uma missão persistente da etapa: enquanto estiver presente e obrigatório, ele continua pendente até existir evidência real de conclusão. Ter perguntado antes SEM resposta não significa concluído.",
+    "OBJETIVO_ATIVO é uma missão persistente da etapa: enquanto estiver presente e obrigatório, ele continua pendente até cumprir a política de conclusão configurada. Ter tentado antes sem resultado não significa concluído.",
     "Com OBJETIVO_ATIVO obrigatório, objectiveDecision='none' é inválido. Escolha pursue quando houver ponte semântica OU uma transição natural de assunto; escolha defer somente quando realmente não houver espaço naquele turno e informe objectiveDeferralReason.",
     "Quando a resposta ao assunto atual terminaria em mera reação/comentário e deixaria a conversa sem direção, isso é uma natural_transition: use o objetivo ativo para abrir o próximo assunto de forma humana.",
+    "OBJETIVO DE AÇÃO: quando OBJETIVO_ATIVO_TIPO=action, ele representa algo que você PRECISA executar. Nunca use already_satisfied para uma ação com completion=delivery_confirmed: a conclusão virá do backend somente após entrega real confirmada.",
+    "AÇÃO send_audio: pursue significa enviar neste turno um áudio autorizado vinculado ao objective_id ativo em outboundActions. Se o contexto estiver emocionalmente inadequado (luto, hospital, sofrimento, crise), use defer, acolha primeiro e preserve a missão para o próximo turno.",
+    "Uma ação obrigatória adiada não pode ser esquecida nem adiada indefinidamente: nos turnos seguintes, responda ao assunto vivo e conduza com leveza para uma abertura socialmente adequada. Assim que houver contexto aceitável, execute a ação.",
     "Ao usar pursue em objetivo factual, faça a pergunta do objetivo no mesmo turno e anote questionIntents[].objectiveId com o ID exato do OBJETIVO_ATIVO.",
     "Não repita a mesma frase de pergunta em sequência, mas um objetivo obrigatório ainda sem resposta pode e deve ser retomado depois com formulação natural; anti-repetição nunca transforma pergunta ignorada em objetivo concluído.",
     "OBJETIVO_ATIVO controla o próximo dado ainda pendente sobre o pretendente; ele NÃO limita a categoria temática do Cofre.",
@@ -350,6 +358,8 @@ function validateAndNormalizeSdkPlan(
     currentObjectiveId: params.currentObjectiveId,
     currentObjectiveRequired: params.currentObjectiveRequired,
     currentObjectiveKind: params.currentObjectiveKind,
+    currentObjectiveActionType: params.currentObjectiveActionType,
+    currentObjectiveCompletionPolicy: params.currentObjectiveCompletionPolicy,
   });
   const stageProgression = validateStageProgressionInvariant(parsedPlan, {
     currentStageId: params.currentStageId,

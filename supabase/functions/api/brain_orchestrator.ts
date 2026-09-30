@@ -2278,6 +2278,87 @@ function memoryWriteMatchesAction(item: any, actionIndex: number): boolean {
   return index === actionIndex;
 }
 
+async function completeDeliveryObjectiveFromConfirmedAction(params: {
+  supabase: any;
+  conversationId: string;
+  action: BrainDecisionActionDelivery;
+}): Promise<boolean> {
+  const objectiveId = String(params.action.payload?.objectiveId || "").trim();
+  if (!objectiveId || params.action.status !== "sent") return false;
+
+  const { data: conversation, error: conversationError } = await params.supabase
+    .from("instagram_conversations")
+    .select("current_stage_id, stage_completed_rules")
+    .eq("id", params.conversationId)
+    .maybeSingle();
+  if (conversationError || !conversation?.current_stage_id) return false;
+
+  const { data: stage, error: stageError } = await params.supabase
+    .from("chat_stages")
+    .select("id, goals")
+    .eq("id", conversation.current_stage_id)
+    .maybeSingle();
+  if (stageError || !stage) return false;
+
+  const objective = (Array.isArray(stage.goals) ? stage.goals : [])
+    .find((goal: any) => goal?.id === objectiveId && goal.enabled !== false);
+  if (
+    !objective ||
+    objective.kind !== "action" ||
+    objective.completionPolicy !== "delivery_confirmed"
+  ) return false;
+
+  if (objective.actionType === "send_audio") {
+    const audioId = String(params.action.payload?.audioId || "").trim();
+    if (params.action.action_type !== "audio" || !audioId) return false;
+    const { data: audio, error: audioError } = await params.supabase
+      .from("persona_audios")
+      .select("id, objective_id, enabled")
+      .eq("id", audioId)
+      .maybeSingle();
+    if (audioError || !audio || audio.enabled === false || audio.objective_id !== objectiveId) return false;
+  }
+
+  const rules = conversation.stage_completed_rules && typeof conversation.stage_completed_rules === "object"
+    ? conversation.stage_completed_rules
+    : {};
+  const completedGoalIds = resolveOfficialCompletedGoals(rules, rules.orchestration || {});
+  const objectiveProgress = resolveOfficialObjectiveProgress(rules, rules.orchestration || {});
+  if (completedGoalIds.includes(objectiveId) || objectiveProgress[objectiveId]?.status === "completed") {
+    return true;
+  }
+
+  const nextCompletedGoalIds = [...new Set([...completedGoalIds, objectiveId])];
+  const nextObjectiveProgress = {
+    ...objectiveProgress,
+    [objectiveId]: {
+      conversationId: params.conversationId,
+      stageId: stage.id,
+      objectiveId,
+      status: "completed",
+      value: null,
+      source: "delivery_confirmed",
+      deliveryActionId: params.action.id,
+      providerMessageId: params.action.provider_message_id || null,
+      completedAt: new Date().toISOString(),
+    },
+  };
+
+  const { data: patchResult, error: patchError } = await params.supabase.rpc("patch_chat_progress_atomic", {
+    p_conversation_id: params.conversationId,
+    p_progress_patch: {
+      currentStageId: stage.id,
+      completedGoalIds: nextCompletedGoalIds,
+      objectiveProgress: nextObjectiveProgress,
+    },
+  });
+  if (patchError || patchResult?.success !== true) {
+    console.warn("[Brain] Falha ao concluir objetivo de ação por entrega confirmada:", patchError?.message || patchResult?.reason);
+    return false;
+  }
+  return true;
+}
+
 async function projectConfirmedBrainAction(params: {
   supabase: any;
   conversationId: string;
@@ -2295,6 +2376,18 @@ async function projectConfirmedBrainAction(params: {
   const { data: decision, error: decisionError } = await params.supabase.from("brain_decisions")
     .select("id, turn_id, payload").eq("id", action.decision_id).maybeSingle();
   if (decisionError || !decision) return;
+
+  const deliveryObjectiveCompleted = await completeDeliveryObjectiveFromConfirmedAction({
+    supabase: params.supabase,
+    conversationId: params.conversationId,
+    action,
+  });
+  if (deliveryObjectiveCompleted && action.payload?.objectiveId) {
+    console.log(
+      `[Brain] Objetivo de ação concluído por entrega confirmada. conv=${params.conversationId} objective=${String(action.payload.objectiveId)} action=${action.id}`,
+    );
+  }
+
   if (decision.payload?.runtime === "agents_sdk_conversation") {
     const providerMessageId = String(
       action.provider_message_id
@@ -4535,12 +4628,14 @@ export interface ResolvedStageGoal {
   id: string;
   label: string;
   title?: string;
-  kind?: "fact" | "conversation_state";
+  kind?: "fact" | "conversation_state" | "action";
   status: "completed" | "pending";
   value: any;
   required?: boolean;
   description?: string;
-  completionPolicy?: "conversation_evidence" | "fact_only";
+  completionPolicy?: "conversation_evidence" | "fact_only" | "delivery_confirmed" | "operator_handoff";
+  actionType?: "send_audio" | "send_raffle_details" | "send_raffle_numbers" | "operator_handoff";
+  actionConfig?: Record<string, any>;
   evidenceMessageId?: string;
   source?: string;
 }
@@ -4590,6 +4685,8 @@ export async function resolveStageChecklistGoals(params: {
       required: item.required !== false,
       description: item.description,
       completionPolicy: item.completionPolicy,
+      actionType: item.actionType,
+      actionConfig: item.actionConfig,
       evidenceMessageId: progress.evidenceMessageId,
       source: progress.source,
     };
@@ -4774,10 +4871,14 @@ export async function validateAndApplyBrainStageDecision(params: {
     : [])
     .filter((goal: any) => goal && goal.enabled !== false && goal.required !== false);
   const finalRequiredGoalIds = finalStageGoals.map((goal: any) => String(goal.id || "")).filter(Boolean);
+  const finalStageAllowsWorkflowFinalization = finalStageGoals.every((goal: any) =>
+    goal?.actionConfig?.finalizeWorkflowOnCompletion !== false
+  );
   const workflowComplete =
     Boolean(finalStageId) &&
     nextStageId === finalStageId &&
     finalRequiredGoalIds.length > 0 &&
+    finalStageAllowsWorkflowFinalization &&
     finalRequiredGoalIds.every((goalId: string) =>
       completed.includes(goalId) || progress[goalId]?.status === "completed"
     );
@@ -4817,6 +4918,71 @@ export function isPersistentAgentSessionCompatible(params: {
     params.kind === "persistent" &&
     params.version === PERSISTENT_AGENT_SESSION_VERSION
   );
+}
+
+// ----------------------------------------------------------------------------
+// Fonte canônica da Rifa para futuras ações do Brain.
+// Ainda não é exposta como tool: o teste atual termina na missão send_audio.
+// ----------------------------------------------------------------------------
+export interface ActiveRaffleBrainSnapshot {
+  raffleId: string;
+  title: string;
+  description: string;
+  imageUrl: string | null;
+  pricePerNumber: number;
+  totalNumbers: number;
+  availableNumbers: number[];
+}
+
+export async function loadActiveRaffleBrainSnapshot(supabase: any): Promise<ActiveRaffleBrainSnapshot | null> {
+  const { data, error } = await supabase
+    .from("instagram_conversations")
+    .select("stage_completed_rules")
+    .eq("id", "__raffle_data__")
+    .maybeSingle();
+  if (error || !data?.stage_completed_rules) return null;
+
+  const payload = data.stage_completed_rules;
+  const raffles = Array.isArray(payload.raffles) ? payload.raffles : [];
+  const raffle = raffles.find((item: any) => item?.status === "active");
+  if (!raffle?.id || !Number.isFinite(Number(raffle.totalNumbers))) return null;
+
+  const ticketsByRaffle = payload.tickets && typeof payload.tickets === "object" ? payload.tickets : {};
+  const tickets = Array.isArray(ticketsByRaffle[raffle.id]) ? ticketsByRaffle[raffle.id] : [];
+  const occupied = new Set<number>(
+    tickets
+      .filter((ticket: any) => ticket && ticket.status !== "available")
+      .map((ticket: any) => Number(ticket.number))
+      .filter((number: number) => Number.isInteger(number) && number > 0),
+  );
+  const totalNumbers = Math.max(0, Math.floor(Number(raffle.totalNumbers)));
+  const availableNumbers: number[] = [];
+  for (let number = 1; number <= totalNumbers; number++) {
+    if (!occupied.has(number)) availableNumbers.push(number);
+  }
+
+  return {
+    raffleId: String(raffle.id),
+    title: String(raffle.title || "Rifa"),
+    description: String(raffle.description || ""),
+    imageUrl: typeof raffle.imageUrl === "string" && raffle.imageUrl.trim() ? raffle.imageUrl.trim() : null,
+    pricePerNumber: Number(raffle.pricePerNumber) || 0,
+    totalNumbers,
+    availableNumbers,
+  };
+}
+
+export function pickRandomAvailableRaffleNumbers(
+  availableNumbers: number[],
+  count = 10,
+  random: () => number = Math.random,
+): number[] {
+  const pool = [...new Set(availableNumbers.filter((number) => Number.isInteger(number) && number > 0))];
+  for (let index = pool.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(Math.max(0, Math.min(0.999999999, random())) * (index + 1));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
+  }
+  return pool.slice(0, Math.max(0, Math.min(Math.floor(count), pool.length)));
 }
 
 // ----------------------------------------------------------------------------
@@ -7919,6 +8085,8 @@ export async function runBrainOrchestration(
           currentObjectiveDescription: stageChecklistForRouter.currentObjective?.description,
           currentObjectiveRequired: stageChecklistForRouter.currentObjective?.required !== false,
           currentObjectiveKind: stageChecklistForRouter.currentObjective?.kind,
+          currentObjectiveActionType: stageChecklistForRouter.currentObjective?.actionType,
+          currentObjectiveCompletionPolicy: stageChecklistForRouter.currentObjective?.completionPolicy,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
           currentInboundMessages: claimedMessages
             .map((m: any) => ({
@@ -7965,7 +8133,14 @@ export async function runBrainOrchestration(
           }),
           nextObjectives: (stageChecklistForRouter.goals || [])
             .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
-            .map((g) => ({ id: g.id, label: g.label, description: g.description, kind: g.kind })),
+            .map((g) => ({
+              id: g.id,
+              label: g.label,
+              description: g.description,
+              kind: g.kind,
+              actionType: g.actionType,
+              completionPolicy: g.completionPolicy,
+            })),
           stageObjectives: stageChecklistForRouter.goals.map((goal) => ({
             id: goal.id,
             label: goal.label,
@@ -7974,6 +8149,9 @@ export async function runBrainOrchestration(
             evidenceMessageId: goal.evidenceMessageId,
             description: goal.description,
             required: goal.required !== false,
+            kind: goal.kind,
+            actionType: goal.actionType,
+            completionPolicy: goal.completionPolicy,
           })),
           contextPipeline: {
             candidateCount: budgetedRecentContext.candidateCount,
@@ -9488,6 +9666,9 @@ export async function runBrainOrchestration(
             payload: {
               text: entry.messageType === "text" ? entry.content : null,
               audioId: entry.vaultAudioId || null,
+              objectiveId: entry.vaultAudioId
+                ? (brainAudioObjectiveById.get(entry.vaultAudioId) || null)
+                : null,
               mediaUrl: entry.mediaUrl || null,
               outboxId: entry.id,
               brainActionId: `brain_action_${correlationId}_${actionIndex}`,
@@ -9820,6 +10001,24 @@ export async function runBrainOrchestration(
           .maybeSingle();
 
         const freshRules = preCommitData?.stage_completed_rules || stageRules;
+        const freshCompletedGoalIds = resolveOfficialCompletedGoals(
+          freshRules,
+          freshRules?.orchestration || {},
+        );
+        const freshObjectiveProgress = resolveOfficialObjectiveProgress(
+          freshRules,
+          freshRules?.orchestration || {},
+        );
+        const effectiveCompletedGoalIds = [
+          ...new Set([
+            ...(stageProgression.updatedCompletedGoals || []),
+            ...freshCompletedGoalIds,
+          ]),
+        ];
+        const effectiveObjectiveProgress = {
+          ...(stageProgression.updatedObjectiveProgress || {}),
+          ...freshObjectiveProgress,
+        };
         const latestMemoryFromDb = freshRules?.orchestration?.memory;
 
         let providerMemoryEntities: Record<string, Record<string, MemoryFact>> = {};
@@ -9961,8 +10160,8 @@ export async function runBrainOrchestration(
           manualRetryAuthorizedAt: null,
         };
         // Enriquece objetivos factuais concluídos com os valores reais da memória consolidada
-        if (stageProgression.updatedObjectiveProgress) {
-          for (const [goalId, prog] of Object.entries(stageProgression.updatedObjectiveProgress as Record<string, any>)) {
+        if (effectiveObjectiveProgress) {
+          for (const [goalId, prog] of Object.entries(effectiveObjectiveProgress as Record<string, any>)) {
             if (prog && prog.status === "completed" && (prog.value === null || prog.value === undefined)) {
               for (const ent of Object.values(mergedEntities)) {
                 if (!ent || typeof ent !== "object") continue;
@@ -9982,15 +10181,30 @@ export async function runBrainOrchestration(
           }
         }
 
-        (updatedState as any).completedGoalIds = stageProgression.updatedCompletedGoals;
-        (updatedState as any).objectiveProgress = stageProgression.updatedObjectiveProgress;
+        (updatedState as any).completedGoalIds = effectiveCompletedGoalIds;
+        (updatedState as any).objectiveProgress = effectiveObjectiveProgress;
         updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
         updatedState.preemptRequested = false;
 
-        const workflowCompletedAt = stageProgression.workflowComplete
+        const currentRequiredGoalsForFinalization = (stageChecklistForRouter.goals || [])
+          .filter((goal) => goal.required !== false);
+        const deliveryAwareWorkflowComplete =
+          stageProgression.workflowComplete ||
+          (
+            stageChecklistForRouter.isFinalStage &&
+            currentRequiredGoalsForFinalization.length > 0 &&
+            currentRequiredGoalsForFinalization.every((goal) =>
+              effectiveCompletedGoalIds.includes(goal.id) ||
+              effectiveObjectiveProgress[goal.id]?.status === "completed"
+            ) &&
+            currentRequiredGoalsForFinalization.every((goal) =>
+              goal.actionConfig?.finalizeWorkflowOnCompletion !== false
+            )
+          );
+        const workflowCompletedAt = deliveryAwareWorkflowComplete
           ? new Date().toISOString()
           : null;
-        if (stageProgression.workflowComplete) {
+        if (deliveryAwareWorkflowComplete) {
           (updatedState as any).isConverted = true;
           (updatedState as any).workflowFinalized = true;
           (updatedState as any).workflowCompletedAt = workflowCompletedAt;
@@ -9999,12 +10213,12 @@ export async function runBrainOrchestration(
 
         const finalStageCompletedRules = {
           ...freshRules,
-          completed_goals: stageProgression.updatedCompletedGoals,
-          objective_progress: stageProgression.updatedObjectiveProgress,
+          completed_goals: effectiveCompletedGoalIds,
+          objective_progress: effectiveObjectiveProgress,
           active_cycle_token: null,
           active_cycle_at: null,
           preempt_requested: false,
-          ...(stageProgression.workflowComplete
+          ...(deliveryAwareWorkflowComplete
             ? {
                 status: "completed",
                 workflow_finalized: true,
@@ -10013,8 +10227,8 @@ export async function runBrainOrchestration(
                 chat_progress: {
                   ...(freshRules?.chat_progress || {}),
                   currentStageId: stageProgression.nextStageId,
-                  completedGoalIds: stageProgression.updatedCompletedGoals,
-                  objectiveProgress: stageProgression.updatedObjectiveProgress,
+                  completedGoalIds: effectiveCompletedGoalIds,
+                  objectiveProgress: effectiveObjectiveProgress,
                   isConverted: true,
                   updatedAt: workflowCompletedAt,
                 },

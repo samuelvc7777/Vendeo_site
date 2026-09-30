@@ -4,21 +4,36 @@ import { VaultItemType } from "./Vault";
  * Objetivo Semântico da Etapa (Canônico).
  * Define um resultado desejado que a persona deve alcançar/descobrir de forma natural.
  */
+export type StageObjectiveKind = "fact" | "conversation_state" | "action";
+export type StageActionType =
+  | "send_audio"
+  | "send_raffle_details"
+  | "send_raffle_numbers"
+  | "operator_handoff";
+
+export interface StageActionConfig {
+  raffleSource?: "active";
+  numbersCount?: number;
+  finalizeWorkflowOnCompletion?: boolean;
+}
+
 export interface StageObjective {
   id: string;
   stageId: string;
   title?: string;
   label?: string; // Compatibilidade com v231 (alias para title)
   description?: string;
-  kind?: "fact" | "conversation_state"; // "fact": biográfico durável | "conversation_state": checkpoint de evolução
+  kind?: StageObjectiveKind; // "action": missão obrigatória executada pelo Brain
   /** @deprecated No Vendeo todo objetivo ativo (enabled !== false) é obrigatório por definição */
   required?: boolean;
   enabled: boolean;
   order: number;
   memoryEntity?: string; // Ex: "self", "familia"
   memoryField?: string;  // Ex: "age", "city", "occupation"
-  /** Política de conclusão: "conversation_evidence" (padrão conversacional) ou "fact_only" (auto-completa se já souber o fato) */
-  completionPolicy?: "conversation_evidence" | "fact_only";
+  /** Política de conclusão. Ações de entrega só concluem após confirmação real do provedor. */
+  completionPolicy?: "conversation_evidence" | "fact_only" | "delivery_confirmed" | "operator_handoff";
+  actionType?: StageActionType;
+  actionConfig?: StageActionConfig;
   createdAt?: string;
   updatedAt?: string;
 }

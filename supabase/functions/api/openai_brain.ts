@@ -1204,6 +1204,8 @@ export function validateObjectiveProgressionInvariant(
     currentObjectiveId?: string | null;
     currentObjectiveRequired?: boolean;
     currentObjectiveKind?: string | null;
+    currentObjectiveActionType?: string | null;
+    currentObjectiveCompletionPolicy?: string | null;
   },
 ): PlanValidationResult {
   if (!plan || typeof plan !== "object") {
@@ -1242,6 +1244,29 @@ export function validateObjectiveProgressionInvariant(
       valid: false,
       error: `PLAN_OBJECTIVE_TARGET_MISMATCH: objetivo ativo="${objectiveId}" targetObjective="${targetObjectiveId}"`,
     };
+  }
+
+  if (params.currentObjectiveKind === "action") {
+    if (decision === "already_satisfied") {
+      return {
+        valid: false,
+        error: `PLAN_ACTION_OBJECTIVE_CANNOT_BE_ALREADY_SATISFIED: objetivo de ação "${objectiveId}" só conclui pela política de execução configurada`,
+      };
+    }
+    if (
+      decision === "pursue" &&
+      params.currentObjectiveCompletionPolicy === "delivery_confirmed" &&
+      params.currentObjectiveActionType === "send_audio"
+    ) {
+      const actions = Array.isArray(plan.outboundActions) ? plan.outboundActions : [];
+      const hasAudio = actions.some((action: any) => action?.type === "audio" && String(action?.audioId || "").trim());
+      if (!hasAudio) {
+        return {
+          valid: false,
+          error: `PLAN_ACTION_AUDIO_MISSING: pursue do objetivo de ação "${objectiveId}" exige outboundActions com áudio autorizado`,
+        };
+      }
+    }
   }
 
   const opportunity = String(plan.objectiveProgressionOpportunity || "").trim();
@@ -1506,6 +1531,8 @@ export interface RunOpenAiBrainParams {
   currentObjectiveDescription?: string | null;
   currentObjectiveRequired?: boolean;
   currentObjectiveKind?: string | null;
+  currentObjectiveActionType?: string | null;
+  currentObjectiveCompletionPolicy?: string | null;
   inboundMessages: string[];
   currentInboundMessages?: Array<{
     id: string;
@@ -1552,7 +1579,14 @@ export interface RunOpenAiBrainParams {
   recentStyleStateSnippet?: string;
   memoryScopeId?: string;
   recentQuestionIntentsSnippet?: string;
-  nextObjectives?: Array<{ id: string; label: string; description?: string; kind?: string }>;
+  nextObjectives?: Array<{
+    id: string;
+    label: string;
+    description?: string;
+    kind?: string;
+    actionType?: string;
+    completionPolicy?: string;
+  }>;
   stageObjectives?: Array<{
     id: string;
     label: string;
@@ -1561,6 +1595,9 @@ export interface RunOpenAiBrainParams {
     evidenceMessageId?: string;
     description?: string;
     required?: boolean;
+    kind?: string;
+    actionType?: string;
+    completionPolicy?: string;
   }>;
   temporalContext?: string;
   contextPipeline?: {
@@ -2135,7 +2172,11 @@ function buildAgentRecentWindow(params: RunOpenAiBrainParams): {
  */
 export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string {
   const objectiveDesc = params.currentObjectiveDescription ? ` - Descrição: ${params.currentObjectiveDescription}` : "";
-  const objectiveType = "[PENDENTE; oportunidade opcional, seguir somente se natural]";
+  const objectiveType = params.currentObjectiveKind === "action"
+    ? `[AÇÃO OBRIGATÓRIA; action=${params.currentObjectiveActionType || "não definida"}; completion=${params.currentObjectiveCompletionPolicy || "delivery_confirmed"}]`
+    : params.currentObjectiveRequired === false
+    ? "[OPCIONAL; seguir somente se natural]"
+    : "[OBRIGATÓRIO; missão persistente até conclusão]";
   const objectiveLine = params.currentObjectiveId
     ? `${params.currentObjectiveId} ("${params.currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
     : "Nenhum objetivo pendente";
@@ -2151,11 +2192,18 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
 
   if (params.stageObjectives?.length) {
     sections.push(`OBJETIVOS DA ETAPA E PROGRESSO PERSISTIDO:\n${params.stageObjectives.map((objective) => {
-      const status = objective.status === "completed" ? "CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE" : "PENDENTE — NÃO É OBRIGATÓRIO";
+      const status = objective.status === "completed"
+        ? "CONCLUÍDO"
+        : objective.required === false
+        ? "PENDENTE — OPCIONAL"
+        : "PENDENTE — OBRIGATÓRIO";
       const value = objective.value === null || objective.value === undefined ? "" : ` | valor: ${JSON.stringify(objective.value)}`;
       const evidence = objective.evidenceMessageId ? ` | evidenceMessageId: ${objective.evidenceMessageId}` : "";
       const description = objective.description ? ` | ${objective.description}` : "";
-      return `• ${objective.id} | ${status}${value}${evidence}${description}`;
+      const kind = objective.kind ? ` | kind=${objective.kind}` : "";
+      const action = objective.actionType ? ` | action=${objective.actionType}` : "";
+      const completion = objective.completionPolicy ? ` | completion=${objective.completionPolicy}` : "";
+      return `• ${objective.id} | ${status}${kind}${action}${completion}${value}${evidence}${description}`;
     }).join("\n")}`);
   }
 
@@ -2382,7 +2430,11 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     : buildAgentRecentWindow(params);
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
-  const objectiveType = "[PENDENTE; oportunidade opcional, seguir somente se natural]";
+  const objectiveType = params.currentObjectiveKind === "action"
+    ? `[AÇÃO OBRIGATÓRIA; action=${params.currentObjectiveActionType || "não definida"}; completion=${params.currentObjectiveCompletionPolicy || "delivery_confirmed"}]`
+    : params.currentObjectiveRequired === false
+    ? "[OPCIONAL; seguir somente se natural]"
+    : "[OBRIGATÓRIO; missão persistente até conclusão]";
   const objectiveLine = currentObjectiveId
     ? `${currentObjectiveId} ("${currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
     : "Nenhum objetivo pendente";
@@ -2396,11 +2448,18 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
 
   if (params.stageObjectives?.length) {
     sections.push(`OBJETIVOS DA ETAPA E PROGRESSO PERSISTIDO:\n${params.stageObjectives.map((objective) => {
-      const status = objective.status === "completed" ? "CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE" : "PENDENTE — NÃO É OBRIGATÓRIO";
+      const status = objective.status === "completed"
+        ? "CONCLUÍDO"
+        : objective.required === false
+        ? "PENDENTE — OPCIONAL"
+        : "PENDENTE — OBRIGATÓRIO";
       const value = objective.value === null || objective.value === undefined ? "" : ` | valor: ${JSON.stringify(objective.value)}`;
       const evidence = objective.evidenceMessageId ? ` | evidenceMessageId: ${objective.evidenceMessageId}` : "";
       const description = objective.description ? ` | ${objective.description}` : "";
-      return `• ${objective.id} | ${status}${value}${evidence}${description}`;
+      const kind = objective.kind ? ` | kind=${objective.kind}` : "";
+      const action = objective.actionType ? ` | action=${objective.actionType}` : "";
+      const completion = objective.completionPolicy ? ` | completion=${objective.completionPolicy}` : "";
+      return `• ${objective.id} | ${status}${kind}${action}${completion}${value}${evidence}${description}`;
     }).join("\n")}`);
   }
 

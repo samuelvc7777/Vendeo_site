@@ -222,8 +222,12 @@ export function useChatStages(
     data: {
       label: string;
       memoryEntity?: string;
-      memoryField: string;
+      memoryField?: string;
       description?: string;
+      kind?: import("@/domain/entities/ChatStage").ConversationGoal["kind"];
+      completionPolicy?: import("@/domain/entities/ChatStage").ConversationGoal["completionPolicy"];
+      actionType?: import("@/domain/entities/ChatStage").ConversationGoal["actionType"];
+      actionConfig?: import("@/domain/entities/ChatStage").ConversationGoal["actionConfig"];
       required?: boolean;
       enabled?: boolean;
     }
