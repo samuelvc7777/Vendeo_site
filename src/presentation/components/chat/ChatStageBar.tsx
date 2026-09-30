@@ -14,6 +14,11 @@ import {
 } from "lucide-react";
 import { ChatStageDetail, StageObjectiveItem } from "@/application/use-cases/ManageChatProgressUseCase";
 import { StageChecklistItem } from "@/domain/entities/ChatStage";
+import {
+  RAFFLE_COMMERCIAL_STATUS_OPTIONS,
+  RaffleCommercialStatus,
+  raffleCommercialStatusLabel,
+} from "@/domain/entities/RaffleStatus";
 
 interface ChatStageBarProps {
   detail: ChatStageDetail | null;
@@ -22,6 +27,9 @@ interface ChatStageBarProps {
   onAdvanceStage: () => void;
   onSetStage: (stageId: string) => void;
   onToggleConverted: (isConverted: boolean) => void;
+  raffleStatus?: RaffleCommercialStatus;
+  onSetRaffleStatus?: (status: RaffleCommercialStatus) => void;
+  isUpdatingRaffleStatus?: boolean;
   onQuickSendItem?: (item: StageChecklistItem) => void;
 }
 
@@ -32,6 +40,9 @@ export function ChatStageBar({
   onAdvanceStage,
   onSetStage,
   onToggleConverted,
+  raffleStatus = null,
+  onSetRaffleStatus,
+  isUpdatingRaffleStatus = false,
 }: ChatStageBarProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSelectingStage, setIsSelectingStage] = useState(false);
@@ -59,6 +70,14 @@ export function ChatStageBar({
       ? Math.round((completedObjectivesCount / totalObjectives) * 100)
       : 0;
   const stageColor = stage.color || "#3b82f6";
+  const raffleBadgeClass =
+    raffleStatus === "bought"
+      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35"
+      : raffleStatus === "offered"
+      ? "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/35"
+      : raffleStatus === "not_bought"
+      ? "bg-rose-500/12 text-rose-700 dark:text-rose-300 border-rose-500/30"
+      : "bg-zinc-100 dark:bg-zinc-800/70 text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700";
 
   const handleToggle = (obj: StageObjectiveItem) => {
     const isComp = obj.status === "completed";
@@ -90,10 +109,15 @@ export function ChatStageBar({
             {stage.name}
           </span>
           {isConverted && (
-            <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] font-bold border border-amber-500/30 flex items-center gap-1">
-              <Trophy className="w-2.5 h-2.5" />
-              Finalizado
-            </span>
+            <>
+              <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] font-bold border border-amber-500/30 flex items-center gap-1">
+                <Trophy className="w-2.5 h-2.5" />
+                Finalizado
+              </span>
+              <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-semibold border ${raffleBadgeClass}`}>
+                Rifa: {raffleCommercialStatusLabel(raffleStatus)}
+              </span>
+            </>
           )}
         </div>
 
@@ -264,6 +288,49 @@ export function ChatStageBar({
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {isConverted && (
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/55 p-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-semibold text-zinc-900 dark:text-zinc-100">Status da rifa</p>
+                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                    Controle comercial manual deste chat finalizado.
+                  </p>
+                </div>
+                <span className={`shrink-0 px-2 py-1 rounded-full text-[10px] font-semibold border ${raffleBadgeClass}`}>
+                  {raffleCommercialStatusLabel(raffleStatus)}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {RAFFLE_COMMERCIAL_STATUS_OPTIONS.map((option) => {
+                  const selected = raffleStatus === option.value;
+                  return (
+                    <button
+                      key={option.value || "not_offered"}
+                      type="button"
+                      disabled={isUpdatingRaffleStatus || !onSetRaffleStatus}
+                      onClick={() => onSetRaffleStatus?.(option.value)}
+                      className={`px-2 py-1.5 rounded-lg border text-[11px] font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                        selected
+                          ? option.value === "bought"
+                            ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/45"
+                            : option.value === "offered"
+                            ? "bg-sky-500/20 text-sky-700 dark:text-sky-300 border-sky-500/45"
+                            : option.value === "not_bought"
+                            ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/40"
+                            : "bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-100 border-zinc-300 dark:border-zinc-600"
+                          : "bg-white dark:bg-zinc-950 text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 

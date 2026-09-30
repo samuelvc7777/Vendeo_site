@@ -43,6 +43,54 @@ export async function handleOperatorChatProgress(
     }
   }
 
+  if (body?.operation === "raffle_status") {
+    const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
+    const requestedStatus = body?.raffleStatus;
+    const raffleStatus = requestedStatus === null || requestedStatus === undefined || requestedStatus === ""
+      ? null
+      : typeof requestedStatus === "string"
+      ? requestedStatus.trim()
+      : "__invalid__";
+    const allowedStatuses = new Set(["offered", "bought", "not_bought"]);
+
+    if (!conversationId || conversationId.length > 256 || (raffleStatus !== null && !allowedStatuses.has(raffleStatus))) {
+      return jsonResponse({ error: "Conversa ou status da rifa inválido." }, 400, corsHeaders);
+    }
+
+    const { data: conversation, error: conversationError } = await supabase
+      .from("instagram_conversations")
+      .select("id, is_converted")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (conversationError) {
+      return jsonResponse({ error: "Não foi possível validar a conversa." }, 503, corsHeaders);
+    }
+    if (!conversation) return jsonResponse({ error: "Conversa não encontrada." }, 404, corsHeaders);
+    if (conversation.is_converted !== true) {
+      return jsonResponse({ error: "O status da rifa só pode ser alterado em chats finalizados." }, 409, corsHeaders);
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from("instagram_conversations")
+      .update({
+        raffle_status: raffleStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", conversationId)
+      .select("id, raffle_status")
+      .maybeSingle();
+
+    if (updateError || !updated) {
+      return jsonResponse({ error: updateError?.message || "Falha ao atualizar o status da rifa." }, 500, corsHeaders);
+    }
+
+    return jsonResponse({
+      success: true,
+      conversationId: updated.id,
+      raffleStatus: updated.raffle_status ?? null,
+    }, 200, corsHeaders);
+  }
+
   const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
   const patch = body?.progressPatch;
   if (!conversationId || conversationId.length > 256 || !patch || typeof patch !== "object" || Array.isArray(patch)) {

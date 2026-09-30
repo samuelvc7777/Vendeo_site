@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { AutoPilotChatState } from "@/domain/entities/AutoPilot";
+import {
+  RaffleCommercialStatus,
+  normalizeRaffleCommercialStatus,
+} from "@/domain/entities/RaffleStatus";
 
 export interface RealtimeMessagePayload {
   id: string;
@@ -40,6 +44,7 @@ export interface RealtimeConversationUpdatePayload {
   avatar?: string;
   currentStageId?: string | null;
   isConverted?: boolean;
+  raffleStatus?: RaffleCommercialStatus;
   aiAutoRespond?: boolean;
 }
 
@@ -336,6 +341,7 @@ export function useChatRealtime({
             avatar: row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
+            raffleStatus: normalizeRaffleCommercialStatus(row.raffle_status),
             aiAutoRespond: Boolean(row.ai_auto_respond),
           });
         }
@@ -363,6 +369,7 @@ export function useChatRealtime({
             avatar: row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
+            raffleStatus: normalizeRaffleCommercialStatus(row.raffle_status),
             aiAutoRespond: Boolean(row.ai_auto_respond),
           });
         }

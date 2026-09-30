@@ -76,6 +76,11 @@ import {
 import { ChatStageBar } from "./ChatStageBar";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { StageChecklistItem } from "@/domain/entities/ChatStage";
+import {
+  RaffleCommercialStatus,
+  normalizeRaffleCommercialStatus,
+  raffleCommercialStatusLabel,
+} from "@/domain/entities/RaffleStatus";
 import { useAutoPilot } from "@/presentation/hooks/useAutoPilot";
 import { AutoPilotApprovalCard } from "./AutoPilotApprovalCard";
 import {
@@ -172,6 +177,7 @@ export interface DirectConversation {
   isRestricted?: boolean;
   currentStageId?: string | null;
   isConverted?: boolean;
+  raffleStatus?: RaffleCommercialStatus;
   aiAutoRespond?: boolean;
   status?: "active" | "archived" | "blocked" | "restricted" | "pending" | "system" | "vault";
 }
@@ -716,6 +722,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [isManualSyncing, setIsManualSyncing] = useState(false);
   const [mediaObservationText, setMediaObservationText] = useState("");
   const [isSubmittingMediaObservation, setIsSubmittingMediaObservation] = useState(false);
+  const [isUpdatingRaffleStatus, setIsUpdatingRaffleStatus] = useState(false);
 
   useEffect(() => {
     setMediaObservationText("");
@@ -1070,6 +1077,55 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     fetchConversationMessages,
     isSubmittingMediaObservation,
     mediaObservationText,
+  ]);
+
+  const handleSetRaffleStatus = useCallback(async (nextStatus: RaffleCommercialStatus) => {
+    const conversationId = activeChat?.id;
+    if (!conversationId || chatDetail?.isConverted !== true || isUpdatingRaffleStatus) return;
+
+    const previousStatus = normalizeRaffleCommercialStatus(activeChat?.raffleStatus);
+    const applyLocalStatus = (status: RaffleCommercialStatus) => {
+      setActiveChat((prev) =>
+        prev && prev.id === conversationId ? { ...prev, raffleStatus: status } : prev
+      );
+      setConversations((prev) =>
+        prev.map((conversation) =>
+          conversation.id === conversationId ? { ...conversation, raffleStatus: status } : conversation
+        )
+      );
+    };
+
+    setIsUpdatingRaffleStatus(true);
+    applyLocalStatus(nextStatus);
+    try {
+      const response = await brainOperatorFetch("/operator/chat-progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          operation: "raffle_status",
+          conversationId,
+          raffleStatus: nextStatus,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success !== true) {
+        throw new Error(result?.error || "Não foi possível atualizar o status da rifa.");
+      }
+      const confirmedStatus = normalizeRaffleCommercialStatus(result?.raffleStatus);
+      applyLocalStatus(confirmedStatus);
+      toast.success(`Rifa: ${raffleCommercialStatusLabel(confirmedStatus)}`);
+    } catch (error: any) {
+      applyLocalStatus(previousStatus);
+      console.error("[Raffle Status] Falha:", error);
+      toast.error(error?.message || "Não foi possível atualizar o status da rifa.");
+    } finally {
+      setIsUpdatingRaffleStatus(false);
+    }
+  }, [
+    activeChat?.id,
+    activeChat?.raffleStatus,
+    chatDetail?.isConverted,
+    isUpdatingRaffleStatus,
   ]);
 
   // Push remoto crítico: o frontend apenas registra este dispositivo.
@@ -1440,6 +1496,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               isRestricted,
               currentStageId: c.current_stage_id || c.currentStageId || null,
               isConverted: Boolean(c.is_converted ?? c.isConverted),
+              raffleStatus: normalizeRaffleCommercialStatus(c.raffle_status ?? c.raffleStatus),
               aiAutoRespond: Boolean(c.ai_auto_respond ?? c.aiAutoRespond),
               status: isRestricted ? "restricted" : (c.status || "active"),
             };
@@ -1465,6 +1522,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     // Metadados de etapa são canônicos e não dependem do timestamp da última mensagem.
                     currentStageId: next.currentStageId,
                     isConverted: next.isConverted,
+                    raffleStatus: next.raffleStatus,
                     aiAutoRespond: next.aiAutoRespond,
                   }
                 : next
@@ -1480,7 +1538,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       // last_message_at porque chats ativos mudam de posição enquanto a carga roda.
       if (supabase) {
         const selectColumns =
-          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, ai_auto_respond, created_at, updated_at";
+          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, raffle_status, ai_auto_respond, created_at, updated_at";
 
         const { data: recentRows, error: recentError } = await supabase
           .from("instagram_conversations")
@@ -1603,6 +1661,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               isRestricted: isRestr,
               currentStageId: c.currentStageId ?? c.current_stage_id ?? null,
               isConverted: Boolean(c.isConverted ?? c.is_converted),
+              raffleStatus: normalizeRaffleCommercialStatus(c.raffleStatus ?? c.raffle_status),
               aiAutoRespond: Boolean(c.aiAutoRespond ?? c.ai_auto_respond),
               status: isRestr ? "restricted" : (c.status === "restricted" ? "active" : (c.status || "active")),
             };
@@ -1862,6 +1921,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     avatar?: string;
     currentStageId?: string | null;
     isConverted?: boolean;
+    raffleStatus?: RaffleCommercialStatus;
     aiAutoRespond?: boolean;
   }) => {
     if (!conv.id || conv.id.startsWith("__")) return;
@@ -1958,6 +2018,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         avatar: conv.avatar || target.avatar,
         currentStageId: conv.currentStageId !== undefined ? conv.currentStageId : target.currentStageId,
         isConverted: conv.isConverted !== undefined ? conv.isConverted : target.isConverted,
+        raffleStatus: conv.raffleStatus !== undefined ? conv.raffleStatus : target.raffleStatus,
         aiAutoRespond: conv.aiAutoRespond !== undefined ? conv.aiAutoRespond : target.aiAutoRespond,
         lastMessage: formattedPreview,
         lastMessageAt: conv.lastMessageAt || target.lastMessageAt,
@@ -1980,6 +2041,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         updated.avatar === target.avatar &&
         updated.currentStageId === target.currentStageId &&
         updated.isConverted === target.isConverted &&
+        updated.raffleStatus === target.raffleStatus &&
         updated.aiAutoRespond === target.aiAutoRespond &&
         updated.lastMessage === target.lastMessage &&
         updated.lastMessageAt === target.lastMessageAt &&
@@ -2001,6 +2063,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       next[idx] = updated;
       return next;
     });
+
+    if (isCurrentActive && (conv.raffleStatus !== undefined || conv.isConverted !== undefined)) {
+      setActiveChat((prev) =>
+        prev && prev.id === conv.id
+          ? {
+              ...prev,
+              isConverted: conv.isConverted !== undefined ? conv.isConverted : prev.isConverted,
+              raffleStatus: conv.raffleStatus !== undefined ? conv.raffleStatus : prev.raffleStatus,
+            }
+          : prev
+      );
+    }
   }, [fetchConversationMessages, sendCriticalNotificationOnce]);
 
   // Handler de INSERT de nova conversa via Realtime — adiciona incrementalmente à lista sem full fetch
@@ -2015,6 +2089,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     avatar?: string;
     currentStageId?: string | null;
     isConverted?: boolean;
+    raffleStatus?: RaffleCommercialStatus;
     aiAutoRespond?: boolean;
   }) => {
     if (!conv.id || conv.id.startsWith("__")) return;
@@ -2043,6 +2118,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         isRestricted: false,
         currentStageId: conv.currentStageId || null,
         isConverted: Boolean(conv.isConverted),
+        raffleStatus: normalizeRaffleCommercialStatus(conv.raffleStatus),
         aiAutoRespond: Boolean(conv.aiAutoRespond),
         status: "active",
       };
@@ -4069,6 +4145,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             onAdvanceStage={advanceStage}
             onSetStage={setStage}
             onToggleConverted={toggleConverted}
+            raffleStatus={normalizeRaffleCommercialStatus(activeChat.raffleStatus)}
+            onSetRaffleStatus={handleSetRaffleStatus}
+            isUpdatingRaffleStatus={isUpdatingRaffleStatus}
             onQuickSendItem={handleQuickSendChecklistItem}
           />
         )}
@@ -5497,11 +5576,25 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       {/* BADGE DA ETAPA DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
                       {conv.type === "instagram" && (() => {
                         if (conv.isConverted) {
+                          const raffleStatus = normalizeRaffleCommercialStatus(conv.raffleStatus);
+                          const raffleClass =
+                            raffleStatus === "bought"
+                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35"
+                              : raffleStatus === "offered"
+                              ? "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/35"
+                              : raffleStatus === "not_bought"
+                              ? "bg-rose-500/12 text-rose-700 dark:text-rose-300 border-rose-500/30"
+                              : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-zinc-200 dark:border-[#333]";
                           return (
-                            <span className="text-[9px] bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
-                              <Trophy className="w-2.5 h-2.5 text-amber-700 dark:text-amber-300" />
-                              Finalizado
-                            </span>
+                            <>
+                              <span className="text-[9px] bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
+                                <Trophy className="w-2.5 h-2.5 text-amber-700 dark:text-amber-300" />
+                                Finalizado
+                              </span>
+                              <span className={`text-[9px] border font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none ${raffleClass}`}>
+                                Rifa: {raffleCommercialStatusLabel(raffleStatus)}
+                              </span>
+                            </>
                           );
                         }
                         const currentStageId = conv.currentStageId || stages[0]?.id;
