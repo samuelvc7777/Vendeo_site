@@ -1528,6 +1528,7 @@ export interface RunOpenAiBrainParams {
   vaultIds?: string[];
   candidateEvidence?: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }>;
   schemaRetryCount?: number;
+  technicalRepairCount?: number;
   schemaFeedback?: string;
   recoveredAudioToolState?: RecoveredAudioToolState;
   recentGreetingState?: RecentGreetingState;

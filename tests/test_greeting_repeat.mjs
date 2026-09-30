@@ -172,7 +172,7 @@ test("Fixture Jhonathan — 13 minutos depois, bom diaa repetido nunca passa ao 
 
 test("A trava final fica entre a formação das ações e a preparação da outbox", async () => {
   const source = await readFile(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
-  const guardIndex = source.indexOf("const dispatchGreetingRepeat = detectGreetingRepeat");
+  const guardIndex = source.indexOf("const dispatchGreetingRepeat = useSdkConversationRuntime");
   const outboxIndex = source.indexOf("OUTBOX PATTERN: Sequência Canônica de Ações de Saída");
   const persistIndex = source.indexOf("persistCanonicalBrainDecision", outboxIndex);
   assert.ok(guardIndex > outboxIndex && guardIndex < persistIndex);

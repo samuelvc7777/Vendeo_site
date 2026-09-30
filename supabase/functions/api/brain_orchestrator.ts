@@ -3876,7 +3876,34 @@ export async function runDurableOutboxDispatcher(
       continue;
     }
 
-    // B. Status dispatch_uncertain: tenta reconciliação determinística antes de qualquer coisa
+    // B. Um "sending" antigo precisa ser reclassificado atomicamente antes
+    // da reconciliação. Sending ativo continua bloqueado; sending stale vira
+    // dispatch_uncertain no PostgreSQL para impedir reenvio cego.
+    if (entry.status === "sending") {
+      const sendingCheck = await claimOutboxEntryAtomic({
+        supabase,
+        conversationId,
+        outboxKey: entryKey,
+        claimToken: dispatcherToken,
+        cycleId: entry.cycleId,
+      });
+
+      if (sendingCheck.reason === "sending_active") {
+        result.blockedCount++;
+        blockedCycleKeys.add(entryCycleKey);
+        continue;
+      }
+
+      if (sendingCheck.reason === "sending_stale_uncertain" || sendingCheck.isUncertain) {
+        Object.assign(entry, sendingCheck.entry || {}, { status: "dispatch_uncertain" });
+      } else {
+        result.blockedCount++;
+        blockedCycleKeys.add(entryCycleKey);
+        continue;
+      }
+    }
+
+    // C. Status dispatch_uncertain: tenta reconciliação determinística antes de qualquer coisa
     if (entry.status === "dispatch_uncertain") {
       const recResult = await reconcileUncertainOutboxAction({
         supabase,

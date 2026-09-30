@@ -4,7 +4,6 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import {
   runBrainOrchestration,
-  requestBrainCyclePreemptionAtomic,
   authorizeManualAutopilotRetryAtomic,
   releaseExperimentalCycleAtomic,
   runDurableOutboxDispatcher,
@@ -34,11 +33,13 @@ import {
   verifyBrainOperatorToken,
 } from "./brain_operator_auth.ts";
 import { handleOperatorChatProgress } from "./operator_chat_progress.ts";
-import { computeBoundedDebounce } from "./debounce_policy.ts";
 import {
-  enqueueOpenAiConversationMessageSync,
   processOpenAiConversationSyncQueue,
 } from "./openai_conversation_runtime.ts";
+import { processAutopilotInboundQueue } from "./autopilot_inbound_queue.ts";
+import {
+  processInstagramProfileQueue,
+} from "./instagram_profile_queue.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -74,6 +75,40 @@ function getSupabaseClient() {
   return createClient(url, key);
 }
 
+async function resolveInstagramConversationId(
+  supabase: any,
+  rawContactId: string,
+): Promise<string> {
+  if (!/^\d+$/.test(rawContactId)) return rawContactId;
+
+  try {
+    const { data, error } = await supabase.rpc("resolve_instagram_conversation_id_fast", {
+      p_raw_contact_id: rawContactId,
+    });
+    if (!error && data) return String(data);
+  } catch {
+    // Rollout-safe: fall through to the legacy lookup until the migration exists.
+  }
+
+  const { data: convByContact } = await supabase
+    .from("instagram_conversations")
+    .select("id")
+    .or(`id.eq.${rawContactId},contact_id.eq.${rawContactId}`)
+    .limit(1)
+    .maybeSingle();
+  if (convByContact?.id) return convByContact.id;
+
+  const { data: convRow } = await supabase
+    .from("instagram_messages")
+    .select("conversation_id")
+    .or(`sender_id.eq.${rawContactId},contact_id.eq.${rawContactId}`)
+    .neq("conversation_id", rawContactId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return convRow?.conversation_id || rawContactId;
+}
 
 async function getOpenAiApiKey(supabase: any): Promise<string | null> {
   const envKey = (Deno.env.get("OPENAI_API_KEY") || "").trim();
@@ -386,83 +421,58 @@ serve(async (req: Request) => {
             const message = msgEvent.message;
             const readEvent = msgEvent.read;
 
-            // 1. TRATAMENTO DE READ RECEIPT (Cliente visualizou a mensagem da Larissa / Vendeo)
+            // 1. READ RECEIPT: resolução + updates em uma única transação.
             if (readEvent && senderId) {
               const rawContactId = senderId;
               const watermark = readEvent.watermark || msgEvent.timestamp || Date.now();
               const seenAtIso = new Date(watermark).toISOString();
 
-              let conversationId = rawContactId;
-              if (/^\d+$/.test(rawContactId)) {
-                // Procura na tabela instagram_conversations se já existe conversa com esse contact_id ou id
-                const { data: convByContact } = await supabase
-                  .from("instagram_conversations")
-                  .select("id")
-                  .or(`id.eq.${rawContactId},contact_id.eq.${rawContactId}`)
-                  .limit(1)
-                  .maybeSingle();
+              try {
+                const { data: seenResult, error: seenError } = await supabase.rpc(
+                  "mark_instagram_seen_atomic",
+                  {
+                    p_raw_contact_id: rawContactId,
+                    p_seen_at: seenAtIso,
+                  },
+                );
 
-                if (convByContact?.id) {
-                  conversationId = convByContact.id;
+                if (seenError || seenResult?.success !== true) {
+                  console.warn(
+                    "[Webhook] mark_instagram_seen_atomic falhou:",
+                    seenError || seenResult,
+                  );
                 } else {
-                  // Procura em instagram_messages se já temos alguma mensagem desse contato vinculada a outro conversation_id
-                  const { data: convRow } = await supabase
-                    .from("instagram_messages")
-                    .select("conversation_id")
-                    .or(`sender_id.eq.${rawContactId},contact_id.eq.${rawContactId}`)
-                    .neq("conversation_id", rawContactId)
-                    .limit(1)
-                    .maybeSingle();
+                  const conversationId = String(seenResult.conversation_id || rawContactId);
 
-                  if (convRow?.conversation_id) {
-                    conversationId = convRow.conversation_id;
+                  // A conversa já atualiza via postgres_changes. Este único broadcast
+                  // existe para refletir status seen nas mensagens, cuja assinatura
+                  // atual da UI não escuta UPDATE.
+                  const seenBroadcast = (async () => {
+                    try {
+                      const channel = supabase.channel("vendeo_realtime_chat");
+                      await channel.send({
+                        type: "broadcast",
+                        event: "instagram_seen",
+                        payload: {
+                          conversationId,
+                          watermark,
+                          seenAt: seenAtIso,
+                        },
+                      });
+                    } catch {
+                      // O estado canônico já está persistido no PostgreSQL.
+                    }
+                  })();
+
+                  if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                    (globalThis as any).EdgeRuntime.waitUntil(seenBroadcast);
+                  } else {
+                    void seenBroadcast;
                   }
                 }
+              } catch (seenException) {
+                console.warn("[Webhook] read receipt exception:", seenException);
               }
-
-              // Atualiza conversa para status 'seen' e grava o momento exato em seen_at
-              await supabase
-                .from("instagram_conversations")
-                .update({
-                  last_status: "seen",
-                  seen_at: seenAtIso,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq("id", conversationId);
-
-              // Atualiza mensagens enviadas por nós até o watermark para status 'seen'
-              await supabase
-                .from("instagram_messages")
-                .update({
-                  status: "seen",
-                  seen_at: seenAtIso,
-                })
-                .eq("conversation_id", conversationId)
-                .eq("is_mine", true)
-                .lte("timestamp", seenAtIso);
-
-              // Dispara broadcasts instantâneos via Supabase Realtime (< 20ms)
-              const channel = supabase.channel("vendeo_realtime_chat");
-              channel.send({
-                type: "broadcast",
-                event: "instagram_seen",
-                payload: {
-                  conversationId,
-                  watermark,
-                  seenAt: seenAtIso,
-                },
-              }).catch(() => {});
-
-              channel.send({
-                type: "broadcast",
-                event: "instagram_conversation_update",
-                payload: {
-                  id: conversationId,
-                  lastStatus: "seen",
-                  seenAt: seenAtIso,
-                  lastDirection: "out",
-                },
-              }).catch(() => {});
 
               continue;
             }
@@ -473,34 +483,9 @@ serve(async (req: Request) => {
             const rawContactId = isEcho ? recipientId : senderId;
             if (!rawContactId) continue;
 
-            // Mapeia IGSID numérico para a thread real no banco para não fragmentar conversas
-            let conversationId = rawContactId;
-            if (/^\d+$/.test(rawContactId)) {
-              // 1. Procura na tabela instagram_conversations se já existe conversa com esse contact_id ou id
-              const { data: convByContact } = await supabase
-                .from("instagram_conversations")
-                .select("id")
-                .or(`id.eq.${rawContactId},contact_id.eq.${rawContactId}`)
-                .limit(1)
-                .maybeSingle();
-
-              if (convByContact?.id) {
-                conversationId = convByContact.id;
-              } else {
-                // 2. Procura em instagram_messages se já temos alguma mensagem desse contato vinculada a outro conversation_id
-                const { data: convRow } = await supabase
-                  .from("instagram_messages")
-                  .select("conversation_id")
-                  .or(`sender_id.eq.${rawContactId},contact_id.eq.${rawContactId}`)
-                  .neq("conversation_id", rawContactId)
-                  .limit(1)
-                  .maybeSingle();
-
-                if (convRow?.conversation_id) {
-                  conversationId = convRow.conversation_id;
-                }
-              }
-            }
+            // Mapeia IGSID numérico para a thread real sem repetir scans REST no hot path.
+            const conversationId = await resolveInstagramConversationId(supabase, rawContactId);
+            const messageId = message.mid || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
             let text = message.text || "";
             const isAudioMsg =
@@ -515,21 +500,22 @@ serve(async (req: Request) => {
               const rawAudioUrl = firstAtt?.payload?.url || firstAtt?.file_url;
 
               if (rawAudioUrl) {
-                // Se a URL do áudio for da CDN da Meta (lookaside ou cdninstagram), baixa e persiste no Supabase Storage
-                if (rawAudioUrl.includes("lookaside.fbsbx.com") || rawAudioUrl.includes("cdninstagram.com")) {
+                // Inbound fica no hot path apenas com a URL da Meta. O worker
+                // durável persiste no Vault e transcreve fora do webhook.
+                if (!isEcho) {
+                  audioUrl = rawAudioUrl;
+                } else if (rawAudioUrl.includes("lookaside.fbsbx.com") || rawAudioUrl.includes("cdninstagram.com")) {
                   try {
-                    const audioRes = await fetch(rawAudioUrl);
+                    const audioRes = await fetch(rawAudioUrl, { signal: AbortSignal.timeout(15_000) });
                     if (audioRes.ok) {
                       const audioBytes = await audioRes.arrayBuffer();
-                      const fileName = `voice_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp4`;
+                      const safeMessageId = messageId.replace(/[^a-zA-Z0-9_-]/g, "_");
+                      const fileName = `echo_voice_${safeMessageId}.mp4`;
                       const contentType = audioRes.headers.get("content-type") || "video/mp4";
 
                       const { data: upData, error: upErr } = await supabase.storage
                         .from("vendeo_vault")
-                        .upload(fileName, audioBytes, {
-                          contentType,
-                          upsert: true,
-                        });
+                        .upload(fileName, audioBytes, { contentType, upsert: true });
 
                       if (!upErr && upData?.path) {
                         const { data: pubData } = supabase.storage.from("vendeo_vault").getPublicUrl(upData.path);
@@ -541,7 +527,7 @@ serve(async (req: Request) => {
                       audioUrl = rawAudioUrl;
                     }
                   } catch (err) {
-                    console.error("Erro ao persistir áudio da CDN no Supabase Storage:", err);
+                    console.error("Erro ao persistir áudio echo da CDN no Supabase Storage:", err);
                     audioUrl = rawAudioUrl;
                   }
                 } else {
@@ -560,113 +546,19 @@ serve(async (req: Request) => {
               }
             }
 
-            const messageId = message.mid || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
             const timestamp = msgEvent.timestamp
               ? new Date(msgEvent.timestamp).toISOString()
               : new Date().toISOString();
 
             const previewText = isAudioMsg ? "🎙️ Mensagem de voz" : imageUrl ? "📷 Foto" : text;
-
-            // Busca configurações ativas do Instagram para resolução de perfil
-            const { data: igCfg } = await supabase
-              .from("instagram_config")
-              .select("access_token, username")
-              .eq("id", "default")
-              .maybeSingle();
-
-            const myIgUsername = igCfg?.username || "lariresende_0611";
-
-            // PASSO 1 CRÍTICO: Garante a conversa na tabela instagram_conversations ANTES de salvar a mensagem
-            // Isso evita 100% de violação de Foreign Key Constraint (instagram_messages_conversation_id_fkey)
-            const { data: existingConv } = await supabase
-              .from("instagram_conversations")
-              .select("id, username, full_name, avatar")
-              .or(`id.eq.${conversationId},id.eq.${rawContactId}`)
-              .limit(1)
-              .maybeSingle();
-
-            if (!existingConv) {
-              // Conversa nova: resolve perfil completo (thread do MID + IGSID)
-              let resolved = {
-                username: `ig_${conversationId.slice(-6)}`,
-                fullName: `ig_${conversationId.slice(-6)}`,
-                avatar: "/images/default-avatar.svg",
-              };
-
-              if (igCfg?.access_token) {
-                resolved = await resolveInstagramContactProfile(
-                  supabase,
-                  igCfg.access_token,
-                  myIgUsername,
-                  conversationId,
-                  messageId
-                );
-              }
-
-              await supabase.from("instagram_conversations").upsert({
-                id: conversationId,
-                username: resolved.username,
-                full_name: resolved.fullName,
-                avatar: resolved.avatar,
-                contact_id: rawContactId,
-                last_message: previewText,
-                last_message_preview: previewText,
-                last_message_at: timestamp,
-                last_direction: isEcho ? "out" : "in",
-                last_status: isEcho ? "sent" : null,
-                seen_at: null,
-                unread: !isEcho,
-                updated_at: timestamp,
-                status: "active",
-              });
-            } else {
-              // Conversa já existente: atualiza com a última mensagem
-              const updatePayload: any = {
-                last_message: previewText,
-                last_message_preview: previewText,
-                last_message_at: timestamp,
-                last_direction: isEcho ? "out" : "in",
-                last_status: isEcho ? "sent" : null,
-                seen_at: null,
-                unread: !isEcho,
-                updated_at: timestamp,
-              };
-
-              // Se a conversa existente estava com username temporário ig_ ou sem avatar, tenta enriquecer
-              if (
-                (existingConv.username?.startsWith("ig_") ||
-                  !existingConv.avatar ||
-                  existingConv.avatar === "/images/default-avatar.svg") &&
-                igCfg?.access_token
-              ) {
-                const resolved = await resolveInstagramContactProfile(
-                  supabase,
-                  igCfg.access_token,
-                  myIgUsername,
-                  conversationId,
-                  messageId
-                );
-                if (resolved.username && !resolved.username.startsWith("ig_")) {
-                  updatePayload.username = resolved.username;
-                  updatePayload.full_name = resolved.fullName;
-                  if (resolved.avatar && !resolved.avatar.includes("default-avatar.svg")) {
-                    updatePayload.avatar = resolved.avatar;
-                  }
-                }
-              }
-
-              await supabase
-                .from("instagram_conversations")
-                .update(updatePayload)
-                .eq("id", existingConv.id);
-            }
-
-            // PASSO 2 CRÍTICO: Agora que a conversa existe com 100% de certeza, salva a mensagem no Supabase
             const replyToMid =
               message.reply_to?.mid ||
               message.reply_to?.id ||
               (typeof message.reply_to === "string" ? message.reply_to : null) ||
               null;
+
+            // Conversa/mensagem/filas serão persistidas atomicamente abaixo.
+            // O echo de áudio pode fazer persistência/transcrição externa antes disso.
 
             let audioTranscript: string | null = null;
             let audioTranscriptionError: string | null = null;
@@ -683,7 +575,7 @@ serve(async (req: Request) => {
                 shouldTranscribeAudio = true;
               }
             }
-            if (isAudioMsg && audioUrl && shouldTranscribeAudio) {
+            if (isEcho && isAudioMsg && audioUrl && shouldTranscribeAudio) {
               try {
                 const resolved = await resolveInboundAudioMessage(supabase, {
                   id: messageId,
@@ -702,28 +594,35 @@ serve(async (req: Request) => {
               }
             }
 
-            let inboundRpcData: any = null;
+            const inboundIsActionable = !isEcho && isActionableInboundMessage({
+              text,
+              mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+              audioTranscript,
+            });
+
             if (!isEcho) {
               try {
                 const { data, error: inboundRpcErr } = await supabase.rpc(
-                  "record_inbound_message_atomic",
+                  "ingest_instagram_inbound_atomic",
                   {
                     p_conversation_id: conversationId,
+                    p_raw_contact_id: rawContactId,
                     p_message_id: messageId,
-                    p_contact_id: rawContactId,
                     p_sender_id: senderId,
                     p_text: text,
                     p_timestamp: timestamp,
+                    p_preview_text: previewText,
                     p_media_url: audioUrl || imageUrl || null,
                     p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
                     p_reply_to_message_id: replyToMid,
                     p_audio_transcript: audioTranscript,
                     p_audio_transcription_error: audioTranscriptionError,
+                    p_actionable: inboundIsActionable,
                   }
                 );
                 if (inboundRpcErr || !data?.success) {
                   console.error(
-                    `[Webhook] record_inbound_message_atomic falhou (fail-closed): conv=${conversationId} msg=${messageId}`,
+                    `[Webhook] ingest_instagram_inbound_atomic falhou (fail-closed): conv=${conversationId} msg=${messageId}`,
                     inboundRpcErr || data
                   );
                   // Não confirme para a Meta um evento que ainda não foi persistido.
@@ -734,10 +633,19 @@ serve(async (req: Request) => {
                     headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
                   });
                 }
-                inboundRpcData = data;
+                if (
+                  data?.eligible_after_activation === true &&
+                  inboundIsActionable &&
+                  data?.queued !== true
+                ) {
+                  console.warn(
+                    `[Webhook] inbound persistida sem job da fila; cron legado poderá recuperar conv=${conversationId} msg=${messageId}`,
+                    data,
+                  );
+                }
               } catch (rErr) {
                 console.error(
-                  `[Webhook] record_inbound_message_atomic exception (fail-closed): conv=${conversationId} msg=${messageId}`,
+                  `[Webhook] ingest_instagram_inbound_atomic exception (fail-closed): conv=${conversationId} msg=${messageId}`,
                   rErr
                 );
                 return new Response(JSON.stringify({ error: "inbound_persistence_unavailable", retryable: true }), {
@@ -746,358 +654,79 @@ serve(async (req: Request) => {
                 });
               }
             } else {
-              // Echos de mensagens enviadas por nós no app oficial (outbound)
-              const { error: echoSaveErr } = await supabase.from("instagram_messages").upsert({
-                id: messageId,
-                conversation_id: conversationId,
-                contact_id: rawContactId,
-                sender_id: "me",
-                text: text,
-                timestamp: timestamp,
-                is_mine: true,
-                status: "delivered",
-                media_url: audioUrl || imageUrl || null,
-                media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
-                reply_to_message_id: replyToMid,
-                direction: "outbound",
-                audio_transcript: audioTranscript,
-                audio_transcribed_at: audioTranscript ? new Date().toISOString() : null,
-                audio_transcription_error: audioTranscriptionError,
-              });
-              if (echoSaveErr) {
-                console.error("[Webhook] Erro ao persistir echo no Supabase:", echoSaveErr);
-              }
-            }
-
-            // Dispara Broadcast Realtime imediato (< 20ms) para todas as telas conectadas
-            try {
-              const realtimeChannel = supabase.channel("vendeo_realtime_chat");
-              await realtimeChannel.send({
-                type: "broadcast",
-                event: "instagram_message",
-                payload: {
-                  id: messageId,
-                  conversationId: conversationId,
-                  senderId: isEcho ? "me" : senderId,
-                  text: text,
-                  timestamp: timestamp,
-                  isMine: isEcho,
-                  status: "sent",
-                  mediaUrl: audioUrl || imageUrl,
-                  mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
-                  replyToMessageId: replyToMid,
-                },
-              });
-              await realtimeChannel.send({
-                type: "broadcast",
-                event: "instagram_conversation_update",
-                payload: {
-                  id: conversationId,
-                  lastMessage: previewText,
-                  lastMessageAt: timestamp,
-                  lastDirection: isEcho ? "out" : "in",
-                  lastStatus: isEcho ? "sent" : undefined,
-                  seenAt: null,
-                  unread: !isEcho,
-                },
-              });
-              if (rawContactId && rawContactId !== conversationId) {
-                await realtimeChannel.send({
-                  type: "broadcast",
-                  event: "instagram_conversation_update",
-                  payload: {
-                    id: rawContactId,
-                    lastMessage: previewText,
-                    lastMessageAt: timestamp,
-                    lastDirection: isEcho ? "out" : "in",
-                    lastStatus: isEcho ? "sent" : undefined,
-                    seenAt: null,
-                    unread: !isEcho,
-                  },
-                });
-              }
-            } catch (bErr) {
-              console.error("Aviso broadcast:", bErr);
-            }
-
-            // A view já recebeu o broadcast. Daqui em diante apenas enfileiramos
-            // a cópia para a OpenAI; nenhuma chamada externa da OpenAI bloqueia a inbox.
-            let openAiSyncQueued = false;
-            try {
-              const queued = await enqueueOpenAiConversationMessageSync({
-                supabase,
-                conversationId,
-                providerMessageId: messageId,
-                direction: isEcho ? "outbound" : "inbound",
-                receivedAt: timestamp,
-              });
-              openAiSyncQueued = queued.queued;
-            } catch (queueErr) {
-              console.warn(
-                `[OpenAI Sync Queue] Falha ao enfileirar msg=${messageId} conv=${conversationId}`,
-                queueErr,
-              );
-            }
-
-            if (isEcho && openAiSyncQueued) {
-              const syncPromise = processOpenAiConversationSyncQueue({
-                supabase,
-                conversationId,
-                providerMessageIds: [messageId],
-                limit: 1,
-              }).catch((syncErr) => {
-                console.warn(`[OpenAI Sync Queue] Fast-path outbound falhou msg=${messageId}:`, syncErr);
-              });
-              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                (globalThis as any).EdgeRuntime.waitUntil(syncPromise);
-              } else {
-                void syncPromise;
-              }
-            }
-
-            // AutoPilot Inteligente: Agendamento assíncrono de Debounce (Sem timeout na nuvem)
-            if (!isEcho) {
+              // Echo: conversa + mensagem + filas em uma única transação.
               try {
-                // 1. Busca configuração global do piloto automático
-                const { data: configRow } = await supabase
-                  .from("autopilot_settings")
-                  .select("config")
-                  .eq("id", "global")
-                  .single();
-                const apConfig = configRow?.config || {};
-                const isEnabledGlobally = apConfig?.isEnabledGlobally !== false;
-                const isManual = apConfig?.mode === "manual";
-
-                // 2. Busca estado da conversa para checar pausas e restrições
-                const { data: convRow } = await supabase
-                  .from("instagram_conversations")
-                  .select("status, is_restricted, stage_completed_rules, ai_debounce_until, ai_debounce_started_at, ai_auto_respond")
-                  .eq("id", conversationId)
-                  .maybeSingle();
-
-                // 2.1 Estado canônico por conversa. Nenhuma leitura de projeção global antiga.
-                const { data: stateRow } = await supabase
-                  .from("autopilot_chat_states")
-                  .select("is_enabled, status")
-                  .eq("conversation_id", conversationId)
-                  .maybeSingle();
-                const convRules = convRow?.stage_completed_rules || {};
-                const canonicalStatus = stateRow?.status || null;
-                const isPaused =
-                  convRow?.ai_auto_respond !== true ||
-                  stateRow?.is_enabled === false ||
-                  convRow?.is_restricted === true ||
-                  canonicalStatus === "waiting_human" ||
-                  canonicalStatus === "paused_handoff" ||
-                  canonicalStatus === "paused_guardrail";
-
-                const isEligibleByWatermark = inboundRpcData?.eligible_after_activation === true;
-                const isConversationAiEnabled = convRow?.ai_auto_respond === true;
-                const isActionable = isActionableInboundMessage({
-                  text,
-                  mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
-                  audioTranscript,
-                });
-                const shouldRunBrain =
-                  isConversationAiEnabled &&
-                  !isPaused &&
-                  isEnabledGlobally &&
-                  !isManual &&
-                  isEligibleByWatermark &&
-                  isActionable;
-
-                const scheduleInboundOpenAiSync = () => {
-                  if (!openAiSyncQueued) return;
-                  const syncPromise = processOpenAiConversationSyncQueue({
-                    supabase,
-                    conversationId,
-                    providerMessageIds: [messageId],
-                    limit: 1,
-                  }).catch((syncErr) => {
-                    console.warn(`[OpenAI Sync Queue] Fast-path inbound falhou msg=${messageId}:`, syncErr);
-                  });
-                  if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                    (globalThis as any).EdgeRuntime.waitUntil(syncPromise);
-                  } else {
-                    void syncPromise;
-                  }
-                };
-
-                if (!shouldRunBrain) {
-                  scheduleInboundOpenAiSync();
-                }
-
-                if (isPaused) {
-                  console.log(
-                    `[AutoPilot] Conversa ${conversationId} está desativada/pausada manualmente (ai_auto_respond=${convRow?.ai_auto_respond}, status=${convRules.status}, isPaused=${isPaused}). Não respondendo.`
-                  );
-                  if (convRow?.ai_debounce_until) {
-                    await supabase
-                      .from("instagram_conversations")
-                      .update({ ai_debounce_until: null })
-                      .eq("id", conversationId);
-                  }
-                } else if (!isEligibleByWatermark) {
-                  console.log(
-                    `[AutoPilot] Inbound ${messageId} para conv ${conversationId} pertence ao baseline do watermark (rev=${inboundRpcData?.inbound_revision} <= watermark=${inboundRpcData?.watermark_revision}). Zero Brain.`
-                  );
-                } else if (!isActionable) {
-                  console.log(
-                    `[AutoPilot] Inbound ${messageId} para conv ${conversationId} ignorado para resposta da IA (apenas emoji isolado, foto ou mídia sem texto/áudio). Zero Brain.`
+                const { data: echoResult, error: echoSaveErr } = await supabase.rpc(
+                  "ingest_instagram_echo_atomic",
+                  {
+                    p_conversation_id: conversationId,
+                    p_raw_contact_id: rawContactId,
+                    p_message_id: messageId,
+                    p_text: text,
+                    p_timestamp: timestamp,
+                    p_preview_text: previewText,
+                    p_media_url: audioUrl || imageUrl || null,
+                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                    p_reply_to_message_id: replyToMid,
+                    p_audio_transcript: audioTranscript,
+                    p_audio_transcription_error: audioTranscriptionError,
+                  },
+                );
+                if (echoSaveErr || echoResult?.success !== true) {
+                  console.error(
+                    "[Webhook] ingest_instagram_echo_atomic falhou:",
+                    echoSaveErr || echoResult,
                   );
                 }
-
-                // BRAIN: Único orquestrador oficial de produção (fail-closed)
-                if (shouldRunBrain) {
-                  const delayMinutes =
-                    typeof apConfig?.responseDelayMinutes === "number"
-                      ? apConfig.responseDelayMinutes
-                      : typeof convRules?.orchestration?.responseDelayMinutes === "number"
-                      ? convRules.orchestration.responseDelayMinutes
-                      : 0;
-
-                  const hasActiveCycle = Boolean(
-                    convRules?.orchestration?.activeCycle?.cycleToken &&
-                    convRules?.orchestration?.activeCycle?.expiresAt &&
-                    new Date(convRules.orchestration.activeCycle.expiresAt).getTime() > Date.now()
-                  );
-
-                  const maxDebounceWindowMinutes =
-                    typeof apConfig?.maxDebounceWindowMinutes === "number"
-                      ? apConfig.maxDebounceWindowMinutes
-                      : Math.max(delayMinutes, 3);
-                  const boundedDebounce = computeBoundedDebounce({
-                    responseDelayMinutes: delayMinutes,
-                    maxDebounceWindowMinutes,
-                    batchStartedAt: convRow?.ai_debounce_started_at || null,
-                  });
-
-                  // Se o Brain não vai começar agora, a Conversation não espera o debounce.
-                  if (hasActiveCycle || (delayMinutes > 0 && !boundedDebounce.dueNow)) {
-                    scheduleInboundOpenAiSync();
-                  }
-
-                  if (hasActiveCycle) {
-                    const newDebounceUntil = delayMinutes > 0
-                      ? boundedDebounce.scheduledAt
-                      : new Date(Date.now() + 2500).toISOString();
-                    console.log(
-                      `[Brain] Concorrência/Ciclo ativo detectado em ${conversationId}. Sinalizando preempção atômica e novo debounce de ${delayMinutes}m (${newDebounceUntil}).`
-                    );
-                    await requestBrainCyclePreemptionAtomic({
-                      supabase,
-                      conversationId,
-                      messageId: messageId || null,
-                      debounceUntil: newDebounceUntil,
-                    });
-                    await publishAutoPilotState(supabase, conversationId, {
-                      status: "scheduled",
-                      activity: activity(
-                        "scheduled",
-                        `Nova mensagem recebida. Reiniciando tempo de espera (${delayMinutes}m)...`,
-                        "Aguardando período de silêncio para responder com o contexto atualizado.",
-                        {
-                          scheduledAt: newDebounceUntil,
-                          quietPeriodMinutes: delayMinutes,
-                        }
-                      ),
-                      scheduledResponseAt: newDebounceUntil,
-                    });
-                  } else if (delayMinutes > 0 && !boundedDebounce.dueNow) {
-                    const scheduledUntil = boundedDebounce.scheduledAt;
-                    console.log(
-                      `[Brain] Inbound recebida em ${conversationId}. Agendando quiet period de ${delayMinutes}m (ai_debounce_until = ${scheduledUntil}).`
-                    );
-                    await supabase
-                      .from("instagram_conversations")
-                      .update({
-                        ai_debounce_until: scheduledUntil,
-                      })
-                      .eq("id", conversationId);
-
-                    await publishAutoPilotState(supabase, conversationId, {
-                      status: "scheduled",
-                      activity: activity(
-                        "scheduled",
-                        `Aguardando tempo de resposta (${delayMinutes}m)...`,
-                        "Aguardando o tempo configurado após a última mensagem recebida.",
-                        {
-                          scheduledAt: scheduledUntil,
-                          quietPeriodMinutes: delayMinutes,
-                        }
-                      ),
-                      scheduledResponseAt: scheduledUntil,
-                    });
-                  } else {
-                    // responseDelayMinutes = 0: inicia imediatamente
-                    console.log(`[Brain] responseDelayMinutes=0. Executando Brain imediatamente para conversa ${conversationId}`);
-                    let brainInputText = text || "";
-                    if (isAudioMsg) {
-                      if (!audioTranscript) {
-                        try {
-                          const resolvedNow = await resolveInboundAudioMessage(supabase, {
-                            id: messageId,
-                            text: text,
-                            media_type: "audio",
-                            media_url: audioUrl,
-                          });
-                          if (resolvedNow.hasValidTranscript && resolvedNow.transcript) {
-                            audioTranscript = resolvedNow.transcript;
-                            brainInputText = resolvedNow.transcript;
-                          } else {
-                            brainInputText = "[áudio recebido — transcrição indisponível]";
-                          }
-                        } catch {
-                          brainInputText = "[áudio recebido — transcrição indisponível]";
-                        }
-                      } else {
-                        brainInputText = audioTranscript;
-                      }
-                    }
-
-                    const brainPromise = (async () => {
-                      const res = await runBrainOrchestration({
-                        supabase,
-                        conversationId,
-                        newMessage: {
-                          id: messageId,
-                          text: brainInputText,
-                          timestamp: timestamp || new Date().toISOString(),
-                          sender: senderId || "them",
-                          mediaType: isAudioMsg ? "audio" : undefined,
-                          audioTranscript: audioTranscript || undefined,
-                        },
-                      });
-
-                      // Em caso de concorrência com ciclo ativo, sinaliza preempção atômica no PostgreSQL
-                      if (!res.handled && res.error === "Lock ativo concorrente") {
-                        const newDebounceUntil = new Date(Date.now() + 2500).toISOString();
-                        console.log(`[Brain] Concorrência detectada em ${conversationId}. Sinalizando preempção atômica.`);
-                        await requestBrainCyclePreemptionAtomic({
-                          supabase,
-                          conversationId,
-                          messageId: messageId || null,
-                          debounceUntil: newDebounceUntil,
-                        });
-                      }
-
-                      // FAIL-CLOSED: Nenhum fallback para legado
-                      if (!res.handled && res.error) {
-                        console.error(`[Brain] FAIL CLOSED: Erro no Brain para ${conversationId} (${res.error}). Nenhum fallback acionado.`);
-                      }
-                    })();
-
-                    if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                      (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
-                    } else {
-                      void brainPromise;
-                    }
-                  }
-                }
-              } catch (apErr) {
-                console.error("[Cloud AutoPilot] Erro ao agendar resposta no webhook:", apErr);
+              } catch (echoException) {
+                console.error("[Webhook] Echo persistence exception:", echoException);
               }
             }
+
+            // Inbound já chega à UI por postgres_changes:
+            // instagram_messages INSERT + instagram_conversations INSERT/UPDATE.
+            // Não duplicamos esse tráfego com broadcast por mensagem.
+            //
+            // Echo é a exceção: o upsert pode virar UPDATE de mensagem, enquanto a
+            // assinatura atual da UI escuta INSERT. Mantemos apenas esse evento,
+            // fora do hot path da resposta do webhook.
+            if (isEcho) {
+              const echoBroadcast = (async () => {
+                try {
+                  const realtimeChannel = supabase.channel("vendeo_realtime_chat");
+                  await realtimeChannel.send({
+                    type: "broadcast",
+                    event: "instagram_message",
+                    payload: {
+                      id: messageId,
+                      conversationId,
+                      senderId: "me",
+                      text,
+                      timestamp,
+                      isMine: true,
+                      status: "sent",
+                      mediaUrl: audioUrl || imageUrl,
+                      mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+                      replyToMessageId: replyToMid,
+                    },
+                  });
+                } catch (broadcastError) {
+                  console.warn("[Webhook] Echo broadcast falhou:", broadcastError);
+                }
+              })();
+
+              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                (globalThis as any).EdgeRuntime.waitUntil(echoBroadcast);
+              } else {
+                void echoBroadcast;
+              }
+            }
+
+            // Inbound texto/imagem e echo já enfileiram OpenAI sync dentro
+            // das respectivas transações SQL. Áudio inbound espera transcrição no worker.
+
+            // O Brain não roda no webhook. A admissão atômica acima criou/atualizou
+            // o job durável; o worker com backpressure processa fora desta requisição.
           }
         }
 
@@ -3750,31 +3379,115 @@ serve(async (req: Request) => {
 
     // ==========================================
     // 8.5. AUTOPILOT: CRON TICK ASSÍNCRONO (/autopilot/cron-tick)
-    // Acionado a cada 1 minuto pelo pg_cron para processar conversas cujo tempo de debounce venceu
+    // Acionado pelo pg_cron a cada 15s. O tick rápido só reivindica trabalho devido;
+    // manutenção pesada é limitada pelas scheduler lanes.
     // ==========================================
     if ((path === "/autopilot/cron-tick" || path === "/api/autopilot/cron-tick") && (req.method === "POST" || req.method === "GET")) {
       try {
         const nowIso = new Date().toISOString();
         console.log(`[TRACE-AUTOPILOT] cron:tick check at ${nowIso}`);
 
-        // Drena a fila durável de sincronização com OpenAI Conversation.
-        // Independente do toggle global e sem bloquear as outras rotinas do cron.
-        const openAiSyncPromise = processOpenAiConversationSyncQueue({
-          supabase,
-          limit: 50,
-        }).catch((syncErr) => {
-          console.warn("[OpenAI Sync Queue] cron:tick falhou:", syncErr);
-        });
-        if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-          (globalThis as any).EdgeRuntime.waitUntil(openAiSyncPromise);
-        } else {
-          void openAiSyncPromise;
+        // Worker durável do inbound: reivindica poucos jobs por tick. O trabalho
+        // pesado roda fora do webhook; leases recuperam qualquer worker encerrado.
+        let inboundQueueAvailable = false;
+        let inboundQueueClaimed = 0;
+        try {
+          const inboundQueue = await processAutopilotInboundQueue({
+            supabase,
+            limit: 3,
+          });
+          inboundQueueAvailable = true;
+          inboundQueueClaimed = inboundQueue.claimed;
+          if (inboundQueue.claimed > 0) {
+            console.log(`[Inbound Queue] cron:tick claimed=${inboundQueue.claimed}`);
+          }
+        } catch (inboundQueueError) {
+          // O scheduler legado abaixo permanece como recuperação durante o rollout.
+          console.error("[Inbound Queue] Falha ao reivindicar jobs:", inboundQueueError);
         }
 
-        // Recovery dedicado: reivindica brain_late com lease e consulta somente o
-        // provider_turn_id existente. Turnos ativos ficam intactos; nenhum POST
-        // ao provider é feito por este scanner.
-        const recoveryWorkerToken = crypto.randomUUID();
+        // Recovery técnico não precisa rodar 4x/min. O claim é atômico no banco,
+        // então cron ticks sobrepostos não duplicam a manutenção.
+        let runMaintenance = true;
+        try {
+          const { data: maintenanceLane, error: maintenanceLaneError } = await supabase.rpc(
+            "claim_autopilot_scheduler_lane",
+            { p_lane: "brain_maintenance", p_min_interval_seconds: 60 },
+          );
+          if (maintenanceLaneError || maintenanceLane?.success !== true) {
+            console.warn("[AutoPilot Scheduler] Lane de manutenção indisponível; usando fallback compatível.", maintenanceLaneError || maintenanceLane);
+          } else {
+            runMaintenance = maintenanceLane.acquired === true;
+          }
+        } catch (maintenanceLaneError) {
+          console.warn("[AutoPilot Scheduler] Falha no claim da lane; usando fallback compatível.", maintenanceLaneError);
+        }
+
+        // OpenAI Conversation é uma lane de baixa prioridade. O histórico continua
+        // durável, mas a sync não compete com webhook/Brain em todo tick de 15s.
+        let runOpenAiSync = true;
+        try {
+          const { data: openAiLane, error: openAiLaneError } = await supabase.rpc(
+            "claim_autopilot_scheduler_lane",
+            { p_lane: "openai_conversation_sync", p_min_interval_seconds: 30 },
+          );
+          if (!openAiLaneError && openAiLane?.success === true) {
+            runOpenAiSync = openAiLane.acquired === true;
+          }
+        } catch {
+          // Durante rollout da migration, mantém compatibilidade.
+          runOpenAiSync = true;
+        }
+
+        if (runOpenAiSync) {
+          const openAiSyncPromise = processOpenAiConversationSyncQueue({
+            supabase,
+            limit: 25,
+          }).catch((syncErr) => {
+            console.warn("[OpenAI Sync Queue] cron:tick falhou:", syncErr);
+          });
+          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+            (globalThis as any).EdgeRuntime.waitUntil(openAiSyncPromise);
+          } else {
+            void openAiSyncPromise;
+          }
+        }
+
+        // Enriquecimento de perfil é best-effort e de baixa prioridade.
+        // Nunca compete com cada tick do inbound/Brain.
+        let runProfileEnrichment = true;
+        try {
+          const { data: profileLane, error: profileLaneError } = await supabase.rpc(
+            "claim_autopilot_scheduler_lane",
+            { p_lane: "instagram_profile_enrichment", p_min_interval_seconds: 60 },
+          );
+          if (!profileLaneError && profileLane?.success === true) {
+            runProfileEnrichment = profileLane.acquired === true;
+          }
+        } catch {
+          runProfileEnrichment = true;
+        }
+
+        if (runProfileEnrichment) {
+          const profilePromise = processInstagramProfileQueue({
+            supabase,
+            resolveProfile: resolveInstagramContactProfile,
+            limit: 2,
+          }).catch((profileError) => {
+            console.warn("[Instagram Profile Queue] cron:tick falhou:", profileError);
+          });
+          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+            (globalThis as any).EdgeRuntime.waitUntil(profilePromise);
+          } else {
+            void profilePromise;
+          }
+        }
+
+        if (runMaintenance) {
+          // Recovery dedicado: reivindica brain_late com lease e consulta somente o
+          // provider_turn_id existente. Turnos ativos ficam intactos; nenhum POST
+          // ao provider é feito por este scanner.
+          const recoveryWorkerToken = crypto.randomUUID();
         const { data: lateTurns, error: lateClaimError } = await supabase.rpc("claim_brain_late_turns", {
           p_worker_token: recoveryWorkerToken,
           p_limit: 5,
@@ -3872,67 +3585,80 @@ serve(async (req: Request) => {
             }
           }
         }
+        }
 
-        // 0. Verifica se o Piloto Automático está habilitado globalmente
-        // Entrega autorizada e independente da criacao de novas inferencias.
-        // Decisoes ja persistidas continuam drenando a outbox mesmo quando
-        // o toggle global bloqueia novos ciclos do Brain.
-        // 2. DISPATCHER DURAVEL INDEPENDENTE DO TOGGLE GLOBAL (P0): Despacha ações de outbox pendentes que já maturaram (not_before <= now)
+        // 0. Entrega durável independente do toggle global.
+        // O caminho normal usa brain_decision_actions indexada; não varre o JSON
+        // de todas as conversas a cada tick.
         try {
-          const finalizedDrainSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-          const [
-            { data: activeOutboxConvs },
-            { data: finalizedOutboxConvs },
-          ] = await Promise.all([
-            supabase
-              .from("instagram_conversations")
-              .select("id, stage_completed_rules")
-              .eq("ai_auto_respond", true)
-              .not("stage_completed_rules->orchestration->outbox", "is", null)
-              .order("updated_at", { ascending: false })
-              .limit(30),
-            supabase
-              .from("instagram_conversations")
-              .select("id, stage_completed_rules")
-              .eq("ai_auto_respond", false)
-              .eq("stage_completed_rules->>workflow_finalized", "true")
-              .gte("updated_at", finalizedDrainSince)
-              .not("stage_completed_rules->orchestration->outbox", "is", null)
-              .order("updated_at", { ascending: false })
-              .limit(20),
-          ]);
-          // Entrega de decisões já persistidas é independente da criação de novas
-          // inferências. Chats finalizados entram só na janela de drenagem recente.
-          const outboxConvs = Array.from(new Map(
-            [...(activeOutboxConvs || []), ...(finalizedOutboxConvs || [])]
-              .map((conversation: any) => [conversation.id, conversation]),
-          ).values());
+          const { data: dueOutboxConvs, error: dueOutboxError } = await supabase.rpc(
+            "list_due_brain_action_conversations",
+            { p_now: nowIso, p_limit: 6 },
+          );
+          if (dueOutboxError) throw dueOutboxError;
 
-          if (outboxConvs.length > 0) {
-            for (const oc of outboxConvs) {
-              const outbox = oc.stage_completed_rules?.orchestration?.outbox || {};
-              const entries = Object.values(outbox) as any[];
-              const hasMaturePending = entries.some(
-                (e: any) => e && e.status === "pending" && (!e.notBefore || e.notBefore <= nowIso)
+          const dueConversationIds = (dueOutboxConvs || [])
+            .map((row: any) => String(row?.conversation_id || ""))
+            .filter(Boolean);
+
+          if (dueConversationIds.length > 0) {
+            const dispatchPromise = Promise.allSettled(
+              dueConversationIds.map((conversationId: string) =>
+                runDurableOutboxDispatcher({ supabase, conversationId })
+              ),
+            );
+            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+              (globalThis as any).EdgeRuntime.waitUntil(dispatchPromise);
+            } else {
+              void dispatchPromise;
+            }
+          }
+
+          // Recuperação compatível para outboxes históricos sem action row.
+          // É uma lane rara; não volta a transformar JSON em hot path.
+          if (runMaintenance) {
+            let runLegacyOutboxRecovery = false;
+            try {
+              const { data: legacyLane, error: legacyLaneError } = await supabase.rpc(
+                "claim_autopilot_scheduler_lane",
+                { p_lane: "legacy_outbox_recovery", p_min_interval_seconds: 300 },
               );
+              runLegacyOutboxRecovery =
+                !legacyLaneError && legacyLane?.success === true && legacyLane?.acquired === true;
+            } catch {
+              runLegacyOutboxRecovery = false;
+            }
 
-              if (hasMaturePending) {
-                console.log(`[Cloud AutoPilot] cron:tick despachando outbox pendente madura para conv=${oc.id}`);
-                const dispatchPromise = runDurableOutboxDispatcher({
-                  supabase,
-                  conversationId: oc.id,
-                });
+            if (runLegacyOutboxRecovery) {
+              const { data: legacyOutboxConvs, error: legacyOutboxError } = await supabase.rpc(
+                "list_legacy_outbox_conversations",
+                { p_limit: 5 },
+              );
+              if (legacyOutboxError) throw legacyOutboxError;
 
+              const legacyIds = (legacyOutboxConvs || [])
+                .map((row: any) => String(row?.conversation_id || ""))
+                .filter(Boolean);
+
+              if (legacyIds.length > 0) {
+                const legacyDispatch = Promise.allSettled(
+                  legacyIds.map((conversationId: string) =>
+                    runDurableOutboxDispatcher({ supabase, conversationId })
+                  ),
+                );
                 if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                  (globalThis as any).EdgeRuntime.waitUntil(dispatchPromise);
+                  (globalThis as any).EdgeRuntime.waitUntil(legacyDispatch);
                 } else {
-                  void dispatchPromise;
+                  void legacyDispatch;
                 }
               }
             }
           }
         } catch (outboxTickErr: any) {
-          console.warn(`[Cloud AutoPilot] cron:tick erro ao verificar outbox pendente:`, outboxTickErr?.message || outboxTickErr);
+          console.warn(
+            "[Cloud AutoPilot] cron:tick erro ao descobrir/despachar outbox normalizada:",
+            outboxTickErr?.message || outboxTickErr,
+          );
         }
 
         // 1. Só depois da entrega durável, o toggle global decide se NOVAS inferências podem rodar.
@@ -3947,18 +3673,20 @@ serve(async (req: Request) => {
         if (!isEnabledGlobally) {
           console.log("[Cloud AutoPilot] cron:tick em modo OFF global: sem novos ciclos; apenas drenagem/recuperação.");
 
-          // Mesmo com o global OFF precisamos liberar ciclos que morreram no meio.
-          // Isso não inicia inferência nova: apenas recupera ownership stale.
-          try {
-            const { error: staleDrainError } = await supabase.rpc(
-              "recover_stale_experimental_cycles_atomic",
-              { p_stale_before: getStaleCycleThresholdIso(), p_limit: 10 },
-            );
-            if (staleDrainError) {
-              console.warn("[Cloud AutoPilot] recovery stale durante drenagem global falhou:", staleDrainError.message);
+          // Recovery técnico fica na lane lenta mesmo com global OFF.
+          // A finalização de chats em draining continua a cada tick abaixo.
+          if (runMaintenance) {
+            try {
+              const { error: staleDrainError } = await supabase.rpc(
+                "recover_stale_experimental_cycles_atomic",
+                { p_stale_before: getStaleCycleThresholdIso(), p_limit: 10 },
+              );
+              if (staleDrainError) {
+                console.warn("[Cloud AutoPilot] recovery stale durante drenagem global falhou:", staleDrainError.message);
+              }
+            } catch (staleDrainError) {
+              console.warn("[Cloud AutoPilot] recovery stale durante drenagem global lançou exceção:", staleDrainError);
             }
-          } catch (staleDrainError) {
-            console.warn("[Cloud AutoPilot] recovery stale durante drenagem global lançou exceção:", staleDrainError);
           }
 
           const { data: finalizedDrains, error: finalizedDrainsError } = await supabase.rpc(
@@ -3968,10 +3696,12 @@ serve(async (req: Request) => {
             console.warn("[Cloud AutoPilot] finalização de drenagens globais falhou:", finalizedDrainsError.message);
           }
 
-          await supabase
-            .from("instagram_conversations")
-            .update({ ai_debounce_until: null })
-            .not("ai_debounce_until", "is", null);
+          if (runMaintenance) {
+            await supabase
+              .from("instagram_conversations")
+              .update({ ai_debounce_until: null })
+              .not("ai_debounce_until", "is", null);
+          }
 
           return new Response(JSON.stringify({
             success: true,
@@ -3983,29 +3713,42 @@ serve(async (req: Request) => {
           });
         }
 
-        // 0. Auto-recuperação atômica de ciclos stale (P0)
-        // A RPC compara timestamptz, usa FOR UPDATE e valida ownership/outbox.
-        // Nunca fazer read-modify-write do estado do ciclo aqui: o operador
-        // ->> retornaria TEXT e poderia recuperar um ciclo novo por comparação lexical.
-        try {
-          const staleThresholdIso = getStaleCycleThresholdIso();
-          const { data: staleRecovery, error: staleRecoveryError } = await supabase.rpc(
-            "recover_stale_experimental_cycles_atomic",
-            {
-              p_stale_before: staleThresholdIso,
-              p_limit: 10,
-            },
-          );
+        // Auto-recuperação atômica de ciclos stale é manutenção, não hot path.
+        if (runMaintenance) {
+          try {
+            const staleThresholdIso = getStaleCycleThresholdIso();
+            const { data: staleRecovery, error: staleRecoveryError } = await supabase.rpc(
+              "recover_stale_experimental_cycles_atomic",
+              {
+                p_stale_before: staleThresholdIso,
+                p_limit: 10,
+              },
+            );
 
-          if (staleRecoveryError) {
-            console.error("[Cloud AutoPilot] Erro na recuperação atômica de ciclos stale:", staleRecoveryError);
-          } else if (staleRecovery) {
-            console.log("[Cloud AutoPilot] Recuperação atômica de ciclos stale concluída:", staleRecovery);
+            if (staleRecoveryError) {
+              console.error("[Cloud AutoPilot] Erro na recuperação atômica de ciclos stale:", staleRecoveryError);
+            } else if (staleRecovery) {
+              console.log("[Cloud AutoPilot] Recuperação atômica de ciclos stale concluída:", staleRecovery);
+            }
+          } catch (staleErr) {
+            console.error("[Cloud AutoPilot] Falha fechada na recuperação atômica de ciclos stale:", staleErr);
           }
-        } catch (staleErr) {
-          console.error("[Cloud AutoPilot] Falha fechada na recuperação atômica de ciclos stale:", staleErr);
         }
 
+        // A fila durável é a autoridade de novas inbounds. O scanner legado só
+        // roda se a infraestrutura da fila estiver indisponível durante o rollout.
+        if (inboundQueueAvailable) {
+          return new Response(JSON.stringify({
+            success: true,
+            processor: "durable_inbound_queue",
+            processedCount: inboundQueueClaimed,
+          }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // 1. FALLBACK: busca conversas prontas apenas se a fila estiver indisponível
+        // durante o rollout/migração.
         // 1. Busca conversas prontas para serem respondidas cujo tempo de espera já venceu
         const { data: readyConvs, error: queryErr } = await supabase.rpc(
           "list_autopilot_due_work",

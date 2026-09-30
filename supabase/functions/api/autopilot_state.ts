@@ -25,7 +25,7 @@ export async function patchAutoPilotProjectionState(
   if (error || data?.success !== true) {
     throw new Error(error?.message || data?.reason || "autopilot_projection_patch_failed");
   }
-  return data as { success: true; applied: boolean; isEnabled: boolean; stateUpdatedAt?: string; stateRevision?: number; state?: Record<string, any>; previousState?: Record<string, any> };
+  return data as { success: true; applied: boolean; reason?: string; isEnabled: boolean; stateUpdatedAt?: string; stateRevision?: number; state?: Record<string, any>; previousState?: Record<string, any> };
 }
 
 export async function publishAutoPilotState(
@@ -78,18 +78,24 @@ export async function publishAutoPilotState(
     const projectionResult = await patchAutoPilotProjectionState(
       supabase, conversationId, { ...statePatch, stateUpdatedAt: requestedAt }
     );
-    if (!projectionResult.applied) return;
+    if (!projectionResult.applied && projectionResult.reason !== "semantic_noop") return;
 
     const updated = projectionResult.state as Record<string, any>;
     if (!updated) throw new Error("canonical_projection_state_missing");
     const previous = projectionResult.previousState || {};
+    const projectionApplied = projectionResult.applied === true;
 
     const cycleId = statePatch.cycleId || statePatch.activity?.cycleId || updated?.cycleId || null;
     const patchEventName = patchEvent || statePatch.activity?.event;
     const statusChanged = statePatch.status !== undefined && statePatch.status !== previous.status;
     const phaseChanged = statePatch.activity?.phase !== undefined && statePatch.activity?.phase !== previous.activity?.phase;
     const shouldAppendEvent = Boolean(
-      (appendEvent !== false && (cycleEvent || patchEventName || appendEvent === true)) || statusChanged || phaseChanged
+      (appendEvent !== false && (
+        cycleEvent ||
+        appendEvent === true ||
+        (projectionApplied && patchEventName)
+      )) ||
+      (projectionApplied && (statusChanged || phaseChanged))
     );
 
     if (cycleId && shouldAppendEvent) {
@@ -117,11 +123,8 @@ export async function publishAutoPilotState(
       }
     }
 
-    const realtimeChannel = supabase.channel("vendeo_realtime_chat");
-    await realtimeChannel.send({
-      type: "broadcast", event: "autopilot_state_update",
-      payload: { ...updated, timestamp: updated.stateUpdatedAt || requestedAt },
-    });
+    // A atualização da linha em autopilot_chat_states já é publicada pelo
+    // Postgres Realtime. Não duplicamos o mesmo estado via Broadcast.
   } catch (error) {
     console.warn("[AutoPilot State] Falha ao publicar estado visual:", error);
   }

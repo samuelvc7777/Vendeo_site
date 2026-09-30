@@ -1808,6 +1808,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     const isSentByMe = conv.lastDirection === "out" || conv.lastDirection === "outbound";
     const isCurrentActive = activeChatIdRef.current === conv.id;
+    const previousConversation = conversationsRef.current.find((item) => item.id === conv.id);
+    const incomingConversationTimestamp = conv.lastMessageAt
+      ? getMessageTimestampMs(conv.lastMessageAt)
+      : 0;
+    const previousConversationTimestamp = previousConversation?.lastMessageAt
+      ? getMessageTimestampMs(previousConversation.lastMessageAt)
+      : 0;
+    const hasNewMessageActivity = Boolean(
+      conv.lastMessageAt &&
+      incomingConversationTimestamp > previousConversationTimestamp
+    );
 
     // O evento da conversa pode chegar mesmo quando o broadcast da mensagem
     // foi perdido durante uma troca de conexão. Revalida o histórico ativo
@@ -1833,7 +1844,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       }
     }
 
-    if (!isSentByMe && !isCurrentActive) {
+    if (hasNewMessageActivity && !isSentByMe && !isCurrentActive) {
       delete readChatTimestampsRef.current[conv.id];
       if (typeof window !== "undefined") {
         try {
@@ -1845,7 +1856,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       }
     }
 
-    const previousConversation = conversationsRef.current.find((item) => item.id === conv.id);
     if (
       conv.isConverted === true &&
       previousConversation &&
@@ -1875,7 +1885,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const timeFormatted = formatMessageTime(conv.lastMessageAt || target.lastActive);
 
       const isRead = isSentByMe || isCurrentActive;
-      const updatedUnread = isRead ? false : (conv.unread !== undefined ? Boolean(conv.unread) : true);
+      const updatedUnread = isRead
+        ? false
+        : hasNewMessageActivity
+          ? (conv.unread !== undefined ? Boolean(conv.unread) : true)
+          : target.unread;
 
       const updated: DirectConversation = {
         ...target,
@@ -1887,19 +1901,45 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         aiAutoRespond: conv.aiAutoRespond !== undefined ? conv.aiAutoRespond : target.aiAutoRespond,
         lastMessage: formattedPreview,
         lastMessageAt: conv.lastMessageAt || target.lastMessageAt,
-        lastSender: isSentByMe ? "me" : "them",
+        lastSender: hasNewMessageActivity
+          ? (isSentByMe ? "me" : "them")
+          : target.lastSender,
         lastStatus: conv.lastStatus !== undefined
           ? conv.lastStatus
           : (isSentByMe ? "sent" : target.lastStatus),
         seenAt: conv.seenAt !== undefined
           ? conv.seenAt
           : (isSentByMe ? undefined : target.seenAt),
-        lastActive: timeFormatted,
+        lastActive: hasNewMessageActivity ? timeFormatted : target.lastActive,
         unread: updatedUnread,
       };
 
-      const others = prevConvs.filter((c) => c.id !== conv.id);
-      return [updated, ...others];
+      const unchanged =
+        updated.fullName === target.fullName &&
+        updated.username === target.username &&
+        updated.avatar === target.avatar &&
+        updated.currentStageId === target.currentStageId &&
+        updated.isConverted === target.isConverted &&
+        updated.aiAutoRespond === target.aiAutoRespond &&
+        updated.lastMessage === target.lastMessage &&
+        updated.lastMessageAt === target.lastMessageAt &&
+        updated.lastSender === target.lastSender &&
+        updated.lastStatus === target.lastStatus &&
+        updated.seenAt === target.seenAt &&
+        updated.lastActive === target.lastActive &&
+        updated.unread === target.unread;
+
+      if (unchanged) return prevConvs;
+
+      if (hasNewMessageActivity) {
+        const others = prevConvs.slice();
+        others.splice(idx, 1);
+        return [updated, ...others];
+      }
+
+      const next = prevConvs.slice();
+      next[idx] = updated;
+      return next;
     });
   }, [fetchConversationMessages, sendCriticalNotificationOnce]);
 
@@ -5066,6 +5106,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {stages.map((stg, idx) => {
               const countInStage = platformConversations.filter((c) => {
+                if (isChatRestricted(c)) return false;
                 const currentStageId = c.currentStageId || stages[0]?.id;
                 return currentStageId === stg.id && !c.isConverted;
               }).length;
@@ -5108,7 +5149,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {/* Filtro de Finalizados */}
             {(() => {
               const convertedCount = platformConversations.filter(
-                (c) => Boolean(c.isConverted)
+                (c) => !isChatRestricted(c) && Boolean(c.isConverted)
               ).length;
               const isSelected = stageFilter === "concluidos";
 

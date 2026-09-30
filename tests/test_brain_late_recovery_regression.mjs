@@ -139,13 +139,13 @@ test("brain_late revalida somente o audioId já escolhido pelo Brain contra o ob
   assert.match(source, /late_turn_audio_revalidated=/);
 });
 
-test("webhook não referencia variável isExplicitlyDisabled inexistente", () => {
+test("webhook não referencia flags legadas inexistentes", () => {
   const source = fs.readFileSync(
     new URL("../supabase/functions/api/index.ts", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(source, /isExplicitlyDisabled=/);
-  assert.match(source, /isPaused=\$\{isPaused\}/);
+  assert.doesNotMatch(source, /isPaused=\$\{isPaused\}/);
 });
 
 test("scanner de recovery libera lease sem ressuscitar turno concluído", () => {
@@ -165,7 +165,7 @@ test("cron drena outbox durável antes de bloquear novas inferências pelo toggl
     new URL("../supabase/functions/api/index.ts", import.meta.url),
     "utf8",
   );
-  const dispatcherIndex = source.indexOf("cron:tick despachando outbox pendente madura");
+  const dispatcherIndex = source.indexOf("list_due_brain_action_conversations");
   const globalGateIndex = source.indexOf("if (!isEnabledGlobally)");
   assert.ok(dispatcherIndex >= 0);
   assert.ok(globalGateIndex > dispatcherIndex);

@@ -48,7 +48,7 @@ test("sync=true fica restrito à ação manual e histórico vazio sincroniza sem
   const openStart = clientSource.indexOf("const handleOpenConversation = async");
   const openEnd = clientSource.indexOf("// Navegação automática para o chat", openStart);
   const openHandler = clientSource.slice(openStart, openEnd);
-  const emptyHistoryBranch = openHandler.slice(openHandler.indexOf("if (formatted.length === 0"));
+  const emptyHistoryBranch = openHandler.slice(openHandler.indexOf("if (resolvedFormatted.length === 0"));
   assert.match(emptyHistoryBranch, /void fetch\(getApiUrl\("\/api\/instagram\/sync"\)/);
   assert.match(emptyHistoryBranch, /\.then\(async \(syncResponse\)/);
   assert.match(openHandler, /finally \{\s*setLoadingConversationId/);
@@ -166,7 +166,7 @@ test("INSERT recebido e burst repetido não geram GET redundante", async () => {
 });
 
 test("resultado de A é guardado na chave de A e não encerra loading de B", () => {
-  assert.match(clientSource, /setMessages\(\(previous\) => \(\{ \.\.\.previous, \[conv\.id\]: formatted \}\)\)/);
+  assert.match(clientSource, /setMessages\(\(previous\) => \(\{ \.\.\.previous, \[conv\.id\]: resolvedFormatted \}\)\)/);
   assert.match(clientSource, /setLoadingConversationId\(\(current\) => current === conv\.id \? null : current\)/);
   assert.match(clientSource, /const isLoadingMessages = loadingConversationId === activeChat\?\.id/);
 });

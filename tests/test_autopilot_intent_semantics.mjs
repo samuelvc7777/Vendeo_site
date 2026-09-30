@@ -49,7 +49,8 @@ test("E: apenas a rota de toggle OFF usa a RPC explícita de desligamento", () =
 test("F: pausas operacionais aceitam guardrail/handoff sem alterar ai_auto_respond", () => {
   assert.match(runtimeSql, /'paused_guardrail', 'paused_handoff'/);
   assert.doesNotMatch(runtimeSql, /ai_auto_respond\s*=/);
-  assert.match(api, /convRules\.status === "paused_guardrail"/);
+  assert.match(brain, /"paused_handoff",[\s\S]*"paused_guardrail"/);
+  assert.match(brain, /blocksAutomaticBrainCycle/);
 });
 
 test("G: projeção usa lock por conversa, versão CAS e nunca substitui o mapa global", () => {
