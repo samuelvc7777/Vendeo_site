@@ -26,6 +26,7 @@ import { PersonaAudioAsset, ChatStage } from "@/domain/entities/ChatStage";
 import { usePersonaAudios } from "@/presentation/hooks/usePersonaAudios";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { getApiUrl } from "@/infrastructure/http/network";
+import { ensureInstagramCompatibleAudio } from "@/presentation/components/chat/audio-converter";
 
 interface PersonaAudioVaultModalProps {
   isOpen: boolean;
@@ -208,9 +209,11 @@ export function PersonaAudioVaultModal({
         setFormTitle(cleanName);
       }
 
-      // 2. Upload REAL para o bucket do Supabase Storage via rota interna
+      // 2. Normaliza o áudio antes do upload. Arquivos podem chegar com extensão/MIME
+      // incompatíveis com os bytes reais (ex.: ".mp3" contendo AAC/M4A), que a Meta rejeita.
+      const compatibleFile = await ensureInstagramCompatibleAudio(file);
       const formData = new FormData();
-      formData.append("file", file);
+      formData.append("file", compatibleFile, compatibleFile.name);
       formData.append("type", "audio");
 
       const upRes = await fetch(getApiUrl("/api/instagram/upload"), {
