@@ -122,6 +122,35 @@ export async function handleOperatorChatProgress(
     }, 200, corsHeaders);
   }
 
+  if (body?.operation === "raffle_purchase_confirmed") {
+    const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
+    if (!conversationId || conversationId.length > 256) {
+      return jsonResponse({ error: "Conversa vinculada à compra é inválida." }, 400, corsHeaders);
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from("instagram_conversations")
+      .update({
+        raffle_status: "bought",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", conversationId)
+      .select("id, raffle_status, raffle_status_updated_at")
+      .maybeSingle();
+
+    if (updateError) {
+      return jsonResponse({ error: updateError.message || "Falha ao sincronizar a compra com o chat." }, 500, corsHeaders);
+    }
+    if (!updated) return jsonResponse({ error: "Conversa vinculada à compra não encontrada." }, 404, corsHeaders);
+
+    return jsonResponse({
+      success: true,
+      conversationId: updated.id,
+      raffleStatus: updated.raffle_status ?? null,
+      raffleStatusUpdatedAt: updated.raffle_status_updated_at ?? null,
+    }, 200, corsHeaders);
+  }
+
   if (body?.operation === "raffle_status") {
     const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
     const requestedStatus = body?.raffleStatus;

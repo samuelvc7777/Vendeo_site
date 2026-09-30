@@ -13,7 +13,9 @@ import { CreateRaffleInput } from "@/domain/repositories/IRaffleRepository";
 import { manageRaffleUseCase } from "@/infrastructure/di/container";
 import { InstagramConversation } from "@/domain/entities/Instagram";
 import { getApiUrl } from "@/infrastructure/http/network";
+import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
+import { toast } from "sonner";
 
 export function useRaffles() {
   const [raffles, setRaffles] = useState<Raffle[]>([]);
@@ -351,6 +353,28 @@ export function useRaffles() {
           status: params.status,
           notes: params.notes,
         });
+
+        // Uma compra paga vinculada a uma conversa do Instagram também fecha o funil comercial.
+        // Reserva não conta como compra para não inflar a conversão do relatório.
+        if (params.status === "paid" && params.buyer.conversationId) {
+          try {
+            const syncResponse = await brainOperatorFetch("/operator/chat-progress", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                operation: "raffle_purchase_confirmed",
+                conversationId: params.buyer.conversationId,
+              }),
+            });
+            const syncResult = await syncResponse.json().catch(() => ({}));
+            if (!syncResponse.ok || syncResult?.success !== true) {
+              throw new Error(syncResult?.error || "Falha ao sincronizar o status comercial.");
+            }
+          } catch (syncError) {
+            console.warn("[Raffle] Compra paga salva, mas status do chat não sincronizou.", syncError);
+            toast.warning("Compra salva, mas o status do chat não foi atualizado automaticamente.");
+          }
+        }
 
         // Atualiza a lista local de tickets
         const updatedNumbersMap = new Map<number, RaffleTicket>();
