@@ -5,6 +5,7 @@ import {
   extractWebSearchAudit,
   isWebSearchSessionConfigurationReady,
   runOpenAiBrainTurn,
+  validateWebSearchOutputPrivacy,
 } from "../supabase/functions/api/openai_brain.ts";
 
 const AUDIO_ID = "audio_approved_profession";
@@ -17,15 +18,14 @@ function plan(text = "Não consegui confirmar isso com segurança agora.", inclu
     reasoning: "O Brain decide a resposta a partir do contexto e das evidências disponíveis.",
     responses: [text],
     outboundActions: [
-      { type: "text", text },
-      ...(includeAudio ? [{ type: "audio", audioId: AUDIO_ID }] : []),
+      { type: "text", text, delay_before_send: 2 },
+      ...(includeAudio ? [{ type: "audio", audioId: AUDIO_ID, delay_before_send: 2 }] : []),
     ],
     turnContract: {
       mustAnswerFirst: true,
       newQuestionBudget: 1,
       responseShape: "react_and_answer",
       directQuestions: [],
-      maxBalloons: 2,
     },
   };
 }
@@ -157,6 +157,27 @@ test("pergunta atual pode gerar busca e as fontes reais entram na telemetria sem
   assert.equal(result.telemetry.webSearchCallCount, 1);
   assert.deepEqual(result.telemetry.webSearchSources, ["https://dados.example.com/cafe"]);
   assert.doesNotMatch(JSON.stringify(result.telemetry), /Samuel Vitor|samuel_private|cotação atual/);
+});
+
+test("web_search vira conhecimento interno e nunca pode vazar citação ou URL na fala", async () => {
+  const natural = plan("fica pertinho daqui kkk, eu conheço sim");
+  assert.equal(validateWebSearchOutputPrivacy(natural, true).valid, true);
+
+  const markdownLeak = plan("fica pertinho daqui ([gov.br](https://www.gov.br/exemplo?utm_source=openai))");
+  const markdownResult = validateWebSearchOutputPrivacy(markdownLeak, true);
+  assert.equal(markdownResult.valid, false);
+  assert.match(markdownResult.error || "", /web_search_output_leak/);
+  assert.equal(validateWebSearchOutputPrivacy(plan("[site](https://example.com)"), false).valid, true);
+
+  const rawUrl = plan("olha https://example.com/info");
+  assert.equal(validateWebSearchOutputPrivacy(rawUrl, true).valid, false);
+  assert.equal(validateWebSearchOutputPrivacy(rawUrl, false).valid, true);
+
+  const { result, captured } = await runRuntimeTurn({ message: "vc sabe onde fica essa cidade?" });
+  assert.equal(result.success, true, result.error);
+  assert.match(captured.context, /grounding INTERNO/i);
+  assert.match(captured.context, /NUNCA exponha em outboundActions URL/i);
+  assert.match(captured.context, /o pretendente não deve perceber que houve busca/i);
 });
 
 test("busca falha ou sem fontes não trava o Brain nem cria fontes", async () => {
