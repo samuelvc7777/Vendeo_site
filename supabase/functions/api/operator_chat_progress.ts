@@ -43,6 +43,85 @@ export async function handleOperatorChatProgress(
     }
   }
 
+  if (body?.operation === "raffle_report") {
+    const startAtRaw = typeof body?.startAt === "string" ? body.startAt.trim() : "";
+    const endAtRaw = typeof body?.endAt === "string" ? body.endAt.trim() : "";
+    const startMs = Date.parse(startAtRaw);
+    const endMs = Date.parse(endAtRaw);
+    const maxRangeMs = 10 * 366 * 24 * 60 * 60 * 1000;
+
+    if (
+      !Number.isFinite(startMs) ||
+      !Number.isFinite(endMs) ||
+      endMs <= startMs ||
+      endMs - startMs > maxRangeMs
+    ) {
+      return jsonResponse({ error: "Intervalo do relatório inválido." }, 400, corsHeaders);
+    }
+
+    const startAt = new Date(startMs).toISOString();
+    const endAt = new Date(endMs).toISOString();
+
+    const [peopleResult, eventsResult] = await Promise.all([
+      supabase
+        .from("instagram_conversations")
+        .select("id, username, full_name, avatar, status, raffle_status, raffle_status_updated_at, workflow_finalized_at")
+        .eq("is_converted", true)
+        .gte("workflow_finalized_at", startAt)
+        .lt("workflow_finalized_at", endAt)
+        .order("workflow_finalized_at", { ascending: false })
+        .limit(5000),
+      supabase
+        .from("raffle_commercial_events")
+        .select("id, conversation_id, previous_status, status, changed_at")
+        .gte("changed_at", startAt)
+        .lt("changed_at", endAt)
+        .order("changed_at", { ascending: true })
+        .limit(10000),
+    ]);
+
+    if (peopleResult.error || eventsResult.error) {
+      console.error("[Raffle Report] Falha ao carregar relatório.", {
+        peopleError: peopleResult.error?.message,
+        eventsError: eventsResult.error?.message,
+      });
+      return jsonResponse({ error: "Não foi possível carregar o relatório da rifa." }, 503, corsHeaders);
+    }
+
+    const people = (peopleResult.data || [])
+      .filter((row: any) =>
+        row?.id &&
+        !String(row.id).startsWith("__") &&
+        row.status !== "system" &&
+        row.status !== "vault"
+      )
+      .map((row: any) => ({
+        id: String(row.id),
+        username: row.username ? String(row.username) : "",
+        fullName: row.full_name ? String(row.full_name) : "",
+        avatar: row.avatar ? String(row.avatar) : null,
+        raffleStatus: row.raffle_status ?? null,
+        raffleStatusUpdatedAt: row.raffle_status_updated_at ?? null,
+        finalizedAt: row.workflow_finalized_at ?? null,
+      }));
+
+    const events = (eventsResult.data || []).map((row: any) => ({
+      id: String(row.id),
+      conversationId: String(row.conversation_id || ""),
+      previousStatus: row.previous_status ?? null,
+      status: row.status ?? null,
+      changedAt: row.changed_at,
+    }));
+
+    return jsonResponse({
+      success: true,
+      startAt,
+      endAt,
+      people,
+      events,
+    }, 200, corsHeaders);
+  }
+
   if (body?.operation === "raffle_status") {
     const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
     const requestedStatus = body?.raffleStatus;
@@ -77,7 +156,7 @@ export async function handleOperatorChatProgress(
         updated_at: new Date().toISOString(),
       })
       .eq("id", conversationId)
-      .select("id, raffle_status")
+      .select("id, raffle_status, raffle_status_updated_at")
       .maybeSingle();
 
     if (updateError || !updated) {
@@ -88,6 +167,7 @@ export async function handleOperatorChatProgress(
       success: true,
       conversationId: updated.id,
       raffleStatus: updated.raffle_status ?? null,
+      raffleStatusUpdatedAt: updated.raffle_status_updated_at ?? null,
     }, 200, corsHeaders);
   }
 

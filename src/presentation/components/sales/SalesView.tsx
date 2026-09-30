@@ -10,6 +10,7 @@ import { EditRaffleModal } from "./EditRaffleModal";
 import { RaffleBuyersModal } from "./RaffleBuyersModal";
 import { InstagramBuyerConnector } from "./InstagramBuyerConnector";
 import { ClothingSalesView } from "./ClothingSalesView";
+import { RaffleReportView } from "./RaffleReportView";
 import { RaffleTicket, RaffleBuyer, formatTicketNumber } from "@/domain/entities/Raffle";
 import {
   Loader2,
@@ -20,10 +21,11 @@ import {
   User,
   Trash2,
   ShoppingBag,
+  BarChart3,
 } from "lucide-react";
 
 export function SalesView() {
-  const [salesSection, setSalesSection] = useState<"raffles" | "clothes">("raffles");
+  const [salesSection, setSalesSection] = useState<"raffles" | "clothes" | "report">("raffles");
 
   const {
     raffles,
@@ -59,7 +61,7 @@ export function SalesView() {
     <div className="flex-1 overflow-y-auto h-full min-h-0 bg-zinc-50 dark:bg-black text-zinc-950 dark:text-white relative no-scrollbar">
       {/* SELETOR DE ABAS PRINCIPAIS: RIFAS vs ROUPAS */}
       <div className="sticky top-0 z-30 bg-white/95 dark:bg-black/95 backdrop-blur-md px-3 pt-2.5 pb-2 border-b border-zinc-200 dark:border-[#1e232e]">
-        <div className="grid grid-cols-2 p-1 rounded-2xl bg-zinc-100 dark:bg-[#12151b] border border-zinc-200 dark:border-[#232d3d]">
+        <div className="grid grid-cols-3 p-1 rounded-2xl bg-zinc-100 dark:bg-[#12151b] border border-zinc-200 dark:border-[#232d3d]">
           {/* Aba 1: Rifas */}
           <button
             type="button"
@@ -87,12 +89,28 @@ export function SalesView() {
             <ShoppingBag className="w-4 h-4" />
             <span>Roupas</span>
           </button>
+
+          {/* Aba 3: Relatório */}
+          <button
+            type="button"
+            onClick={() => setSalesSection("report")}
+            className={`py-2 px-2 sm:px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer ${
+              salesSection === "report"
+                ? "bg-gradient-to-r from-sky-500 to-cyan-500 text-white shadow-md shadow-sky-500/20"
+                : "text-zinc-500 dark:text-[#8e8e93] hover:text-zinc-950 dark:hover:text-white"
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            <span>Relatório</span>
+          </button>
         </div>
       </div>
 
       {/* CONTEÚDO DA ABA SELECIONADA */}
       {salesSection === "clothes" ? (
         <ClothingSalesView />
+      ) : salesSection === "report" ? (
+        <RaffleReportView />
       ) : (
         <>
           {isLoading && !activeRaffle ? (
