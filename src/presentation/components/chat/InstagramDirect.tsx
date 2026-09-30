@@ -78,7 +78,14 @@ import {
   isAutoPilotActivelyWorking,
 } from "./AutoPilotActivityIndicator";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
+import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
+
+function parseMediaObservationPauseReason(reason?: string | null): { kind: "video" | "image"; messageId: string } | null {
+  const match = /^media_observation_required\|(video|image)\|(.+)$/.exec(String(reason || ""));
+  if (!match) return null;
+  return { kind: match[1] as "video" | "image", messageId: match[2] };
+}
 
 function InstagramIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -700,6 +707,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [sortOrder, setSortOrder] = useState<SortOrder>("recentes");
   const [expandedImageUrl, setExpandedImageUrl] = useState<string | null>(null);
   const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [mediaObservationText, setMediaObservationText] = useState("");
+  const [isSubmittingMediaObservation, setIsSubmittingMediaObservation] = useState(false);
+
+  useEffect(() => {
+    setMediaObservationText("");
+    setIsSubmittingMediaObservation(false);
+  }, [activeChat?.id]);
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
   const [stageFilter, setStageFilter] = useState<string>("todas"); // "todas" | "concluidos" | stageId
@@ -1011,6 +1025,43 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   useEffect(() => {
     autoPilotRef.current = autoPilot;
   }, [autoPilot]);
+
+  const submitMediaObservation = useCallback(async (
+    media: { kind: "video" | "image"; messageId: string },
+  ) => {
+    if (!activeChat?.id || !mediaObservationText.trim() || isSubmittingMediaObservation) return;
+    setIsSubmittingMediaObservation(true);
+    try {
+      const response = await brainOperatorFetch("/operator/brain/media-observation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: activeChat.id,
+          messageId: media.messageId,
+          observation: mediaObservationText.trim(),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success !== true) {
+        throw new Error(result?.error || "Não foi possível registrar a observação.");
+      }
+      setMediaObservationText("");
+      toast.success("Observação registrada. O Brain vai retomar a conversa.");
+      await autoPilot.refreshState(true);
+      await fetchConversationMessages(activeChat.id).catch(() => undefined);
+    } catch (error: any) {
+      console.error("[Media Observation] Falha:", error);
+      toast.error(error?.message || "Não foi possível registrar a observação.");
+    } finally {
+      setIsSubmittingMediaObservation(false);
+    }
+  }, [
+    activeChat?.id,
+    autoPilot,
+    fetchConversationMessages,
+    isSubmittingMediaObservation,
+    mediaObservationText,
+  ]);
 
   // Push remoto crítico: o frontend apenas registra este dispositivo.
   // Os alertas são enviados pelo backend mesmo com o Vendeo fechado.
@@ -4031,6 +4082,47 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             if (!currentChatState) return null;
 
             if (currentChatState.status === "waiting_human") {
+              const mediaObservation = parseMediaObservationPauseReason(currentChatState.pauseReason);
+              if (mediaObservation) {
+                return (
+                  <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-violet-500/10 border-violet-500/35 text-violet-950 dark:text-violet-100 shadow-lg shadow-violet-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-start gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/30 flex items-center justify-center shrink-0">
+                        <AlertTriangle className="w-4 h-4 text-violet-500 dark:text-violet-300" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h5 className="text-xs font-bold text-violet-800 dark:text-violet-200">Precisa de observação</h5>
+                        <p className="text-[11px] text-zinc-700 dark:text-zinc-300 mt-0.5 leading-snug">
+                          {mediaObservation.kind === "video"
+                            ? "Vídeo recebido. Assista à mensagem e descreva abaixo o que é relevante para a conversa."
+                            : "Não consegui interpretar a foto automaticamente. Descreva abaixo o que aparece nela."}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                      <textarea
+                        value={mediaObservationText}
+                        onChange={(event) => setMediaObservationText(event.target.value)}
+                        placeholder={mediaObservation.kind === "video"
+                          ? "Ex: ele mostrou o carro novo e falou que acabou de comprar..."
+                          : "Ex: selfie dele numa trilha, sorrindo..."}
+                        rows={2}
+                        maxLength={3000}
+                        className="min-h-[58px] flex-1 resize-y rounded-lg border border-violet-500/25 bg-white/70 dark:bg-zinc-950/60 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100 outline-none focus:border-violet-500/60"
+                      />
+                      <button
+                        type="button"
+                        disabled={!mediaObservationText.trim() || isSubmittingMediaObservation}
+                        onClick={() => void submitMediaObservation(mediaObservation)}
+                        className="self-stretch sm:self-end rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isSubmittingMediaObservation ? "Salvando..." : "Enviar observação e retomar"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
               return (
                 <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-amber-500/15 border-amber-500/40 text-amber-900 dark:text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="flex items-start gap-2.5">
@@ -4235,7 +4327,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         onDoubleClick={() => handleToggleLike(msg.id)}
                         className={`relative rounded-2xl text-sm leading-relaxed transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
                           msg.mediaType === "audio" ||
+                          msg.mediaType === "video" ||
                           msg.text.startsWith("[audio:") ||
+                          msg.text.startsWith("[video:") ||
                           msg.text.includes("Mensagem de voz") ||
                           msg.text.includes("Áudio") ||
                           msg.text === "📷 Mídia"
@@ -4279,6 +4373,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                                 ? "🎙️ Mensagem de voz"
                                 : (msg.replyTo.text || "").startsWith("[image:")
                                 ? "📷 Foto"
+                                : (msg.replyTo.text || "").startsWith("[video:")
+                                ? "🎥 Vídeo"
                                 : msg.replyTo.text || "Mensagem citada"}
                             </p>
                           </div>
@@ -4316,6 +4412,22 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               </div>
                             );
                           })()
+                        ) : /* 2. Mídia do tipo Vídeo com player nativo */
+                        (msg.mediaType === "video" || msg.text.startsWith("[video:")) &&
+                        (msg.mediaUrl || msg.text.match(/^\[video:(https?:\/\/[^\]]+)\]/)?.[1]) ? (
+                          <video
+                            src={
+                              msg.mediaUrl ||
+                              msg.text.match(/^\[video:(https?:\/\/[^\]]+)\]/)?.[1] ||
+                              ""
+                            }
+                            controls
+                            playsInline
+                            preload="metadata"
+                            className="block max-h-[420px] w-full max-w-[320px] rounded-xl bg-black object-contain"
+                          >
+                            Seu navegador não conseguiu reproduzir este vídeo.
+                          </video>
                         ) : /* 3. Mídia do tipo Imagem / Foto com URL */
                         (msg.mediaType === "image" || msg.text.startsWith("[image:")) &&
                         (msg.mediaUrl || msg.text.match(/^\[image:(https?:\/\/[^\]]+)\]/)?.[1]) ? (

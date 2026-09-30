@@ -896,9 +896,12 @@ function BrainOperationalConsole({
 
 function getCopy(state: AutoPilotChatState) {
   if (state.status === "waiting_human") {
+    const mediaObservation = String(state.pauseReason || "").startsWith("media_observation_required|");
     return {
-      title: "Aguardando sua resposta",
-      detail: state.pauseReason || "A IA não respondeu com segurança. Responda manualmente e retome o Piloto quando quiser.",
+      title: mediaObservation ? "Precisa de observação" : "Aguardando sua resposta",
+      detail: mediaObservation
+        ? state.activity?.detail || "Uma mídia precisa da sua observação antes de o Brain continuar."
+        : state.pauseReason || "A IA não respondeu com segurança. Responda manualmente e retome o Piloto quando quiser.",
     };
   }
   if (state.status === "paused_guardrail") {

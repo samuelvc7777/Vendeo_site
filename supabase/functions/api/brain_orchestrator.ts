@@ -372,7 +372,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
   try {
     const { data: lastOutboundRows } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+      .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript, image_description, media_operator_observation")
       .eq("conversation_id", conversationId)
       .or("is_mine.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
       .order("created_at", { ascending: false })
@@ -389,7 +389,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
     try {
       const { data: replyTargetRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript, image_description, media_operator_observation")
         .eq("conversation_id", conversationId)
         .in("id", replyTargetIds);
       if (Array.isArray(replyTargetRows)) {
@@ -773,7 +773,7 @@ export interface CanonicalMessage {
   sender: "pretendente" | "larissa";
   direction: "inbound" | "outbound";
   timestamp: string;
-  type: "text" | "audio" | "image" | "file";
+  type: "text" | "audio" | "image" | "video" | "file";
   text: string;
   replyToMessageId?: string | null;
   mediaUrl?: string | null;
@@ -1365,7 +1365,7 @@ export function formatContextForDescoberta(
 // ----------------------------------------------------------------------------
 export function normalizeToCanonicalMessage(raw: any, conversationId: string): CanonicalMessage {
   const isMine = Boolean(raw.is_mine || raw.is_from_me || raw.sender_id === "me" || raw.sender === "larissa");
-  let msgType: "text" | "audio" | "image" | "file" = "text";
+  let msgType: "text" | "audio" | "image" | "video" | "file" = "text";
   const rawText = String(raw.text || raw.message || "").trim();
 
   if (
@@ -1384,6 +1384,13 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
   ) {
     msgType = "image";
   } else if (
+    raw.media_type === "video" ||
+    raw.mediaType === "video" ||
+    raw.type === "video" ||
+    rawText.startsWith("[video:")
+  ) {
+    msgType = "video";
+  } else if (
     raw.media_type === "file" ||
     raw.mediaType === "file" ||
     raw.type === "file" ||
@@ -1393,6 +1400,10 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
   }
 
   const rawAudioTranscript = raw.audio_transcript || raw.audioTranscript || null;
+  const imageDescription = String(raw.image_description || raw.imageDescription || "").trim();
+  const operatorObservation = String(
+    raw.media_operator_observation || raw.mediaOperatorObservation || "",
+  ).trim();
   let text = rawText;
   let hasValidTranscript = false;
 
@@ -1404,6 +1415,16 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
       text = "[áudio recebido — transcrição indisponível]";
       hasValidTranscript = false;
     }
+  } else if (msgType === "image") {
+    text = operatorObservation
+      ? `[IMAGEM OBSERVADA PELO OPERADOR]\n${operatorObservation}`
+      : imageDescription
+      ? `[IMAGEM RECEBIDA — descrição visual automática]\n${imageDescription}`
+      : "[imagem recebida — descrição visual indisponível]";
+  } else if (msgType === "video") {
+    text = operatorObservation
+      ? `[VÍDEO OBSERVADO PELO OPERADOR]\n${operatorObservation}`
+      : "[vídeo recebido — observação humana pendente]";
   }
 
   return {
@@ -7195,7 +7216,7 @@ export async function runBrainOrchestration(
     while (hasMore) {
       const q = supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction, audio_transcript")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction, audio_transcript, image_description, media_operator_observation")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false });
 
@@ -7699,7 +7720,7 @@ export async function runBrainOrchestration(
       try {
         const { data: recentDbRows } = await supabase
           .from("instagram_messages")
-          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript")
+          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript, image_description, media_operator_observation")
           .eq("conversation_id", conversationId)
           .order("created_at", { ascending: false })
           .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);

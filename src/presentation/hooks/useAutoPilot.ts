@@ -33,8 +33,11 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
       notifiedHumanReviewRef.current[conversationId] = reviewKey;
       const conversation = conversations.find((item) => item.id === conversationId);
       const contactName = conversation?.fullName || conversation?.username || conversationId;
-      toast("A IA precisa de você", {
-        description: `${contactName} aguarda uma resposta sua. A IA continua habilitada neste chat.`,
+      const mediaObservation = String(state.pauseReason || "").startsWith("media_observation_required|");
+      toast(mediaObservation ? "Precisa de observação" : "A IA precisa de você", {
+        description: mediaObservation
+          ? `${contactName} enviou uma mídia que precisa da sua observação antes de o Brain continuar.`
+          : `${contactName} aguarda uma resposta sua. A IA continua habilitada neste chat.`,
         duration: 10000,
       });
     }

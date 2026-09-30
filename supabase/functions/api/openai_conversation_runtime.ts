@@ -85,6 +85,10 @@ function bootstrapMessageText(row: any): string {
   const mediaType = String(row?.media_type || row?.mediaType || "").toLowerCase();
   const rawText = String(row?.text || row?.message || "").trim();
   const transcript = String(row?.audio_transcript || row?.audioTranscript || "").trim();
+  const imageDescription = String(row?.image_description || row?.imageDescription || "").trim();
+  const operatorObservation = String(
+    row?.media_operator_observation || row?.mediaOperatorObservation || "",
+  ).trim();
   const looksAudio = mediaType === "audio" || rawText.startsWith("[audio:") || rawText.includes("[audio:");
 
   if (looksAudio) {
@@ -95,10 +99,21 @@ function bootstrapMessageText(row: any): string {
     return `[DATA/HORA ORIGINAL: ${originalAt}]\n[ÁUDIO TRANSCRITO]\n${body}`;
   }
   if (mediaType === "image") {
-    return `[DATA/HORA ORIGINAL: ${originalAt}]\n[IMAGEM]${rawText ? `\n${rawText}` : ""}`;
+    const body = operatorObservation
+      || imageDescription
+      || (!rawText.startsWith("[image:") ? rawText : "")
+      || "[descrição visual indisponível]";
+    const label = operatorObservation ? "[IMAGEM OBSERVADA PELO OPERADOR]" : "[IMAGEM — DESCRIÇÃO VISUAL]";
+    return `[DATA/HORA ORIGINAL: ${originalAt}]\n${label}\n${body}`;
   }
   if (mediaType === "video") {
-    return `[DATA/HORA ORIGINAL: ${originalAt}]\n[VÍDEO]${rawText ? `\n${rawText}` : ""}`;
+    const body = operatorObservation
+      || (!rawText.startsWith("[video:") ? rawText : "")
+      || "[observação humana pendente]";
+    const label = operatorObservation
+      ? "[VÍDEO OBSERVADO PELO OPERADOR]"
+      : "[VÍDEO — OBSERVAÇÃO HUMANA PENDENTE]";
+    return `[DATA/HORA ORIGINAL: ${originalAt}]\n${label}\n${body}`;
   }
   if (mediaType === "file") {
     return `[DATA/HORA ORIGINAL: ${originalAt}]\n[ARQUIVO]${rawText ? `\n${rawText}` : ""}`;
@@ -147,7 +162,7 @@ export async function bootstrapOpenAiConversationHistory(params: {
     while (true) {
       const { data: rows, error: rowsError } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, timestamp, created_at, status, media_type, audio_transcript")
+        .select("id, sender_id, is_mine, text, timestamp, created_at, status, media_type, audio_transcript, image_description, media_operator_observation")
         .eq("conversation_id", conversationId)
         .order("timestamp", { ascending: true })
         .order("created_at", { ascending: true })
@@ -393,7 +408,7 @@ export async function processOpenAiConversationSyncQueue(params: {
     try {
       const { data: message, error: messageError } = await supabase
         .from("instagram_messages")
-        .select("id, conversation_id, text, timestamp, created_at, is_mine, sender_id, status, media_type, audio_transcript")
+        .select("id, conversation_id, text, timestamp, created_at, is_mine, sender_id, status, media_type, audio_transcript, image_description, media_operator_observation")
         .eq("conversation_id", candidate.conversation_id)
         .eq("id", providerMessageId)
         .maybeSingle();
@@ -417,6 +432,8 @@ export async function processOpenAiConversationSyncQueue(params: {
             providerMessageId,
             text: message.text,
             audioTranscript: message.audio_transcript,
+            imageDescription: message.image_description,
+            mediaOperatorObservation: message.media_operator_observation,
             mediaType: message.media_type,
             receivedAt: message.timestamp || message.created_at || candidate.received_at,
           });
@@ -451,6 +468,8 @@ export async function persistInboundToOpenAiConversation(params: {
   providerMessageId: string;
   text?: string | null;
   audioTranscript?: string | null;
+  imageDescription?: string | null;
+  mediaOperatorObservation?: string | null;
   mediaType?: string | null;
   receivedAt?: string | null;
   replyContext?: {
@@ -500,6 +519,8 @@ export async function persistInboundToOpenAiConversation(params: {
     timestamp: receivedAt,
     media_type: params.mediaType || null,
     audio_transcript: params.audioTranscript || null,
+    image_description: params.imageDescription || null,
+    media_operator_observation: params.mediaOperatorObservation || null,
     is_mine: false,
   });
   const replyContext = params.replyContext;

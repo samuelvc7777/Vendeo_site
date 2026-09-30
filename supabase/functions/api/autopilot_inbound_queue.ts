@@ -1,6 +1,7 @@
 import { runBrainOrchestration } from "./brain_orchestrator.ts";
 import { activity, publishAutoPilotState } from "./autopilot_state.ts";
 import { resolveInboundAudioMessage } from "./audio_transcription.ts";
+import { resolveInboundImageMessage } from "./image_analysis.ts";
 import { isActionableInboundMessage } from "./ConversationQualityGate.ts";
 import { enqueueOpenAiConversationMessageSync } from "./openai_conversation_runtime.ts";
 
@@ -41,6 +42,104 @@ async function rescheduleJob(
     p_due_at: dueAt,
     p_last_error: message || null,
   });
+}
+
+async function pauseForMediaObservation(
+  supabase: any,
+  workerToken: string,
+  job: ClaimedInboundJob,
+  message: any,
+  mediaKind: "video" | "image",
+  detail: string,
+) {
+  const messageId = String(message?.id || job.latest_message_id);
+  const pauseReason = `media_observation_required|${mediaKind}|${messageId}`;
+  const { data: pauseResult, error: pauseError } = await supabase.rpc(
+    "set_autopilot_runtime_state_atomic",
+    {
+      p_conversation_id: job.conversation_id,
+      p_status: "waiting_human",
+      p_reason: pauseReason,
+      p_cancel_current_cycle: false,
+      p_clear_cancel_current_cycle: false,
+    },
+  );
+  if (pauseError || pauseResult?.success !== true) {
+    await rescheduleJob(supabase, workerToken, job, retryAt(15), pauseError || "media_observation_pause_failed");
+    return;
+  }
+
+  await publishAutoPilotState(supabase, job.conversation_id, {
+    status: "waiting_human",
+    pauseReason,
+    pausedAt: new Date().toISOString(),
+    activity: activity("waiting", "Precisa de observação", detail, {
+      event: "media_observation_required",
+      mediaKind,
+      messageId,
+    }),
+    event: "media_observation_required",
+    eventMetadata: { mediaKind, messageId },
+  });
+
+  await completeJob(supabase, workerToken, job);
+}
+
+async function persistInboundMediaToVault(
+  supabase: any,
+  message: any,
+  mediaKind: "image" | "video",
+): Promise<any> {
+  const mediaUrl = String(message?.media_url || "");
+  const isMetaCdn =
+    mediaUrl.includes("lookaside.fbsbx.com") ||
+    mediaUrl.includes("cdninstagram.com");
+  if (!mediaUrl || !isMetaCdn) return message;
+
+  try {
+    const mediaRes = await fetch(mediaUrl, { signal: AbortSignal.timeout(20_000) });
+    if (!mediaRes.ok) return message;
+
+    const mediaBytes = await mediaRes.arrayBuffer();
+    if (!mediaBytes.byteLength || mediaBytes.byteLength > 50 * 1024 * 1024) return message;
+
+    const contentType = mediaRes.headers.get("content-type")
+      || (mediaKind === "image" ? "image/jpeg" : "video/mp4");
+    const extension =
+      mediaKind === "image"
+        ? contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg"
+        : "mp4";
+    const safeId = String(message.id || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_");
+    const fileName = `inbound_${mediaKind}_${safeId}.${extension}`;
+
+    const { data: upload, error: uploadError } = await supabase.storage
+      .from("vendeo_vault")
+      .upload(fileName, mediaBytes, {
+        contentType,
+        upsert: true,
+      });
+    if (uploadError || !upload?.path) return message;
+
+    const { data: publicData } = supabase.storage
+      .from("vendeo_vault")
+      .getPublicUrl(upload.path);
+    const durableUrl = publicData?.publicUrl;
+    if (!durableUrl) return message;
+
+    const text = `[${mediaKind}:${durableUrl}]`;
+    await supabase
+      .from("instagram_messages")
+      .update({ media_url: durableUrl, text })
+      .eq("id", message.id);
+
+    return { ...message, media_url: durableUrl, text };
+  } catch (error) {
+    console.warn(
+      `[Inbound Queue] Falha ao persistir ${mediaKind} msg=${message?.id || "?"}:`,
+      error,
+    );
+    return message;
+  }
 }
 
 async function persistInboundAudioToVault(
@@ -130,11 +229,12 @@ async function processClaimedInboundJob(
     }
 
     const canonicalStatus = state?.status || null;
+    const hasMediaObservation = Boolean(String(message?.media_operator_observation || "").trim());
     const isPaused =
       conversation?.ai_auto_respond !== true ||
       state?.is_enabled === false ||
       conversation?.is_restricted === true ||
-      canonicalStatus === "waiting_human" ||
+      (canonicalStatus === "waiting_human" && !hasMediaObservation) ||
       canonicalStatus === "paused_handoff" ||
       canonicalStatus === "paused_guardrail";
 
@@ -143,12 +243,76 @@ async function processClaimedInboundJob(
       return;
     }
 
+    let rawMediaType = String(message?.media_type || "").toLowerCase();
+    let rawText = String(message?.text || "");
+
+    if (rawMediaType === "image" || rawText.startsWith("[image:")) {
+      message = await persistInboundMediaToVault(supabase, message, "image");
+      rawMediaType = String(message?.media_type || "image").toLowerCase();
+      rawText = String(message?.text || rawText);
+    } else if (rawMediaType === "video" || rawText.startsWith("[video:")) {
+      message = await persistInboundMediaToVault(supabase, message, "video");
+      rawMediaType = String(message?.media_type || "video").toLowerCase();
+      rawText = String(message?.text || rawText);
+    }
+
+    const looksVideo = rawMediaType === "video" || rawText.startsWith("[video:");
+    const operatorObservation = String(message?.media_operator_observation || "").trim();
+
+    // Vídeo nunca chama IA sem observação humana. O backend só identifica o tipo
+    // técnico da mídia e bloqueia o ciclo antes do Brain.
+    if (looksVideo && !operatorObservation) {
+      await pauseForMediaObservation(
+        supabase,
+        workerToken,
+        job,
+        message,
+        "video",
+        "Vídeo recebido. Assista e descreva o que é relevante para o Brain continuar.",
+      );
+      return;
+    }
+
+    let resolvedImage: Awaited<ReturnType<typeof resolveInboundImageMessage>> | null = null;
+    if (rawMediaType === "image" || rawText.startsWith("[image:")) {
+      resolvedImage = await resolveInboundImageMessage(supabase, message);
+      if (!resolvedImage.hasValidDescription) {
+        if (job.attempt_count < 3) {
+          await rescheduleJob(
+            supabase,
+            workerToken,
+            job,
+            retryAt(15 * job.attempt_count),
+            resolvedImage.analysisError || "image_analysis_unavailable",
+          );
+          return;
+        }
+        await pauseForMediaObservation(
+          supabase,
+          workerToken,
+          job,
+          message,
+          "image",
+          "Não consegui interpretar a foto automaticamente. Descreva o que aparece nela para o Brain continuar.",
+        );
+        return;
+      }
+    }
+
     if (message?.media_type === "audio") {
       message = await persistInboundAudioToVault(supabase, message);
     }
 
     const resolvedAudio = await resolveInboundAudioMessage(supabase, message);
-    if (resolvedAudio.isAudio) {
+    const inputText = resolvedAudio.isAudio
+      ? resolvedAudio.text
+      : resolvedImage?.isImage
+      ? resolvedImage.text
+      : looksVideo
+      ? `[VÍDEO OBSERVADO PELO OPERADOR]\n${operatorObservation}`
+      : rawText;
+
+    if (resolvedAudio.isAudio || resolvedImage?.isImage || looksVideo) {
       try {
         await enqueueOpenAiConversationMessageSync({
           supabase,
@@ -165,13 +329,9 @@ async function processClaimedInboundJob(
       }
     }
 
-    const inputText = resolvedAudio.isAudio
-      ? resolvedAudio.text
-      : String(message?.text || "");
-
     const actionable = isActionableInboundMessage({
       text: inputText,
-      mediaType: resolvedAudio.isAudio ? "audio" : message?.media_type,
+      mediaType: resolvedAudio.isAudio ? "audio" : (looksVideo ? "video" : message?.media_type),
       audioTranscript: resolvedAudio.transcript,
     });
 
@@ -258,7 +418,7 @@ async function processClaimedInboundJob(
         text: inputText,
         timestamp: message.timestamp || message.created_at || new Date().toISOString(),
         sender: message.sender_id || "them",
-        mediaType: resolvedAudio.isAudio ? "audio" : (message.media_type || undefined),
+        mediaType: resolvedAudio.isAudio ? "audio" : (looksVideo ? "video" : (message.media_type || undefined)),
         audioTranscript: resolvedAudio.hasValidTranscript
           ? resolvedAudio.transcript || undefined
           : undefined,

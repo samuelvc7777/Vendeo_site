@@ -16,6 +16,7 @@ import {
   transcribeWithGroqCloud,
   resolveInboundAudioMessage,
 } from "./audio_transcription.ts";
+import { resolveInboundImageMessage } from "./image_analysis.ts";
 export { getGroqApiKey, transcribeWithGroqCloud, resolveInboundAudioMessage };
 import {
   isActionableInboundMessage,
@@ -293,6 +294,7 @@ serve(async (req: Request) => {
     "/operator/brain/events": "/autopilot/brain-events",
     "/operator/brain/retry-failed-action": "/autopilot/retry-failed-action",
     "/operator/brain/manual-resolution": "/autopilot/manual-resolution",
+    "/operator/brain/media-observation": "/autopilot/media-observation",
     "/operator/brain/consultation": "/autopilot/brain-consultation",
     "/operator/brain/retry-once": "/autopilot/retry-once",
   };
@@ -496,6 +498,7 @@ serve(async (req: Request) => {
 
             let audioUrl: string | undefined;
             let imageUrl: string | undefined;
+            let videoUrl: string | undefined;
 
             if (isAudioMsg) {
               const firstAtt = message.attachments?.[0];
@@ -544,7 +547,8 @@ serve(async (req: Request) => {
                 imageUrl = att.payload.url;
                 text = `[image:${imageUrl}]`;
               } else if (att.type === "video" && att.payload?.url) {
-                text = `[video:${att.payload.url}]`;
+                videoUrl = att.payload.url;
+                text = `[video:${videoUrl}]`;
               }
             }
 
@@ -552,7 +556,13 @@ serve(async (req: Request) => {
               ? new Date(msgEvent.timestamp).toISOString()
               : new Date().toISOString();
 
-            const previewText = isAudioMsg ? "🎙️ Mensagem de voz" : imageUrl ? "📷 Foto" : text;
+            const previewText = isAudioMsg
+              ? "🎙️ Mensagem de voz"
+              : imageUrl
+              ? "📷 Foto"
+              : videoUrl
+              ? "🎬 Vídeo"
+              : text;
             const replyToMid =
               message.reply_to?.mid ||
               message.reply_to?.id ||
@@ -598,7 +608,7 @@ serve(async (req: Request) => {
 
             const inboundIsActionable = !isEcho && isActionableInboundMessage({
               text,
-              mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+              mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : undefined,
               audioTranscript,
             });
 
@@ -614,8 +624,8 @@ serve(async (req: Request) => {
                     p_text: text,
                     p_timestamp: timestamp,
                     p_preview_text: previewText,
-                    p_media_url: audioUrl || imageUrl || null,
-                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                    p_media_url: audioUrl || imageUrl || videoUrl || null,
+                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : null,
                     p_reply_to_message_id: replyToMid,
                     p_audio_transcript: audioTranscript,
                     p_audio_transcription_error: audioTranscriptionError,
@@ -667,8 +677,8 @@ serve(async (req: Request) => {
                     p_text: text,
                     p_timestamp: timestamp,
                     p_preview_text: previewText,
-                    p_media_url: audioUrl || imageUrl || null,
-                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : null,
+                    p_media_url: audioUrl || imageUrl || videoUrl || null,
+                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : null,
                     p_reply_to_message_id: replyToMid,
                     p_audio_transcript: audioTranscript,
                     p_audio_transcription_error: audioTranscriptionError,
@@ -707,8 +717,8 @@ serve(async (req: Request) => {
                       timestamp,
                       isMine: true,
                       status: "sent",
-                      mediaUrl: audioUrl || imageUrl,
-                      mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : undefined,
+                      mediaUrl: audioUrl || imageUrl || videoUrl,
+                      mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : undefined,
                       replyToMessageId: replyToMid,
                     },
                   });
@@ -3824,20 +3834,85 @@ serve(async (req: Request) => {
 
             if (isFromThem) {
               const convRules = conv.stage_completed_rules || {};
+              const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+              const rawLastText = String(lastMsg.text || "");
+              const looksVideo = lastMediaType === "video" || rawLastText.startsWith("[video:");
+              const looksImage = lastMediaType === "image" || rawLastText.startsWith("[image:");
+              const operatorObservation = String(lastMsg.media_operator_observation || "").trim();
+
+              if (looksVideo && !operatorObservation) {
+                const pauseReason = `media_observation_required|video|${lastMsg.id}`;
+                await supabase.rpc("set_autopilot_runtime_state_atomic", {
+                  p_conversation_id: conv.id,
+                  p_status: "waiting_human",
+                  p_reason: pauseReason,
+                  p_cancel_current_cycle: false,
+                  p_clear_cancel_current_cycle: false,
+                });
+                await publishAutoPilotState(supabase, conv.id, {
+                  status: "waiting_human",
+                  pauseReason,
+                  pausedAt: new Date().toISOString(),
+                  activity: activity(
+                    "waiting",
+                    "Precisa de observação",
+                    "Vídeo recebido. Assista e descreva o que é relevante para o Brain continuar.",
+                    { event: "media_observation_required", mediaKind: "video", messageId: lastMsg.id },
+                  ),
+                  event: "media_observation_required",
+                  eventMetadata: { mediaKind: "video", messageId: lastMsg.id },
+                });
+                processed.push(conv.id);
+                continue;
+              }
+
+              let preparedText = rawLastText;
+              if (looksImage) {
+                const resolvedImage = await resolveInboundImageMessage(supabase, lastMsg);
+                if (!resolvedImage.hasValidDescription) {
+                  const pauseReason = `media_observation_required|image|${lastMsg.id}`;
+                  await supabase.rpc("set_autopilot_runtime_state_atomic", {
+                    p_conversation_id: conv.id,
+                    p_status: "waiting_human",
+                    p_reason: pauseReason,
+                    p_cancel_current_cycle: false,
+                    p_clear_cancel_current_cycle: false,
+                  });
+                  await publishAutoPilotState(supabase, conv.id, {
+                    status: "waiting_human",
+                    pauseReason,
+                    pausedAt: new Date().toISOString(),
+                    activity: activity(
+                      "waiting",
+                      "Precisa de observação",
+                      "Não consegui interpretar a foto automaticamente. Descreva o que aparece nela para o Brain continuar.",
+                      { event: "media_observation_required", mediaKind: "image", messageId: lastMsg.id },
+                    ),
+                    event: "media_observation_required",
+                    eventMetadata: { mediaKind: "image", messageId: lastMsg.id },
+                  });
+                  processed.push(conv.id);
+                  continue;
+                }
+                preparedText = resolvedImage.text;
+              } else if (looksVideo) {
+                preparedText = `[VÍDEO OBSERVADO PELO OPERADOR]\n${operatorObservation}`;
+              }
 
               // BRAIN: Único orquestrador oficial (fail-closed)
               console.log(`[Brain] cron:tick roteando para Brain em ${conv.id}`);
               const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+              if (resolvedAudio.isAudio) preparedText = resolvedAudio.text;
 
               const brainPromise = runBrainOrchestration({
                 supabase,
                 conversationId: conv.id,
                 newMessage: {
                   id: lastMsg.id,
-                  text: resolvedAudio.text,
+                  text: preparedText,
                   timestamp: lastMsg.timestamp || lastMsg.created_at,
                   sender: lastMsg.sender_id || "them",
-                  mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+                  mediaType: resolvedAudio.isAudio ? "audio" : (looksVideo ? "video" : (lastMsg.media_type || undefined)),
                   audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
                 },
               });
@@ -4111,6 +4186,40 @@ serve(async (req: Request) => {
             const lastMsg = lastMsgs?.[0];
 
             if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
+              const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+              const needsMediaWorker =
+                lastMediaType === "image" ||
+                lastMediaType === "video" ||
+                String(lastMsg.text || "").startsWith("[image:") ||
+                String(lastMsg.text || "").startsWith("[video:");
+
+              if (needsMediaWorker) {
+                const { data: queueResult, error: queueError } = await supabase.rpc(
+                  "enqueue_autopilot_inbound_job",
+                  {
+                    p_conversation_id: conversationId,
+                    p_message_id: lastMsg.id,
+                    p_due_at: new Date().toISOString(),
+                  },
+                );
+                if (queueError || queueResult?.success !== true) {
+                  immediateResult = { started: false, reason: queueError?.message || queueResult?.reason || "media_queue_failed" };
+                } else {
+                  immediateResult = { started: true, reason: "media_queued" };
+                  await publishAutoPilotState(supabase, conversationId, {
+                    status: "starting",
+                    activity: activity(
+                      "starting",
+                      lastMediaType === "video" ? "Preparando observação" : "Analisando foto",
+                      lastMediaType === "video"
+                        ? "Vídeo encaminhado para observação humana antes do Brain."
+                        : "Foto encaminhada para descrição visual antes do Brain.",
+                      { event: "media_worker_queued", mediaType: lastMediaType, messageId: lastMsg.id },
+                    ),
+                    scheduledResponseAt: null,
+                  });
+                }
+              } else {
               const proposedCycleId = `corr_toggle_imm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
               const { data: authResult } = await supabase.rpc(
                 "authorize_send_now_atomic",
@@ -4156,6 +4265,7 @@ serve(async (req: Request) => {
                 immediateResult = { started: true, reason: "already_processing", cycleId: authResult.active_cycle_token };
               } else {
                 immediateResult = { started: false, reason: authResult?.reason || "auth_failed" };
+              }
               }
             } else {
               immediateResult = { started: false, reason: "nothing_to_answer" };
@@ -4384,6 +4494,61 @@ serve(async (req: Request) => {
             .limit(1);
           const lastMsg = lastMsgs?.[0];
           if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
+            const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+            const needsMediaWorker =
+              lastMediaType === "image" ||
+              lastMediaType === "video" ||
+              String(lastMsg.text || "").startsWith("[image:") ||
+              String(lastMsg.text || "").startsWith("[video:");
+
+            if (needsMediaWorker) {
+              await releaseExperimentalCycleAtomic({
+                supabase,
+                conversationId,
+                cycleToken: cycleId,
+                processingStatus: "idle",
+              }).catch(() => null);
+
+              const { data: queueResult, error: queueError } = await supabase.rpc(
+                "enqueue_autopilot_inbound_job",
+                {
+                  p_conversation_id: conversationId,
+                  p_message_id: lastMsg.id,
+                  p_due_at: new Date().toISOString(),
+                },
+              );
+              if (queueError || queueResult?.success !== true) {
+                return new Response(JSON.stringify({
+                  success: false,
+                  result: "media_queue_failed",
+                  detail: queueError?.message || queueResult?.reason || "Falha ao encaminhar mídia para processamento.",
+                }), {
+                  status: 503,
+                  headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+              }
+
+              await publishAutoPilotState(supabase, conversationId, {
+                status: "starting",
+                activity: activity(
+                  "starting",
+                  lastMediaType === "video" ? "Preparando observação" : "Analisando foto",
+                  lastMediaType === "video"
+                    ? "Vídeo encaminhado para observação humana antes do Brain."
+                    : "Foto encaminhada para descrição visual antes do Brain.",
+                  { event: "media_worker_queued", mediaType: lastMediaType, messageId: lastMsg.id },
+                ),
+                scheduledResponseAt: null,
+              });
+              return new Response(JSON.stringify({
+                success: true,
+                result: "media_queued",
+                status: "starting",
+              }), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+              });
+            }
+
             // BRAIN: Único orquestrador oficial (fail-closed)
             console.log(`[Brain] send-now roteando para Brain em ${conversationId}`);
             const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
@@ -4730,6 +4895,71 @@ serve(async (req: Request) => {
       } catch (error: any) {
         console.error("[Brain Consultation] Falha:", error?.message || error);
         return new Response(JSON.stringify({ success: false, error: error?.message || "Falha na consulta privada com o Brain." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if ((path === "/autopilot/media-observation" || path === "/api/autopilot/media-observation") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !await isBrainOperatorRequest(req)) {
+        return new Response(JSON.stringify({ success: false, error: "Acesso operacional exige credencial de operador." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = String(body?.conversationId || "").trim();
+        const messageId = String(body?.messageId || "").trim();
+        const observation = String(body?.observation || "").trim();
+        if (!conversationId || !messageId || !observation) {
+          return new Response(JSON.stringify({ success: false, error: "conversationId, messageId e observation são obrigatórios." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: prepared, error: prepareError } = await supabase.rpc("prepare_instagram_media_observation", {
+          p_conversation_id: conversationId,
+          p_message_id: messageId,
+          p_observation: observation,
+        });
+        if (prepareError || prepared?.success !== true) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: prepareError?.message || prepared?.reason || "Falha ao registrar observação da mídia.",
+          }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        await publishAutoPilotState(supabase, conversationId, {
+          status: "idle",
+          pauseReason: null,
+          pausedAt: null,
+          scheduledResponseAt: null,
+          activity: activity(
+            "starting",
+            "Observação recebida",
+            "Contexto humano registrado. O Brain vai retomar a conversa com essa observação.",
+            { event: "media_observation_received", messageId, mediaKind: prepared?.mediaKind || null },
+          ),
+          event: "media_observation_received",
+          eventMetadata: { messageId, mediaKind: prepared?.mediaKind || null },
+        });
+
+        return new Response(JSON.stringify({
+          success: true,
+          queued: prepared?.queued === true,
+          mediaKind: prepared?.mediaKind || null,
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (error: any) {
+        console.error("[Media Observation] Falha:", error?.message || error);
+        return new Response(JSON.stringify({ success: false, error: error?.message || "Falha ao registrar observação da mídia." }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

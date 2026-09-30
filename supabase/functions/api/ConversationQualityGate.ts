@@ -151,13 +151,19 @@ export function isActionableInboundMessage(msg: {
     return true;
   }
 
-  // 2. Fotos / Imagens isoladas NÃO são acionáveis
+  // 2. Fotos / imagens entram na fila para descrição visual com Luna antes do Brain.
   if (mediaType === "image" || text.startsWith("[image:")) {
-    return false;
+    return true;
   }
 
-  // 3. Vídeos ou arquivos isolados NÃO são acionáveis
-  if (mediaType === "video" || text.startsWith("[video:") || mediaType === "file" || text.startsWith("[file:")) {
+  // 3. Vídeos entram na fila apenas para o handoff técnico ao operador.
+  // O worker intercepta antes de qualquer chamada ao Brain.
+  if (mediaType === "video" || text.startsWith("[video:")) {
+    return true;
+  }
+
+  // 4. Arquivos isolados continuam sem processamento automático.
+  if (mediaType === "file" || text.startsWith("[file:")) {
     return false;
   }
 
