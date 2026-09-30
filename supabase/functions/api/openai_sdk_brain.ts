@@ -81,6 +81,19 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     }
   }
 
+  if (params.recentInstagramReactions?.length) {
+    lines.push("REACOES_RECENTES_DO_PRETENDENTE:");
+    for (const reaction of params.recentInstagramReactions) {
+      const targetText = String(reaction.targetText || "").replace(/\s+/g, " ").trim().slice(0, 320);
+      lines.push(
+        `- reagiu ${reaction.emoji} à mensagem da Larissa id=${reaction.messageId}${reaction.reactedAt ? ` em ${reaction.reactedAt}` : ""}${targetText ? ` texto=${JSON.stringify(targetText)}` : ""}`
+      );
+    }
+    lines.push(
+      "REACTION_SEMANTICS: reação é sinal contextual, não é uma nova mensagem e não exige resposta isolada. Use somente para interpretar tom/interesse quando houver um turno real."
+    );
+  }
+
   if (params.audioPrefetchComplete && params.prefetchedAudioCandidateGroups?.length) {
     lines.push("COFRE_AUDIO_PREAUTORIZADO_DA_ETAPA:");
     for (const group of params.prefetchedAudioCandidateGroups) {
@@ -135,6 +148,16 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   if (params.manualSessionFacts?.length) {
     lines.push("FATOS_MANUAIS_DA_SESSAO:");
     for (const fact of params.manualSessionFacts) lines.push(`- ${fact.id}: ${fact.fact}`);
+  }
+
+  // Memória permanente entra apenas quando o orquestrador já a julgou relevante.
+  // Formato compacto: evita carregar chaves/metadados e mantém o custo de tokens mínimo.
+  if (params.persistentManualFacts?.length) {
+    lines.push("MEMORIA_CONFIRMADA_RELEVANTE:");
+    for (const fact of params.persistentManualFacts.slice(0, 2)) {
+      lines.push(`- ${fact.question} => ${fact.fact}`);
+    }
+    lines.push("Use esses fatos diretamente; não peça ao operador o mesmo dado novamente.");
   }
 
   if (params.recentStyleStateSnippet) lines.push(params.recentStyleStateSnippet.trim());

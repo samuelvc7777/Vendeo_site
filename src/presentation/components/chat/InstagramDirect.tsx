@@ -48,7 +48,12 @@ import { TinderProfileModal } from "@/presentation/components/tinder/TinderProfi
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { ChatFilterModal, SortOrder } from "./ChatFilterModal";
 import { resolveContactAvatar } from "@/domain/services/AvatarResolverService";
-import { useChatRealtime, notifyLocalTabs, RealtimeMessagePayload } from "@/presentation/hooks/useChatRealtime";
+import {
+  useChatRealtime,
+  notifyLocalTabs,
+  RealtimeMessagePayload,
+  RealtimeInstagramReactionPayload,
+} from "@/presentation/hooks/useChatRealtime";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { InstagramAudioMessage } from "./InstagramAudioMessage";
 import {
@@ -124,6 +129,8 @@ export interface DirectMessage {
   mediaUrl?: string;
   mediaType?: "image" | "audio" | "video";
   audioTranscript?: string;
+  reactionEmoji?: string;
+  reactionAt?: string;
   createdAt: string;
   timestamp?: number;
   sentDate?: string;
@@ -834,7 +841,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     const { data, error } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript")
+      .select("id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript, reaction_emoji, reaction_at")
       .eq("conversation_id", conversationId)
       .order("timestamp", { ascending: false })
       .limit(150);
@@ -914,6 +921,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         mediaUrl,
         mediaType,
         audioTranscript: row.audio_transcript || undefined,
+        reactionEmoji: row.reaction_emoji || undefined,
+        reactionAt: row.reaction_at || undefined,
         createdAt: formatMessageTime(row.timestamp),
         timestamp: timestampMs,
         sentDate: row.timestamp || new Date(timestampMs).toISOString(),
@@ -2095,6 +2104,30 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     []
   );
 
+  const handleRealtimeInstagramReaction = useCallback(
+    (payload: RealtimeInstagramReactionPayload) => {
+      if (!payload.conversationId || !payload.messageId) return;
+      setMessages((prev) => {
+        const current = prev[payload.conversationId];
+        if (!current || current.length === 0) return prev;
+        let changed = false;
+        const updated = current.map((message) => {
+          if (message.id !== payload.messageId) return message;
+          changed = true;
+          return {
+            ...message,
+            reactionEmoji: payload.action === "react" ? (payload.emoji || undefined) : undefined,
+            reactionAt: payload.reactedAt || undefined,
+          };
+        });
+        return changed
+          ? { ...prev, [payload.conversationId]: updated }
+          : prev;
+      });
+    },
+    []
+  );
+
   const handleRealtimeTinderMessage = useCallback((msg: RealtimeMessagePayload) => {
     const isActuallyMine =
       msg.isMine ||
@@ -2207,6 +2240,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     onInstagramConversationUpdate: handleRealtimeInstagramConversationUpdate,
     onInstagramConversationInsert: handleRealtimeInstagramConversationInsert,
     onInstagramSeen: handleRealtimeInstagramSeen,
+    onInstagramReaction: handleRealtimeInstagramReaction,
     onTinderMessage: handleRealtimeTinderMessage,
     onTinderConversationUpdate: handleRealtimeTinderConversationUpdate,
     onAutoPilotStateUpdate: autoPilot.applyRemoteStateUpdate,
@@ -4324,7 +4358,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       )}
 
                       <div
-                        onDoubleClick={() => handleToggleLike(msg.id)}
+                        onDoubleClick={() => {
+                          if (isTinderChat) handleToggleLike(msg.id);
+                        }}
                         className={`relative rounded-2xl text-sm leading-relaxed transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
                           msg.mediaType === "audio" ||
                           msg.mediaType === "video" ||
@@ -4485,11 +4521,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           )}
                         </div>
 
-                        {msg.liked && (
+                        {msg.reactionEmoji ? (
+                          <span
+                            className={`absolute -bottom-2 ${msg.isMine ? "-left-1" : "-right-1"} bg-white dark:bg-[#262626] rounded-full px-1.5 py-0.5 border border-zinc-200 dark:border-black shadow-md text-[13px] leading-none select-none`}
+                            title="Reação no Instagram"
+                          >
+                            {msg.reactionEmoji}
+                          </span>
+                        ) : msg.liked ? (
                           <span className="absolute -bottom-2 -right-1 bg-white dark:bg-[#262626] rounded-full p-1 border border-zinc-200 dark:border-black shadow-md">
                             <Heart className="w-3 h-3 text-red-500 fill-red-500" />
                           </span>
-                        )}
+                        ) : null}
                       </div>
                     </div>
 

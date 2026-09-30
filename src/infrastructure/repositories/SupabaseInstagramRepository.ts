@@ -217,7 +217,7 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
     try {
       const { data, error } = await client
         .from("instagram_messages")
-        .select("id, conversation_id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript")
+        .select("id, conversation_id, sender_id, text, timestamp, is_mine, status, seen_at, deliver_at, reply_to_message_id, media_url, media_type, audio_transcript, reaction_emoji, reaction_at")
         .eq("conversation_id", conversationId)
         .order("timestamp", { ascending: false })
         .limit(limit);
@@ -241,6 +241,8 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
         mediaUrl: item.media_url || undefined,
         mediaType: item.media_type || undefined,
         audioTranscript: item.audio_transcript || undefined,
+        reactionEmoji: item.reaction_emoji || undefined,
+        reactionAt: item.reaction_at || undefined,
       }));
     } catch {
       return [];

@@ -42,6 +42,7 @@ import { processAutopilotInboundQueue } from "./autopilot_inbound_queue.ts";
 import {
   processInstagramProfileQueue,
 } from "./instagram_profile_queue.ts";
+import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -476,6 +477,61 @@ serve(async (req: Request) => {
                 }
               } catch (seenException) {
                 console.warn("[Webhook] read receipt exception:", seenException);
+              }
+
+              continue;
+            }
+
+            // 2. MESSAGE REACTION: contexto leve. Não vira mensagem nem dispara turno do Brain.
+            const parsedReaction = parseInstagramReactionEvent(msgEvent);
+            if (parsedReaction) {
+              try {
+                const { data: reactionResult, error: reactionError } = await supabase.rpc(
+                  "apply_instagram_message_reaction_atomic",
+                  {
+                    p_message_id: parsedReaction.messageId,
+                    p_sender_id: parsedReaction.senderId,
+                    p_emoji: parsedReaction.emoji,
+                    p_action: parsedReaction.action,
+                    p_reacted_at: parsedReaction.reactedAt,
+                  },
+                );
+
+                if (reactionError || reactionResult?.success !== true) {
+                  console.warn(
+                    "[Webhook] apply_instagram_message_reaction_atomic falhou:",
+                    reactionError || reactionResult,
+                  );
+                } else if (reactionResult?.ignored !== true) {
+                  const conversationId = String(reactionResult.conversation_id || "");
+                  const reactionBroadcast = (async () => {
+                    try {
+                      const channel = supabase.channel("vendeo_realtime_chat");
+                      await channel.send({
+                        type: "broadcast",
+                        event: "instagram_reaction",
+                        payload: {
+                          conversationId,
+                          messageId: parsedReaction.messageId,
+                          senderId: parsedReaction.senderId,
+                          action: parsedReaction.action,
+                          emoji: parsedReaction.emoji,
+                          reactedAt: parsedReaction.reactedAt,
+                        },
+                      });
+                    } catch {
+                      // A reação já está persistida; broadcast é somente projeção de UI.
+                    }
+                  })();
+
+                  if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                    (globalThis as any).EdgeRuntime.waitUntil(reactionBroadcast);
+                  } else {
+                    void reactionBroadcast;
+                  }
+                }
+              } catch (reactionException) {
+                console.warn("[Webhook] reaction exception:", reactionException);
               }
 
               continue;

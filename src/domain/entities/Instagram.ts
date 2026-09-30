@@ -39,6 +39,8 @@ export interface InstagramMessage {
   mediaUrl?: string;
   mediaType?: "image" | "audio" | "video";
   audioTranscript?: string;
+  reactionEmoji?: string;
+  reactionAt?: string;
   timestamp: string;
   isMine: boolean;
   status?: "sending" | "sent" | "seen" | "failed";

@@ -8261,6 +8261,36 @@ export async function runBrainOrchestration(
           ? runOpenAiSdkBrainTurn
           : runOpenAiBrainTurn;
 
+        let recentInstagramReactions: NonNullable<Parameters<typeof runOpenAiBrainTurn>[0]["recentInstagramReactions"]> = [];
+        try {
+          const reactionCutoffIso = new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString();
+          const { data: reactionRows, error: reactionRowsError } = await supabase
+            .from("instagram_messages")
+            .select("id, text, reaction_emoji, reaction_at")
+            .eq("conversation_id", conversationId)
+            .eq("is_mine", true)
+            .not("reaction_emoji", "is", null)
+            .gte("reaction_at", reactionCutoffIso)
+            .order("reaction_at", { ascending: false })
+            .limit(3);
+
+          if (reactionRowsError) throw reactionRowsError;
+          recentInstagramReactions = (reactionRows || [])
+            .map((row: any) => ({
+              messageId: String(row.id || ""),
+              emoji: String(row.reaction_emoji || "").trim(),
+              reactedAt: row.reaction_at ? String(row.reaction_at) : undefined,
+              targetText: String(row.text || "").trim().slice(0, 320),
+            }))
+            .filter((reaction: any) => reaction.messageId && reaction.emoji);
+          if (recentInstagramReactions.length > 0) {
+            currentCycle.trace.push(`instagram_reaction_context_count=${recentInstagramReactions.length}`);
+          }
+        } catch (reactionContextError) {
+          currentCycle.trace.push("instagram_reaction_context_unavailable=true");
+          console.warn("[Brain] Falha ao carregar contexto de reações do Instagram.", reactionContextError);
+        }
+
         const agentTurnParams: Parameters<typeof runOpenAiBrainTurn>[0] = {
           supabase,
           conversationId,
@@ -8311,6 +8341,7 @@ export async function runBrainOrchestration(
               replyToMessageId: m.reply_to_message_id || m.replyToMessageId || null,
             }))
             .filter((m: any) => m.id && m.text),
+          recentInstagramReactions,
           recentMessages: persistentAgentSessionEnabled
             ? []
             : finalRecentMessages.map((m) => ({

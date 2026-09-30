@@ -1545,6 +1545,12 @@ export interface RunOpenAiBrainParams {
     audioTranscript?: string | null;
     replyToMessageId?: string | null;
   }>;
+  recentInstagramReactions?: Array<{
+    messageId: string;
+    emoji: string;
+    reactedAt?: string;
+    targetText?: string;
+  }>;
   recentMessages: Array<{ id?: string; sender: "user" | "larissa"; text: string; createdAt?: string }>;
   contactMemorySummary?: string;
   landmarksSummary?: string;

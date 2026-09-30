@@ -49,12 +49,22 @@ export interface RealtimeSeenPayload {
   seenAt: string;
 }
 
+export interface RealtimeInstagramReactionPayload {
+  conversationId: string;
+  messageId: string;
+  senderId: string;
+  action: "react" | "unreact";
+  emoji?: string | null;
+  reactedAt: string;
+}
+
 interface UseChatRealtimeProps {
   onInstagramMessage?: (msg: RealtimeMessagePayload) => void;
   onInstagramConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
   /** Chamado quando uma nova conversa Instagram é inserida no banco (INSERT) */
   onInstagramConversationInsert?: (conv: RealtimeConversationUpdatePayload) => void;
   onInstagramSeen?: (payload: RealtimeSeenPayload) => void;
+  onInstagramReaction?: (payload: RealtimeInstagramReactionPayload) => void;
   onTinderMessage?: (msg: RealtimeMessagePayload) => void;
   onTinderConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
   onAutoPilotStateUpdate?: (payload: Partial<AutoPilotChatState> & { conversationId: string; timestamp?: string }) => void;
@@ -67,6 +77,7 @@ export function notifyLocalTabs(
     | "instagram_message"
     | "instagram_conversation_update"
     | "instagram_seen"
+    | "instagram_reaction"
     | "tinder_message"
     | "tinder_conversation_update",
   payload: any
@@ -87,6 +98,7 @@ export function useChatRealtime({
   onInstagramConversationUpdate,
   onInstagramConversationInsert,
   onInstagramSeen,
+  onInstagramReaction,
   onTinderMessage,
   onTinderConversationUpdate,
   onAutoPilotStateUpdate,
@@ -98,6 +110,7 @@ export function useChatRealtime({
     onInstagramConversationUpdate,
     onInstagramConversationInsert,
     onInstagramSeen,
+    onInstagramReaction,
     onTinderMessage,
     onTinderConversationUpdate,
     onAutoPilotStateUpdate,
@@ -118,6 +131,7 @@ export function useChatRealtime({
       onInstagramConversationUpdate,
       onInstagramConversationInsert,
       onInstagramSeen,
+      onInstagramReaction,
       onTinderMessage,
       onTinderConversationUpdate,
       onAutoPilotStateUpdate,
@@ -127,6 +141,7 @@ export function useChatRealtime({
     onInstagramConversationUpdate,
     onInstagramConversationInsert,
     onInstagramSeen,
+    onInstagramReaction,
     onTinderMessage,
     onTinderConversationUpdate,
     onAutoPilotStateUpdate,
@@ -174,6 +189,8 @@ export function useChatRealtime({
             callbacksRef.current.onInstagramConversationUpdate?.(payload);
           } else if (type === "instagram_seen" && payload.conversationId) {
             callbacksRef.current.onInstagramSeen?.(payload);
+          } else if (type === "instagram_reaction" && payload.conversationId && payload.messageId) {
+            callbacksRef.current.onInstagramReaction?.(payload);
           } else if (type === "tinder_message" && payload.id) {
             if (processedMessageIdsRef.current.has(payload.id)) return;
             markMessageProcessed(payload.id);
@@ -219,6 +236,14 @@ export function useChatRealtime({
         ({ payload }: { payload: RealtimeSeenPayload }) => {
           if (!payload || !payload.conversationId) return;
           callbacksRef.current.onInstagramSeen?.(payload);
+        }
+      )
+      .on(
+        "broadcast",
+        { event: "instagram_reaction" },
+        ({ payload }: { payload: RealtimeInstagramReactionPayload }) => {
+          if (!payload || !payload.conversationId || !payload.messageId) return;
+          callbacksRef.current.onInstagramReaction?.(payload);
         }
       )
       .on(
