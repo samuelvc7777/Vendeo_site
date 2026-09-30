@@ -142,6 +142,64 @@ async function persistInboundMediaToVault(
   }
 }
 
+async function loadCurrentInboundMediaBatch(
+  supabase: any,
+  conversationId: string,
+  batchStartedAt: string | null | undefined,
+  latestMessage: any,
+): Promise<any[]> {
+  const latestCreatedAt = String(latestMessage?.created_at || "").trim();
+  const latestMediaType = String(latestMessage?.media_type || "").toLowerCase();
+  const latestIsMedia = latestMediaType === "image" || latestMediaType === "video";
+
+  // ai_debounce_started_at é a fronteira canônica do lote atual. Sem ela,
+  // nunca varremos mídia histórica: processamos apenas a mensagem mais recente.
+  if (!batchStartedAt || !latestCreatedAt) {
+    return latestIsMedia ? [latestMessage] : [];
+  }
+
+  const { data, error } = await supabase
+    .from("instagram_messages")
+    .select(
+      "id, conversation_id, sender_id, is_mine, text, timestamp, created_at, media_type, media_url, image_description, image_description_error, media_operator_observation",
+    )
+    .eq("conversation_id", conversationId)
+    .eq("is_mine", false)
+    .in("media_type", ["image", "video"])
+    .gte("created_at", String(batchStartedAt))
+    .lte("created_at", latestCreatedAt)
+    .order("created_at", { ascending: true });
+
+  if (error) throw new Error(`inbound_media_batch_load_failed: ${error.message || error}`);
+
+  const rows = Array.isArray(data) ? data : [];
+  if (latestIsMedia && !rows.some((row: any) => String(row?.id) === String(latestMessage?.id))) {
+    rows.push(latestMessage);
+  }
+  return rows;
+}
+
+async function enqueueInboundMediaSync(
+  supabase: any,
+  conversationId: string,
+  message: any,
+) {
+  try {
+    await enqueueOpenAiConversationMessageSync({
+      supabase,
+      conversationId,
+      providerMessageId: String(message?.id || ""),
+      direction: "inbound",
+      receivedAt: message?.timestamp || message?.created_at || new Date().toISOString(),
+    });
+  } catch (syncQueueError) {
+    console.warn(
+      `[Inbound Queue] Falha ao enfileirar sync OpenAI msg=${message?.id || "?"}:`,
+      syncQueueError,
+    );
+  }
+}
+
 async function persistInboundAudioToVault(
   supabase: any,
   message: any,
@@ -243,47 +301,72 @@ async function processClaimedInboundJob(
       return;
     }
 
-    let rawMediaType = String(message?.media_type || "").toLowerCase();
-    let rawText = String(message?.text || "");
+    // O job é coalescido por conversa e aponta só para a mensagem mais recente.
+    // Antes do Brain, resolvemos TODA mídia do lote atual para não perder uma foto/vídeo
+    // quando o pretendente manda outra mensagem logo em seguida.
+    let latestResolvedImage: Awaited<ReturnType<typeof resolveInboundImageMessage>> | null = null;
+    let hasActionableMediaInBatch = false;
+    let mediaBatch: any[] = [];
 
-    if (rawMediaType === "image" || rawText.startsWith("[image:")) {
-      message = await persistInboundMediaToVault(supabase, message, "image");
-      rawMediaType = String(message?.media_type || "image").toLowerCase();
-      rawText = String(message?.text || rawText);
-    } else if (rawMediaType === "video" || rawText.startsWith("[video:")) {
-      message = await persistInboundMediaToVault(supabase, message, "video");
-      rawMediaType = String(message?.media_type || "video").toLowerCase();
-      rawText = String(message?.text || rawText);
-    }
-
-    const looksVideo = rawMediaType === "video" || rawText.startsWith("[video:");
-    const operatorObservation = String(message?.media_operator_observation || "").trim();
-
-    // Vídeo nunca chama IA sem observação humana. O backend só identifica o tipo
-    // técnico da mídia e bloqueia o ciclo antes do Brain.
-    if (looksVideo && !operatorObservation) {
-      await pauseForMediaObservation(
+    try {
+      mediaBatch = await loadCurrentInboundMediaBatch(
+        supabase,
+        job.conversation_id,
+        conversation?.ai_debounce_started_at || null,
+        message,
+      );
+    } catch (mediaBatchError) {
+      await rescheduleJob(
         supabase,
         workerToken,
         job,
-        message,
-        "video",
-        "Vídeo recebido. Assista e descreva o que é relevante para o Brain continuar.",
+        retryAt(15),
+        mediaBatchError,
       );
       return;
     }
 
-    let resolvedImage: Awaited<ReturnType<typeof resolveInboundImageMessage>> | null = null;
-    if (rawMediaType === "image" || rawText.startsWith("[image:")) {
-      resolvedImage = await resolveInboundImageMessage(supabase, message);
-      if (!resolvedImage.hasValidDescription) {
+    for (const pendingMedia of mediaBatch) {
+      const mediaType = String(pendingMedia?.media_type || "").toLowerCase();
+      if (mediaType !== "image" && mediaType !== "video") continue;
+
+      let preparedMedia = await persistInboundMediaToVault(
+        supabase,
+        pendingMedia,
+        mediaType as "image" | "video",
+      );
+
+      if (mediaType === "video") {
+        const observation = String(preparedMedia?.media_operator_observation || "").trim();
+        if (!observation) {
+          await pauseForMediaObservation(
+            supabase,
+            workerToken,
+            job,
+            preparedMedia,
+            "video",
+            "Vídeo recebido. Assista e descreva o que é relevante para o Brain continuar.",
+          );
+          return;
+        }
+
+        hasActionableMediaInBatch = true;
+        await enqueueInboundMediaSync(supabase, job.conversation_id, preparedMedia);
+        if (String(preparedMedia?.id) === String(message?.id)) {
+          message = preparedMedia;
+        }
+        continue;
+      }
+
+      const resolved = await resolveInboundImageMessage(supabase, preparedMedia);
+      if (!resolved.hasValidDescription) {
         if (job.attempt_count < 3) {
           await rescheduleJob(
             supabase,
             workerToken,
             job,
-            retryAt(15 * job.attempt_count),
-            resolvedImage.analysisError || "image_analysis_unavailable",
+            retryAt(15 * Math.max(1, job.attempt_count)),
+            resolved.analysisError || "image_analysis_unavailable",
           );
           return;
         }
@@ -291,49 +374,58 @@ async function processClaimedInboundJob(
           supabase,
           workerToken,
           job,
-          message,
+          preparedMedia,
           "image",
           "Não consegui interpretar a foto automaticamente. Descreva o que aparece nela para o Brain continuar.",
         );
         return;
       }
+
+      preparedMedia = {
+        ...preparedMedia,
+        image_description: resolved.description,
+        image_description_error: null,
+      };
+      hasActionableMediaInBatch = true;
+      await enqueueInboundMediaSync(supabase, job.conversation_id, preparedMedia);
+
+      if (String(preparedMedia?.id) === String(message?.id)) {
+        message = preparedMedia;
+        latestResolvedImage = resolved;
+      }
     }
+
+    let rawMediaType = String(message?.media_type || "").toLowerCase();
+    let rawText = String(message?.text || "");
+    const looksVideo = rawMediaType === "video" || rawText.startsWith("[video:");
+    const operatorObservation = String(message?.media_operator_observation || "").trim();
 
     if (message?.media_type === "audio") {
       message = await persistInboundAudioToVault(supabase, message);
+      rawMediaType = String(message?.media_type || "audio").toLowerCase();
+      rawText = String(message?.text || rawText);
     }
 
     const resolvedAudio = await resolveInboundAudioMessage(supabase, message);
     const inputText = resolvedAudio.isAudio
       ? resolvedAudio.text
-      : resolvedImage?.isImage
-      ? resolvedImage.text
+      : latestResolvedImage?.isImage
+      ? latestResolvedImage.text
       : looksVideo
       ? `[VÍDEO OBSERVADO PELO OPERADOR]\n${operatorObservation}`
       : rawText;
 
-    if (resolvedAudio.isAudio || resolvedImage?.isImage || looksVideo) {
-      try {
-        await enqueueOpenAiConversationMessageSync({
-          supabase,
-          conversationId: job.conversation_id,
-          providerMessageId: job.latest_message_id,
-          direction: "inbound",
-          receivedAt: message.timestamp || message.created_at || new Date().toISOString(),
-        });
-      } catch (syncQueueError) {
-        console.warn(
-          `[Inbound Queue] Falha ao enfileirar sync OpenAI msg=${job.latest_message_id}:`,
-          syncQueueError,
-        );
-      }
+    if (resolvedAudio.isAudio) {
+      await enqueueInboundMediaSync(supabase, job.conversation_id, message);
     }
 
-    const actionable = isActionableInboundMessage({
-      text: inputText,
-      mediaType: resolvedAudio.isAudio ? "audio" : (looksVideo ? "video" : message?.media_type),
-      audioTranscript: resolvedAudio.transcript,
-    });
+    const actionable =
+      hasActionableMediaInBatch ||
+      isActionableInboundMessage({
+        text: inputText,
+        mediaType: resolvedAudio.isAudio ? "audio" : (looksVideo ? "video" : message?.media_type),
+        audioTranscript: resolvedAudio.transcript,
+      });
 
     if (!actionable) {
       await completeJob(supabase, workerToken, job);

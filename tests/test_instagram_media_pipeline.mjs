@@ -53,16 +53,28 @@ test("análise visual usa apenas Luna Flex e reaproveita descrição persistida"
   assert.match(source, /if \(existing\)/);
 });
 
-test("worker intercepta vídeo antes do Brain e persiste mídia fora da CDN da Meta", () => {
+test("worker resolve toda mídia coalescida antes do Brain e persiste fora da CDN da Meta", () => {
   const source = read("supabase/functions/api/autopilot_inbound_queue.ts");
   const workerStart = source.indexOf("async function processClaimedInboundJob");
   const worker = source.slice(workerStart);
-  const handoff = worker.indexOf("if (looksVideo && !operatorObservation)");
+  const batchLoad = worker.indexOf("mediaBatch = await loadCurrentInboundMediaBatch");
+  const batchLoop = worker.indexOf("for (const pendingMedia of mediaBatch)");
   const brain = worker.indexOf("const result = await runBrainOrchestration");
-  assert.ok(handoff >= 0 && brain >= 0 && handoff < brain);
-  assert.match(source, /persistInboundMediaToVault\(supabase, message, "image"\)/);
-  assert.match(source, /persistInboundMediaToVault\(supabase, message, "video"\)/);
+  assert.ok(batchLoad >= 0 && batchLoop >= 0 && brain >= 0);
+  assert.ok(batchLoad < batchLoop && batchLoop < brain);
+  assert.match(source, /\.in\("media_type", \["image", "video"\]\)/);
+  assert.match(source, /\.gte\("created_at", String\(batchStartedAt\)\)/);
+  assert.match(source, /\.lte\("created_at", latestCreatedAt\)/);
+  assert.match(source, /persistInboundMediaToVault\(\s*supabase,\s*pendingMedia,/);
   assert.match(source, /media_observation_required\|\$\{mediaKind\}\|\$\{messageId\}/);
+});
+
+test("regressão Luan: foto seguida de texto continua acionando o Brain pelo lote", () => {
+  const source = read("supabase/functions/api/autopilot_inbound_queue.ts");
+  assert.match(source, /conversation\?\.ai_debounce_started_at \|\| null/);
+  assert.match(source, /hasActionableMediaInBatch = true/);
+  assert.match(source, /const actionable =\s*hasActionableMediaInBatch \|\|/);
+  assert.match(source, /await enqueueInboundMediaSync\(supabase, job\.conversation_id, preparedMedia\)/);
 });
 
 test("schema guarda descrição/observação e retoma pelo inbound mais recente", () => {
