@@ -288,16 +288,77 @@ async function processClaimedInboundJob(
 
     const canonicalStatus = state?.status || null;
     const hasMediaObservation = Boolean(String(message?.media_operator_observation || "").trim());
-    const isPaused =
+    const isHardPaused =
       conversation?.ai_auto_respond !== true ||
       state?.is_enabled === false ||
       conversation?.is_restricted === true ||
-      (canonicalStatus === "waiting_human" && !hasMediaObservation) ||
       canonicalStatus === "paused_handoff" ||
       canonicalStatus === "paused_guardrail";
 
-    if (isPaused || message?.is_mine === true) {
+    if (isHardPaused || message?.is_mine === true) {
       await completeJob(supabase, workerToken, job);
+      return;
+    }
+
+    // Uma resolução humana já pendente tem prioridade sobre qualquer mídia nova.
+    // Ainda preservamos foto/vídeo fora da CDN temporária e podemos descrever a foto
+    // uma única vez, mas NÃO alteramos o HUD e NÃO chamamos o Brain até o operador
+    // encerrar o handoff existente.
+    if (canonicalStatus === "waiting_human" && !hasMediaObservation) {
+      let waitingMediaBatch: any[] = [];
+      try {
+        waitingMediaBatch = await loadCurrentInboundMediaBatch(
+          supabase,
+          job.conversation_id,
+          conversation?.ai_debounce_started_at || null,
+          message,
+        );
+      } catch (waitingMediaError) {
+        await rescheduleJob(supabase, workerToken, job, retryAt(30), waitingMediaError);
+        return;
+      }
+
+      let sawDeferredMedia = false;
+      for (const pendingMedia of waitingMediaBatch) {
+        const mediaType = String(pendingMedia?.media_type || "").toLowerCase();
+        if (mediaType !== "image" && mediaType !== "video") continue;
+        sawDeferredMedia = true;
+
+        const preparedMedia = await persistInboundMediaToVault(
+          supabase,
+          pendingMedia,
+          mediaType as "image" | "video",
+        );
+
+        if (mediaType === "image") {
+          const existingDescription = String(preparedMedia?.image_description || "").trim();
+          const previousError = String(preparedMedia?.image_description_error || "").trim();
+          if (existingDescription) {
+            await enqueueInboundMediaSync(supabase, job.conversation_id, preparedMedia);
+          } else if (!previousError) {
+            const resolved = await resolveInboundImageMessage(supabase, preparedMedia);
+            if (resolved.hasValidDescription) {
+              await enqueueInboundMediaSync(supabase, job.conversation_id, {
+                ...preparedMedia,
+                image_description: resolved.description,
+                image_description_error: null,
+              });
+            }
+          }
+        }
+      }
+
+      if (sawDeferredMedia) {
+        await rescheduleJob(
+          supabase,
+          workerToken,
+          job,
+          retryAt(30),
+          "waiting_human_preserved_media_deferred",
+        );
+      } else {
+        await completeJob(supabase, workerToken, job);
+      }
       return;
     }
 

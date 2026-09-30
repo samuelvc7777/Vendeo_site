@@ -820,6 +820,21 @@ export function validateWebSearchOutputPrivacy(
   return { valid: true };
 }
 
+function isInternalTechnicalManualResolutionQuestion(question: string): boolean {
+  const normalized = String(question || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (/\b(?:evidencemessageid|message_id|turn_id|objective_id|conversation_id|provider_message_id|provider_turn_id)\b/.test(normalized)) {
+    return true;
+  }
+
+  return /\b(?:id|identificador)\s+(?:da|do|de)\s+(?:mensagem|message|turno|turn|objetivo|objective|evidencia|evidence|sessao|session)\b/.test(normalized);
+}
+
 export function validateConversationBrainPlan(
   plan: any,
   allowedPendingActionIds?: string[],
@@ -861,6 +876,12 @@ export function validateConversationBrainPlan(
       return { valid: false, error: "manualResolution.question é obrigatório quando action='manual_resolution'" };
     }
     request.question = request.question.trim().slice(0, 500);
+    if (isInternalTechnicalManualResolutionQuestion(request.question)) {
+      return {
+        valid: false,
+        error: "manual_resolution_technical_identifier_forbidden: nunca peça ao operador ID/identificador interno de mensagem, turno, objetivo, evidência ou sessão. Se o fato já estiver claro na OpenAI Conversation sem message id disponível, use objectiveEvidence={type:'conversation_history',id:'current'}; caso contrário mantenha o objetivo pendente e responda naturalmente ao turno vivo.",
+      };
+    }
     if (typeof request.context === "string") request.context = request.context.trim().slice(0, 1500);
     plan.responses = [];
     plan.outboundActions = [];

@@ -78,6 +78,25 @@ function getSupabaseClient() {
   return createClient(url, key);
 }
 
+async function hasWaitingManualBrainTurn(
+  supabase: any,
+  conversationId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("brain_turns")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("status", "waiting_manual")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[Brain] Não foi possível confirmar waiting_manual; preservando estado por segurança.", error);
+    return true;
+  }
+  return Boolean(data?.id);
+}
+
 async function resolveInstagramConversationId(
   supabase: any,
   rawContactId: string,
@@ -4231,8 +4250,11 @@ serve(async (req: Request) => {
             console.log(`[Autopilot] autopilot_armed_atomic conv=${conversationId} watermark_rev=${armResult?.inbound_revision ?? armResult?.watermark?.inboundRevision}`);
           }
 
-          // Se o operador solicitou resposta imediata à última mensagem pendente:
-          if (triggerImmediate) {
+          // Se já existe uma resolução manual pendente, ativar a IA não pode atropelar
+          // esse handoff nem trocar o HUD para "starting".
+          if (triggerImmediate && await hasWaitingManualBrainTurn(supabase, conversationId)) {
+            immediateResult = { started: false, reason: "waiting_manual" };
+          } else if (triggerImmediate) {
             const { data: lastMsgs } = await supabase
               .from("instagram_messages")
               .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
@@ -4484,6 +4506,18 @@ serve(async (req: Request) => {
         if (!conversationId) {
           return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
             status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        if (await hasWaitingManualBrainTurn(supabase, conversationId)) {
+          return new Response(JSON.stringify({
+            success: false,
+            result: "waiting_manual",
+            status: "waiting_human",
+            detail: "O Brain ainda aguarda uma resposta do operador; o envio imediato não pode atropelar esse handoff.",
+          }), {
+            status: 409,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }

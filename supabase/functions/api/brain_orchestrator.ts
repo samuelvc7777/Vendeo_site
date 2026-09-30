@@ -8123,7 +8123,7 @@ export async function runBrainOrchestration(
         const relevantPersistentManualFacts = (await fetchRelevantPersistentManualFacts({
           supabase,
           query: persistentManualQuery,
-          limit: 6,
+          limit: 2,
         })).filter((fact) =>
           !sessionFactFingerprints.has(
             normalizePersistentManualFactText(`${fact.question} ${fact.fact}`)

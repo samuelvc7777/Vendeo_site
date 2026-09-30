@@ -1,11 +1,11 @@
-export type ObjectiveEvidenceType = "message" | "contact_fact" | "contact_quote" | "episode" | "manual_fact";
+export type ObjectiveEvidenceType = "message" | "contact_fact" | "contact_quote" | "episode" | "manual_fact" | "conversation_history";
 
 export interface ObjectiveEvidence {
   type: ObjectiveEvidenceType;
   id: string;
 }
 
-const EVIDENCE_TABLES: Record<Exclude<ObjectiveEvidenceType, "manual_fact">, string> = {
+const EVIDENCE_TABLES: Record<Exclude<ObjectiveEvidenceType, "manual_fact" | "conversation_history">, string> = {
   message: "instagram_messages",
   contact_fact: "contact_memory_facts",
   contact_quote: "contact_memory_quotes",
@@ -17,6 +17,9 @@ export function normalizeObjectiveEvidence(value: unknown, legacyMessageId?: unk
     const candidate = value as Record<string, unknown>;
     const type = String(candidate.type || "") as ObjectiveEvidenceType;
     const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+    if (type === "conversation_history") {
+      return id === "current" ? { type, id } : null;
+    }
     if (!id || (!Object.hasOwn(EVIDENCE_TABLES, type) && type !== "manual_fact")) return null;
     return { type, id };
   }
@@ -32,6 +35,18 @@ export async function objectiveEvidenceExists(
   providerSessionId?: string | null,
 ): Promise<boolean> {
   if (!conversationId.trim() || !evidence.id.trim()) return false;
+  if (evidence.type === "conversation_history") {
+    if (evidence.id !== "current" || !providerSessionId?.startsWith("conversation:")) return false;
+    const { data, error } = await supabase.from("brain_sessions")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("provider", "openai_conversation")
+      .eq("provider_session_id", providerSessionId)
+      .eq("status", "active")
+      .maybeSingle();
+    return !error && Boolean(data?.id);
+  }
+
   if (evidence.type === "manual_fact") {
     if (!providerSessionId) return false;
     const { data: session, error: sessionError } = await supabase.from("brain_sessions")
