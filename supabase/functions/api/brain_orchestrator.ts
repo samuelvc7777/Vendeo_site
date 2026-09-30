@@ -185,6 +185,109 @@ export function estimateTextTokens(text: string): number {
   return Math.max(1, Math.ceil((text || "").length / 4));
 }
 
+type RelevantPersistentManualFact = {
+  key: string;
+  question: string;
+  fact: string;
+  score: number;
+};
+
+const PERSISTENT_MANUAL_FACT_STOPWORDS = new Set([
+  "que", "qual", "quais", "como", "onde", "quando", "quanto", "quantos", "quantas",
+  "para", "pra", "com", "sem", "uma", "uns", "umas", "dos", "das", "por", "ela",
+  "ele", "larissa", "sobre", "mais", "muito", "muita", "tem", "esta", "está",
+]);
+
+function normalizePersistentManualFactText(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchRelevantPersistentManualFacts(params: {
+  supabase: any;
+  query: string;
+  limit?: number;
+}): Promise<RelevantPersistentManualFact[]> {
+  const queryNormalized = normalizePersistentManualFactText(params.query);
+  const queryTerms = Array.from(new Set(
+    queryNormalized
+      .split(" ")
+      .filter((term) => term.length >= 3 && !PERSISTENT_MANUAL_FACT_STOPWORDS.has(term)),
+  ));
+
+  if (queryTerms.length === 0) return [];
+
+  try {
+    const { data, error } = await params.supabase
+      .from("persona_memory")
+      .select("key, value, updated_at")
+      .eq("persona_id", "larissa")
+      .eq("category", "manual_resolution")
+      .order("updated_at", { ascending: false })
+      .limit(120);
+
+    if (error || !Array.isArray(data)) return [];
+
+    const ranked = data.flatMap((row: any) => {
+      const value = row?.value && typeof row.value === "object" ? row.value : {};
+      const question = String(value?.question || "").trim();
+      const fact = String(value?.fact || "").trim();
+      const key = String(row?.key || "").trim();
+      if (!fact) return [];
+
+      const questionNormalized = normalizePersistentManualFactText(question);
+      const haystack = normalizePersistentManualFactText(`${key} ${question} ${fact}`);
+      let score = 0;
+
+      for (const term of queryTerms) {
+        if (questionNormalized.includes(term)) score += 3;
+        else if (haystack.includes(term)) score += 1;
+      }
+
+      for (let index = 0; index < queryTerms.length - 1; index += 1) {
+        const pair = `${queryTerms[index]} ${queryTerms[index + 1]}`;
+        if (pair.trim().length > 3 && haystack.includes(pair)) score += 3;
+      }
+
+      if (
+        queryNormalized.length >= 6 &&
+        questionNormalized &&
+        (questionNormalized.includes(queryNormalized) || queryNormalized.includes(questionNormalized))
+      ) {
+        score += 8;
+      }
+
+      if (score <= 0) return [];
+      return [{
+        key,
+        question,
+        fact,
+        score,
+        updatedAt: String(row?.updated_at || ""),
+      }];
+    });
+
+    ranked.sort((left: any, right: any) =>
+      right.score - left.score ||
+      Date.parse(right.updatedAt || "0") - Date.parse(left.updatedAt || "0")
+    );
+
+    return ranked.slice(0, Math.max(1, Math.min(params.limit || 6, 8))).map((row: any) => ({
+      key: row.key,
+      question: row.question,
+      fact: row.fact,
+      score: row.score,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export function buildBudgetedRecentContext(params: {
   messages: CanonicalMessage[];
   claimedMessageIds: string[];
@@ -7982,6 +8085,33 @@ export async function runBrainOrchestration(
             manualSessionFacts = Array.isArray(factRows) ? factRows : [];
           }
         }
+        const persistentManualQuery = [
+          ...claimedMessages.map((message: any) => String(message?.text || "").trim()),
+          ...finalRecentMessages.slice(-8).map((message: any) => String(message?.text || "").trim()),
+          String(stageChecklistForRouter.currentObjective?.label || "").trim(),
+          String(stageChecklistForRouter.currentObjective?.description || "").trim(),
+        ].filter(Boolean).join(" ");
+
+        const sessionFactFingerprints = new Set(
+          manualSessionFacts.map((fact) =>
+            normalizePersistentManualFactText(`${fact.question} ${fact.fact}`)
+          ),
+        );
+
+        const relevantPersistentManualFacts = (await fetchRelevantPersistentManualFacts({
+          supabase,
+          query: persistentManualQuery,
+          limit: 6,
+        })).filter((fact) =>
+          !sessionFactFingerprints.has(
+            normalizePersistentManualFactText(`${fact.question} ${fact.fact}`)
+          )
+        );
+
+        if (relevantPersistentManualFacts.length > 0) {
+          currentCycle.trace.push(`persistent_manual_facts_relevant=${relevantPersistentManualFacts.length}`);
+        }
+
         let recoveredAudioToolState: RecoveredAudioToolState | undefined;
         const activeObjectiveId = stageChecklistForRouter.currentObjective?.id;
         if (activeObjectiveId) {
@@ -8068,6 +8198,11 @@ export async function runBrainOrchestration(
             factId: params.manualResolution.factId,
           } : undefined,
           manualSessionFacts,
+          persistentManualFacts: relevantPersistentManualFacts.map((fact) => ({
+            key: fact.key,
+            question: fact.question,
+            fact: fact.fact,
+          })),
           pendingOutboundActions,
           persistentSessionEnabled: persistentAgentSessionEnabled,
           model: configuredAgentModel,

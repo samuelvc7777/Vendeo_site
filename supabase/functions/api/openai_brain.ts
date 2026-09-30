@@ -1518,6 +1518,7 @@ export interface RunOpenAiBrainParams {
   resumeExistingTurnOnly?: boolean;
   manualResolutionAnswer?: { question: string; context?: string; answer: string; factId?: string };
   manualSessionFacts?: Array<{ id: string; question: string; fact: string }>;
+  persistentManualFacts?: Array<{ key: string; question: string; fact: string }>;
   pendingOutboundActions?: Array<{ actionId: string; actionIndex: number; type: string; preview: string }>;
   persistentSessionEnabled?: boolean;
   replyTargets?: Record<string, { id: string; sender: string; text: string }>;
@@ -2294,6 +2295,14 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
       `\n## FATOS MANUAIS PERSISTIDOS NESTA SESSÃO\n${params.manualSessionFacts.map((fact) =>
         `- manual_fact_id="${fact.id}" pergunta="${fact.question}" fato="${fact.fact}"`
       ).join("\n")}\nEsses fatos pertencem somente à sessão atual. Cada manual_fact já é a resposta aceita do operador à pergunta correspondente: NÃO peça ao operador para complementar a mesma resolução. Se o fato for parcial, use somente a parte confirmada e siga a conversa naturalmente, sem inventar o restante. Use-os como evidência técnica quando apropriado; não os trate como mensagens do pretendente.`
+    );
+  }
+
+  if (params.persistentManualFacts?.length) {
+    sections.push(
+      `\n## FATOS MANUAIS PERMANENTES RELEVANTES\n${params.persistentManualFacts.map((fact) =>
+        `- memory_key="${fact.key}" pergunta="${fact.question}" fato="${fact.fact}"`
+      ).join("\n")}\nEstes fatos foram explicitamente salvos pelo operador para uso futuro e valem como contexto confirmado da Larissa em qualquer conversa. Use-os diretamente quando forem relevantes. NÃO volte a pedir ao operador uma informação já respondida aqui e não trate estes fatos como mensagens do pretendente.`
     );
   }
 

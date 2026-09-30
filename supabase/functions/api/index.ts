@@ -4620,8 +4620,26 @@ serve(async (req: Request) => {
 
         const personaFacts = Array.isArray(personaFactsResult.data)
           ? personaFactsResult.data
-              .map((row: any) => `- [${String(row?.category || "memória")}] ${String(row?.key || "")}: ${String(row?.value || "")}`)
-              .filter((line: string) => !line.endsWith(": "))
+              .map((row: any) => {
+                const rawValue = row?.value;
+                if (rawValue && typeof rawValue === "object") {
+                  const fact = String(rawValue?.fact || "").trim();
+                  const question = String(rawValue?.question || "").trim();
+                  if (fact) {
+                    return `- [${String(row?.category || "memória")}] ${question ? `${question} → ` : ""}${fact}`;
+                  }
+                  try {
+                    return `- [${String(row?.category || "memória")}] ${String(row?.key || "")}: ${JSON.stringify(rawValue)}`;
+                  } catch {
+                    return null;
+                  }
+                }
+                const value = String(rawValue || "").trim();
+                return value
+                  ? `- [${String(row?.category || "memória")}] ${String(row?.key || "")}: ${value}`
+                  : null;
+              })
+              .filter(Boolean)
           : [];
 
         const openAiKey = await getOpenAiApiKey(supabase);
