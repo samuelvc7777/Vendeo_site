@@ -704,43 +704,38 @@ serve(async (req: Request) => {
               }
             }
 
-            // Inbound já chega à UI por postgres_changes:
-            // instagram_messages INSERT + instagram_conversations INSERT/UPDATE.
-            // Não duplicamos esse tráfego com broadcast por mensagem.
-            //
-            // Echo é a exceção: o upsert pode virar UPDATE de mensagem, enquanto a
-            // assinatura atual da UI escuta INSERT. Mantemos apenas esse evento,
-            // fora do hot path da resposta do webhook.
-            if (isEcho) {
-              const echoBroadcast = (async () => {
-                try {
-                  const realtimeChannel = supabase.channel("vendeo_realtime_chat");
-                  await realtimeChannel.send({
-                    type: "broadcast",
-                    event: "instagram_message",
-                    payload: {
-                      id: messageId,
-                      conversationId,
-                      senderId: "me",
-                      text,
-                      timestamp,
-                      isMine: true,
-                      status: "sent",
-                      mediaUrl: audioUrl || imageUrl || videoUrl,
-                      mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : undefined,
-                      replyToMessageId: replyToMid,
-                    },
-                  });
-                } catch (broadcastError) {
-                  console.warn("[Webhook] Echo broadcast falhou:", broadcastError);
-                }
-              })();
-
-              if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-                (globalThis as any).EdgeRuntime.waitUntil(echoBroadcast);
-              } else {
-                void echoBroadcast;
+            // Entrega redundante para a UI: postgres_changes continua como fonte durável,
+            // mas o broadcast garante baixa latência e evita que uma conexão Realtime
+            // aparentemente saudável deixe a mensagem invisível até um refresh.
+            // O client deduplica pelo message id, então receber pelos dois caminhos é seguro.
+            const messageBroadcast = (async () => {
+              try {
+                const realtimeChannel = supabase.channel("vendeo_realtime_chat");
+                await realtimeChannel.send({
+                  type: "broadcast",
+                  event: "instagram_message",
+                  payload: {
+                    id: messageId,
+                    conversationId,
+                    senderId: isEcho ? "me" : senderId,
+                    text,
+                    timestamp,
+                    isMine: isEcho,
+                    status: isEcho ? "sent" : "delivered",
+                    mediaUrl: audioUrl || imageUrl || videoUrl,
+                    mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : undefined,
+                    replyToMessageId: replyToMid,
+                  },
+                });
+              } catch (broadcastError) {
+                console.warn("[Webhook] Message broadcast falhou:", broadcastError);
               }
+            })();
+
+            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+              (globalThis as any).EdgeRuntime.waitUntil(messageBroadcast);
+            } else {
+              void messageBroadcast;
             }
 
             // Inbound texto/imagem e echo já enfileiram OpenAI sync dentro
