@@ -5049,7 +5049,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* FILTROS SECUNDÁRIOS: IA + ETAPA */}
         {showFilterBar && hasCanonicalInstagramSnapshot && (
-          <div className="flex items-center gap-2 overflow-x-auto py-0.5 scrollbar-none select-none">
+          <div className="flex flex-wrap items-center gap-2 overflow-visible py-0.5 select-none">
             <div className="flex shrink-0 items-center gap-1.5">
               <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-400 dark:text-zinc-500">
                 <Bot className="h-3.5 w-3.5 text-emerald-400" />
