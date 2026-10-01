@@ -8,7 +8,6 @@ import {
   getExistingOpenAiTurn,
 } from "../supabase/functions/api/openai_brain.ts";
 import { objectiveEvidenceExists } from "../supabase/functions/api/objective_evidence.ts";
-import { consumeOperatorLoginAttempt } from "../src/infrastructure/security/brainOperatorRateLimit.ts";
 
 const root = process.cwd();
 const migration = fs.readFileSync(`${root}/supabase/migrations/20260926235806_brain_late_recovery_and_manual_facts.sql`, "utf8");
@@ -150,36 +149,4 @@ test("backend não calcula nextStage a partir da conclusão de objetivos", () =>
   const implementation = orchestrator.slice(start, end);
   assert.match(implementation, /decision\.nextPhase/);
   assert.doesNotMatch(implementation, /completed\.length\s*===|order\s*ASC|nextStageFromObjectives/);
-});
-
-test("limite de login usa RPC persistente e envia somente hash do cliente", async () => {
-  const previous = {
-    secret: process.env.BRAIN_OPERATOR_SESSION_SECRET,
-    url: process.env.SUPABASE_URL,
-    key: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  };
-  process.env.BRAIN_OPERATOR_SESSION_SECRET = "unit-test-secret-with-at-least-32-bytes";
-  process.env.SUPABASE_URL = "https://supabase.test";
-  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-key-test";
-  let sentBody;
-  try {
-    const result = await consumeOperatorLoginAttempt(
-      new Request("https://local.test/operator/session", { headers: { "x-real-ip": "192.0.2.10" } }),
-      async (url, init) => {
-        assert.equal(String(url), "https://supabase.test/rest/v1/rpc/consume_brain_operator_login_attempt");
-        sentBody = JSON.parse(String(init.body));
-        return new Response(JSON.stringify({ allowed: false, retry_after_seconds: 900 }), { status: 200 });
-      },
-    );
-    assert.deepEqual(result, { allowed: false, retryAfterSeconds: 900 });
-    assert.match(sentBody.p_key_hash, /^[0-9a-f]{64}$/);
-    assert.equal(JSON.stringify(sentBody).includes("192.0.2.10"), false);
-  } finally {
-    if (previous.secret === undefined) delete process.env.BRAIN_OPERATOR_SESSION_SECRET;
-    else process.env.BRAIN_OPERATOR_SESSION_SECRET = previous.secret;
-    if (previous.url === undefined) delete process.env.SUPABASE_URL;
-    else process.env.SUPABASE_URL = previous.url;
-    if (previous.key === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-    else process.env.SUPABASE_SERVICE_ROLE_KEY = previous.key;
-  }
 });

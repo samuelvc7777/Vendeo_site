@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  BRAIN_OPERATOR_COOKIE,
-  isSameOriginRequest,
-  verifyBrainOperatorSession,
-} from "@/infrastructure/security/brainOperatorSession";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type BrainOperation = "events" | "manual-resolution" | "retry-failed-action" | "retry-once";
 
-function authorized(request: NextRequest) {
-  return verifyBrainOperatorSession(request.cookies.get(BRAIN_OPERATOR_COOKIE)?.value);
+function sameOrigin(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  try {
+    return new URL(origin).origin === request.nextUrl.origin;
+  } catch {
+    return false;
+  }
 }
 
 function serviceConfiguration() {
@@ -52,15 +53,13 @@ async function callBrainEdge(operation: BrainOperation, request: NextRequest, bo
 }
 
 export async function GET(request: NextRequest, context: { params: Promise<{ operation: string }> }) {
-  if (!authorized(request)) return NextResponse.json({ error: "Acesso de operador necessário." }, { status: 401 });
   const { operation } = await context.params;
   if (operation !== "events") return NextResponse.json({ error: "Operação inválida." }, { status: 404 });
   return callBrainEdge(operation, request);
 }
 
 export async function POST(request: NextRequest, context: { params: Promise<{ operation: string }> }) {
-  if (!isSameOriginRequest(request)) return NextResponse.json({ error: "Origem inválida." }, { status: 403 });
-  if (!authorized(request)) return NextResponse.json({ error: "Acesso de operador necessário." }, { status: 401 });
+  if (!sameOrigin(request)) return NextResponse.json({ error: "Origem inválida." }, { status: 403 });
 
   const { operation: rawOperation } = await context.params;
   if (!["manual-resolution", "retry-failed-action", "retry-once"].includes(rawOperation)) {

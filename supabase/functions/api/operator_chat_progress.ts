@@ -9,10 +9,10 @@ function jsonResponse(body: Record<string, unknown>, status: number, corsHeaders
 export async function handleOperatorChatProgress(
   request: Request,
   supabase: any,
-  authorized: boolean,
+  allowedOrigin: boolean,
   corsHeaders: Record<string, string>,
 ) {
-  if (!authorized) return jsonResponse({ error: "Sessão de operador inválida ou expirada." }, 401, corsHeaders);
+  if (!allowedOrigin) return jsonResponse({ error: "Origem inválida." }, 403, corsHeaders);
 
   const body = await request.json().catch(() => ({}));
 
