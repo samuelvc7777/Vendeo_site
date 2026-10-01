@@ -37,6 +37,7 @@ import {
   BotOff,
   AlertTriangle,
   RefreshCw,
+  ChevronDown,
 } from "lucide-react";
 import {
   ConversationSkeletonList,
@@ -4946,54 +4947,48 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         {/* PÍLULAS OFICIAIS DO INSTAGRAM (DESIGN IDÊNTICO AO APP OFICIAL) */}
         {showFilterBar && (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none select-none animate-in fade-in duration-150">
+            <div className="flex items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-200/80 bg-zinc-100/70 p-1 scrollbar-none select-none animate-in fade-in duration-150 dark:border-white/[0.06] dark:bg-white/[0.035]">
               <button
                 onClick={() => setInstaFilter("todos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 border ${
+                className={`min-h-9 px-4 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-[0.98] ${
                   instaFilter === "todos"
-                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
+                    ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-zinc-100 dark:text-black"
+                    : "text-zinc-500 hover:bg-white/70 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-white"
                 }`}
               >
                 Todos
               </button>
               <button
                 onClick={() => setInstaFilter("nao_respondidos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 border ${
+                className={`min-h-9 px-4 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-[0.98] ${
                   instaFilter === "nao_respondidos"
-                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
+                    ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-zinc-100 dark:text-black"
+                    : "text-zinc-500 hover:bg-white/70 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-white"
                 }`}
               >
                 Não respondidos
               </button>
               <button
                 onClick={() => setInstaFilter("respondidos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 border ${
+                className={`min-h-9 px-4 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-[0.98] ${
                   instaFilter === "respondidos"
-                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
+                    ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-zinc-100 dark:text-black"
+                    : "text-zinc-500 hover:bg-white/70 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-white"
                 }`}
               >
                 Respondidos
               </button>
               <button
                 onClick={() => setInstaFilter("pedidos")}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
+                className={`min-h-9 px-4 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-[0.98] flex items-center gap-1.5 ${
                   instaFilter === "pedidos"
-                    ? "bg-white text-zinc-950 border-zinc-300 font-bold shadow-md shadow-zinc-200/70 dark:bg-white dark:text-black dark:border-white dark:shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#e0e0e0] border-transparent hover:bg-zinc-200 dark:hover:bg-[#333] hover:text-zinc-950 dark:hover:text-white"
+                    ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-zinc-100 dark:text-black"
+                    : "text-zinc-500 hover:bg-white/70 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-white"
                 }`}
               >
                 <span>Pedidos</span>
                 {pedidosCount > 0 && (
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold leading-none ${
-                      instaFilter === "pedidos"
-                        ? "bg-zinc-900 text-white dark:bg-black dark:text-white"
-                        : "bg-zinc-200 dark:bg-[#383838] text-zinc-700 dark:text-white"
-                    }`}
-                  >
+                  <span className="text-[10px] font-bold tabular-nums opacity-55">
                     {pedidosCount}
                   </span>
                 )}
@@ -5038,153 +5033,84 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         )}
 
-        {/* FILTRO DE IA - Exclusivo Instagram Direct */}
+        {/* FILTROS SECUNDÁRIOS: IA + ETAPA */}
         {showFilterBar && hasCanonicalInstagramSnapshot && (
-          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
-            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
-              <Bot className="w-3.5 h-3.5 text-emerald-400" />
-              <span>IA:</span>
-            </div>
+          <div className="flex items-center gap-2 overflow-x-auto py-0.5 scrollbar-none select-none">
+            <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-400 dark:text-zinc-500">
+                <Bot className="h-3.5 w-3.5 text-emerald-400" />
+                <span>IA</span>
+              </div>
 
-            <button
-              type="button"
-              onClick={() => setAiFilter("todas")}
-              className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
-                aiFilter === "todas"
-                  ? "bg-white text-zinc-950 border-zinc-200 shadow-sm dark:bg-zinc-100 dark:text-black dark:border-zinc-100"
-                  : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
-              }`}
-            >
-              <span>Todas</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                aiFilter === "todas" ? "bg-black/15 text-black" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-              }`}>
-                {platformConversations.length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setAiFilter("com_ia")}
-              className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
-                aiFilter === "com_ia"
-                  ? "bg-emerald-500 text-black font-bold border-emerald-400 shadow-sm"
-                  : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
-              }`}
-            >
-              <Bot className="w-3 h-3" />
-              <span>Com IA</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                aiFilter === "com_ia" ? "bg-black/20 text-black" : "bg-zinc-200 dark:bg-zinc-800 text-emerald-700 dark:text-emerald-300"
-              }`}>
-                {aiEnabledCount}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setAiFilter("sem_ia")}
-              className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
-                aiFilter === "sem_ia"
-                  ? "bg-zinc-800 text-white dark:bg-zinc-600 font-bold border-zinc-700 dark:border-zinc-500 shadow-sm"
-                  : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
-              }`}
-            >
-              <BotOff className="w-3 h-3" />
-              <span>Sem IA</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                aiFilter === "sem_ia" ? "bg-zinc-200/80 dark:bg-black/30 text-zinc-950 dark:text-white" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-              }`}>
-                {aiDisabledCount}
-              </span>
-            </button>
-          </div>
-        )}
-
-        {/* FILTRO DE ETAPAS DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
-        {showFilterBar && hasCanonicalInstagramSnapshot && stages.length > 0 && (
-          <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
-            <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
-              <Layers className="w-3.5 h-3.5 text-sky-400" />
-              <span>Etapa:</span>
-            </div>
-
-            {stages.map((stg, idx) => {
-              const countInStage = platformConversations.filter((c) => {
-                if (isChatRestricted(c)) return false;
-                const currentStageId = c.currentStageId || stages[0]?.id;
-                return currentStageId === stg.id && !c.isConverted;
-              }).length;
-
-              const isSelected = stageFilter === stg.id;
-              const stgColor = stg.color || "#3b82f6";
-
-              return (
-                <button
-                  key={stg.id}
-                  type="button"
-                  onClick={() => setStageFilter((prev) => (prev === stg.id ? "todas" : stg.id))}
-                  style={{
-                    backgroundColor: isSelected ? stgColor : undefined,
-                    borderColor: isSelected ? stgColor : undefined,
-                  }}
-                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border shadow-sm ${
-                    isSelected
-                      ? "text-white"
-                      : "bg-white dark:bg-[#222] text-zinc-600 dark:text-[#a1a1aa] border-zinc-200 dark:border-transparent"
-                  }`}
-                >
-                  <span
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ backgroundColor: isSelected ? "#fff" : stgColor }}
-                  />
-                  <span>
-                    {idx + 1}. {stg.name}
-                  </span>
-                  {countInStage > 0 && (
-                    <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                        isSelected ? "bg-white/80 text-zinc-900 dark:bg-black/30 dark:text-white" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-                      }`}
-                    >
-                      {countInStage}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-
-            {/* Filtro de Finalizados */}
-            {(() => {
-              const convertedCount = platformConversations.filter(
-                (c) => !isChatRestricted(c) && Boolean(c.isConverted)
-              ).length;
-              const isSelected = stageFilter === "concluidos";
-
-              return (
+              <div className="flex items-center gap-1 rounded-xl bg-zinc-100/70 p-1 dark:bg-white/[0.035]">
                 <button
                   type="button"
-                  onClick={() => setStageFilter((prev) => (prev === "concluidos" ? "todas" : "concluidos"))}
-                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 border ${
-                    isSelected
-                      ? "bg-amber-500 text-black font-bold border-amber-400 shadow-sm"
-                      : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
+                  onClick={() => setAiFilter("todas")}
+                  className={`min-h-8 rounded-lg px-2.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
+                    aiFilter === "todas"
+                      ? "bg-white text-zinc-950 shadow-sm dark:bg-zinc-100 dark:text-black"
+                      : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
                   }`}
                 >
-                  <Trophy className="w-3 h-3 text-amber-700 dark:text-amber-300" />
-                  <span>Finalizados</span>
-                  {convertedCount > 0 && (
-                    <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold leading-none ${
-                        isSelected ? "bg-zinc-200/80 dark:bg-black/30 text-zinc-950 dark:text-white" : "bg-zinc-200 dark:bg-zinc-800 text-amber-700 dark:text-amber-300"
-                      }`}
-                    >
-                      {convertedCount}
-                    </span>
-                  )}
+                  Todas <span className="ml-1 text-[10px] tabular-nums opacity-50">{platformConversations.length}</span>
                 </button>
-              );
-            })()}
+
+                <button
+                  type="button"
+                  onClick={() => setAiFilter("com_ia")}
+                  className={`min-h-8 rounded-lg px-2.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
+                    aiFilter === "com_ia"
+                      ? "bg-emerald-500/15 text-emerald-700 ring-1 ring-emerald-500/20 dark:text-emerald-300"
+                      : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+                  }`}
+                >
+                  Com IA <span className="ml-1 text-[10px] tabular-nums opacity-55">{aiEnabledCount}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAiFilter("sem_ia")}
+                  className={`min-h-8 rounded-lg px-2.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
+                    aiFilter === "sem_ia"
+                      ? "bg-zinc-800 text-white shadow-sm dark:bg-zinc-700"
+                      : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+                  }`}
+                >
+                  Sem IA <span className="ml-1 text-[10px] tabular-nums opacity-55">{aiDisabledCount}</span>
+                </button>
+              </div>
+            </div>
+
+            {stages.length > 0 && (
+              <div className="relative ml-auto w-[176px] shrink-0">
+                <Layers className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                <select
+                  value={stageFilter}
+                  onChange={(event) => setStageFilter(event.target.value)}
+                  aria-label="Filtrar por etapa"
+                  className="h-10 w-full appearance-none rounded-xl border border-zinc-200/80 bg-white pl-8 pr-8 text-[11px] font-semibold text-zinc-700 outline-none transition hover:border-zinc-300 focus:border-zinc-400 dark:border-white/[0.07] dark:bg-white/[0.04] dark:text-zinc-200 dark:hover:border-white/[0.12]"
+                >
+                  <option value="todas">Todas as etapas</option>
+                  {stages.map((stg, idx) => {
+                    const countInStage = platformConversations.filter((c) => {
+                      if (isChatRestricted(c)) return false;
+                      const currentStageId = c.currentStageId || stages[0]?.id;
+                      return currentStageId === stg.id && !c.isConverted;
+                    }).length;
+
+                    return (
+                      <option key={stg.id} value={stg.id}>
+                        {idx + 1}. {stg.name} · {countInStage}
+                      </option>
+                    );
+                  })}
+                  <option value="concluidos">
+                    Finalizados · {platformConversations.filter((c) => !isChatRestricted(c) && Boolean(c.isConverted)).length}
+                  </option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              </div>
+            )}
           </div>
         )}
 
