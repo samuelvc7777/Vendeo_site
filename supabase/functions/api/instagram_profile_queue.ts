@@ -24,6 +24,65 @@ type ResolveInstagramProfile = (
 const retryAt = (seconds: number) =>
   new Date(Date.now() + Math.max(1, seconds) * 1000).toISOString();
 
+const STABLE_AVATAR_PREFIX = "/storage/v1/object/public/vendeo_vault/instagram_avatars/";
+
+function isStableAvatarUrl(value: unknown): boolean {
+  const url = String(value || "");
+  return url.includes(STABLE_AVATAR_PREFIX);
+}
+
+function avatarExtension(contentType: string): string {
+  const normalized = contentType.toLowerCase();
+  if (normalized.includes("png")) return "png";
+  if (normalized.includes("webp")) return "webp";
+  return "jpg";
+}
+
+async function persistInstagramAvatar(
+  supabase: any,
+  avatarUrl: string,
+  conversationId: string,
+): Promise<string> {
+  if (!avatarUrl || isStableAvatarUrl(avatarUrl)) return avatarUrl;
+
+  const response = await fetch(avatarUrl, {
+    signal: AbortSignal.timeout(10000),
+    headers: { "User-Agent": "Vendeo/1.0" },
+  });
+  if (!response.ok) {
+    throw new Error(`instagram_avatar_download_failed:${response.status}`);
+  }
+
+  const contentType = String(response.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+  if (!contentType.startsWith("image/")) {
+    throw new Error(`instagram_avatar_invalid_content_type:${contentType}`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) {
+    throw new Error(`instagram_avatar_invalid_size:${bytes.byteLength}`);
+  }
+
+  const safeConversationId = conversationId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const objectPath = `instagram_avatars/${safeConversationId}.${avatarExtension(contentType)}`;
+  const { error: uploadError } = await supabase.storage
+    .from("vendeo_vault")
+    .upload(objectPath, bytes, {
+      contentType,
+      upsert: true,
+      cacheControl: "86400",
+    });
+
+  if (uploadError) {
+    throw new Error(`instagram_avatar_upload_failed:${uploadError.message}`);
+  }
+
+  const { data } = supabase.storage.from("vendeo_vault").getPublicUrl(objectPath);
+  const publicUrl = String(data?.publicUrl || "");
+  if (!publicUrl) throw new Error("instagram_avatar_public_url_missing");
+  return publicUrl;
+}
+
 async function completeProfileJob(
   supabase: any,
   workerToken: string,
@@ -117,11 +176,15 @@ export async function processInstagramProfileQueue(params: {
         return;
       }
 
+      const currentAvatar = String(currentConversation.avatar || "");
+      const avatarNeedsMigration =
+        Boolean(currentAvatar) &&
+        currentAvatar !== "/images/default-avatar.svg" &&
+        !isStableAvatarUrl(currentAvatar);
       const alreadyResolved =
         Boolean(currentConversation.username) &&
         !String(currentConversation.username).startsWith("ig_") &&
-        Boolean(currentConversation.avatar) &&
-        currentConversation.avatar !== "/images/default-avatar.svg";
+        isStableAvatarUrl(currentAvatar);
 
       if (alreadyResolved) {
         await completeProfileJob(params.supabase, workerToken, job.conversation_id);
@@ -145,7 +208,11 @@ export async function processInstagramProfileQueue(params: {
         resolved.avatar &&
         !resolved.avatar.includes("default-avatar.svg")
       ) {
-        update.avatar = resolved.avatar;
+        update.avatar = await persistInstagramAvatar(
+          params.supabase,
+          resolved.avatar,
+          job.conversation_id,
+        );
       }
       if (resolved.igsid) {
         update.contact_id = resolved.igsid;
@@ -173,6 +240,27 @@ export async function processInstagramProfileQueue(params: {
           workerToken,
           job,
           updateError,
+        );
+        return;
+      }
+
+      if (avatarNeedsMigration && !update.avatar) {
+        if (Number(job.attempt_count || 0) >= 5) {
+          await params.supabase
+            .from("instagram_conversations")
+            .update({
+              avatar: "/images/default-avatar.svg",
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.conversation_id);
+          await completeProfileJob(params.supabase, workerToken, job.conversation_id);
+          return;
+        }
+        await rescheduleProfileJob(
+          params.supabase,
+          workerToken,
+          job,
+          "instagram_avatar_not_resolved",
         );
         return;
       }

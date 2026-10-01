@@ -186,6 +186,8 @@ export interface DirectConversation {
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
 type TinderFilter = "todos" | "novos" | "sua_vez" | "vez_deles" | "restritos";
 
+const avatarRefreshRequests = new Set<string>();
+
 function getApiUrl(path: string): string {
   const cleanPath = path.startsWith("/api/")
     ? path.replace(/^\/api\//, "/")
@@ -215,6 +217,7 @@ interface InstagramDirectProps {
 interface AvatarWithFallbackProps {
   src?: string;
   alt: string;
+  conversationId?: string;
   sizeClassName?: string;
   ringClassName?: string;
 }
@@ -222,6 +225,7 @@ interface AvatarWithFallbackProps {
 function AvatarWithFallback({
   src,
   alt,
+  conversationId,
   sizeClassName = "w-10 h-10",
   ringClassName = "",
 }: AvatarWithFallbackProps) {
@@ -246,7 +250,25 @@ function AvatarWithFallback({
         fill
         unoptimized
         className="object-cover"
-        onError={() => setHasError(true)}
+        onError={() => {
+          setHasError(true);
+          const source = String(src || "");
+          const isMetaCdn = source.includes("cdninstagram.com") || source.includes("fbcdn.net");
+          if (conversationId && isMetaCdn && !avatarRefreshRequests.has(conversationId)) {
+            avatarRefreshRequests.add(conversationId);
+            fetch(getApiUrl("/instagram/profile/refresh"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ conversationId }),
+            })
+              .then((response) => {
+                if (!response.ok) avatarRefreshRequests.delete(conversationId);
+              })
+              .catch(() => {
+                avatarRefreshRequests.delete(conversationId);
+              });
+          }
+        }}
       />
     </div>
   );
@@ -4056,6 +4078,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               <AvatarWithFallback
                 src={activeChat.avatar}
                 alt={activeChat.fullName || activeChat.username}
+                conversationId={activeChat.id}
                 sizeClassName="w-9 h-9 group-hover:scale-105 transition-transform"
                 ringClassName={isTinderChat ? "ring-2 ring-[#fe3c72]" : ""}
               />
@@ -4375,6 +4398,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <AvatarWithFallback
               src={activeChat.avatar}
               alt={activeChat.fullName || activeChat.username}
+              conversationId={activeChat.id}
               sizeClassName="w-20 h-20 group-hover:scale-105 group-active:scale-95 transition-transform"
               ringClassName={isTinderChat ? "ring-3 ring-[#fe3c72]" : ""}
             />
@@ -5583,6 +5607,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <AvatarWithFallback
                       src={conv.avatar}
                       alt={conv.fullName || conv.username}
+                      conversationId={conv.id}
                       sizeClassName="w-13 h-13"
                       ringClassName={conv.type === "tinder" ? "ring-2 ring-[#fe3c72]" : ""}
                     />
@@ -5805,6 +5830,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           <AvatarWithFallback
                             src={conv.avatar}
                             alt={conv.fullName || conv.username}
+                            conversationId={conv.id}
                             sizeClassName="w-4 h-4"
                           />
                         </div>
@@ -5894,6 +5920,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               <AvatarWithFallback
                 src={selectedChatForActionSheet.avatar}
                 alt={selectedChatForActionSheet.fullName || selectedChatForActionSheet.username}
+                conversationId={selectedChatForActionSheet.id}
                 sizeClassName="w-11 h-11"
               />
               <div className="min-w-0 flex-1">

@@ -1302,7 +1302,73 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
-    // 3. INSTAGRAM: CONVERSAS (GET)
+    // 3. INSTAGRAM: RENOVAR AVATAR/PERFIL
+    // ==========================================
+    if (path === "/instagram/profile/refresh" && req.method === "POST") {
+      const origin = req.headers.get("origin");
+      if (origin && !brainOperatorAllowedOrigin(origin)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const body = await req.json().catch(() => ({}));
+      const conversationId = typeof body?.conversationId === "string" ? body.conversationId.trim() : "";
+      if (!conversationId || conversationId.length > 256) {
+        return new Response(JSON.stringify({ success: false, error: "invalid_conversation_id" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: conversation, error: conversationError } = await supabase
+        .from("instagram_conversations")
+        .select("id, contact_id")
+        .eq("id", conversationId)
+        .maybeSingle();
+
+      if (conversationError || !conversation) {
+        return new Response(JSON.stringify({ success: false, error: "conversation_not_found" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error: enqueueError } = await supabase.rpc("enqueue_instagram_profile_job", {
+        p_conversation_id: conversationId,
+        p_raw_contact_id: String(conversation.contact_id || conversationId),
+        p_message_id: null,
+      });
+
+      if (enqueueError) {
+        return new Response(JSON.stringify({ success: false, error: enqueueError.message }), {
+          status: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const refreshPromise = processInstagramProfileQueue({
+        supabase,
+        resolveProfile: resolveInstagramContactProfile,
+        limit: 1,
+      }).catch((refreshError) => {
+        console.warn("[Instagram Profile] refresh imediato falhou:", refreshError);
+      });
+      if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+        (globalThis as any).EdgeRuntime.waitUntil(refreshPromise);
+      } else {
+        void refreshPromise;
+      }
+
+      return new Response(JSON.stringify({ success: true, queued: true }), {
+        status: 202,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ==========================================
+    // 4. INSTAGRAM: CONVERSAS (GET)
     // ==========================================
     if (path === "/instagram/conversations" && req.method === "GET") {
       const pageSize = 1000;
@@ -3492,7 +3558,7 @@ serve(async (req: Request) => {
           const profilePromise = processInstagramProfileQueue({
             supabase,
             resolveProfile: resolveInstagramContactProfile,
-            limit: 2,
+            limit: 4,
           }).catch((profileError) => {
             console.warn("[Instagram Profile Queue] cron:tick falhou:", profileError);
           });
