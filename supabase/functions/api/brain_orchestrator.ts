@@ -2341,8 +2341,9 @@ export function deriveBrainDeliveryStatus(statuses: string[]):
   if (statuses.includes("dispatch_uncertain")) return "dispatch_uncertain";
   if (statuses.every((status) => status === "sent")) return "fully_sent";
   if (statuses.some((status) => status === "sent")) return "partially_sent";
-  if (statuses.every((status) => status === "failed_confirmed")) return "delivery_failed";
-  if (statuses.every((status) => status === "cancelled")) return "delivery_cancelled";
+  if (statuses.every((status) => status === "failed_confirmed" || status === "cancelled")) {
+    return statuses.includes("failed_confirmed") ? "delivery_failed" : "delivery_cancelled";
+  }
   return "delivery_pending";
 }
 
@@ -2647,7 +2648,7 @@ async function projectConfirmedBrainAction(params: {
 async function syncBrainDecisionActionStatus(params: {
   supabase: any;
   actionId?: string;
-  status: "sending" | "sent" | "dispatch_uncertain" | "failed_retryable" | "failed_confirmed";
+  status: "sending" | "sent" | "cancelled" | "dispatch_uncertain" | "failed_retryable" | "failed_confirmed";
   providerMessageId?: string;
   providerError?: string;
   attempts?: number;
@@ -2664,6 +2665,7 @@ async function syncBrainDecisionActionStatus(params: {
     const eventMessage: Record<string, string> = {
       sending: "Ação iniciada pelo dispatcher.",
       sent: "Envio confirmado pelo provedor.",
+      cancelled: "Ação posterior cancelada porque uma ação anterior do mesmo lote falhou definitivamente.",
       dispatch_uncertain: "Envio incerto; novas tentativas e envio manual bloqueados até reconciliação.",
       failed_retryable: "Falha confirmada; nova tentativa automática programada.",
       failed_confirmed: "Falha confirmada pelo provedor após esgotar as tentativas.",
@@ -4091,6 +4093,40 @@ export async function runDurableOutboxDispatcher(
   const nowMs = Date.now();
   const blockedCycleKeys = new Set<string>();
 
+  const cancelTrailingEntriesAfterPermanentFailure = async (failedEntry: OutboxEntry) => {
+    const failedCycleKey = cycleScopeKey(failedEntry);
+    const failedIndex = failedEntry.actionIndex !== undefined ? failedEntry.actionIndex : 0;
+    const trailingEntries = entries.filter((other) => {
+      if (cycleScopeKey(other) !== failedCycleKey) return false;
+      const otherIndex = other.actionIndex !== undefined ? other.actionIndex : 0;
+      return otherIndex > failedIndex && other.status === "pending";
+    });
+
+    for (const trailingEntry of trailingEntries) {
+      const trailingKey = trailingEntry.idempotencyKey || trailingEntry.id;
+      const cancelResult = await finalizeOutboxEntryAtomic({
+        supabase,
+        conversationId,
+        outboxId: trailingKey,
+        status: "cancelled",
+        error: "blocked_by_failed_prior_action",
+      });
+      const persistedStatus = cancelResult.entry?.status;
+
+      if (cancelResult.success && persistedStatus === "cancelled") {
+        trailingEntry.status = "cancelled";
+        await syncBrainDecisionActionStatus({
+          supabase,
+          actionId: outboxBrainActionId(trailingEntry),
+          status: "cancelled",
+          providerError: "blocked_by_failed_prior_action",
+        });
+      } else if (persistedStatus === "sent") {
+        trailingEntry.status = "sent";
+      }
+    }
+  };
+
   for (const entry of entries) {
     if (result.dispatchedCount >= maxActionsPerRun) {
       break;
@@ -4163,7 +4199,10 @@ export async function runDurableOutboxDispatcher(
     }
 
     // C. Status failed permanente: encerra somente este ciclo histórico.
+    // Como a ordem é estrita, ações posteriores desse mesmo lote jamais podem
+    // ser enviadas depois que uma ação anterior falhou definitivamente.
     if (entry.status === "failed") {
+      await cancelTrailingEntriesAfterPermanentFailure(entry);
       result.blockedCount++;
       blockedCycleKeys.add(entryCycleKey);
       continue;
@@ -4376,6 +4415,9 @@ export async function runDurableOutboxDispatcher(
           providerError: dispatchRes.error,
           attempts: claimedEntry.attempts,
         });
+        if (nextStatus === "failed") {
+          await cancelTrailingEntriesAfterPermanentFailure(entry);
+        }
         result.errors.push(`dispatch_failed:${dispatchRes.error}`);
         blockedCycleKeys.add(entryCycleKey);
         continue;
