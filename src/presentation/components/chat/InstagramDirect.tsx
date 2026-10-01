@@ -1173,6 +1173,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // Estado da mensagem sendo respondida (Quote Reply do Instagram)
   const [replyingToMessage, setReplyingToMessage] = useState<DirectMessage | null>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
+  const messageElementRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const replyHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [highlightedReplyTargetId, setHighlightedReplyTargetId] = useState<string | null>(null);
 
   // Sub-filtro da aba Pedidos no Instagram: todos os pedidos ou contas restringidas
   const [pedidosSubFilter, setPedidosSubFilter] = useState<"todos_pedidos" | "restringidos">("todos_pedidos");
@@ -4007,6 +4010,38 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [activeChat?.type]);
 
+  const jumpToRepliedMessage = useCallback((messageId: string) => {
+    const target = messageElementRefs.current.get(messageId);
+    if (!target) {
+      toast.info("A mensagem original não está carregada neste trecho do histórico.");
+      return;
+    }
+
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "nearest",
+    });
+
+    if (replyHighlightTimerRef.current) {
+      clearTimeout(replyHighlightTimerRef.current);
+    }
+
+    setHighlightedReplyTargetId(messageId);
+    replyHighlightTimerRef.current = setTimeout(() => {
+      setHighlightedReplyTargetId((current) => current === messageId ? null : current);
+      replyHighlightTimerRef.current = null;
+    }, 1250);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (replyHighlightTimerRef.current) {
+        clearTimeout(replyHighlightTimerRef.current);
+      }
+    };
+  }, []);
+
   const renderChatThread = () => {
     if (!activeChat) return null;
 
@@ -4393,7 +4428,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   )}
 
                   <div
-                    className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full`}
+                    ref={(node) => {
+                      if (node) {
+                        messageElementRefs.current.set(msg.id, node);
+                      } else {
+                        messageElementRefs.current.delete(msg.id);
+                      }
+                    }}
+                    data-message-id={msg.id}
+                    className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full scroll-mt-20`}
                   >
                     <InstagramReplyGesture
                       enabled={!isTinderChat}
@@ -4469,19 +4512,30 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white rounded-br-[4px]"
                               : "bg-[#0095f6] text-white rounded-br-[4px]"
                             : "bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white rounded-bl-[4px]"
-                        } ${msg.status === "failed" ? "border border-red-500/50 bg-red-950/30" : ""}`}
+                        } ${msg.status === "failed" ? "border border-red-500/50 bg-red-950/30" : ""} ${
+                          highlightedReplyTargetId === msg.id
+                            ? "ring-2 ring-[#0095f6]/70 shadow-[0_0_0_5px_rgba(0,149,246,0.12)] scale-[1.015]"
+                            : ""
+                        }`}
                       >
                         {/* Bloco de Mensagem Respondida (Quote Reply estilo Instagram) */}
                         {msg.replyTo && (
-                          <div
-                            className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-2 text-xs flex flex-col text-left min-w-0 max-w-full overflow-hidden ${
+                          <button
+                            type="button"
+                            onClick={() => jumpToRepliedMessage(msg.replyTo!.id)}
+                            title="Ir para a mensagem original"
+                            className={`group/replyquote mb-2 w-full px-2.5 py-2 rounded-xl text-left min-w-0 max-w-full overflow-hidden transition-all cursor-pointer active:scale-[0.985] ${
                               msg.isMine
-                                ? "bg-black/25 border-white/90 text-white/95"
-                                : "bg-zinc-200/70 dark:bg-white/10 border-zinc-300 dark:border-white/40 text-zinc-800 dark:text-zinc-200"
+                                ? "bg-black/20 hover:bg-black/30 ring-1 ring-white/15 text-white/95"
+                                : "bg-black/[0.045] dark:bg-white/[0.08] hover:bg-black/[0.07] dark:hover:bg-white/[0.12] ring-1 ring-black/[0.06] dark:ring-white/[0.09] text-zinc-800 dark:text-zinc-200"
                             }`}
                           >
-                            <div className={`flex items-center gap-1 text-[10px] font-bold min-w-0 ${msg.isMine ? "text-white/90" : "text-zinc-600 dark:text-white/90"}`}>
-                              <Reply className={`w-3 h-3 shrink-0 ${msg.isMine ? "text-white/70" : "text-zinc-500 dark:text-white/70"}`} />
+                            <div className={`flex items-center gap-1.5 text-[10px] font-semibold min-w-0 ${
+                              msg.isMine ? "text-white/85" : "text-zinc-600 dark:text-zinc-300"
+                            }`}>
+                              <Reply className={`w-3 h-3 shrink-0 transition-transform group-hover/replyquote:-translate-x-0.5 ${
+                                msg.isMine ? "text-white/70" : "text-zinc-500 dark:text-zinc-400"
+                              }`} />
                               <span className="truncate block">
                                 {msg.isMine
                                   ? (msg.replyTo.senderName && msg.replyTo.senderName !== "Você"
@@ -4490,7 +4544,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                                   : "Você"}
                               </span>
                             </div>
-                            <p className="text-[11px] truncate block w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap opacity-90 mt-0.5 font-normal">
+                            <p className="text-[11px] truncate block w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap opacity-85 mt-0.5 font-normal">
                               {(msg.replyTo.text || "").startsWith("[audio:")
                                 ? "🎙️ Mensagem de voz"
                                 : (msg.replyTo.text || "").startsWith("[image:")
@@ -4499,7 +4553,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                                 ? "🎥 Vídeo"
                                 : msg.replyTo.text || "Mensagem citada"}
                             </p>
-                          </div>
+                          </button>
                         )}
 
                         {/* 1. Mídia do tipo Áudio com Player Oficial do Instagram */}
