@@ -199,11 +199,13 @@ export type OutboundAction =
       type: "text";
       text: string;
       delayBeforeSendSeconds?: number;
+      replyToMessageId?: string;
     }
   | {
       type: "audio";
       audioId: string;
       delayBeforeSendSeconds?: number;
+      replyToMessageId?: string;
     };
 
 export const COFRE_AUDIO_SEARCH_TOOL_DEFINITION: OpenAiBrainToolDefinition = {
@@ -838,6 +840,7 @@ function isInternalTechnicalManualResolutionQuestion(question: string): boolean 
 export function validateConversationBrainPlan(
   plan: any,
   allowedPendingActionIds?: string[],
+  allowedReplyTargetIds?: string[],
 ): PlanValidationResult {
   if (!plan || typeof plan !== "object") {
     return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
@@ -911,6 +914,37 @@ export function validateConversationBrainPlan(
       } else {
         return { valid: false, error: `outboundActions[${i}] tipo inválido: '${act.type}'` };
       }
+      const rawReplyTarget = act.reply_to ?? act.replyToMessageId;
+      if (rawReplyTarget !== undefined && rawReplyTarget !== null) {
+        let resolvedReplyTarget = "";
+        const numericAlias = typeof rawReplyTarget === "number" && Number.isInteger(rawReplyTarget)
+          ? rawReplyTarget
+          : typeof rawReplyTarget === "string" && /^\d+$/.test(rawReplyTarget.trim())
+          ? Number(rawReplyTarget.trim())
+          : null;
+
+        if (
+          numericAlias !== null &&
+          allowedReplyTargetIds &&
+          numericAlias >= 1 &&
+          numericAlias <= allowedReplyTargetIds.length
+        ) {
+          resolvedReplyTarget = allowedReplyTargetIds[numericAlias - 1];
+        } else if (
+          typeof rawReplyTarget === "string" &&
+          rawReplyTarget.trim() &&
+          (!allowedReplyTargetIds || allowedReplyTargetIds.includes(rawReplyTarget.trim()))
+        ) {
+          resolvedReplyTarget = rawReplyTarget.trim();
+        }
+
+        // Reply é metadado opcional: alvo inválido é descartado sem regenerar o turno.
+        // Assim um erro cosmético nunca provoca nova inferência nem bloqueia a resposta.
+        if (resolvedReplyTarget) act.replyToMessageId = resolvedReplyTarget;
+        else delete act.replyToMessageId;
+        delete act.reply_to;
+      }
+
       const delay = act.delay_before_send ?? act.delayBeforeSendSeconds;
       if (delay !== undefined && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0 || delay > 7200)) {
         return { valid: false, error: `outboundActions[${i}].delay_before_send deve ser um número entre 0 e 7200 segundos` };
@@ -2282,8 +2316,8 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
   if (params.currentInboundMessages && params.currentInboundMessages.length > 0) {
     inboundsText = params.currentInboundMessages
       .map(
-        (m) =>
-          `[MENSAGEM id="${m.id}"${
+        (m, index) =>
+          `[MENSAGEM ${index + 1} id="${m.id}"${
             m.createdAt
               ? ` | ${new Intl.DateTimeFormat("pt-BR", {
                   timeZone: "America/Sao_Paulo",
@@ -2366,7 +2400,7 @@ Emita EXCLUSIVAMENTE um único objeto JSON:
   ],
   "responses": ["balão 1", "Você...? "]
 }
-(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e objectiveEvidence {type,id} devem referenciar uma evidência persistida válida (message, contact_fact, contact_quote, episode ou manual_fact). evidenceMessageId legado só representa type=message. Se houver ações pendentes listadas, avalie se permanecem adequadas e liste em cancelActionIds somente IDs dessa lista. Se houver uma nova pergunta, preencha \`questionIntents\` usando este formato: ${QUESTION_INTENTS_CONTRACT_EXAMPLE}. O \`responseIndex\` deve existir em \`responses[]\`. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
+(Regras essenciais: se objectiveDecision="already_satisfied", satisfiedObjectiveId e objectiveEvidence {type,id} devem referenciar uma evidência persistida válida (message, contact_fact, contact_quote, episode ou manual_fact). evidenceMessageId legado só representa type=message. Se houver ações pendentes listadas, avalie se permanecem adequadas e liste em cancelActionIds somente IDs dessa lista. Se houver uma nova pergunta, preencha \`questionIntents\` usando este formato: ${QUESTION_INTENTS_CONTRACT_EXAMPLE}. O \`responseIndex\` deve existir em \`responses[]\`. Em uma outboundAction, \`reply_to\` pode apontar pelo número para uma MENSAGEM deste turno apenas quando a ação responder diretamente àquele balão; não use por padrão. outboundActions aceita type "audio" com audioId válido de cofre_audio_search quando oportuno e natural.)`
   );
 
   if (params.schemaFeedback) {
@@ -3131,7 +3165,11 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
         }
       }
 
-      const basicValidation = validateConversationBrainPlan(mockResult.plan);
+      const basicValidation = validateConversationBrainPlan(
+        mockResult.plan,
+        undefined,
+        (params.currentInboundMessages || []).map((message) => message.id),
+      );
       const invariantValidation = validatePersonaMemoryExecutionInvariant(mockResult.plan, telemetry.actualMemoryToolCalled);
       const responseGenValidation = validateResponseGenerationInvariant(mockResult.plan);
       const webSearchPrivacyValidation = validateWebSearchOutputPrivacy(
@@ -4233,6 +4271,7 @@ export async function runOpenAiBrainTurn(params: RunOpenAiBrainParams): Promise<
     const basicValidation = validateConversationBrainPlan(
       parsedPlan,
       (params.pendingOutboundActions || []).map((action) => action.actionId),
+      (params.currentInboundMessages || []).map((message) => message.id),
     );
     const manualResolutionContinuationValidation =
       params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution"

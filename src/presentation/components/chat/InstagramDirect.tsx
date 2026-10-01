@@ -3992,6 +3992,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         status: "sending",
         deliverAt: Date.parse(preview.deliverAt) || 0,
         deliveryQueueStatus: preview.status,
+        replyToMessageId: preview.replyToMessageId || undefined,
       };
     });
     const rawChatMessages = deduplicateMessages([...(activeChatMessagesRaw || []), ...pendingPreviews]);

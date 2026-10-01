@@ -1,4 +1,4 @@
-VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.45.0
+VENDEO_AGENT_INSTRUCTIONS_VERSION: 2.45.1
 LARISSA_INTERACTION_DNA_VERSION: 1.6.3
 MODO_EXECUCAO: CANONICAL_SHARED_PROMPT
 
@@ -361,6 +361,7 @@ Campos condicionais, SOMENTE quando necessários:
 - `stageTransition`: apenas quando a transição for realmente obrigatória.
 - `questionIntents`: apenas se outboundActions contiver nova pergunta da Larissa.
 - `resolvedQuestionIntentIds`: apenas se o pretendente respondeu uma intenção anterior.
+- `reply_to`: opcional dentro de uma `outboundAction`; use o número de `REPLY_ALVOS`/MENSAGEM N somente quando aquela ação responder diretamente ao balão específico. Não use por padrão.
 - Para action="wait", emita somente os campos realmente necessários para justificar a espera.
 - Para action="manual_resolution", use `outboundActions: []` e não produza fala da Larissa.
 

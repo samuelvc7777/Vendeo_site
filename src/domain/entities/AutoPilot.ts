@@ -93,6 +93,7 @@ export interface AutoPilotPendingOutboundMessage {
   deliverAt: string;
   createdAt: string;
   audioDurationSeconds?: number | null;
+  replyToMessageId?: string | null;
   status?: "pending" | "sending";
 }
 

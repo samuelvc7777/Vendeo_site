@@ -806,6 +806,7 @@ export interface OutboxEntry {
   mediaUrl?: string | null;
   audioDurationSeconds?: number | null;
   vaultAudioId?: string | null;
+  replyToMessageId?: string | null;
   payload?: Record<string, unknown>;
   actionType?: "text" | "audio" | "image";
   claimedBy?: string | null;
@@ -858,7 +859,11 @@ export function createBrainOutboxBatch(params: {
       mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : null,
       audioDurationSeconds: isAudio && Number.isFinite(Number(resolvedAudio?.duration)) ? Number(resolvedAudio?.duration) : null,
       vaultAudioId: isAudio ? (resolvedAudio?.id || action.audioId || null) : null,
-      payload: { brainActionId: `brain_action_${cycleId}_${index}` },
+      replyToMessageId: action.replyToMessageId || null,
+      payload: {
+        brainActionId: `brain_action_${cycleId}_${index}`,
+        replyToMessageId: action.replyToMessageId || null,
+      },
     };
   });
 }
@@ -3652,7 +3657,12 @@ export interface DispatchOutboxParams {
   recipientId: string;
   claimToken?: string;
   runtime?: {
-    sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
+    sendMetaTextMessage?: (
+      supabase: any,
+      conversationId: string,
+      text: string,
+      replyToMessageId?: string | null,
+    ) => Promise<any>;
   };
 }
 
@@ -3732,7 +3742,14 @@ export async function dispatchOutboxEntry(
 
   try {
     if (runtime?.sendMetaTextMessage) {
-      const res = await runtime.sendMetaTextMessage(supabase, outboxEntry.conversationId || recipientId, outboxEntry.content);
+      const replyToMessageId = outboxEntry.replyToMessageId
+        || (typeof outboxEntry.payload?.replyToMessageId === "string" ? outboxEntry.payload.replyToMessageId : null);
+      const res = await runtime.sendMetaTextMessage(
+        supabase,
+        outboxEntry.conversationId || recipientId,
+        outboxEntry.content,
+        replyToMessageId,
+      );
       const providerId = res?.message_id || `sim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       outboxEntry.status = "sent";
       outboxEntry.sentAt = new Date().toISOString();
@@ -3784,6 +3801,13 @@ export async function dispatchOutboxEntry(
         recipient: { id: recipientId },
         message: { text: outboxEntry.content },
       };
+    }
+
+    const replyToMessageId = outboxEntry.replyToMessageId
+      || (typeof outboxEntry.payload?.replyToMessageId === "string" ? outboxEntry.payload.replyToMessageId : null);
+    if (replyToMessageId) {
+      bodyPayload.reply_to = { mid: replyToMessageId };
+      bodyPayload.messaging_type = "RESPONSE";
     }
 
     const sendRes = await fetch(
@@ -4291,6 +4315,8 @@ export async function runDurableOutboxDispatcher(
             is_mine: true,
             text: claimedEntry.content,
             status: "sent",
+            reply_to_message_id: claimedEntry.replyToMessageId
+              || (typeof claimedEntry.payload?.replyToMessageId === "string" ? claimedEntry.payload.replyToMessageId : null),
             created_at: nowIso,
             timestamp: nowIso,
           });
@@ -4373,6 +4399,8 @@ export async function runDurableOutboxDispatcher(
       deliverAt: entry.notBefore || entry.createdAt || new Date().toISOString(),
       createdAt: entry.createdAt || new Date().toISOString(),
       audioDurationSeconds: entry.audioDurationSeconds ?? null,
+      replyToMessageId: entry.replyToMessageId
+        || (typeof entry.payload?.replyToMessageId === "string" ? entry.payload.replyToMessageId : null),
       status: entry.status === "sending" ? "sending" : "pending",
     }))
     .filter((entry) => Boolean(entry.content));
@@ -6576,7 +6604,12 @@ export interface RunOrchestrationParams {
   preClaimedCycleToken?: string;
   manualResolution?: { turnId: string; question: string; context?: string; answer: string };
   runtime?: {
-    sendMetaTextMessage?: (supabase: any, conversationId: string, text: string) => Promise<any>;
+    sendMetaTextMessage?: (
+      supabase: any,
+      conversationId: string,
+      text: string,
+      replyToMessageId?: string | null,
+    ) => Promise<any>;
     callModel?: (prompt: string) => Promise<{ content: string; tokens?: number }>;
     memoryProvider?: MemoryProvider;
     _fastTest?: boolean;
@@ -9914,6 +9947,8 @@ export async function runBrainOrchestration(
                 ? (brainAudioObjectiveById.get(entry.vaultAudioId) || null)
                 : null,
               mediaUrl: entry.mediaUrl || null,
+              replyToMessageId: entry.replyToMessageId
+                || (typeof entry.payload?.replyToMessageId === "string" ? entry.payload.replyToMessageId : null),
               outboxId: entry.id,
               brainActionId: `brain_action_${correlationId}_${actionIndex}`,
               deliveryProjectionId: `out_${correlationId}_${actionIndex}`,

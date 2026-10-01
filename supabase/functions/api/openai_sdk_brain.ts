@@ -112,6 +112,25 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     );
   }
 
+  const currentReplyTargets = (params.currentInboundMessages || []).slice(-4);
+  if (currentReplyTargets.length > 0) {
+    lines.push("REPLY_ALVOS:");
+    currentReplyTargets.forEach((message, index) => {
+      const mediaType = String(message.mediaType || "").toLowerCase();
+      const messageText = String(message.text || "");
+      const rawText = mediaType === "audio" || messageText.startsWith("[audio:")
+        ? (message.audioTranscript ? `áudio: ${message.audioTranscript}` : "áudio recebido")
+        : mediaType === "image" || messageText.startsWith("[image:")
+        ? "foto recebida"
+        : mediaType === "video" || messageText.startsWith("[video:")
+        ? "vídeo recebido"
+        : messageText;
+      const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 80);
+      lines.push(`${index + 1}=${JSON.stringify(preview || "mensagem recebida")}`);
+    });
+    lines.push("REPLY_TO: em outboundActions, reply_to=N é opcional; use só ao responder diretamente ao alvo N, nunca por padrão.");
+  }
+
   const repliedInbounds = (params.currentInboundMessages || []).filter((message) =>
     Boolean(message.replyToMessageId)
   );
@@ -375,6 +394,7 @@ function validateAndNormalizeSdkPlan(
   const basic = validateConversationBrainPlan(
     parsedPlan,
     (params.pendingOutboundActions || []).map((action) => action.actionId),
+    (params.currentInboundMessages || []).slice(-4).map((message) => message.id),
   );
   const response = validateResponseGenerationInvariant(parsedPlan);
   const progression = validateObjectiveProgressionInvariant(parsedPlan, {
