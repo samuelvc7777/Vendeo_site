@@ -754,6 +754,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const isLoadingMessages = loadingConversationId === activeChat?.id;
   const [isPersonaAudioModalOpen, setIsPersonaAudioModalOpen] = useState(false);
   const [isAutoPilotActivationModalOpen, setIsAutoPilotActivationModalOpen] = useState(false);
+  const [isGlobalAutoPilotDisabledModalOpen, setIsGlobalAutoPilotDisabledModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const [selectedProfileForModal, setSelectedProfileForModal] = useState<DirectConversation | null>(null);
@@ -4187,23 +4188,46 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {activeChat.type === "instagram" && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
+                  const globalEnabled = autoPilot.config?.isEnabledGlobally === false
+                    ? false
+                    : await autoPilot.isGlobalAutoPilotEnabled();
+                  if (!globalEnabled) {
+                    setIsGlobalAutoPilotDisabledModalOpen(true);
+                    return;
+                  }
                   if (autoPilot.chatStates[activeChat.id]?.isEnabled) {
-                    autoPilot.toggleAutoPilotForChat(activeChat.id, false);
+                    await autoPilot.toggleAutoPilotForChat(activeChat.id, false);
                   } else {
                     setIsAutoPilotActivationModalOpen(true);
                   }
                 }}
                 className={`px-2.5 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shrink-0 ${
-                  autoPilot.chatStates[activeChat.id]?.isEnabled
+                  autoPilot.config?.isEnabledGlobally === false
+                    ? "bg-zinc-100 dark:bg-[#171719] text-zinc-500 dark:text-zinc-500 border-zinc-200 dark:border-[#2e2e30] hover:bg-amber-500/10 hover:text-amber-700 dark:hover:text-amber-300 hover:border-amber-500/30"
+                    : autoPilot.chatStates[activeChat.id]?.isEnabled
                     ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25"
                     : "bg-zinc-100 dark:bg-[#1c1c1e] text-zinc-600 dark:text-[#a8a8a8] border-zinc-200 dark:border-[#2e2e30] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-[#2c2c2e]"
                 }`}
-                title={autoPilot.chatStates[activeChat.id]?.isEnabled ? "Desativar IA nesta conversa" : "Ativar IA nesta conversa"}
+                title={
+                  autoPilot.config?.isEnabledGlobally === false
+                    ? "IA desativada globalmente"
+                    : autoPilot.chatStates[activeChat.id]?.isEnabled
+                    ? "Desativar IA nesta conversa"
+                    : "Ativar IA nesta conversa"
+                }
               >
-                <Bot className="w-3.5 h-3.5" />
+                {autoPilot.config?.isEnabledGlobally === false ? (
+                  <BotOff className="w-3.5 h-3.5" />
+                ) : (
+                  <Bot className="w-3.5 h-3.5" />
+                )}
                 <span className="hidden md:inline">
-                  {autoPilot.chatStates[activeChat.id]?.isEnabled ? "IA ativa" : "Ativar IA"}
+                  {autoPilot.config?.isEnabledGlobally === false
+                    ? "IA global off"
+                    : autoPilot.chatStates[activeChat.id]?.isEnabled
+                    ? "IA ativa"
+                    : "Ativar IA"}
                 </span>
               </button>
             )}
@@ -4991,6 +5015,60 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             await autoPilot.activateAutoPilotWithChoice(activeChat.id, mode);
           }}
         />
+
+        {isGlobalAutoPilotDisabledModalOpen && (
+          <div
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-in fade-in duration-150"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="global-ai-disabled-title"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) setIsGlobalAutoPilotDisabledModalOpen(false);
+            }}
+          >
+            <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-zinc-200 dark:border-[#2a2a2d] bg-white dark:bg-[#121214] shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between border-b border-zinc-200 dark:border-[#262629] px-5 py-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+                    <BotOff className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 id="global-ai-disabled-title" className="text-sm font-bold text-zinc-950 dark:text-white">
+                      IA global desativada
+                    </h3>
+                    <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Não é possível ativar a IA só neste chat.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Fechar"
+                  onClick={() => setIsGlobalAutoPilotDisabledModalOpen(false)}
+                  className="rounded-lg p-2 text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-950 dark:hover:bg-zinc-800 dark:hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="px-5 py-4">
+                <p className="text-sm leading-6 text-zinc-700 dark:text-zinc-300">
+                  O Piloto Automático está desligado nas configurações gerais. Para usar a IA nesta conversa, primeiro ative a chave global em <strong>Config</strong>.
+                </p>
+              </div>
+
+              <div className="flex justify-end border-t border-zinc-200 dark:border-[#262629] bg-zinc-50 dark:bg-[#161618] px-5 py-3">
+                <button
+                  type="button"
+                  onClick={() => setIsGlobalAutoPilotDisabledModalOpen(false)}
+                  className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+                >
+                  Entendi
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Modal de Perfil Completo estilo Tinder */}
         <TinderProfileModal

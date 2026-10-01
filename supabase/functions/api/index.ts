@@ -4225,6 +4225,26 @@ serve(async (req: Request) => {
         let deactivationResult: any = null;
 
         if (isEnabled) {
+          // A chave global é a autoridade máxima. Mesmo que algum cliente esteja com
+          // estado antigo em cache, não permitimos reativar um chat individualmente.
+          const { data: globalConfigRow, error: globalConfigError } = await supabase
+            .from("autopilot_settings")
+            .select("config")
+            .eq("id", "global")
+            .maybeSingle();
+          if (globalConfigError) throw globalConfigError;
+          if (globalConfigRow?.config?.isEnabledGlobally === false) {
+            return new Response(JSON.stringify({
+              success: false,
+              isEnabled: false,
+              error: "global_autopilot_disabled",
+              detail: "Ative o Piloto Automático globalmente antes de ativar a IA neste chat.",
+            }), {
+              status: 409,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
           // Ativação atômica via RPC: busca a última mensagem sob lock FOR UPDATE e grava o watermark + ai_auto_respond = true sem janela de race!
           const { data: armResult, error: armErr } = await supabase.rpc(
             "arm_autopilot_with_watermark_atomic",

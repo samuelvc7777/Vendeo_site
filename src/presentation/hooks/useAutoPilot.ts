@@ -125,6 +125,17 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     toast.success("Configurações do Piloto Automático atualizadas!"); return updated;
   }, []);
 
+  const isGlobalAutoPilotEnabled = useCallback(async () => {
+    try {
+      const latestConfig = await autoPilotRepo.getConfig(true);
+      setConfig(latestConfig);
+      return latestConfig.isEnabledGlobally !== false;
+    } catch (error) {
+      console.warn("Não foi possível confirmar a chave global do Piloto Automático:", error);
+      return config?.isEnabledGlobally !== false;
+    }
+  }, [config?.isEnabledGlobally]);
+
   const toggleAutoPilotForChat = useCallback(async (conversationId: string, forceState?: boolean) => {
     const isEnabled = forceState ?? !chatStatesRef.current[conversationId]?.isEnabled;
     try {
@@ -288,5 +299,5 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }
