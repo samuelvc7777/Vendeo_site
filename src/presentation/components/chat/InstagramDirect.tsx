@@ -859,7 +859,21 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
   const [stageFilter, setStageFilter] = useState<string>("todas"); // "todas" | "concluidos" | stageId
+  const [isStageFilterOpen, setIsStageFilterOpen] = useState(false);
+  const stageFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const [aiFilter, setAiFilter] = useState<"todas" | "com_ia" | "sem_ia">("todas");
+
+  useEffect(() => {
+    if (!isStageFilterOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!stageFilterMenuRef.current?.contains(event.target as Node)) {
+        setIsStageFilterOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [isStageFilterOpen]);
+
   const chatStages = useChatStages(activeChat?.id, { loadAllProgresses: false });
   const {
     stages,
@@ -5081,36 +5095,124 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               </div>
             </div>
 
-            {stages.length > 0 && (
-              <div className="relative ml-auto w-[176px] shrink-0">
-                <Layers className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
-                <select
-                  value={stageFilter}
-                  onChange={(event) => setStageFilter(event.target.value)}
-                  aria-label="Filtrar por etapa"
-                  className="h-10 w-full appearance-none rounded-xl border border-zinc-200/80 bg-white pl-8 pr-8 text-[11px] font-semibold text-zinc-700 outline-none transition hover:border-zinc-300 focus:border-zinc-400 dark:border-white/[0.07] dark:bg-white/[0.04] dark:text-zinc-200 dark:hover:border-white/[0.12]"
-                >
-                  <option value="todas">Todas as etapas</option>
-                  {stages.map((stg, idx) => {
-                    const countInStage = platformConversations.filter((c) => {
-                      if (isChatRestricted(c)) return false;
-                      const currentStageId = c.currentStageId || stages[0]?.id;
-                      return currentStageId === stg.id && !c.isConverted;
-                    }).length;
+            {stages.length > 0 && (() => {
+              const convertedCount = platformConversations.filter(
+                (c) => !isChatRestricted(c) && Boolean(c.isConverted)
+              ).length;
+              const selectedStageIndex = stages.findIndex((stage) => stage.id === stageFilter);
+              const selectedStage = selectedStageIndex >= 0 ? stages[selectedStageIndex] : null;
+              const selectedStageCount = selectedStage
+                ? platformConversations.filter((c) => {
+                    if (isChatRestricted(c)) return false;
+                    const currentStageId = c.currentStageId || stages[0]?.id;
+                    return currentStageId === selectedStage.id && !c.isConverted;
+                  }).length
+                : 0;
 
-                    return (
-                      <option key={stg.id} value={stg.id}>
-                        {idx + 1}. {stg.name} · {countInStage}
-                      </option>
-                    );
-                  })}
-                  <option value="concluidos">
-                    Finalizados · {platformConversations.filter((c) => !isChatRestricted(c) && Boolean(c.isConverted)).length}
-                  </option>
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
-              </div>
-            )}
+              const selectedLabel =
+                stageFilter === "concluidos"
+                  ? `Finalizados · ${convertedCount}`
+                  : selectedStage
+                    ? `${selectedStageIndex + 1}. ${selectedStage.name} · ${selectedStageCount}`
+                    : "Todas as etapas";
+
+              const selectStage = (value: string) => {
+                setStageFilter(value);
+                setIsStageFilterOpen(false);
+              };
+
+              return (
+                <div ref={stageFilterMenuRef} className="relative ml-auto w-[184px] shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsStageFilterOpen((current) => !current)}
+                    aria-haspopup="menu"
+                    aria-expanded={isStageFilterOpen}
+                    className={`flex h-10 w-full items-center gap-2 rounded-xl border px-3 text-left text-[11px] font-semibold transition-all active:scale-[0.99] ${
+                      isStageFilterOpen || stageFilter !== "todas"
+                        ? "border-zinc-300 bg-white text-zinc-950 shadow-sm dark:border-white/[0.12] dark:bg-white/[0.07] dark:text-white"
+                        : "border-zinc-200/80 bg-white text-zinc-700 dark:border-white/[0.07] dark:bg-white/[0.04] dark:text-zinc-300"
+                    }`}
+                  >
+                    <Layers className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+                    <span className="min-w-0 flex-1 truncate">{selectedLabel}</span>
+                    <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform ${isStageFilterOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {isStageFilterOpen && (
+                    <div
+                      role="menu"
+                      className="absolute right-0 top-[calc(100%+6px)] z-50 w-[230px] overflow-hidden rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-2xl shadow-black/10 dark:border-white/[0.08] dark:bg-[#151515] dark:shadow-black/50"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => selectStage("todas")}
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs transition-colors ${
+                          stageFilter === "todas"
+                            ? "bg-zinc-100 font-semibold text-zinc-950 dark:bg-white/[0.08] dark:text-white"
+                            : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/[0.05]"
+                        }`}
+                      >
+                        <span className="flex-1">Todas as etapas</span>
+                        {stageFilter === "todas" && <Check className="h-3.5 w-3.5" />}
+                      </button>
+
+                      <div className="my-1 h-px bg-zinc-100 dark:bg-white/[0.06]" />
+
+                      {stages.map((stg, idx) => {
+                        const countInStage = platformConversations.filter((c) => {
+                          if (isChatRestricted(c)) return false;
+                          const currentStageId = c.currentStageId || stages[0]?.id;
+                          return currentStageId === stg.id && !c.isConverted;
+                        }).length;
+                        const isSelected = stageFilter === stg.id;
+
+                        return (
+                          <button
+                            key={stg.id}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => selectStage(stg.id)}
+                            className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs transition-colors ${
+                              isSelected
+                                ? "bg-zinc-100 font-semibold text-zinc-950 dark:bg-white/[0.08] dark:text-white"
+                                : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/[0.05]"
+                            }`}
+                          >
+                            <span
+                              className="h-2 w-2 shrink-0 rounded-full"
+                              style={{ backgroundColor: stg.color || "#3b82f6" }}
+                            />
+                            <span className="min-w-0 flex-1 truncate">{idx + 1}. {stg.name}</span>
+                            <span className="text-[10px] tabular-nums text-zinc-400">{countInStage}</span>
+                            {isSelected && <Check className="h-3.5 w-3.5 shrink-0" />}
+                          </button>
+                        );
+                      })}
+
+                      <div className="my-1 h-px bg-zinc-100 dark:bg-white/[0.06]" />
+
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => selectStage("concluidos")}
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs transition-colors ${
+                          stageFilter === "concluidos"
+                            ? "bg-amber-500/10 font-semibold text-amber-700 dark:text-amber-300"
+                            : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/[0.05]"
+                        }`}
+                      >
+                        <Trophy className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                        <span className="flex-1">Finalizados</span>
+                        <span className="text-[10px] tabular-nums text-zinc-400">{convertedCount}</span>
+                        {stageFilter === "concluidos" && <Check className="h-3.5 w-3.5 shrink-0" />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
