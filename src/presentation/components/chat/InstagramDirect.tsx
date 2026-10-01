@@ -63,6 +63,7 @@ import {
 import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
 import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
+import { InstagramReplyGesture } from "./InstagramReplyGesture";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
 import {
@@ -4000,6 +4001,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   }, [activeChat, activeChatMessagesRaw, activeAutoPilotState?.pendingOutboundMessages]);
   const isTinderChat = activeChat?.type === "tinder";
 
+  const beginReplyToMessage = useCallback((message: DirectMessage) => {
+    if (activeChat?.type !== "instagram") return;
+    setReplyingToMessage(message);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [activeChat?.type]);
+
   const renderChatThread = () => {
     if (!activeChat) return null;
 
@@ -4388,28 +4395,28 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   <div
                     className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full`}
                   >
-                    <div
-                      className={`flex items-end gap-1.5 max-w-[84%] sm:max-w-[75%] min-w-0 ${
-                        msg.isMine ? "flex-row-reverse" : "flex-row"
-                      }`}
+                    <InstagramReplyGesture
+                      enabled={!isTinderChat}
+                      isMine={msg.isMine}
+                      onReply={() => beginReplyToMessage(msg)}
                     >
-                      {/* Botão de Responder à mensagem específica (Reply do Instagram - apenas para mensagens do cliente) */}
-                      {!msg.isMine && (
-                        <>
-<button
+                      <div
+                        className={`flex items-end gap-1.5 max-w-full min-w-0 ${
+                          msg.isMine ? "flex-row-reverse" : "flex-row"
+                        }`}
+                      >
+                        {/* Desktop: ação aparece no hover. Mobile: gesto de arrastar ativa a resposta. */}
+                        {!isTinderChat && (
+                          <button
                             type="button"
-                            onClick={() => {
-                              setReplyingToMessage(msg);
-                              setTimeout(() => composerRef.current?.focus(), 60);
-                            }}
-                            className="self-center opacity-70 sm:opacity-0 sm:group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
+                            onClick={() => beginReplyToMessage(msg)}
+                            className="hidden sm:inline-flex self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
                             title="Responder a esta mensagem"
                             aria-label="Responder a mensagem"
                           >
                             <Reply className="w-3.5 h-3.5" />
                           </button>
-                        </>
-                      )}
+                        )}
 
                       {/* Ícone de falha com clique para retry OU abrir no Instagram se janela 24h expirada */}
                       {msg.isMine && msg.status === "failed" && (
@@ -4614,6 +4621,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         ) : null}
                       </div>
                     </div>
+                    </InstagramReplyGesture>
 
                     {/* Dica de clique para reenviar quando a mensagem falha OU botão para abrir no Instagram se janela de 24h expirada */}
                     {msg.isMine && msg.status === "failed" && (
@@ -4784,12 +4792,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {/* Card de Resposta a Mensagem Específica (Instagram Reply Bar) */}
             {replyingToMessage && (
-              <div className="mx-3 mt-2 px-3.5 py-2 bg-zinc-100 dark:bg-[#1c1c1e] border-l-2 border-[#0095f6] rounded-r-xl flex items-center justify-between gap-3 animate-in fade-in duration-150 select-none">
+              <div className="mx-3 mt-2 px-3.5 py-2 bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#2f2f2f] border-l-[3px] border-l-[#0095f6] rounded-xl flex items-center justify-between gap-3 shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-150 select-none">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#0095f6]">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#0095f6]">
                     <Reply className="w-3.5 h-3.5 shrink-0" />
-                    <span>
-                      Respondendo a {activeChat.fullName || activeChat.username}
+                    <span className="truncate">
+                      Respondendo a {replyingToMessage.isMine ? "você" : activeChat.fullName || activeChat.username}
                     </span>
                   </div>
                   <p className="text-xs text-zinc-700 dark:text-zinc-300 truncate mt-0.5 font-normal">
@@ -4797,13 +4805,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       ? "🎙️ Mensagem de voz"
                       : (replyingToMessage.text || "").startsWith("[image:") || replyingToMessage.mediaType === "image"
                       ? "📷 Foto"
+                      : (replyingToMessage.text || "").startsWith("[video:") || replyingToMessage.mediaType === "video"
+                      ? "🎥 Vídeo"
                       : replyingToMessage.text || "Mensagem"}
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setReplyingToMessage(null)}
-                  className="p-1 rounded-full text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer"
+                  onClick={() => {
+                    setReplyingToMessage(null);
+                    requestAnimationFrame(() => composerRef.current?.focus());
+                  }}
+                  className="p-1.5 rounded-full text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-white/10 active:scale-90 transition-all cursor-pointer"
                   title="Cancelar resposta"
                   aria-label="Cancelar resposta"
                 >
