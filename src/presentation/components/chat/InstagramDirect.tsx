@@ -372,13 +372,24 @@ function canPreviewSharedMediaAsVideo(url?: string): boolean {
  * Quando a Meta entrega mídia direta, reproduz no próprio chat; caso contrário,
  * mantém um card clicável para abrir o compartilhamento.
  */
-function InstagramSharedReelCard({ url, isMine }: { url?: string; isMine: boolean }) {
+function InstagramSharedReelCard({
+  url,
+  isMine,
+  instagramUsername,
+}: {
+  url?: string;
+  isMine: boolean;
+  instagramUsername?: string | null;
+}) {
   const [previewFailed, setPreviewFailed] = useState(false);
   const canPreview = canPreviewSharedMediaAsVideo(url) && !previewFailed;
+  const cleanUsername = String(instagramUsername || "").replace(/^@/, "").replace(/^ig_/, "").trim();
+  const fallbackUrl = cleanUsername ? `https://ig.me/m/${cleanUsername}` : undefined;
+  const openUrl = url && /^https?:\/\//i.test(url) ? url : fallbackUrl;
 
   const openSharedMedia = () => {
-    if (!url || !/^https?:\/\//i.test(url)) return;
-    window.open(url, "_blank", "noopener,noreferrer");
+    if (!openUrl) return;
+    window.open(openUrl, "_blank", "noopener,noreferrer");
   };
 
   return (
@@ -403,9 +414,9 @@ function InstagramSharedReelCard({ url, isMine }: { url?: string; isMine: boolea
         <button
           type="button"
           onClick={openSharedMedia}
-          disabled={!url}
-          className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition ${url ? "cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 active:scale-[0.99]" : "cursor-default"}`}
-          title={url ? "Abrir Reel ou publicação compartilhada" : "Mídia compartilhada indisponível"}
+          disabled={!openUrl}
+          className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition ${openUrl ? "cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 active:scale-[0.99]" : "cursor-default"}`}
+          title={url ? "Abrir Reel ou publicação compartilhada" : openUrl ? "Abrir conversa no Instagram" : "Mídia compartilhada indisponível"}
         >
           <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-[#f09433] via-[#e6683c] via-[#dc2743] to-[#bc1888] shadow-sm">
             <Play className="h-5 w-5 fill-white text-white" />
@@ -416,7 +427,7 @@ function InstagramSharedReelCard({ url, isMine }: { url?: string; isMine: boolea
               Reel compartilhado
             </span>
             <span className={`mt-1 block text-[10px] ${isMine ? "text-white/75" : "text-zinc-600 dark:text-zinc-400"}`}>
-              {url ? "Toque para abrir no Instagram" : "Prévia indisponível"}
+              {url ? "Toque para abrir no Instagram" : openUrl ? "Abrir conversa no Instagram" : "Prévia indisponível"}
             </span>
           </div>
         </button>
@@ -4757,6 +4768,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           <InstagramSharedReelCard
                             isMine={msg.isMine}
                             url={msg.mediaUrl || extractInstagramSharedMediaUrl(msg.text)}
+                            instagramUsername={activeChat.username}
                           />
                         ) : /* 3. Mídia do tipo Vídeo com player nativo */
                         (msg.mediaType === "video" || msg.text.startsWith("[video:")) &&
