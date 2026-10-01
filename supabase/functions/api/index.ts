@@ -3796,7 +3796,7 @@ serve(async (req: Request) => {
         try {
           const { data: profileLane, error: profileLaneError } = await supabase.rpc(
             "claim_autopilot_scheduler_lane",
-            { p_lane: "instagram_profile_enrichment", p_min_interval_seconds: 60 },
+            { p_lane: "instagram_profile_enrichment", p_min_interval_seconds: 15 },
           );
           if (!profileLaneError && profileLane?.success === true) {
             runProfileEnrichment = profileLane.acquired === true;
@@ -3806,17 +3806,17 @@ serve(async (req: Request) => {
         }
 
         if (runProfileEnrichment) {
-          const profilePromise = processInstagramProfileQueue({
-            supabase,
-            resolveProfile: resolveInstagramContactProfile,
-            limit: 4,
-          }).catch((profileError) => {
+          try {
+            const profileResult = await processInstagramProfileQueue({
+              supabase,
+              resolveProfile: resolveInstagramContactProfile,
+              limit: 4,
+            });
+            if (profileResult.claimed > 0) {
+              console.log("[Instagram Profile Queue] cron:tick claimed=" + profileResult.claimed);
+            }
+          } catch (profileError) {
             console.warn("[Instagram Profile Queue] cron:tick falhou:", profileError);
-          });
-          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-            (globalThis as any).EdgeRuntime.waitUntil(profilePromise);
-          } else {
-            void profilePromise;
           }
         }
 

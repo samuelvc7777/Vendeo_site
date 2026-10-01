@@ -59,3 +59,14 @@ test("profile refresh endpoint is origin-limited and reuses the durable profile 
   assert.match(source, /processInstagramProfileQueue/);
   assert.match(source, /limit: 4/);
 });
+
+test("scheduler awaits profile enrichment instead of abandoning background work", () => {
+  const source = fs.readFileSync(
+    new URL("../supabase/functions/api/index.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /p_lane: "instagram_profile_enrichment", p_min_interval_seconds: 15/);
+  assert.match(source, /const profileResult = await processInstagramProfileQueue\(/);
+  assert.doesNotMatch(source, /const profilePromise = processInstagramProfileQueue\(/);
+});
