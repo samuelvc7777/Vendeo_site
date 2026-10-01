@@ -12,9 +12,9 @@ import {
 } from "../supabase/functions/api/openai_brain.ts";
 
 test("LARISSA_INTERACTION_DNA possui versão estável e hash válido", () => {
-  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.6.4");
-  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_6_4_0a26996a");
-  assert.ok(LARISSA_INTERACTION_DNA.includes("=== LARISSA_INTERACTION_DNA (v1.6.4) ==="));
+  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.6.5");
+  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_6_5_9a3f41ce");
+  assert.ok(LARISSA_INTERACTION_DNA.includes("=== LARISSA_INTERACTION_DNA (v1.6.5) ==="));
   assert.ok(LARISSA_INTERACTION_DNA.includes("ZERO PAPAGAIO"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("DEIXE ISSO APARECER"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("não invente análise só para parecer atenciosa"));

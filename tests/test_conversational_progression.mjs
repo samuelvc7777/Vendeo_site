@@ -10,13 +10,14 @@ import {
   runOpenAiBrainTurn,
 } from "../supabase/functions/api/openai_brain.ts";
 
-test("CONTRATO 0: Metadados do DNA v1.6.4 e princípios de Progressão Oportunística", () => {
-  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.6.4");
-  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_6_4_0a26996a");
+test("CONTRATO 0: Metadados do DNA v1.6.5 e princípios de Progressão Oportunística", () => {
+  assert.equal(LARISSA_INTERACTION_DNA_VERSION, "1.6.5");
+  assert.equal(LARISSA_INTERACTION_DNA_HASH, "dna_v1_6_5_9a3f41ce");
   assert.ok(LARISSA_INTERACTION_DNA.includes("Progressão Oportunística"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("CONVERSATIONAL MOMENTUM"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("CONVERSATIONAL MOMENTUM & FIM DO DEAD-END FÁTICO"));
-  assert.ok(LARISSA_INTERACTION_DNA.includes("gancho real > ponte curta no mesmo turno > pergunta direta"));
+  assert.ok(LARISSA_INTERACTION_DNA.includes("Curiosidade espontânea"));
+  assert.ok(LARISSA_INTERACTION_DNA.includes("objetivo é bússola, não urgência"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("Não transforme o limite em discurso de cautela"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("Saudação Simples do Pretendente"));
 });
