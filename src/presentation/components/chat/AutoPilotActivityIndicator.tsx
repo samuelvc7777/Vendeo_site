@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { brainOperatorFetch, checkBrainOperatorSession } from "@/infrastructure/http/brainOperatorApi";
+import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { BrainConsultationPanel } from "./BrainConsultationPanel";
 import { AutoPilotActivityPhase, AutoPilotChatState, AutoPilotCycleEvent } from "@/domain/entities/AutoPilot";
 import {
@@ -622,7 +622,7 @@ function BrainTurnTimeline({
   retryingActionId: string | null;
   onRetryAction: (actionId: string) => void;
   onToggleTurn: (turnId: string) => void;
-  manualResolution: { answer: string; question: string; submitting: boolean; authenticated: boolean };
+  manualResolution: { answer: string; question: string; submitting: boolean };
   onManualResolution: (saveForFuture: boolean) => void;
   onManualResolutionChange: (value: string) => void;
 }) {
@@ -729,7 +729,7 @@ function BrainTurnTimeline({
             </section>
           )}
 
-          {turn.status === "waiting_human" && manualResolution.authenticated && (
+          {turn.status === "waiting_human" && (
             <BrainConsultationPanel
               turnId={turn.turnId || turn.id}
               question={manualResolution.question || "Uma informação factual para continuar."}
@@ -792,7 +792,6 @@ function BrainOperationalConsole({
   deliveryActions,
   runtimeState,
   failedActions,
-  operationsAccessDenied,
   isRetryExhausted,
   isRetryingManual,
   retryingActionId,
@@ -808,14 +807,13 @@ function BrainOperationalConsole({
   deliveryActions: BrainDecisionAction[];
   runtimeState: { activeCycleToken?: string | null };
   failedActions: Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>;
-  operationsAccessDenied: boolean;
   isRetryExhausted: boolean;
   isRetryingManual: boolean;
   retryingActionId: string | null;
   onRetryAction: (actionId: string) => void;
   onManualRetry: () => void;
   onClose: () => void;
-  manualResolution: { answer: string; question: string; submitting: boolean; authenticated: boolean };
+  manualResolution: { answer: string; question: string; submitting: boolean };
   onManualResolution: (saveForFuture: boolean) => void;
   onManualResolutionChange: (value: string) => void;
 }) {
@@ -882,12 +880,11 @@ function BrainOperationalConsole({
           <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-purple-400/25 bg-purple-400/10 text-purple-800 dark:text-purple-200"><BrainCircuit className="h-5 w-5" /></span><div className="min-w-0"><h2 className="truncate text-base font-semibold">Console do Brain</h2><p className="text-xs text-zinc-600 dark:text-zinc-400">Acompanhe o turno atual e consulte o histórico</p></div></div>
           <button type="button" onClick={onClose} aria-label="Fechar console" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"><X className="h-5 w-5" /></button>
         </header>
-        {operationsAccessDenied && <div className="border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-900 dark:text-amber-100">Entre como operador para carregar a linha do tempo e liberar ações autorizadas. <a href={`/operator?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="ml-1 font-semibold underline underline-offset-2">Entrar como operador</a></div>}
         {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-900 dark:text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
         <div ref={scrollContainerRef} onScroll={(event) => { const element = event.currentTarget; followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88; }} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5">
           {activeTurn && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
           {turns.some((turn) => turn !== activeTurn) && <section aria-label="Histórico de turnos"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">Histórico</h3><div className="space-y-2">{turns.filter((turn) => turn !== activeTurn).map((turn) => <BrainTurnTimeline key={turn.id} turn={turn} turnNumber={turns.length - turns.indexOf(turn)} expanded={uiState.expandedTurnIds.has(turn.id)} active={false} failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} />)}</div></section>}
-          {turns.length === 0 && !operationsAccessDenied && <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
+          {turns.length === 0 && <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
         </div>
       </div>
     </div>
@@ -1083,8 +1080,6 @@ export function AutoPilotActivityIndicator({
   const [canonicalDeliveryActions, setCanonicalDeliveryActions] = useState<BrainDecisionAction[]>([]);
   const [failedConfirmedActions, setFailedConfirmedActions] = useState<Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>>([]);
   const [retryingActionId, setRetryingActionId] = useState<string | null>(null);
-  const [operationsAccessDenied, setOperationsAccessDenied] = useState(false);
-  const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
 
   useEffect(() => {
     if (!targetId) return;
@@ -1121,16 +1116,8 @@ export function AutoPilotActivityIndicator({
           }>;
         };
 
-        if (response.status === 401) {
-          if (!cancelled) {
-            setOperatorAuthenticated(false);
-            setOperationsAccessDenied(true);
-          }
-          return;
-        }
         if (!response.ok || result?.success !== true || cancelled) return;
 
-        setOperationsAccessDenied(false);
         const normalizedEvents = (result.events || []).map((event) => ({
           id: event.id,
           cycleId: eventMetadataText(event.metadata || {}, "cycleId") || eventMetadataText(event.metadata || {}, "cycle_id") || undefined,
@@ -1158,23 +1145,7 @@ export function AutoPilotActivityIndicator({
       }
     };
 
-    const initialize = async () => {
-      try {
-        const session = await checkBrainOperatorSession();
-        if (cancelled) return;
-        if (session.authenticated !== true) {
-          setOperatorAuthenticated(false);
-          setOperationsAccessDenied(true);
-          return;
-        }
-        setOperatorAuthenticated(true);
-        void loadCanonicalEvents();
-      } catch {
-        if (!cancelled) setOperationsAccessDenied(true);
-      }
-    };
-
-    void initialize();
+    void loadCanonicalEvents();
     return () => {
       cancelled = true;
       if (pollTimer) window.clearTimeout(pollTimer);
@@ -1182,7 +1153,7 @@ export function AutoPilotActivityIndicator({
   }, [targetId, isConsoleOpen]);
 
   const handleManualFailedAction = async (actionId: string) => {
-    if (!targetId || !operatorAuthenticated || retryingActionId) return;
+    if (!targetId || retryingActionId) return;
     setRetryingActionId(actionId);
     try {
       const response = await brainOperatorFetch("/operator/brain/retry-failed-action", {
@@ -1524,7 +1495,7 @@ export function AutoPilotActivityIndicator({
   };
 
   const handleManualRetryOnce = async () => {
-    if (!targetId || !operatorAuthenticated || isRetryingManual) return;
+    if (!targetId || isRetryingManual) return;
     setIsRetryingManual(true);
     try {
       const res = await brainOperatorFetch("/operator/brain/retry-once", {
@@ -1546,7 +1517,7 @@ export function AutoPilotActivityIndicator({
   };
 
   const handleSubmitManualResolution = async (saveForFuture: boolean) => {
-    if (!targetId || !operatorAuthenticated || !manualResolutionAnswer.trim() || isSubmittingResolution) return;
+    if (!targetId || !manualResolutionAnswer.trim() || isSubmittingResolution) return;
     setIsSubmittingResolution(true);
     try {
       const response = await brainOperatorFetch("/operator/brain/manual-resolution", {
@@ -1589,7 +1560,6 @@ export function AutoPilotActivityIndicator({
           ? "IA iniciando..."
           : copy.title}</span>
         {state.isEnabled && isWorking && <TypingDots compact />}
-        {operationsAccessDenied && <a href="/operator?returnTo=%2F" onClick={(event) => event.stopPropagation()} className="ml-1 shrink-0 text-amber-700 dark:text-amber-300 underline underline-offset-2" title="Entrar como operador para ver eventos do Brain">Operador</a>}
       </span>
     );
   }
@@ -1988,7 +1958,6 @@ export function AutoPilotActivityIndicator({
         deliveryActions={canonicalDeliveryActions}
         runtimeState={{ activeCycleToken: state.activeCycleToken }}
         failedActions={failedConfirmedActions}
-        operationsAccessDenied={operationsAccessDenied}
         isRetryExhausted={isRetryExhausted}
         isRetryingManual={isRetryingManual}
         retryingActionId={retryingActionId}
@@ -1998,7 +1967,7 @@ export function AutoPilotActivityIndicator({
           setIsConsoleOpen(false);
           if (openConsoleRequestId !== undefined) onConsoleOpenRequestDismissed?.(openConsoleRequestId);
         }}
-        manualResolution={{ answer: manualResolutionAnswer, question: formatVisibleBrainIdentity(state.pauseReason), submitting: isSubmittingResolution, authenticated: operatorAuthenticated }}
+        manualResolution={{ answer: manualResolutionAnswer, question: formatVisibleBrainIdentity(state.pauseReason), submitting: isSubmittingResolution }}
         onManualResolution={handleSubmitManualResolution}
         onManualResolutionChange={setManualResolutionAnswer}
       />
