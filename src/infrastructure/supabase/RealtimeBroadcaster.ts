@@ -72,27 +72,6 @@ export interface BroadcastInstagramSeenPayload {
   seenAt: string;
 }
 
-export interface BroadcastTinderMessagePayload {
-  id: string;
-  conversationId: string;
-  senderId: string;
-  text: string;
-  timestamp: string;
-  isMine: boolean;
-  status: "sent" | "sending" | "failed";
-  deliverAt?: number;
-  delaySeconds?: number;
-}
-
-export interface BroadcastTinderConversationPayload {
-  id: string;
-  lastMessage?: string;
-  lastMessageAt?: string;
-  lastDirection?: string;
-  lastStatus?: string;
-  seenAt?: string;
-}
-
 export class RealtimeBroadcaster {
   static async broadcastInstagramMessage(payload: BroadcastInstagramMessagePayload): Promise<void> {
     try {
@@ -139,33 +118,4 @@ export class RealtimeBroadcaster {
     }
   }
 
-  static async broadcastTinderMessage(payload: BroadcastTinderMessagePayload): Promise<void> {
-    try {
-      const channel = await getServerBroadcastChannel();
-      if (channel) {
-        await channel.send({
-          type: "broadcast",
-          event: "tinder_message",
-          payload,
-        });
-      }
-    } catch (err) {
-      console.warn("Aviso ao disparar broadcast de mensagem do Tinder:", err);
-    }
-  }
-
-  static async broadcastTinderConversation(payload: BroadcastTinderConversationPayload): Promise<void> {
-    try {
-      const channel = await getServerBroadcastChannel();
-      if (channel) {
-        await channel.send({
-          type: "broadcast",
-          event: "tinder_conversation_update",
-          payload,
-        });
-      }
-    } catch (err) {
-      console.warn("Aviso ao disparar broadcast de conversa do Tinder:", err);
-    }
-  }
 }

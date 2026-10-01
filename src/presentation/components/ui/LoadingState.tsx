@@ -37,19 +37,14 @@ export function LoadingSpinner({
 }
 
 /**
- * Skeleton para linhas de conversa do Instagram e Tinder
+ * Skeleton para linhas de conversa do Instagram
  */
-export function ConversationSkeleton({ isTinder = false }: { isTinder?: boolean }) {
+export function ConversationSkeleton() {
   return (
     <div className="flex items-center justify-between py-2.5 px-2 rounded-xl">
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
         {/* Avatar Circular com borda sutil */}
-        <Skeleton
-          className={cn(
-            "w-13 h-13 rounded-full shrink-0",
-            isTinder && "ring-1 ring-[#fe3c72]/30"
-          )}
-        />
+        <Skeleton className="w-13 h-13 rounded-full shrink-0" />
 
         {/* Informações da conversa */}
         <div className="min-w-0 flex-1 space-y-2">
@@ -72,15 +67,13 @@ export function ConversationSkeleton({ isTinder = false }: { isTinder?: boolean 
  */
 export function ConversationSkeletonList({
   count = 6,
-  isTinder = false,
 }: {
   count?: number;
-  isTinder?: boolean;
 }) {
   return (
     <div className="space-y-1 divide-y divide-zinc-900/40">
       {Array.from({ length: count }).map((_, idx) => (
-        <ConversationSkeleton key={idx} isTinder={isTinder} />
+        <ConversationSkeleton key={idx} />
       ))}
     </div>
   );

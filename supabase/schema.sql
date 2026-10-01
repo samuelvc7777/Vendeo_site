@@ -30,10 +30,10 @@ CREATE TABLE IF NOT EXISTS public.products (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Tabela de Conversas (Instagram Direct e Tinder)
+-- 4. Tabela de Conversas (Instagram Direct)
 CREATE TABLE IF NOT EXISTS public.conversations (
     id TEXT PRIMARY KEY,
-    platform TEXT NOT NULL CHECK (platform IN ('instagram', 'tinder')),
+    platform TEXT NOT NULL CHECK (platform = 'instagram'),
     username TEXT,
     full_name TEXT NOT NULL,
     avatar TEXT,
@@ -55,15 +55,6 @@ CREATE TABLE IF NOT EXISTS public.messages (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 6. Tabela de Sessões do Tinder
-CREATE TABLE IF NOT EXISTS public.tinder_sessions (
-    id TEXT PRIMARY KEY DEFAULT 'current',
-    token TEXT NOT NULL,
-    is_connected BOOLEAN DEFAULT true,
-    profile_data JSONB,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
 -- =========================================================
 -- ÍNDICES PARA ALTA PERFORMANCE
 -- =========================================================
@@ -81,7 +72,7 @@ ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tinder_sessions ENABLE ROW LEVEL SECURITY;
+
 
 CREATE POLICY "Permitir leitura pública de categorias" ON public.categories FOR SELECT USING (true);
 CREATE POLICY "Permitir leitura pública de produtos" ON public.products FOR SELECT USING (true);
@@ -89,7 +80,7 @@ CREATE POLICY "Permitir inserção de produtos" ON public.products FOR INSERT WI
 
 CREATE POLICY "Permitir acesso a conversas" ON public.conversations FOR ALL USING (true);
 CREATE POLICY "Permitir acesso a mensagens" ON public.messages FOR ALL USING (true);
-CREATE POLICY "Permitir acesso a sessões tinder" ON public.tinder_sessions FOR ALL USING (true);
+
 
 -- =========================================================
 -- CARGA INICIAL (SEEDS)

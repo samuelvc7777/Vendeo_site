@@ -6,7 +6,6 @@ import {
   Search,
   Camera,
   ArrowLeft,
-  Flame,
   Paperclip,
   Sparkles,
   Heart,
@@ -39,12 +38,11 @@ import {
   AlertTriangle,
   RefreshCw,
 } from "lucide-react";
-import { TinderSession } from "@/domain/entities/Tinder";
 import {
   ConversationSkeletonList,
   ChatMessageSkeletonList,
 } from "@/presentation/components/ui/LoadingState";
-import { TinderProfileModal } from "@/presentation/components/tinder/TinderProfileModal";
+import { InstagramProfileModal } from "@/presentation/components/instagram/InstagramProfileModal";
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { ChatFilterModal, SortOrder } from "./ChatFilterModal";
 import { resolveContactAvatar } from "@/domain/services/AvatarResolverService";
@@ -166,7 +164,7 @@ export interface DirectConversation {
   lastActive: string;
   lastMessage: string;
   unread: boolean;
-  type: "instagram" | "tinder";
+  type: "instagram";
   lastSender: "me" | "them";
   lastStatus?: string;
   seenAt?: string;
@@ -184,7 +182,6 @@ export interface DirectConversation {
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
-type TinderFilter = "todos" | "novos" | "sua_vez" | "vez_deles" | "restritos";
 
 const avatarRefreshRequests = new Set<string>();
 
@@ -832,7 +829,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const composerRef = useRef<InstagramChatComposerRef>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const [chatPlatform, setChatPlatform] = useState<"instagram" | "tinder">("instagram");
   const [isLoadingList, setIsLoadingList] = useState(false);
   const [hasCanonicalInstagramSnapshot, setHasCanonicalInstagramSnapshot] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -878,17 +874,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Envio de mensagem automática disparado pelo Piloto Automático
   const handleSendAutoPilotMessage = async (conversationId: string, text: string) => {
-    const targetConv =
-      conversations.find((c) => c.id === conversationId) ||
-      (activeChat?.id === conversationId ? activeChat : null);
-
-    const convType = targetConv?.type || (conversationId.startsWith("tinder_") ? "tinder" : "instagram");
-
-    const endpoint = getApiUrl(
-      convType === "tinder"
-        ? `/api/tinder/messages/${conversationId}`
-        : `/api/instagram/messages/${conversationId}`
-    );
+    const endpoint = getApiUrl(`/api/instagram/messages/${conversationId}`);
 
     const isAudioMsg = text.startsWith("[audio:");
     const audioUrl = isAudioMsg ? text.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1] : undefined;
@@ -896,9 +882,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const nowIso = new Date().toISOString();
     const timeFormatted = formatMessageTime(new Date());
 
-    if (convType === "instagram") {
-      void markItemCompletedByExactText(text.trim());
-    }
+    void markItemCompletedByExactText(text.trim());
 
     const optimisticMsg: DirectMessage = {
       id: tempId,
@@ -1088,29 +1072,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   // Busca e sincroniza mensagens de uma conversa em segundo plano (sem exigir visualização na tela)
   const fetchConversationMessages = useCallback(async (conversationId: string) => {
-    const targetConv =
-      conversations.find((c) => c.id === conversationId) ||
-      (activeChat?.id === conversationId ? activeChat : null);
-
-    const convType = targetConv?.type || (conversationId.startsWith("tinder_") ? "tinder" : "instagram");
-
     await runDeduplicatedConversationFetch(
       messageFetchesRef.current,
       conversationId,
       async () => {
-        let incoming: DirectMessage[] | null = null;
-
-        if (convType === "instagram") {
-          incoming = await loadInstagramMessagesDirect(conversationId);
-        }
+        let incoming = await loadInstagramMessagesDirect(conversationId);
 
         if (incoming === null) {
-          const endpoint = getApiUrl(
-            convType === "tinder"
-              ? `/api/tinder/messages/${conversationId}`
-              : `/api/instagram/messages/${conversationId}`
-          );
-          const res = await fetch(endpoint, { cache: "no-store" });
+          const res = await fetch(getApiUrl(`/api/instagram/messages/${conversationId}`), { cache: "no-store" });
           if (!res.ok) return;
           const data = await res.json();
           incoming = Array.isArray(data?.messages) ? data.messages : [];
@@ -1503,59 +1472,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         : prev
     );
 
-    if (chat.type === "tinder") {
-      if (nextRestricted) {
-        toast.success(`Match ${chat.fullName || chat.username} movido para Restritos.`);
-      } else {
-        toast.success(`Restrição de ${chat.fullName || chat.username} removida.`);
-      }
+    if (nextRestricted) {
+      toast.success(`Conta @${chat.username} movida para Pedidos (Restringidos).`);
     } else {
-      if (nextRestricted) {
-        toast.success(`Conta @${chat.username} movida para Pedidos (Restringidos).`);
-      } else {
-        toast.success(`Restrição de @${chat.username} removida.`);
-      }
+      toast.success(`Restrição de @${chat.username} removida.`);
     }
 
     // 3. Grava no banco Supabase em tempo real (< 50ms)
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
-      if (chat.type === "instagram") {
-        supabase
-          .from("instagram_conversations")
-          .update({
-            is_restricted: nextRestricted,
-            status: nextStatus,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", chat.id)
-          .then(() => {});
-      } else if (chat.type === "tinder") {
-        supabase
-          .from("tinder_conversations")
-          .update({
-            status: nextStatus,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("match_id", chat.id)
-          .then(() => {});
-      }
+      supabase
+        .from("instagram_conversations")
+        .update({
+          is_restricted: nextRestricted,
+          status: nextStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", chat.id)
+        .then(() => {});
     }
 
     // 4. Notifica a API backend em background
-    if (chat.type === "instagram") {
-      fetch(getApiUrl(`/api/instagram/conversations/${chat.id}/restrict`), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isRestricted: nextRestricted }),
-      }).catch(() => {});
-    } else if (chat.type === "tinder") {
-      fetch(getApiUrl(`/api/tinder/matches/${chat.id}/restrict`), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isRestricted: nextRestricted }),
-      }).catch(() => {});
-    }
+    fetch(getApiUrl(`/api/instagram/conversations/${chat.id}/restrict`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isRestricted: nextRestricted }),
+    }).catch(() => {});
   }, [isChatRestricted]);
 
   const cancelPendingImage = useCallback(() => {
@@ -1587,16 +1529,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
-  // Estado da Conexão com o Tinder
-  const [tinderSession, setTinderSession] = useState<TinderSession | null>(null);
-  const tinderSessionRef = useRef<TinderSession | null>(tinderSession);
-  useEffect(() => {
-    tinderSessionRef.current = tinderSession;
-  }, [tinderSession]);
-
   // Filtros
   const [instaFilter, setInstaFilter] = useState<InstagramFilter>("todos");
-  const [tinderFilter, setTinderFilter] = useState<TinderFilter>("todos");
 
   // Carrega conversas reais do Instagram do Supabase (com in-flight dedup e colunas explícitas sem stage_completed_rules)
   const isDirectLoadingConvsRef = useRef<boolean>(false);
@@ -1648,8 +1582,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const publishInstagramRows = (rows: any[]) => {
         const incoming = normalizeInstagramRows(rows);
         setConversations((prev) => {
-          const tinderOnly = prev.filter((c) => c.type === "tinder");
-          const currentInstagram = prev.filter((c) => c.type === "instagram");
+          const currentInstagram = prev;
           const currentById = new Map<string, any>(currentInstagram.map((c) => [c.id, c]));
           const nextById = new Map<string, any>(currentInstagram.map((c) => [c.id, c]));
 
@@ -1672,7 +1605,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             );
           }
 
-          return [...Array.from(nextById.values()), ...tinderOnly];
+          return Array.from(nextById.values());
         });
       };
 
@@ -1782,7 +1715,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       // O fallback HTTP ainda precisa normalizar e publicar o snapshot recebido.
       if (!supabase) {
         setConversations((prev) => {
-          const tinderOnly = prev.filter((c) => c.type === "tinder");
           const updatedInsta = rawConversations.map((c: any) => {
             const lastMsgTime = getMessageTimestampMs(c.lastMessageAt || c.lastActive);
             const readTime = readChatTimestampsRef.current[c.id];
@@ -1809,7 +1741,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               status: isRestr ? "restricted" : (c.status === "restricted" ? "active" : (c.status || "active")),
             };
           });
-          return [...updatedInsta, ...tinderOnly];
+          return updatedInsta;
         });
       }
     } catch (err) {
@@ -1823,62 +1755,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // As páginas já carregadas e os eventos realtime continuam visíveis; uma falha
   // parcial nunca zera a lista atual.
   useEffect(() => {
-    if (chatPlatform !== "instagram" || hasCanonicalInstagramSnapshot) return;
+    if (hasCanonicalInstagramSnapshot) return;
     const retryId = window.setInterval(() => {
       void loadInstagramConversations();
     }, 5000);
     return () => window.clearInterval(retryId);
-  }, [chatPlatform, hasCanonicalInstagramSnapshot, loadInstagramConversations]);
-
-  // Carrega matches reais do Tinder do Supabase / API
-  const loadRealTinderMatches = useCallback(async () => {
-    try {
-      const res = await fetch(getApiUrl("/api/tinder/matches"));
-      if (res.ok) {
-        const data = await res.json();
-        if (data.matches) {
-          setConversations((prev) => {
-            const instagramOnly = prev.filter((c) => c.type === "instagram");
-            const updatedTinder = data.matches.map((m: DirectConversation) => {
-              const lastMsgTime = getMessageTimestampMs(m.lastMessageAt || m.lastActive);
-              const readTime = readChatTimestampsRef.current[m.id];
-              const isRead = m.lastSender === "me" || (readTime && lastMsgTime > 0 && lastMsgTime <= readTime);
-              const isRestr =
-                restrictedChatIdsRef.current.has(m.id) ||
-                Boolean(m.isRestricted || m.status === "restricted");
-              return {
-                ...m,
-                isRestricted: isRestr,
-                status: isRestr ? "restricted" : (m.status === "restricted" ? "active" : (m.status || "active")),
-                unread: isRead ? false : Boolean(m.unread),
-              };
-            });
-            return [...instagramOnly, ...updatedTinder];
-          });
-          setActiveChat((prev) => {
-            if (!prev || prev.type !== "tinder") return prev;
-            const fresh = data.matches.find((m: DirectConversation) => m.id === prev.id);
-            if (!fresh) return prev;
-            const lastMsgTime = getMessageTimestampMs(fresh.lastMessageAt || fresh.lastActive);
-            const readTime = readChatTimestampsRef.current[fresh.id];
-            const isRead = fresh.lastSender === "me" || (readTime && lastMsgTime > 0 && lastMsgTime <= readTime);
-            const isRestr =
-              restrictedChatIdsRef.current.has(fresh.id) ||
-              Boolean(fresh.isRestricted || fresh.status === "restricted");
-            return {
-              ...prev,
-              ...fresh,
-              isRestricted: isRestr,
-              status: isRestr ? "restricted" : (fresh.status === "restricted" ? "active" : (fresh.status || "active")),
-              unread: isRead ? false : Boolean(fresh.unread),
-            };
-          });
-        }
-      }
-    } catch (err) {
-      console.error("Erro ao carregar matches reais do Tinder:", err);
-    }
-  }, []);
+  }, [hasCanonicalInstagramSnapshot, loadInstagramConversations]);
 
   // Atualiza referência atômica para o ID do chat ativo
   activeChatIdRef.current = activeChat?.id || null;
@@ -2357,123 +2239,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     []
   );
 
-  const handleRealtimeTinderMessage = useCallback((msg: RealtimeMessagePayload) => {
-    const isActuallyMine =
-      msg.isMine ||
-      msg.senderId === "me" ||
-      Boolean(
-        tinderSessionRef.current?.profile?.id &&
-          msg.senderId === tinderSessionRef.current.profile.id
-      );
-
-    const formatted: DirectMessage = {
-      id: msg.id,
-      senderId: isActuallyMine ? "me" : msg.senderId,
-      text: msg.text,
-      createdAt: formatMessageTime(msg.timestamp),
-      timestamp: msg.timestamp ? getMessageTimestampMs(msg.timestamp) : Date.now(),
-      sentDate: msg.timestamp
-        ? typeof msg.timestamp === "string"
-          ? msg.timestamp
-          : new Date(msg.timestamp).toISOString()
-        : new Date().toISOString(),
-      isMine: isActuallyMine,
-      status: (msg.status as any) || "sent",
-      deliverAt: msg.status === "sent" ? undefined : (msg.deliverAt || undefined),
-      delaySeconds: msg.status === "sent" ? undefined : (msg.delaySeconds || undefined),
-    };
-
-    setMessages((prev) => {
-      const current = prev[msg.conversationId] || [];
-      let baseList = current;
-      const rawMsg = msg as any;
-      if (rawMsg.oldId) {
-        baseList = current.map((c) =>
-          c.id === rawMsg.oldId
-            ? {
-                ...c,
-                id: msg.id,
-                status: (msg.status as any) || "sent",
-                deliverAt: msg.status === "sent" ? undefined : c.deliverAt,
-                delaySeconds: msg.status === "sent" ? undefined : c.delaySeconds,
-              }
-            : c
-        );
-      }
-      const merged = deduplicateMessages([...baseList, formatted]);
-      return {
-        ...prev,
-        [msg.conversationId]: merged,
-      };
-    });
-
-    setConversations((prevConvs) => {
-      const found = prevConvs.find((c) => c.id === msg.conversationId);
-      if (!found) return prevConvs;
-      const timeFormatted = formatMessageTime(msg.timestamp);
-      const updated: DirectConversation = {
-        ...found,
-        lastMessage: isActuallyMine ? `Você: ${msg.text}` : msg.text,
-        lastSender: isActuallyMine ? "me" : "them",
-        lastActive: timeFormatted,
-        lastMessageAt: msg.timestamp,
-        unread: activeChatIdRef.current === msg.conversationId ? false : !isActuallyMine,
-      };
-      const others = prevConvs.filter((c) => c.id !== msg.conversationId);
-      return [updated, ...others];
-    });
-
-    if (!isActuallyMine) {
-      autoPilotRef.current?.registerClientMessage(msg.conversationId, msg.timestamp);
-      // Sem push para novas mensagens do Tinder/Instagram.
-    }
-
-    if (activeChatIdRef.current === msg.conversationId) {
-      setTimeout(() => scrollToBottom("smooth"), 50);
-    }
-  }, []);
-
-  const handleRealtimeTinderConversationUpdate = useCallback((conv: {
-    id: string;
-    lastMessage?: string;
-    lastMessageAt?: string;
-    lastDirection?: string;
-  }) => {
-    setConversations((prevConvs) => {
-      const idx = prevConvs.findIndex((c) => c.id === conv.id);
-      if (idx === -1) return prevConvs;
-      const target = prevConvs[idx];
-      const isSentByMe = conv.lastDirection === "outbound" || conv.lastDirection === "out";
-      const rawPreview = conv.lastMessage || target.lastMessage || "";
-      const cleanPreview = rawPreview.startsWith("Você: ") ? rawPreview.replace(/^Você:\s*/, "") : rawPreview;
-      const formattedPreview = isSentByMe ? `Você: ${cleanPreview}` : cleanPreview;
-      const timeFormatted = formatMessageTime(conv.lastMessageAt || target.lastActive);
-
-
-      const updated: DirectConversation = {
-        ...target,
-        lastMessage: formattedPreview,
-        lastMessageAt: conv.lastMessageAt || target.lastMessageAt,
-        lastSender: isSentByMe ? "me" : "them",
-        lastActive: timeFormatted,
-        unread: activeChatIdRef.current === conv.id ? false : target.unread,
-      };
-
-      const others = prevConvs.filter((c) => c.id !== conv.id);
-      return [updated, ...others];
-    });
-  }, []);
-
   const { isRealtimeConnected } = useChatRealtime({
     onInstagramMessage: handleRealtimeInstagramMessage,
     onInstagramConversationUpdate: handleRealtimeInstagramConversationUpdate,
     onInstagramConversationInsert: handleRealtimeInstagramConversationInsert,
     onInstagramSeen: handleRealtimeInstagramSeen,
     onInstagramReaction: handleRealtimeInstagramReaction,
-    onTinderMessage: handleRealtimeTinderMessage,
-    onTinderConversationUpdate: handleRealtimeTinderConversationUpdate,
     onAutoPilotStateUpdate: autoPilot.applyRemoteStateUpdate,
-    tinderUserId: tinderSession?.profile?.id,
   });
 
   // Sincroniza saúde do Realtime para suprimir polling de fallback do AutoPilot
@@ -2494,36 +2266,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // Inicialização
   useEffect(() => {
     setIsLoadingList(true);
-    Promise.all([
-      loadInstagramConversations(),
-      checkInstagramStatus(),
-      fetch(getApiUrl("/api/tinder/status"))
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.isConnected) {
-            setTinderSession({
-              token: data.token || "",
-              isConnected: true,
-              profile: data.profile,
-            });
-            return loadRealTinderMatches();
-          } else {
-            setTinderSession(null);
-          }
-        }),
-    ])
+    Promise.all([loadInstagramConversations(), checkInstagramStatus()])
       .catch((e) => console.error("Erro na carga inicial do chat:", e))
       .finally(() => setIsLoadingList(false));
-  }, [loadInstagramConversations, loadRealTinderMatches, checkInstagramStatus]);
-
-  // Sincroniza ao mudar de plataforma
-  useEffect(() => {
-    if (chatPlatform === "tinder") {
-      loadRealTinderMatches();
-    } else {
-      loadInstagramConversations();
-    }
-  }, [chatPlatform, loadInstagramConversations, loadRealTinderMatches]);
+  }, [loadInstagramConversations, checkInstagramStatus]);
 
   // Scroll automático ao abrir chat
   useEffect(() => {
@@ -2580,20 +2326,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       lastMsgFetchAtRef.current = Date.now();
 
       try {
-        let incomingMessages: DirectMessage[] | null = null;
+        let incomingMessages = await loadInstagramMessagesDirect(activeChat.id);
 
-        if (activeChat.type === "instagram") {
-          incomingMessages = await loadInstagramMessagesDirect(activeChat.id);
-        }
-
-        // Tinder ou Supabase browser indisponível: usa API apenas como fallback.
+        // API é fallback quando o client Supabase não está disponível.
         if (incomingMessages === null) {
-          const endpoint = getApiUrl(
-            activeChat.type === "tinder"
-              ? `/api/tinder/messages/${activeChat.id}`
-              : `/api/instagram/messages/${activeChat.id}`
-          );
-          const res = await fetch(endpoint, { cache: "no-store" });
+          const res = await fetch(getApiUrl(`/api/instagram/messages/${activeChat.id}`), { cache: "no-store" });
           if (!res.ok) {
             consecutiveChatFailuresRef.current += 1;
             return;
@@ -2774,58 +2511,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       lastConvFetchAtRef.current = Date.now();
 
       try {
-        // Instagram usa a mesma fonte canônica paginada da carga inicial.
-        // Nunca reconciliamos a inbox com um snapshot HTTP potencialmente parcial.
-        if (chatPlatform === "instagram") {
-          await loadInstagramConversations();
-          consecutiveListFailuresRef.current = 0;
-          return;
-        }
-
-        const endpoint = getApiUrl("/api/tinder/matches");
-        const res = await fetch(endpoint);
-
-        if (!res.ok) {
-          consecutiveListFailuresRef.current += 1;
-        } else {
-          consecutiveListFailuresRef.current = 0;
-          if (!isSubscribed) return;
-          const data = await res.json();
-
-          if (chatPlatform === "tinder" && data?.matches && isSubscribed) {
-            setConversations((prev) => {
-              const instagramOnly = prev.filter((c) => c.type === "instagram");
-              const mergedTinder = data.matches.map((remoteMatch: DirectConversation) => {
-                const local = prev.find((c) => c.id === remoteMatch.id);
-                const isRestr =
-                  restrictedChatIdsRef.current.has(remoteMatch.id) ||
-                  Boolean(local?.isRestricted || remoteMatch.isRestricted || remoteMatch.status === "restricted");
-                const lastMsgTime = getMessageTimestampMs(remoteMatch.lastMessageAt || remoteMatch.lastActive);
-                const readTime = readChatTimestampsRef.current[remoteMatch.id];
-                const isRead =
-                  remoteMatch.lastSender === "me" ||
-                  (readTime && lastMsgTime > 0 && lastMsgTime <= readTime);
-
-                let merged: DirectConversation = {
-                  ...remoteMatch,
-                  isRestricted: isRestr,
-                  status: isRestr ? "restricted" : (remoteMatch.status === "restricted" ? "active" : (remoteMatch.status || "active")),
-                  unread: isRead ? false : Boolean(remoteMatch.unread),
-                };
-
-                if (local && local.lastSender === "me") {
-                  const localTime = local.lastMessageAt ? new Date(local.lastMessageAt).getTime() : 0;
-                  const remoteTime = remoteMatch.lastMessageAt ? new Date(remoteMatch.lastMessageAt).getTime() : 0;
-                  if (localTime >= remoteTime) {
-                    return { ...merged, ...local, isRestricted: isRestr, status: merged.status };
-                  }
-                }
-                return merged;
-              });
-              return [...instagramOnly, ...mergedTinder];
-            });
-          }
-        }
+        // A inbox usa somente a fonte canônica do Instagram.
+        await loadInstagramConversations();
+        consecutiveListFailuresRef.current = 0;
       } catch {
         consecutiveListFailuresRef.current += 1;
       } finally {
@@ -2869,7 +2557,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       window.removeEventListener("focus", handleImmediateListRevalidate);
       document.removeEventListener("visibilitychange", handleImmediateListRevalidate);
     };
-  }, [activeChat, chatPlatform, loadInstagramConversations]);
+  }, [activeChat, loadInstagramConversations]);
   // Iniciar Gravação de Áudio via Microfone
   const handleStartRecording = async () => {
     try {
@@ -3248,11 +2936,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
     // 3. Dispara no endpoint com effectiveDelaySeconds para execução assíncrona no backend
     try {
-      const endpoint = getApiUrl(
-        activeChat.type === "tinder"
-          ? `/api/tinder/messages/${activeChat.id}`
-          : `/api/instagram/messages/${activeChat.id}`
-      );
+      const endpoint = getApiUrl(`/api/instagram/messages/${activeChat.id}`);
 
       const res = await fetch(endpoint, {
         method: "POST",
@@ -3450,13 +3134,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     // Rola instantaneamente para a nova mensagem
     setTimeout(() => scrollToBottom("smooth"), 40);
 
-    // 3. Dispara no endpoint correspondente (Instagram ou Tinder) com payload estruturado de mídia
+    // 3. Dispara no endpoint do Instagram com payload estruturado de mídia
     try {
-      const endpoint = getApiUrl(
-        activeChat.type === "tinder"
-          ? `/api/tinder/messages/${activeChat.id}`
-          : `/api/instagram/messages/${activeChat.id}`
-      );
+      const endpoint = getApiUrl(`/api/instagram/messages/${activeChat.id}`);
 
       console.log("🚀 [Instagram Reply - UI] Disparando envio de mensagem:", {
         text: messageText,
@@ -3646,11 +3326,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         }
       }
 
-      const endpoint = getApiUrl(
-        activeChat.type === "tinder"
-          ? `/api/tinder/messages/${activeChat.id}`
-          : `/api/instagram/messages/${activeChat.id}`
-      );
+      const endpoint = getApiUrl(`/api/instagram/messages/${activeChat.id}`);
 
       const res = await fetch(endpoint, {
         method: "POST",
@@ -3661,8 +3337,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           audioUrl: audioUrlToSend,
           mediaUrl: failedMsg.mediaType === "image" ? failedMsg.mediaUrl : undefined,
           mediaType: failedMsg.mediaType,
-          replyTo: activeChat.type === "instagram" ? failedMsg.replyTo : undefined,
-          replyToMessageId: activeChat.type === "instagram" ? failedMsg.replyToMessageId : undefined,
+          replyTo: failedMsg.replyTo,
+          replyToMessageId: failedMsg.replyToMessageId,
         }),
       });
 
@@ -3749,11 +3425,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     setReplyingToMessage(null);
     onChatOpenChange?.(false);
 
-    if (chatPlatform === "instagram") {
-      loadInstagramConversations();
-    } else {
-      loadRealTinderMatches();
-    }
+    loadInstagramConversations();
 
     // Restaura a posição exata de rolagem da lista
     requestAnimationFrame(() => {
@@ -3761,7 +3433,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         conversationsScrollRef.current.scrollTop = savedScrollTopRef.current;
       }
     });
-  }, [chatPlatform, loadInstagramConversations, loadRealTinderMatches, markConversationAsReadLocally, onChatOpenChange]);
+  }, [loadInstagramConversations, markConversationAsReadLocally, onChatOpenChange]);
 
   // Intercepta o botão voltar físico/gesto do dispositivo (Android/iOS/Navegador)
   useEffect(() => {
@@ -3824,21 +3496,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       });
     }
 
-    const endpoint = getApiUrl(
-      conv.type === "tinder" ? `/api/tinder/messages/${conv.id}` : `/api/instagram/messages/${conv.id}`,
-    );
+    const endpoint = getApiUrl(`/api/instagram/messages/${conv.id}`);
 
     try {
       await runDeduplicatedConversationFetch(messageFetchesRef.current, conv.id, async () => {
         let formatted: DirectMessage[] | null = null;
 
-        // Instagram abre direto do Supabase no browser. Evita a volta
+        // Abre direto do Supabase no browser. Evita a volta
         // browser -> Next API -> Supabase -> browser no caminho crítico.
-        if (conv.type === "instagram") {
-          formatted = await loadInstagramMessagesDirect(conv.id);
-        }
+        formatted = await loadInstagramMessagesDirect(conv.id);
 
-        // Tinder ou falha/indisponibilidade do Supabase browser: mantém API como fallback.
+        // Falha/indisponibilidade do Supabase browser: mantém API como fallback.
         if (formatted === null) {
           const response = await fetch(endpoint, { cache: "no-store" });
           if (!response.ok) throw new Error(`Falha ao carregar mensagens: ${response.status}`);
@@ -3915,15 +3583,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     return () => window.removeEventListener("hashchange", handleHashCheck);
   }, [conversations, handleOpenConversation]);
 
-  // FILTRAGEM DE CONVERSAS BASEADA NA ABA ATIVA E NO FILTRO ESCOLHIDO
+  // FILTRAGEM DE CONVERSAS DO INSTAGRAM
   const isFilterActive =
     sortOrder !== "recentes" ||
-    (chatPlatform === "instagram" && (instaFilter !== "todos" || stageFilter !== "todas" || aiFilter !== "todas")) ||
-    (chatPlatform === "tinder" && tinderFilter !== "todos");
+    instaFilter !== "todos" ||
+    stageFilter !== "todas" ||
+    aiFilter !== "todas";
 
   const platformConversations = conversations.filter(
     (c) =>
-      c.type === chatPlatform &&
       !c.id?.startsWith("__") &&
       c.status !== "system" &&
       c.status !== "vault"
@@ -3938,71 +3606,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     (c) => isChatRestricted(c)
   ).length;
 
-  const tinderRestritosCount = platformConversations.filter(
-    (c) => isChatRestricted(c)
-  ).length;
-
-  const aiEnabledCount = chatPlatform === "instagram"
-    ? platformConversations.filter((c) => c.aiAutoRespond === true).length
-    : 0;
-  const aiDisabledCount = chatPlatform === "instagram"
-    ? platformConversations.filter((c) => c.aiAutoRespond !== true).length
-    : 0;
+  const aiEnabledCount = platformConversations.filter((c) => c.aiAutoRespond === true).length;
+  const aiDisabledCount = platformConversations.filter((c) => c.aiAutoRespond !== true).length;
 
   const filteredConversations = platformConversations
     .filter((c) => {
-      // Filtros do Instagram: Todos, Não respondidos, Respondidos e Pedidos
-      if (chatPlatform === "instagram") {
-        const isRestr = isChatRestricted(c);
-        const isRestrictedOrPending = Boolean(
-          isRestr || c.status === "pending"
-        );
+      const isRestr = isChatRestricted(c);
+      const isRestrictedOrPending = Boolean(isRestr || c.status === "pending");
 
-        // Aba PEDIDOS: reúne pedidos de novas mensagens e contas restringidas
-        if (instaFilter === "pedidos") {
-          if (pedidosSubFilter === "restringidos") {
-            return isRestr;
-          }
-          // todos_pedidos
-          return isRestrictedOrPending;
-        }
-
-        // Para abas principais (todos, respondidos, nao_respondidos):
-        // Contas restringidas e pedidos pendentes NUNCA aparecem na caixa principal! (Oficial Instagram)
-        if (isRestrictedOrPending) {
-          return false;
-        }
-
-        if (instaFilter === "respondidos") return c.lastSender === "me";
-        if (instaFilter === "nao_respondidos") return c.lastSender === "them" || isConversationUnread(c);
-        return true; // todos
-      }
-
-      // Filtros do Tinder: matchs novos / sua vez / vez deles / restritos
-      if (chatPlatform === "tinder") {
-        const isRestr = isChatRestricted(c);
-
-        if (tinderFilter === "restritos") {
+      // Aba PEDIDOS: reúne pedidos de novas mensagens e contas restringidas
+      if (instaFilter === "pedidos") {
+        if (pedidosSubFilter === "restringidos") {
           return isRestr;
         }
-
-        // Matches restritos não aparecem nas abas comuns (todos, novos, sua_vez, vez_deles)
-        if (isRestr) {
-          return false;
-        }
-
-        if (tinderFilter === "novos") return c.isNewMatch;
-        if (tinderFilter === "sua_vez") return c.lastSender === "them" && !c.isNewMatch;
-        if (tinderFilter === "vez_deles") return c.lastSender === "me";
-        return true; // todos
+        return isRestrictedOrPending;
       }
 
+      // Contas restringidas e pedidos pendentes não aparecem na caixa principal.
+      if (isRestrictedOrPending) {
+        return false;
+      }
+
+      if (instaFilter === "respondidos") return c.lastSender === "me";
+      if (instaFilter === "nao_respondidos") return c.lastSender === "them" || isConversationUnread(c);
       return true;
     })
     .filter((c) => {
-      // Filtragem por etapa do funil (Check-ups) é exclusiva do Instagram Direct.
-      if (chatPlatform !== "instagram") return true;
-
       if (stageFilter === "concluidos") {
         return Boolean(c.isConverted);
       }
@@ -4013,7 +3642,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return true;
     })
     .filter((c) => {
-      if (chatPlatform !== "instagram" || aiFilter === "todas") return true;
+      if (aiFilter === "todas") return true;
       if (aiFilter === "com_ia") return c.aiAutoRespond === true;
       return c.aiAutoRespond !== true;
     })
@@ -4142,13 +3771,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return msg;
     });
   }, [activeChat, activeChatMessagesRaw, activeAutoPilotState?.pendingOutboundMessages]);
-  const isTinderChat = activeChat?.type === "tinder";
 
   const beginReplyToMessage = useCallback((message: DirectMessage) => {
-    if (activeChat?.type !== "instagram") return;
     setReplyingToMessage(message);
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, [activeChat?.type]);
+  }, []);
 
   const jumpToRepliedMessage = useCallback((messageId: string) => {
     const target = messageElementRefs.current.get(messageId);
@@ -4198,7 +3825,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               <ArrowLeft className="w-6 h-6 stroke-[2.2]" />
             </button>
 
-            {/* Clique no avatar ou nome para abrir o perfil completo estilo Tinder */}
+            {/* Clique no avatar ou nome para abrir o perfil completo */}
             <div
               onClick={() => {
                 setSelectedProfileForModal(activeChat);
@@ -4212,7 +3839,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 alt={activeChat.fullName || activeChat.username}
                 conversationId={activeChat.id}
                 sizeClassName="w-9 h-9 group-hover:scale-105 transition-transform"
-                ringClassName={isTinderChat ? "ring-2 ring-[#fe3c72]" : ""}
               />
 
               <div className="leading-tight">
@@ -4220,60 +3846,33 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   <span className="text-sm font-semibold tracking-tight text-zinc-950 dark:text-white group-hover:underline">
                     {activeChat.fullName}
                   </span>
-                  {isTinderChat && (
-                    <Flame className="w-3.5 h-3.5 text-[#fe3c72] fill-[#fe3c72]" />
-                  )}
                 </div>
-                {!isTinderChat ? (
-                  <span className="text-[11px] text-zinc-600 dark:text-[#a8a8a8] block">
-                    @{activeChat.username}
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-[#fe3c72]/90 block font-medium">
-                    Toque para ver perfil
-                  </span>
-                )}
+                <span className="text-[11px] text-zinc-600 dark:text-[#a8a8a8] block">
+                  @{activeChat.username}
+                </span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* Botão de Restringir / Remover Restrição (Instagram e Tinder) */}
+            {/* Botão de Restringir / Remover Restrição */}
             <button
               type="button"
               onClick={() => handleToggleRestricted(activeChat)}
               className={`px-2.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 active:scale-95 ${
                 activeChat.isRestricted
-                  ? isTinderChat
-                    ? "bg-[#fe3c72]/20 text-[#fe3c72] border border-[#fe3c72]/40 hover:bg-[#fe3c72]/30"
-                    : "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 hover:bg-amber-500/30"
+                  ? "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 hover:bg-amber-500/30"
                   : "bg-zinc-100 dark:bg-[#1c1c1e] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white border border-zinc-200 dark:border-[#2e2e30]"
               }`}
-              title={
-                activeChat.isRestricted
-                  ? isTinderChat
-                    ? "Remover restrição deste match"
-                    : "Remover restrição desta conta"
-                  : isTinderChat
-                  ? "Restringir match no Tinder"
-                  : "Restringir conta no Instagram"
-              }
+              title={activeChat.isRestricted ? "Remover restrição desta conta" : "Restringir conta no Instagram"}
             >
               <ShieldAlert
                 className={`w-3.5 h-3.5 ${
-                  activeChat.isRestricted
-                    ? isTinderChat
-                      ? "text-[#fe3c72]"
-                      : "text-amber-400"
-                    : "text-zinc-600 dark:text-[#a8a8a8]"
+                  activeChat.isRestricted ? "text-amber-400" : "text-zinc-600 dark:text-[#a8a8a8]"
                 }`}
               />
               <span className="hidden sm:inline">
-                {activeChat.isRestricted
-                  ? isTinderChat
-                    ? "Restrito"
-                    : "Restrita"
-                  : "Restringir"}
+                {activeChat.isRestricted ? "Restrita" : "Restringir"}
               </span>
             </button>
 
@@ -4360,35 +3959,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* Área de Mensagens */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full px-4 pt-3 pb-6 space-y-2.5 scrollbar-none overscroll-contain">
-          {/* Banner de Conversa Restrita (Instagram e Tinder) */}
+          {/* Banner de Conversa Restrita */}
           {activeChat.isRestricted && (
-            <div
-              className={`mx-1 mb-2 px-3.5 py-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs animate-in fade-in duration-150 select-none ${
-                isTinderChat
-                  ? "bg-[#fe3c72]/10 border-[#fe3c72]/30 text-[#fe3c72]"
-                  : "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
-              }`}
-            >
+            <div className="mx-1 mb-2 px-3.5 py-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs animate-in fade-in duration-150 select-none bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200">
               <div className="flex items-center gap-2">
-                <ShieldAlert
-                  className={`w-4 h-4 shrink-0 ${
-                    isTinderChat ? "text-[#fe3c72]" : "text-amber-400"
-                  }`}
-                />
-                <span>
-                  {isTinderChat
-                    ? "Este match está restrito. Fica na aba Restritos e não aparece no feed principal."
-                    : "Esta conta está restrita. Fica na aba Pedidos."}
-                </span>
+                <ShieldAlert className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>Esta conta está restrita. Fica na aba Pedidos.</span>
               </div>
               <button
                 type="button"
                 onClick={() => handleToggleRestricted(activeChat)}
-                className={`text-[11px] font-bold underline cursor-pointer shrink-0 ${
-                  isTinderChat
-                    ? "text-[#fe3c72] hover:text-zinc-950 dark:hover:text-white"
-                    : "text-amber-400 hover:text-zinc-950 dark:hover:text-white"
-                }`}
+                className="text-[11px] font-bold underline cursor-pointer shrink-0 text-amber-400 hover:text-zinc-950 dark:hover:text-white"
               >
                 Desrestringir
               </button>
@@ -4563,17 +4144,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               alt={activeChat.fullName || activeChat.username}
               conversationId={activeChat.id}
               sizeClassName="w-20 h-20 group-hover:scale-105 group-active:scale-95 transition-transform"
-              ringClassName={isTinderChat ? "ring-3 ring-[#fe3c72]" : ""}
             />
             <div>
               <h3 className="text-base font-bold text-zinc-950 dark:text-white flex items-center justify-center gap-1.5 group-hover:underline">
                 {activeChat.fullName}
-                {isTinderChat && (
-                  <Flame className="w-4 h-4 text-[#fe3c72] fill-[#fe3c72]" />
-                )}
               </h3>
-              <p className="text-xs text-[#fe3c72] font-medium">
-                {isTinderChat ? "Toque para ver perfil completo" : `@${activeChat.username}`}
+              <p className="text-xs text-zinc-500 dark:text-[#8e8e8e] font-medium">
+                @{activeChat.username}
               </p>
             </div>
           </div>
@@ -4612,7 +4189,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full scroll-mt-20`}
                   >
                     <InstagramReplyGesture
-                      enabled={!isTinderChat}
+                      enabled
                       isMine={msg.isMine}
                       onReply={() => beginReplyToMessage(msg)}
                     >
@@ -4622,17 +4199,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         }`}
                       >
                         {/* Desktop: ação aparece no hover. Mobile: gesto de arrastar ativa a resposta. */}
-                        {!isTinderChat && (
-                          <button
-                            type="button"
-                            onClick={() => beginReplyToMessage(msg)}
-                            className="hidden sm:inline-flex self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
-                            title="Responder a esta mensagem"
-                            aria-label="Responder a mensagem"
-                          >
-                            <Reply className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => beginReplyToMessage(msg)}
+                          className="hidden sm:inline-flex self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
+                          title="Responder a esta mensagem"
+                          aria-label="Responder a mensagem"
+                        >
+                          <Reply className="w-3.5 h-3.5" />
+                        </button>
 
                       {/* Ícone de falha com clique para retry OU abrir no Instagram se janela 24h expirada */}
                       {msg.isMine && msg.status === "failed" && (
@@ -4660,9 +4235,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       )}
 
                       <div
-                        onDoubleClick={() => {
-                          if (isTinderChat) handleToggleLike(msg.id);
-                        }}
                         className={`relative rounded-2xl text-sm leading-relaxed transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
                           msg.mediaType === "audio" ||
                           msg.mediaType === "video" ||
@@ -4681,9 +4253,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             : "px-4 py-2.5"
                         } ${
                           msg.isMine
-                            ? isTinderChat
-                              ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white rounded-br-[4px]"
-                              : "bg-[#0095f6] text-white rounded-br-[4px]"
+                            ? "bg-[#0095f6] text-white rounded-br-[4px]"
                             : "bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white rounded-bl-[4px]"
                         } ${msg.status === "failed" ? "border border-red-500/50 bg-red-950/30" : ""} ${
                           highlightedReplyTargetId === msg.id
@@ -4806,7 +4376,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             )}
                           </div>
                         ) : /* 5. Mídia compartilhada ou temporária da Meta (Foto/Story) */
-                        !isTinderChat &&
                         (msg.text === "📷 Mídia compartilhada" ||
                           msg.text === "📷 Mídia ou Story" ||
                           msg.text === "📷 Mídia" ||
@@ -5197,8 +4766,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         )}
 
-        {/* Modal de Perfil Completo estilo Tinder */}
-        <TinderProfileModal
+        {/* Modal de Perfil Completo */}
+        <InstagramProfileModal
           isOpen={isProfileModalOpen}
           onClose={() => {
             setIsProfileModalOpen(false);
@@ -5289,31 +4858,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-1 rounded-2xl bg-zinc-100/90 dark:bg-[#151515] p-1">
-            <button
-              onClick={() => setChatPlatform("instagram")}
-              className={`h-9 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                chatPlatform === "instagram"
-                  ? "bg-white dark:bg-[#262626] text-zinc-950 dark:text-white shadow-sm"
-                  : "text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
-              }`}
-            >
-              <Camera className="w-3.5 h-3.5" />
-              Instagram
-            </button>
-
-            <button
-              onClick={() => setChatPlatform("tinder")}
-              className={`h-9 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                chatPlatform === "tinder"
-                  ? "bg-white dark:bg-[#262626] text-[#fe3c72] shadow-sm"
-                  : "text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
-              }`}
-            >
-              <Flame className={`w-3.5 h-3.5 ${chatPlatform === "tinder" ? "fill-[#fe3c72]" : ""}`} />
-              Tinder
-            </button>
-          </div>
         </div>
 
         {/* BANNER DE NOTIFICAÇÃO: PROPOSTAS DA IA AGUARDANDO APROVAÇÃO */}
@@ -5369,9 +4913,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             onClick={() => setShowFilterBar((current) => !current)}
             className={`relative h-10 px-3 rounded-2xl flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 border ${
               showFilterBar || isFilterActive
-                ? chatPlatform === "tinder"
-                  ? "bg-[#fe3c72]/10 text-[#fe3c72] border-[#fe3c72]/25"
-                  : "bg-zinc-950 text-white border-zinc-950 dark:bg-white dark:text-black dark:border-white"
+                ? "bg-zinc-950 text-white border-zinc-950 dark:bg-white dark:text-black dark:border-white"
                 : "bg-zinc-100/80 dark:bg-[#171717] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
             }`}
             title="Mostrar filtros"
@@ -5381,7 +4923,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <SlidersHorizontal className="w-4 h-4 stroke-[1.9]" />
             <span className="text-xs font-semibold hidden sm:inline">Filtros</span>
             {isFilterActive && (
-              <span className={`w-1.5 h-1.5 rounded-full ${chatPlatform === "tinder" ? "bg-[#fe3c72]" : "bg-[#0095f6]"}`} />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0095f6]" />
             )}
           </button>
         </div>
@@ -5402,7 +4944,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* PÍLULAS OFICIAIS DO INSTAGRAM (DESIGN IDÊNTICO AO APP OFICIAL) */}
-        {showFilterBar && chatPlatform === "instagram" && (
+        {showFilterBar && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none select-none animate-in fade-in duration-150">
               <button
@@ -5496,90 +5038,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         )}
 
-        {showFilterBar && chatPlatform === "tinder" && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none select-none animate-in fade-in duration-150">
-              <button
-                onClick={() => setTinderFilter("todos")}
-                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
-                  tinderFilter === "todos"
-                    ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
-                }`}
-              >
-                Todos
-              </button>
-              <button
-                onClick={() => setTinderFilter("novos")}
-                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
-                  tinderFilter === "novos"
-                    ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
-                }`}
-              >
-                Matchs novos
-              </button>
-              <button
-                onClick={() => setTinderFilter("sua_vez")}
-                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
-                  tinderFilter === "sua_vez"
-                    ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
-                }`}
-              >
-                Sua vez
-              </button>
-              <button
-                onClick={() => setTinderFilter("vez_deles")}
-                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer ${
-                  tinderFilter === "vez_deles"
-                    ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
-                }`}
-              >
-                Vez deles
-              </button>
-              <button
-                onClick={() => setTinderFilter("restritos")}
-                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
-                  tinderFilter === "restritos"
-                    ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold shadow-sm"
-                    : "bg-zinc-100 dark:bg-[#262626] text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
-                }`}
-              >
-                <ShieldAlert className="w-3.5 h-3.5" />
-                <span>Restritos</span>
-                {tinderRestritosCount > 0 && (
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold leading-none ${
-                      tinderFilter === "restritos"
-                        ? "bg-black/40 text-zinc-950 dark:text-white"
-                        : "bg-zinc-200 dark:bg-[#383838] text-zinc-950 dark:text-white"
-                    }`}
-                  >
-                    {tinderRestritosCount}
-                  </span>
-                )}
-              </button>
-            </div>
-
-            {/* BANNER EXPLICATIVO DE MATCHES RESTRINGIDOS (DO JEITO DO TINDER) */}
-            {tinderFilter === "restritos" && (
-              <div className="p-3 rounded-2xl bg-rose-50 dark:bg-[#1c1417] border border-[#fe3c72]/30 space-y-1.5 animate-in fade-in duration-150">
-                <div className="flex items-center gap-2 text-xs font-bold text-[#fe3c72]">
-                  <ShieldAlert className="w-4 h-4 text-[#fe3c72]" />
-                  <span>Matches Restritos</span>
-                </div>
-                <p className="text-[11px] text-zinc-600 dark:text-[#a8a8a8] leading-relaxed">
-                  Matches que você restringiu. As conversas não aparecem no seu feed principal do Tinder e ficam guardadas aqui com discrição.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* FILTRO DE IA - Exclusivo Instagram Direct */}
-        {showFilterBar && chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && (
+        {showFilterBar && hasCanonicalInstagramSnapshot && (
           <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
             <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
               <Bot className="w-3.5 h-3.5 text-emerald-400" />
@@ -5642,7 +5102,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* FILTRO DE ETAPAS DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
-        {showFilterBar && chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && stages.length > 0 && (
+        {showFilterBar && hasCanonicalInstagramSnapshot && stages.length > 0 && (
           <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
             <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
               <Layers className="w-3.5 h-3.5 text-sky-400" />
@@ -5730,30 +5190,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* Lista de Conversas Filtradas e Ordenadas */}
         <div className="space-y-0.5 pt-1">
-          {chatPlatform === "instagram" && !hasCanonicalInstagramSnapshot && sortedConversations.length === 0 ? (
+          {!hasCanonicalInstagramSnapshot && sortedConversations.length === 0 ? (
             <div className="py-3 space-y-3">
               <p className="text-center text-[11px] text-zinc-500">Carregando conversas...</p>
-              <ConversationSkeletonList count={6} isTinder={false} />
+              <ConversationSkeletonList count={6} />
             </div>
           ) : isLoadingList && sortedConversations.length === 0 ? (
             <div className="py-1">
-              <ConversationSkeletonList count={6} isTinder={chatPlatform === "tinder"} />
+              <ConversationSkeletonList count={6} />
             </div>
           ) : sortedConversations.length === 0 ? (
             <div className="py-16 text-center space-y-2.5">
-              {chatPlatform === "tinder" ? (
-                <>
-                  <div className="w-12 h-12 rounded-full bg-zinc-100 dark:bg-[#1c1c1e] flex items-center justify-center mx-auto text-[#fe3c72]">
-                    <Flame className="w-6 h-6 stroke-[1.8]" />
-                  </div>
-                  <p className="text-sm font-semibold text-zinc-950 dark:text-white">Nenhum match encontrado</p>
-                  <p className="text-xs text-zinc-500 dark:text-[#737373] max-w-xs mx-auto leading-relaxed">
-                    {tinderSession?.isConnected
-                      ? "Nenhum match corresponde ao filtro selecionado."
-                      : "Conecte sua conta do Tinder na aba Config para carregar seus matches reais."}
-                  </p>
-                </>
-              ) : chatPlatform === "instagram" && isInstagramConnected === false ? (
+              {isInstagramConnected === false ? (
                 <div className="py-14 text-center space-y-3 px-4">
                   <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] flex items-center justify-center mx-auto text-white shadow-lg">
                     <Camera className="w-6 h-6 stroke-[2]" />
@@ -5772,7 +5220,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     Conectar Instagram Oficial
                   </button>
                 </div>
-              ) : chatPlatform === "instagram" && isInstagramConnected === null ? (
+              ) : isInstagramConnected === null ? (
                 <div className="py-10 text-center space-y-2">
                   <div className="w-7 h-7 mx-auto rounded-full border-2 border-zinc-300 dark:border-zinc-700 border-t-zinc-300 animate-spin" />
                   <p className="text-xs text-zinc-500 dark:text-[#737373]">Verificando conexão do Instagram...</p>
@@ -5842,7 +5290,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       alt={conv.fullName || conv.username}
                       conversationId={conv.id}
                       sizeClassName="w-12 h-12"
-                      ringClassName={conv.type === "tinder" ? "ring-2 ring-[#fe3c72]" : ""}
                     />
                   </div>
 
@@ -5855,26 +5302,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       >
                         {conv.fullName}
                       </h4>
-
-                      {/* BADGES DO TINDER */}
-                      {conv.type === "tinder" && (
-                        <>
-                          {conv.isNewMatch ? (
-                            <span className="text-[9px] bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white font-bold px-1.5 py-0.5 rounded-full shrink-0 shadow-sm flex items-center gap-0.5 leading-none">
-                              <Flame className="w-2.5 h-2.5 fill-white" />
-                              Match novo
-                            </span>
-                          ) : conv.lastSender === "them" ? (
-                            <span className="text-[9px] bg-[#fe3c72]/15 text-[#ff7597] border border-[#fe3c72]/30 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none">
-                              Sua vez
-                            </span>
-                          ) : (
-                            <span className="text-[9px] bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border border-zinc-200 dark:border-[#333] font-medium px-1.5 py-0.5 rounded-full shrink-0 leading-none">
-                              Vez deles
-                            </span>
-                          )}
-                        </>
-                      )}
 
                       {/* BADGES DO INSTAGRAM */}
                       {conv.type === "instagram" && isChatRestricted(conv) && (
@@ -5987,9 +5414,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     if (isUnread) {
                       return (
                         <span
-                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                            conv.type === "tinder" ? "bg-[#fe3c72]" : "bg-[#0095f6] shadow-[0_0_0_3px_rgba(0,149,246,0.08)]"
-                          }`}
+                          className="w-2.5 h-2.5 rounded-full shrink-0 bg-[#0095f6] shadow-[0_0_0_3px_rgba(0,149,246,0.08)]"
                           title="Não lida"
                         />
                       );
@@ -6042,8 +5467,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       {/* 2. CHAT ABERTO (CAMADA SOBREPOSTA COM HISTÓRICO SINCRONIZADO) */}
       {renderChatThread()}
 
-      {/* Modal de Perfil Completo estilo Tinder para acesso a partir da lista */}
-      <TinderProfileModal
+      {/* Modal de Perfil Completo para acesso a partir da lista */}
+      <InstagramProfileModal
         isOpen={isProfileModalOpen}
         onClose={() => {
           setIsProfileModalOpen(false);
@@ -6070,17 +5495,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       <ChatFilterModal
         isOpen={isFilterModalOpen}
         onClose={() => setIsFilterModalOpen(false)}
-        platform={chatPlatform}
         sortOrder={sortOrder}
         onSortOrderChange={setSortOrder}
         instaFilter={instaFilter}
         onInstaFilterChange={setInstaFilter}
-        tinderFilter={tinderFilter}
-        onTinderFilterChange={setTinderFilter}
         onReset={() => {
           setSortOrder("recentes");
           setInstaFilter("todos");
-          setTinderFilter("todos");
           setStageFilter("todas");
           setAiFilter("todas");
         }}
@@ -6124,7 +5545,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {/* Lista de Ações do Chat */}
             <div className="space-y-1.5 pt-1">
-              {/* Opção 1: Restringir / Remover Restrição (Instagram e Tinder) */}
+              {/* Opção 1: Restringir / Remover Restrição */}
               <button
                 type="button"
                 onClick={() => {
@@ -6134,9 +5555,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 }}
                 className={`w-full p-3 rounded-xl flex items-center gap-3 transition-all cursor-pointer active:scale-98 text-left ${
                   selectedChatForActionSheet.isRestricted
-                    ? selectedChatForActionSheet.type === "tinder"
-                      ? "bg-[#fe3c72]/15 border border-[#fe3c72]/40 text-[#fe3c72] hover:bg-[#fe3c72]/25"
-                      : "bg-amber-500/15 border border-amber-500/40 text-amber-800 dark:text-amber-200 hover:bg-amber-500/25"
+                    ? "bg-amber-500/15 border border-amber-500/40 text-amber-800 dark:text-amber-200 hover:bg-amber-500/25"
                     : "bg-white dark:bg-[#202022] border border-zinc-200 dark:border-[#2c2c2e] text-zinc-950 dark:text-white hover:bg-zinc-100 dark:hover:bg-[#28282b]"
                 }`}
               >
@@ -6144,32 +5563,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   {selectedChatForActionSheet.isRestricted ? (
                     <ShieldCheck className="w-5 h-5 text-emerald-400" />
                   ) : (
-                    <ShieldAlert
-                      className={`w-5 h-5 ${
-                        selectedChatForActionSheet.type === "tinder"
-                          ? "text-[#fe3c72]"
-                          : "text-amber-400"
-                      }`}
-                    />
+                    <ShieldAlert className="w-5 h-5 text-amber-400" />
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold">
                     {selectedChatForActionSheet.isRestricted
-                      ? selectedChatForActionSheet.type === "tinder"
-                        ? "Remover restrição do match"
-                        : "Remover restrição"
-                      : selectedChatForActionSheet.type === "tinder"
-                      ? "Restringir match"
+                      ? "Remover restrição"
                       : "Restringir conta"}
                   </p>
                   <p className="text-[11px] text-zinc-500 dark:text-[#8e8e8e] truncate">
                     {selectedChatForActionSheet.isRestricted
-                      ? selectedChatForActionSheet.type === "tinder"
-                        ? "Mover de volta para os matches principais"
-                        : "Mover de volta para a caixa de entrada principal"
-                      : selectedChatForActionSheet.type === "tinder"
-                      ? "Ocultar do feed principal e mover para aba Restritos"
+                      ? "Mover de volta para a caixa de entrada principal"
                       : "Mover para aba Pedidos e ocultar presença online"}
                   </p>
                 </div>

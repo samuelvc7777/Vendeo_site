@@ -22,7 +22,7 @@ const supabase = createClient(url, key);
 
 async function test(n) {
   const start = performance.now();
-  const res = await supabase.from("tinder_config").select("id").eq("id", "default").maybeSingle();
+  const res = await supabase.from("instagram_config").select("id").eq("id", "default").maybeSingle();
   const dur = (performance.now() - start).toFixed(2);
   console.log(`Query #${n}: ${dur}ms`);
 }

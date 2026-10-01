@@ -12,7 +12,7 @@ const clientSource = readFileSync(
 );
 
 const postStart = edgeSource.indexOf("// POST: Envio de mensagem com resolução de IGSID");
-const postEnd = edgeSource.indexOf("// 6. TINDER", postStart);
+const postEnd = edgeSource.indexOf("// 8.5. MOTOR DE TRANSCRIÇÃO GROQ CLOUD", postStart);
 assert.ok(postStart >= 0 && postEnd > postStart);
 const instagramPostRoute = edgeSource.slice(postStart, postEnd);
 
@@ -49,11 +49,8 @@ test("retry no app mantém o reply original", () => {
   assert.ok(retryStart >= 0 && retryEnd > retryStart);
   const retrySource = clientSource.slice(retryStart, retryEnd);
 
-  assert.match(retrySource, /replyTo: activeChat\.type === "instagram" \? failedMsg\.replyTo : undefined/);
-  assert.match(
-    retrySource,
-    /replyToMessageId: activeChat\.type === "instagram" \? failedMsg\.replyToMessageId : undefined/
-  );
+  assert.match(retrySource, /replyTo: failedMsg\.replyTo/);
+  assert.match(retrySource, /replyToMessageId: failedMsg\.replyToMessageId/);
 });
 
 test("persistência de reply fica canônica no backend e não depende de update direto do browser", () => {
