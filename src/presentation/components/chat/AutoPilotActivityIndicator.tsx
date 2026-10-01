@@ -47,6 +47,25 @@ import type { BrainDecisionAction, BrainOperationalEvent, DeliveryProjection } f
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating";
 
+type MediaObservationRequest = {
+  kind: "video" | "image";
+  messageId: string;
+  detail: string;
+};
+
+function parseMediaObservationPauseReason(
+  reason?: string | null,
+  detail?: string | null,
+): MediaObservationRequest | null {
+  const match = /^media_observation_required\|(video|image)\|(.+)$/.exec(String(reason || ""));
+  if (!match) return null;
+  return {
+    kind: match[1] as "video" | "image",
+    messageId: match[2],
+    detail: String(detail || "").trim(),
+  };
+}
+
 function getApiUrl(path: string): string {
   const cleanPath = path.startsWith("/api/")
     ? path.replace(/^\/api\//, "/")
@@ -801,6 +820,11 @@ function BrainOperationalConsole({
   manualResolution,
   onManualResolution,
   onManualResolutionChange,
+  mediaObservation,
+  mediaObservationAnswer,
+  mediaObservationSubmitting,
+  onMediaObservationChange,
+  onMediaObservationSubmit,
 }: {
   open: boolean;
   events: AutoPilotCycleEvent[];
@@ -816,6 +840,11 @@ function BrainOperationalConsole({
   manualResolution: { answer: string; question: string; submitting: boolean };
   onManualResolution: (saveForFuture: boolean) => void;
   onManualResolutionChange: (value: string) => void;
+  mediaObservation: MediaObservationRequest | null;
+  mediaObservationAnswer: string;
+  mediaObservationSubmitting: boolean;
+  onMediaObservationChange: (value: string) => void;
+  onMediaObservationSubmit: () => void;
 }) {
   const groupedTurns = attachDeliveryActionsToTurns(groupBrainTurns(events), deliveryActions);
   const selectorRuntime = { ...runtimeState, now: Date.now() };
@@ -882,9 +911,51 @@ function BrainOperationalConsole({
         </header>
         {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-900 dark:text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
         <div ref={scrollContainerRef} onScroll={(event) => { const element = event.currentTarget; followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88; }} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5">
-          {activeTurn && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
+          {mediaObservation && (
+            <section aria-label="Observação de mídia pendente">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3>
+              <div className="rounded-2xl border border-violet-400/30 bg-violet-400/[0.07] p-4">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-violet-400/25 bg-violet-400/10 text-violet-700 dark:text-violet-200">
+                    <AlertTriangle className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">O Brain precisa da sua observação</p>
+                    <p className="mt-1 text-xs leading-5 text-zinc-600 dark:text-zinc-400">
+                      {mediaObservation.detail || (mediaObservation.kind === "video"
+                        ? "Assista ao vídeo ou Reel e descreva o que é relevante para a conversa."
+                        : "Descreva o que aparece na imagem para o Brain continuar.")}
+                    </p>
+                  </div>
+                </div>
+                <textarea
+                  value={mediaObservationAnswer}
+                  onChange={(event) => onMediaObservationChange(event.target.value)}
+                  rows={3}
+                  maxLength={3000}
+                  placeholder={mediaObservation.kind === "video"
+                    ? "Ex: ele mostrou o carro novo e comentou que acabou de comprar..."
+                    : "Ex: selfie dele numa trilha, sorrindo..."}
+                  className="mt-3 min-h-24 w-full resize-y rounded-xl border border-violet-400/25 bg-white/80 p-3 text-sm leading-5 text-zinc-900 outline-none focus:border-violet-400/60 dark:bg-black/25 dark:text-zinc-100"
+                  disabled={mediaObservationSubmitting}
+                />
+                <div className="mt-3 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={onMediaObservationSubmit}
+                    disabled={mediaObservationSubmitting || !mediaObservationAnswer.trim()}
+                    className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {mediaObservationSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                    {mediaObservationSubmitting ? "Retomando..." : "Enviar observação e retomar"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+          {activeTurn && !mediaObservation && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
           {turns.some((turn) => turn !== activeTurn) && <section aria-label="Histórico de turnos"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">Histórico</h3><div className="space-y-2">{turns.filter((turn) => turn !== activeTurn).map((turn) => <BrainTurnTimeline key={turn.id} turn={turn} turnNumber={turns.length - turns.indexOf(turn)} expanded={uiState.expandedTurnIds.has(turn.id)} active={false} failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} />)}</div></section>}
-          {turns.length === 0 && <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
+          {turns.length === 0 && !mediaObservation && <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
         </div>
       </div>
     </div>
@@ -1076,17 +1147,27 @@ export function AutoPilotActivityIndicator({
   const [isRetryingManual, setIsRetryingManual] = useState<boolean>(false);
   const [manualResolutionAnswer, setManualResolutionAnswer] = useState("");
   const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
+  const [mediaObservationAnswer, setMediaObservationAnswer] = useState("");
+  const [isSubmittingMediaObservation, setIsSubmittingMediaObservation] = useState(false);
   const [canonicalEvents, setCanonicalEvents] = useState<AutoPilotCycleEvent[]>([]);
   const [canonicalDeliveryActions, setCanonicalDeliveryActions] = useState<BrainDecisionAction[]>([]);
   const [failedConfirmedActions, setFailedConfirmedActions] = useState<Array<{ id: string; action_type: string; action_index: number; payload?: Record<string, unknown> }>>([]);
   const [retryingActionId, setRetryingActionId] = useState<string | null>(null);
+  const consoleOpen = isConsoleOpen || openConsoleRequestId !== undefined;
+  const mediaObservation = sourceState.status === "waiting_human"
+    ? parseMediaObservationPauseReason(sourceState.pauseReason, sourceState.activity?.detail)
+    : null;
+
+  useEffect(() => {
+    setMediaObservationAnswer("");
+  }, [mediaObservation?.messageId]);
 
   useEffect(() => {
     if (!targetId) return;
 
-    // O painel fechado usa a proje??o Realtime de autopilot_chat_states.
-    // Hist?rico detalhado s? ? consultado quando o console ? aberto.
-    if (!isConsoleOpen) {
+    // O painel fechado usa a projeção Realtime de autopilot_chat_states.
+    // Histórico detalhado só é consultado quando o console é aberto.
+    if (!consoleOpen) {
       setCanonicalEvents([]);
       setCanonicalDeliveryActions([]);
       setFailedConfirmedActions([]);
@@ -1150,7 +1231,33 @@ export function AutoPilotActivityIndicator({
       cancelled = true;
       if (pollTimer) window.clearTimeout(pollTimer);
     };
-  }, [targetId, isConsoleOpen]);
+  }, [targetId, consoleOpen]);
+
+  const handleSubmitMediaObservation = async () => {
+    if (!targetId || !mediaObservation || !mediaObservationAnswer.trim() || isSubmittingMediaObservation) return;
+    setIsSubmittingMediaObservation(true);
+    try {
+      const response = await brainOperatorFetch("/operator/brain/media-observation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: targetId,
+          messageId: mediaObservation.messageId,
+          observation: mediaObservationAnswer.trim(),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success !== true) {
+        throw new Error(result?.error || "Não foi possível registrar a observação.");
+      }
+      setMediaObservationAnswer("");
+      toast.success("Observação registrada. O Brain vai retomar a conversa.");
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível registrar a observação.");
+    } finally {
+      setIsSubmittingMediaObservation(false);
+    }
+  };
 
   const handleManualFailedAction = async (actionId: string) => {
     if (!targetId || retryingActionId) return;
@@ -1953,7 +2060,7 @@ export function AutoPilotActivityIndicator({
         )}
       </div>
       <BrainOperationalConsole
-        open={isConsoleOpen || openConsoleRequestId !== undefined}
+        open={consoleOpen}
         events={canonicalEvents}
         deliveryActions={canonicalDeliveryActions}
         runtimeState={{ activeCycleToken: state.activeCycleToken }}
@@ -1970,6 +2077,11 @@ export function AutoPilotActivityIndicator({
         manualResolution={{ answer: manualResolutionAnswer, question: formatVisibleBrainIdentity(state.pauseReason), submitting: isSubmittingResolution }}
         onManualResolution={handleSubmitManualResolution}
         onManualResolutionChange={setManualResolutionAnswer}
+        mediaObservation={mediaObservation}
+        mediaObservationAnswer={mediaObservationAnswer}
+        mediaObservationSubmitting={isSubmittingMediaObservation}
+        onMediaObservationChange={setMediaObservationAnswer}
+        onMediaObservationSubmit={handleSubmitMediaObservation}
       />
     </div>
   );
