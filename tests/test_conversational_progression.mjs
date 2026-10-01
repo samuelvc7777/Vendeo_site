@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   LARISSA_INTERACTION_DNA,
   LARISSA_INTERACTION_DNA_VERSION,
@@ -20,6 +21,24 @@ test("CONTRATO 0: Metadados do DNA v1.6.5 e princípios de Progressão Oportuní
   assert.ok(LARISSA_INTERACTION_DNA.includes("objetivo é bússola, não urgência"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("Não transforme o limite em discurso de cautela"));
   assert.ok(LARISSA_INTERACTION_DNA.includes("Saudação Simples do Pretendente"));
+});
+
+test("CONTRATO 0B: engajamento antecipado com a rifa exige handoff manual sem resposta automática", () => {
+  const canonical = fs.readFileSync(
+    new URL("../supabase/functions/api/larissa_canonical_prompt.md", import.meta.url),
+    "utf8",
+  );
+  const brain = fs.readFileSync(
+    new URL("../supabase/functions/api/openai_brain.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(canonical, /ENGAJAMENTO ANTECIPADO COM A RIFA EXIGE OPERADOR/);
+  assert.match(canonical, /action="manual_resolution"/);
+  assert.match(canonical, /deixe outboundActions=\[\]/);
+  assert.match(canonical, /NÃO responda sobre a rifa, NÃO avance outro objetivo/);
+  assert.match(brain, /HANDOFF DE RIFA ANTECIPADA/);
+  assert.match(brain, /RIFA ANTECIPADA É HANDOFF, NÃO CONTEÚDO PARA RESPONDER/);
 });
 
 test("CONTRATO 1: Saudação + objetivo cidade pendente -> pode pursue de forma fluida", async () => {
