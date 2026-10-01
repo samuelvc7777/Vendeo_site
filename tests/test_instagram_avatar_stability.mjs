@@ -49,7 +49,7 @@ test("profile refresh endpoint is origin-limited and reuses the durable profile 
   );
 
   assert.match(source, /path === "\/instagram\/profile\/refresh"/);
-  assert.match(source, /brainOperatorAllowedOrigin\(origin\)/);
+  assert.match(source, /brainOperatorAllowedOrigin\(req\)/);
   assert.match(source, /enqueue_instagram_profile_job/);
   assert.match(source, /processInstagramProfileQueue/);
   assert.match(source, /limit: 4/);
