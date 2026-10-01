@@ -846,7 +846,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
   const [isInstagramConnected, setIsInstagramConnected] = useState<boolean | null>(null);
-  const [showFilterBar, setShowFilterBar] = useState(true);
+  const [showFilterBar, setShowFilterBar] = useState(false);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [sortOrder, setSortOrder] = useState<SortOrder>("recentes");
   const [expandedImageUrl, setExpandedImageUrl] = useState<string | null>(null);
@@ -5237,86 +5237,82 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     <div className="relative flex flex-col h-full w-full bg-white dark:bg-black text-zinc-950 dark:text-white overflow-hidden">
       {/* 1. LISTA DE CONVERSAS (OCULTA QUANDO O CHAT ESTIVER ABERTO PARA GARANTIR RIGOROSAMENTE UM ÚNICO SCROLL) */}
       <div className={`flex flex-col h-full w-full overflow-hidden ${activeChat ? "hidden" : ""}`}>
-        {/* ABAS SUPERIORES: INSTAGRAM E TINDER */}
-        <div className="shrink-0 flex items-center border-b border-zinc-200 dark:border-[#262626] bg-white dark:bg-black px-4">
-          <button
-            onClick={() => setChatPlatform("instagram")}
-            className={`flex-1 py-3 text-xs font-bold tracking-wide flex items-center justify-center gap-2 border-b-2 transition-all cursor-pointer ${
-              chatPlatform === "instagram"
-                ? "text-zinc-950 dark:text-white border-zinc-950 dark:border-white"
-                : "text-zinc-500 dark:text-[#737373] border-transparent hover:text-zinc-950 dark:hover:text-white"
-            }`}
-          >
-            <Camera className="w-4 h-4" />
-            Instagram
-          </button>
+        {/* Cabeçalho compacto da caixa de entrada */}
+        <div className="shrink-0 border-b border-zinc-100 dark:border-[#1f1f1f] bg-white/95 dark:bg-black/95 px-4 pt-4 pb-3 backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400 dark:text-[#666]">
+                Caixa de entrada
+              </p>
+              <h2 className="mt-0.5 text-[19px] leading-tight font-semibold tracking-tight text-zinc-950 dark:text-white">
+                Conversas
+              </h2>
+            </div>
 
-          <button
-            onClick={() => setChatPlatform("tinder")}
-            className={`flex-1 py-3 text-xs font-bold tracking-wide flex items-center justify-center gap-2 border-b-2 transition-all cursor-pointer ${
-              chatPlatform === "tinder"
-                ? "text-[#fe3c72] border-[#fe3c72]"
-                : "text-zinc-500 dark:text-[#737373] border-transparent hover:text-zinc-950 dark:hover:text-white"
-            }`}
-          >
-            <Flame
-              className={`w-4 h-4 ${
-                chatPlatform === "tinder" ? "text-[#fe3c72] fill-[#fe3c72]" : ""
-              }`}
-            />
-            Tinder
-          </button>
-
-          {/* Indicador de Realtime WebSocket */}
-          {/* Ações Rápidas: Notificações Móveis e Realtime WebSocket */}
-          <div className="ml-2 pl-2 border-l border-zinc-200 dark:border-[#262626] flex items-center shrink-0 gap-2">
-            {/* Botão Notificações Móveis Push */}
-            <button
-              type="button"
-              onClick={() => {
-                if (!mobileNotifications.remoteRegistered) {
-                  void mobileNotifications.requestPermission();
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!mobileNotifications.remoteRegistered) {
+                    void mobileNotifications.requestPermission();
+                  }
+                }}
+                disabled={mobileNotifications.remoteRegistered || mobileNotifications.isLoading}
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+                  mobileNotifications.remoteRegistered
+                    ? "bg-zinc-100 dark:bg-[#171717] text-emerald-500 cursor-default"
+                    : "bg-zinc-100 dark:bg-[#171717] text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white cursor-pointer"
+                }`}
+                title={
+                  mobileNotifications.remoteRegistered
+                    ? "Notificações móveis ativas"
+                    : "Ativar notificações móveis"
                 }
-              }}
-              disabled={mobileNotifications.remoteRegistered || mobileNotifications.isLoading}
-              className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
-                mobileNotifications.remoteRegistered
-                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 cursor-default"
-                  : "bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 animate-pulse cursor-pointer"
+              >
+                {mobileNotifications.remoteRegistered ? (
+                  <BellRing className="w-4 h-4" />
+                ) : (
+                  <Bell className="w-4 h-4" />
+                )}
+              </button>
+
+              <div
+                className="w-9 h-9 rounded-full bg-zinc-100 dark:bg-[#171717] flex items-center justify-center"
+                title={isRealtimeConnected ? "Sincronização em tempo real ativa" : "Sincronizando conversas"}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isRealtimeConnected ? "bg-emerald-500" : "bg-amber-400 animate-pulse"
+                  }`}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-1 rounded-2xl bg-zinc-100/90 dark:bg-[#151515] p-1">
+            <button
+              onClick={() => setChatPlatform("instagram")}
+              className={`h-9 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                chatPlatform === "instagram"
+                  ? "bg-white dark:bg-[#262626] text-zinc-950 dark:text-white shadow-sm"
+                  : "text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
               }`}
-              title={
-                mobileNotifications.remoteRegistered
-                  ? "Push remoto ativo: chega mesmo com o Vendeo fechado."
-                  : "Vincular este celular aos alertas críticos remotos"
-              }
             >
-              {mobileNotifications.remoteRegistered ? (
-                <BellRing className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <Bell className="w-3.5 h-3.5 text-amber-400" />
-              )}
-              <span className="hidden sm:inline">
-                {mobileNotifications.remoteRegistered
-                  ? "Push ativo"
-                  : mobileNotifications.permission === "granted"
-                  ? "Vincular push"
-                  : "Ativar alertas"}
-              </span>
+              <Camera className="w-3.5 h-3.5" />
+              Instagram
             </button>
 
-            <div
-              className="flex items-center gap-1.5 py-1 text-[10px] text-zinc-600 dark:text-[#a8a8a8] select-none"
-              title={isRealtimeConnected ? "Supabase Realtime WebSocket conectado" : "Sincronizando..."}
+            <button
+              onClick={() => setChatPlatform("tinder")}
+              className={`h-9 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                chatPlatform === "tinder"
+                  ? "bg-white dark:bg-[#262626] text-[#fe3c72] shadow-sm"
+                  : "text-zinc-500 dark:text-[#737373] hover:text-zinc-950 dark:hover:text-white"
+              }`}
             >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isRealtimeConnected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-                }`}
-              />
-              <span className="font-mono text-[9px] font-semibold text-zinc-600 dark:text-zinc-400 hidden xs:inline">
-                {isRealtimeConnected ? "LIVE" : "SYNC"}
-              </span>
-            </div>
+              <Flame className={`w-3.5 h-3.5 ${chatPlatform === "tinder" ? "fill-[#fe3c72]" : ""}`} />
+              Tinder
+            </button>
           </div>
         </div>
 
@@ -5328,11 +5324,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           if (pendingChats.length === 0) return null;
 
           return (
-            <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 dark:from-purple-950/70 dark:via-indigo-950/60 dark:to-purple-950/70 border-b border-purple-200 dark:border-purple-500/30 px-3.5 py-2 text-xs text-purple-800 dark:text-purple-200 flex items-center justify-between gap-2 shrink-0 animate-in fade-in duration-200">
+            <div className="border-b border-zinc-100 dark:border-[#1f1f1f] bg-violet-50/60 dark:bg-violet-500/[0.06] px-4 py-2 text-xs text-zinc-700 dark:text-zinc-300 flex items-center justify-between gap-3 shrink-0 animate-in fade-in duration-200">
               <div className="flex items-center gap-2 truncate">
-                <Sparkles className="w-3.5 h-3.5 text-purple-400 shrink-0 animate-pulse" />
+                <Sparkles className="w-3.5 h-3.5 text-violet-500 shrink-0" />
                 <span className="truncate">
-                  <strong>{pendingChats.length} {pendingChats.length === 1 ? "proposta da IA" : "propostas da IA"}</strong> aguardando revisão e aprovação!
+                  <strong className="font-semibold">{pendingChats.length} {pendingChats.length === 1 ? "revisão pendente" : "revisões pendentes"}</strong>
                 </span>
               </div>
               <button
@@ -5342,7 +5338,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   const targetConv = conversations.find((c) => c.id === targetId);
                   if (targetConv) handleOpenConversation(targetConv);
                 }}
-                className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] shrink-0 cursor-pointer active:scale-95 transition-all shadow-sm"
+                className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1c1c1c] border border-zinc-200 dark:border-[#303030] text-zinc-800 dark:text-zinc-200 font-semibold text-[11px] shrink-0 cursor-pointer active:scale-95 transition-all"
               >
                 Revisar
               </button>
@@ -5353,47 +5349,57 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         {/* Conteúdo com scroll isolado e rastreamento de posição */}
         <div
           ref={conversationsScrollRef}
-          className={`flex-1 ${activeChat ? "overflow-hidden" : "overflow-y-auto"} px-4 py-3 space-y-3 scrollbar-none overscroll-contain`}
+          className={`flex-1 ${activeChat ? "overflow-hidden" : "overflow-y-auto"} px-3.5 py-3 space-y-2 scrollbar-none overscroll-contain`}
         >
-        {/* Barra de Pesquisa e Botão de Filtro na Mesma Linha */}
+        {/* Pesquisa + acesso compacto aos filtros */}
         <div className="flex items-center gap-2 select-none">
           <div className="relative flex-1">
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Pesquisar no ${chatPlatform === "instagram" ? "Instagram" : "Tinder"}`}
-              className="w-full bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white text-xs placeholder-zinc-400 dark:placeholder-[#8e8e8e] rounded-xl pl-9 pr-4 py-2 focus:outline-none"
+              placeholder="Pesquisar conversas"
+              className="w-full rounded-2xl border border-transparent bg-zinc-100/80 dark:bg-[#171717] text-zinc-950 dark:text-white text-sm placeholder-zinc-400 dark:placeholder-[#737373] pl-10 pr-4 py-2.5 focus:outline-none focus:border-zinc-300 dark:focus:border-[#343434] focus:bg-white dark:focus:bg-[#1d1d1d] transition-colors"
             />
-            <Search className="w-3.5 h-3.5 text-zinc-500 dark:text-[#8e8e8e] absolute left-3 top-2.5" />
+            <Search className="w-4 h-4 text-zinc-400 dark:text-[#737373] absolute left-3.5 top-3" />
           </div>
 
           <button
             type="button"
-            onClick={() => setIsFilterModalOpen(true)}
-            className={`relative min-w-[36px] h-8.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 border ${
-              isFilterActive
+            onClick={() => setShowFilterBar((current) => !current)}
+            className={`relative h-10 px-3 rounded-2xl flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 border ${
+              showFilterBar || isFilterActive
                 ? chatPlatform === "tinder"
-                  ? "bg-[#fe3c72]/20 text-[#fe3c72] border-[#fe3c72]/50 shadow-sm"
-                  : "bg-zinc-900 text-white border-zinc-900 shadow-sm dark:bg-white/20 dark:border-white/40"
-                : "bg-zinc-100 dark:bg-[#262626] text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white border-zinc-300 dark:border-[#383838]"
+                  ? "bg-[#fe3c72]/10 text-[#fe3c72] border-[#fe3c72]/25"
+                  : "bg-zinc-950 text-white border-zinc-950 dark:bg-white dark:text-black dark:border-white"
+                : "bg-zinc-100/80 dark:bg-[#171717] text-zinc-500 dark:text-[#8e8e8e] border-transparent hover:text-zinc-950 dark:hover:text-white"
             }`}
-            title="Filtros e ordenação"
-            aria-label="Abrir filtros e ordenação"
+            title="Mostrar filtros"
+            aria-label="Mostrar filtros"
+            aria-expanded={showFilterBar}
           >
-            <SlidersHorizontal className="w-3.5 h-3.5 stroke-[2]" />
-            <span className="text-[11px] font-semibold hidden xs:inline">
-              {sortOrder === "antigas" ? "Mais antigas" : "Filtro"}
-            </span>
+            <SlidersHorizontal className="w-4 h-4 stroke-[1.9]" />
+            <span className="text-xs font-semibold hidden sm:inline">Filtros</span>
             {isFilterActive && (
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  chatPlatform === "tinder" ? "bg-[#fe3c72]" : "bg-[#0095f6]"
-                }`}
-              />
+              <span className={`w-1.5 h-1.5 rounded-full ${chatPlatform === "tinder" ? "bg-[#fe3c72]" : "bg-[#0095f6]"}`} />
             )}
           </button>
         </div>
+
+        {showFilterBar && (
+          <div className="flex items-center justify-between px-0.5">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-zinc-400 dark:text-[#666]">
+              Filtros rápidos
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsFilterModalOpen(true)}
+              className="text-[11px] font-semibold text-zinc-500 dark:text-[#8e8e8e] hover:text-zinc-950 dark:hover:text-white transition-colors"
+            >
+              Ordenar
+            </button>
+          </div>
+        )}
 
         {/* PÍLULAS OFICIAIS DO INSTAGRAM (DESIGN IDÊNTICO AO APP OFICIAL) */}
         {showFilterBar && chatPlatform === "instagram" && (
@@ -5573,7 +5579,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* FILTRO DE IA - Exclusivo Instagram Direct */}
-        {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && (
+        {showFilterBar && chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && (
           <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
             <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
               <Bot className="w-3.5 h-3.5 text-emerald-400" />
@@ -5636,7 +5642,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* FILTRO DE ETAPAS DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
-        {chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && stages.length > 0 && (
+        {showFilterBar && chatPlatform === "instagram" && hasCanonicalInstagramSnapshot && stages.length > 0 && (
           <div className="flex items-center gap-1.5 overflow-x-auto py-1.5 scrollbar-none select-none border-t border-b border-zinc-200 dark:border-[#202020] bg-zinc-50/80 dark:bg-zinc-950/40 -mx-4 px-4">
             <div className="flex items-center gap-1 text-[11px] font-bold text-zinc-600 dark:text-zinc-400 shrink-0 mr-1">
               <Layers className="w-3.5 h-3.5 text-sky-400" />
@@ -5723,7 +5729,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* Lista de Conversas Filtradas e Ordenadas */}
-        <div className="space-y-1 pt-1">
+        <div className="space-y-0.5 pt-1">
           {chatPlatform === "instagram" && !hasCanonicalInstagramSnapshot && sortedConversations.length === 0 ? (
             <div className="py-3 space-y-3">
               <p className="text-center text-[11px] text-zinc-500">Carregando conversas...</p>
@@ -5786,11 +5792,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               return (
                 <React.Fragment key={conv.id}>
                   {showDateDivider && dateLabel && (
-                    <div className="pt-4 pb-1.5 px-2 flex items-center gap-3 select-none">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-[#8e8e8e]">
+                    <div className="pt-4 pb-1 px-2.5 select-none">
+                      <span className="text-[10px] font-medium text-zinc-400 dark:text-[#666]">
                         {dateLabel}
                       </span>
-                      <div className="h-px bg-zinc-100 dark:bg-[#262626] flex-1" />
                     </div>
                   )}
 
@@ -5820,9 +5825,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   cancelLongPress();
                   setSelectedChatForActionSheet(conv);
                 }}
-                className="flex items-center justify-between py-2.5 px-2 rounded-xl hover:bg-zinc-50 dark:hover:bg-[#121212] transition-colors cursor-pointer active:scale-[0.99] select-none"
+                className="flex items-center justify-between py-3 px-2.5 rounded-2xl hover:bg-zinc-100/70 dark:hover:bg-[#121212] transition-colors cursor-pointer active:scale-[0.99] select-none"
               >
-                <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div
                     onClick={(e) => {
                       e.stopPropagation();
@@ -5836,7 +5841,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       src={conv.avatar}
                       alt={conv.fullName || conv.username}
                       conversationId={conv.id}
-                      sizeClassName="w-13 h-13"
+                      sizeClassName="w-12 h-12"
                       ringClassName={conv.type === "tinder" ? "ring-2 ring-[#fe3c72]" : ""}
                     />
                   </div>
@@ -5845,7 +5850,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <h4
                         className={`text-sm tracking-tight truncate ${
-                          isConversationUnread(conv) ? "font-bold text-zinc-950 dark:text-white" : "font-normal text-zinc-950 dark:text-white"
+                          isConversationUnread(conv) ? "font-bold text-zinc-950 dark:text-white" : "font-semibold text-zinc-900 dark:text-zinc-100"
                         }`}
                       >
                         {conv.fullName}
@@ -5879,54 +5884,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         </span>
                       )}
 
-                      {/* BADGE DA ETAPA DO FUNIL (CHECK-UPS) - Exclusivo Instagram Direct */}
-                      {conv.type === "instagram" && (() => {
-                        if (conv.isConverted) {
-                          const raffleStatus = normalizeRaffleCommercialStatus(conv.raffleStatus);
-                          const raffleClass =
-                            raffleStatus === "bought"
-                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35"
-                              : raffleStatus === "offered"
-                              ? "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/35"
-                              : raffleStatus === "not_bought"
-                              ? "bg-rose-500/12 text-rose-700 dark:text-rose-300 border-rose-500/30"
-                              : "bg-zinc-100 dark:bg-[#222] text-zinc-500 dark:text-[#8e8e8e] border-zinc-200 dark:border-[#333]";
-                          return (
-                            <>
-                              <span className="text-[9px] bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
-                                <Trophy className="w-2.5 h-2.5 text-amber-700 dark:text-amber-300" />
-                                Finalizado
-                              </span>
-                              <span className={`text-[9px] border font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none ${raffleClass}`}>
-                                Rifa: {raffleCommercialStatusLabel(raffleStatus)}
-                              </span>
-                            </>
-                          );
-                        }
-                        const currentStageId = conv.currentStageId || stages[0]?.id;
-                        const currentStage = stages.find((s) => s.id === currentStageId);
-                        if (!currentStage) return null;
-                        const color = currentStage.color || "#3b82f6";
-                        return (
-                          <span
-                            className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1 border"
-                            style={{
-                              backgroundColor: `${color}18`,
-                              borderColor: `${color}40`,
-                              color: color,
-                            }}
-                          >
-                            <span
-                              className="w-1.5 h-1.5 rounded-full shrink-0"
-                              style={{ backgroundColor: color }}
-                            />
-                            {currentStage.name}
-                          </span>
-                        );
-                      })()}
-
                     </div>
-                    <div className="flex items-center text-xs text-zinc-600 dark:text-[#a8a8a8] mt-0.5 min-w-0">
+                    <div className="flex items-center text-xs text-zinc-500 dark:text-[#8e8e8e] mt-0.5 min-w-0">
                       {(() => {
                         const isLastMessageSeen =
                           conv.lastSender === "me" &&
@@ -5944,7 +5903,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                                 <span className="text-zinc-500 dark:text-[#8e8e8e] font-normal truncate">Visto</span>
                               ) : (
                                 <span
-                                  className={isConversationUnread(conv) ? "truncate text-zinc-950 dark:text-white font-semibold" : "truncate text-zinc-600 dark:text-[#a8a8a8]"}
+                                  className={isConversationUnread(conv) ? "truncate text-zinc-800 dark:text-zinc-200 font-medium" : "truncate text-zinc-500 dark:text-[#8e8e8e]"}
                                 >
                                   {conv.lastMessage}
                                 </span>
@@ -5960,63 +5919,57 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
                     </div>
 
-                    {conv.type === "instagram" && brainInboxOverviewAvailable && (() => {
-                      const ai = brainInboxOverview[conv.id];
-                      if (!ai) return null;
+                    {conv.type === "instagram" && (() => {
+                      const currentStageId = conv.currentStageId || stages[0]?.id;
+                      const currentStage = stages.find((stage) => stage.id === currentStageId);
+                      const ai = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : null;
+                      const raffleStatus = normalizeRaffleCommercialStatus(conv.raffleStatus);
+                      const showAiState = Boolean(ai || conv.aiAutoRespond);
 
-                      const toneClass =
-                        ai.status === "failed" ? "text-red-400" :
-                        ai.status === "uncertain" ? "text-orange-700 dark:text-orange-300" :
-                        ai.status === "waiting_human" ? "text-violet-700 dark:text-violet-300" :
-                        ai.status === "waiting_delay" || ai.status === "queued" ? "text-amber-700 dark:text-amber-300" :
-                        ai.status === "sending" ? "text-emerald-700 dark:text-emerald-300" :
-                        ai.status === "processing" ? "text-sky-700 dark:text-sky-300" :
-                        ai.status === "completed" ? "text-emerald-400" :
-                        ai.status === "idle" ? "text-cyan-700 dark:text-cyan-300" :
-                        "text-zinc-500 dark:text-[#737373]";
-                      const dotClass =
-                        ai.status === "failed" ? "bg-red-400" :
-                        ai.status === "uncertain" ? "bg-orange-300" :
-                        ai.status === "waiting_human" ? "bg-violet-300" :
-                        ai.status === "waiting_delay" || ai.status === "queued" ? "bg-amber-300" :
-                        ai.status === "sending" ? "bg-emerald-300" :
-                        ai.status === "processing" ? "bg-sky-300" :
-                        ai.status === "completed" ? "bg-emerald-400" :
-                        ai.status === "idle" ? "bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.55)]" :
-                        "bg-[#525252]";
-                      const statusBadgeClass = ai.status === "idle"
-                        ? "rounded-md border border-cyan-400/20 bg-cyan-400/10 px-1.5 py-0.5"
-                        : "";
-                      const objectiveIsCurrent =
-                        ai.status === "processing" ||
-                        ai.status === "sending" ||
-                        ai.status === "waiting_human";
-                      const objectiveText = ai.objectiveLabel
-                        ? `${objectiveIsCurrent ? "Objetivo" : "Último"}: ${ai.objectiveLabel}`
-                        : null;
-                      const actionText = ai.actionTypes?.length
-                        ? ai.actionTypes.map((type) => type === "audio" ? "áudio" : type === "text" ? "texto" : type).join(" + ")
-                        : null;
+                      if (!conv.isConverted && !currentStage && !showAiState) return null;
+
+                      const aiDotClass = !ai
+                        ? "bg-emerald-400"
+                        : ai.status === "failed"
+                        ? "bg-red-400"
+                        : ai.status === "waiting_human"
+                        ? "bg-violet-400"
+                        : ai.status === "waiting_delay" || ai.status === "queued"
+                        ? "bg-amber-400"
+                        : ai.status === "processing"
+                        ? "bg-sky-400"
+                        : ai.status === "sending" || ai.status === "completed"
+                        ? "bg-emerald-400"
+                        : "bg-zinc-400";
 
                       return (
                         <div
-                          className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] leading-4"
-                          title={ai.detail || ai.label}
+                          className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] leading-4 text-zinc-400 dark:text-[#737373]"
+                          title={ai?.detail || ai?.label}
                         >
-                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-                          <span className={`shrink-0 font-semibold ${toneClass}`}>IA</span>
-                          <span className="text-[#525252]">·</span>
-                          <span className={`truncate font-medium ${toneClass} ${statusBadgeClass}`}><InboxAiStatusLabel ai={ai} /></span>
-                          {objectiveText && (
+                          {conv.isConverted ? (
                             <>
-                              <span className="text-[#525252]">·</span>
-                              <span className="truncate text-zinc-500 dark:text-[#8e8e8e]">{objectiveText}</span>
+                              <span className="shrink-0 font-medium text-amber-600 dark:text-amber-400">Finalizado</span>
+                              <span className="text-zinc-300 dark:text-[#383838]">·</span>
+                              <span className="truncate">Rifa: {raffleCommercialStatusLabel(raffleStatus)}</span>
                             </>
-                          )}
-                          {actionText && (ai.status === "sending" || ai.status === "completed") && (
+                          ) : currentStage ? (
                             <>
-                              <span className="text-[#525252]">·</span>
-                              <span className="truncate text-zinc-500 dark:text-[#737373]">{actionText}</span>
+                              <span
+                                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                style={{ backgroundColor: currentStage.color || "#71717a" }}
+                              />
+                              <span className="truncate">{currentStage.name}</span>
+                            </>
+                          ) : null}
+
+                          {showAiState && (
+                            <>
+                              {(conv.isConverted || currentStage) && <span className="text-zinc-300 dark:text-[#383838]">·</span>}
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiDotClass}`} />
+                              <span className="shrink-0">
+                                {ai ? <InboxAiStatusLabel ai={ai} /> : "IA ativa"}
+                              </span>
                             </>
                           )}
                         </div>
@@ -6035,7 +5988,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       return (
                         <span
                           className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                            conv.type === "tinder" ? "bg-[#fe3c72]" : "bg-[#0095f6]"
+                            conv.type === "tinder" ? "bg-[#fe3c72]" : "bg-[#0095f6] shadow-[0_0_0_3px_rgba(0,149,246,0.08)]"
                           }`}
                           title="Não lida"
                         />
