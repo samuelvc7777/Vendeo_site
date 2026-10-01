@@ -89,11 +89,25 @@ test("schema guarda descrição/observação e retoma pelo inbound mais recente"
 test("webhook persiste vídeo como vídeo e a UI oferece observação humana", () => {
   const api = read("supabase/functions/api/index.ts");
   const ui = read("src/presentation/components/chat/InstagramDirect.tsx");
-  assert.match(api, /p_media_type: isAudioMsg \? "audio" : imageUrl \? "image" : videoUrl \? "video" : null/);
+  assert.match(api, /p_media_type: isAudioMsg \? "audio" : imageUrl \? "image" : \(videoUrl \|\| isSharedMedia\) \? "video" : null/);
   assert.match(api, /"\/operator\/brain\/media-observation"/);
   assert.match(ui, /Precisa de observação/);
   assert.match(ui, /media-observation/);
   assert.match(ui, /<video/);
+  assert.match(ui, /InstagramSharedReelCard/);
+  assert.match(ui, /Reel compartilhado/);
+  assert.match(ui, /isSharedObservation/);
+});
+
+test("Reel ou publicação compartilhada é preservado e segue o mesmo gate humano de vídeo", () => {
+  const api = read("supabase/functions/api/index.ts");
+  const queue = read("supabase/functions/api/autopilot_inbound_queue.ts");
+  assert.match(api, /type === "share" \|\| type === "reel"/);
+  assert.match(api, /\[share:\$\{sharedMediaUrl\}\]/);
+  assert.match(api, /"🎞️ Reel ou publicação compartilhada"/);
+  assert.match(api, /\(videoUrl \|\| isSharedMedia\) \? "video"/);
+  assert.match(queue, /startsWith\("\[share:"\)/);
+  assert.match(queue, /Reel ou publicação recebida\. Abra a mídia e descreva/);
 });
 
 test("Brain recebe descrição visual e suspeita de automação exige resolução manual", () => {

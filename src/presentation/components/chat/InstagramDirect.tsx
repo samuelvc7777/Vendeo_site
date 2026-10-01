@@ -347,21 +347,95 @@ function DirectImage({
   );
 }
 
+function isInstagramSharedMediaText(value?: string | null): boolean {
+  const text = String(value || "").trim();
+  return text.startsWith("[share:") || text.startsWith("🎞️ Reel");
+}
+
+function extractInstagramSharedMediaUrl(value?: string | null): string | undefined {
+  const match = String(value || "").match(/^\[share:(https?:\/\/[^\]]+)\]/);
+  return match?.[1];
+}
+
+function canPreviewSharedMediaAsVideo(url?: string): boolean {
+  if (!url) return false;
+  return (
+    url.includes("cdninstagram.com") ||
+    url.includes("fbcdn.net") ||
+    url.includes("lookaside.fbsbx.com") ||
+    /\.mp4(?:$|\?)/i.test(url)
+  );
+}
+
 /**
- * Card Visual de Mídia Compartilhada do Instagram
- * Apresenta fotos, stories e mídias efêmeras com a identidade visual oficial do Instagram
+ * Card visual de Reel/publicação compartilhada.
+ * Quando a Meta entrega mídia direta, reproduz no próprio chat; caso contrário,
+ * mantém um card clicável para abrir o compartilhamento.
  */
+function InstagramSharedReelCard({ url, isMine }: { url?: string; isMine: boolean }) {
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const canPreview = canPreviewSharedMediaAsVideo(url) && !previewFailed;
+
+  const openSharedMedia = () => {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  return (
+    <div className="min-w-[220px] max-w-[320px] overflow-hidden rounded-xl">
+      {canPreview ? (
+        <div className="relative overflow-hidden rounded-xl bg-black">
+          <video
+            src={url}
+            controls
+            playsInline
+            preload="metadata"
+            onError={() => setPreviewFailed(true)}
+            className="block max-h-[420px] w-full object-contain"
+          >
+            Seu navegador não conseguiu reproduzir esta mídia.
+          </video>
+          <div className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/65 px-2 py-1 text-[10px] font-semibold text-white">
+            Reel compartilhado
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={openSharedMedia}
+          disabled={!url}
+          className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition ${url ? "cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 active:scale-[0.99]" : "cursor-default"}`}
+          title={url ? "Abrir Reel ou publicação compartilhada" : "Mídia compartilhada indisponível"}
+        >
+          <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-[#f09433] via-[#e6683c] via-[#dc2743] to-[#bc1888] shadow-sm">
+            <Play className="h-5 w-5 fill-white text-white" />
+            <InstagramIcon className="absolute -bottom-1 -right-1 h-4 w-4 rounded-md bg-black/70 p-0.5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1 leading-tight">
+            <span className={`block text-xs font-semibold ${isMine ? "text-white" : "text-zinc-950 dark:text-white"}`}>
+              Reel compartilhado
+            </span>
+            <span className={`mt-1 block text-[10px] ${isMine ? "text-white/75" : "text-zinc-600 dark:text-zinc-400"}`}>
+              {url ? "Toque para abrir no Instagram" : "Prévia indisponível"}
+            </span>
+          </div>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function InstagramSharedMediaCard({ isMine }: { isMine: boolean }) {
   return (
     <div className="flex items-center gap-3 py-1.5 px-1 min-w-[210px] max-w-[260px] select-none">
       <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#f09433] via-[#e6683c] via-[#dc2743] via-[#cc2366] to-[#bc1888] flex items-center justify-center shrink-0 shadow-md">
-        <Camera className="w-5 h-5 text-zinc-950 dark:text-white stroke-[2.2]" />
+        <Camera className="w-5 h-5 text-white stroke-[2.2]" />
       </div>
       <div className="leading-tight flex-1">
-        <span className="text-xs font-semibold text-zinc-950 dark:text-white block tracking-tight">
+        <span className={`text-xs font-semibold block tracking-tight ${isMine ? "text-white" : "text-zinc-950 dark:text-white"}`}>
           Foto do Instagram
         </span>
-        <span className="text-[10px] text-zinc-600 dark:text-zinc-400 block mt-0.5">
+        <span className={`text-[10px] block mt-0.5 ${isMine ? "text-white/75" : "text-zinc-600 dark:text-zinc-400"}`}>
           Mídia compartilhada
         </span>
       </div>
@@ -911,11 +985,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       let text = String(row.text || "");
       let mediaUrl = row.media_url || undefined;
       let mediaType = row.media_type as "image" | "audio" | "video" | undefined;
+      const isSharedMedia = isInstagramSharedMediaText(text);
 
       if (!mediaUrl && text) {
         const audioMatch = text.match(/^\[audio:(https?:\/\/[^\]]+)\]$/);
         const imageMatch = text.match(/^\[image:(https?:\/\/[^\]]+)\](?:\s*(.*))?$/);
         const videoMatch = text.match(/^\[video:(https?:\/\/[^\]]+)\](?:\s*(.*))?$/);
+        const shareMatch = text.match(/^\[share:(https?:\/\/[^\]]+)\]$/);
         if (audioMatch) {
           mediaUrl = audioMatch[1];
           mediaType = "audio";
@@ -928,10 +1004,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           mediaUrl = videoMatch[1];
           mediaType = "video";
           text = videoMatch[2] || "🎥 Vídeo";
+        } else if (shareMatch) {
+          mediaUrl = shareMatch[1];
+          mediaType = "video";
         }
       }
 
-      if (mediaType === "audio" && (!text || text.startsWith("[audio:"))) {
+      if (isSharedMedia) {
+        mediaType = "video";
+        text = "🎞️ Reel ou publicação compartilhada";
+      } else if (mediaType === "audio" && (!text || text.startsWith("[audio:"))) {
         text = "🎙️ Mensagem de voz";
       } else if (mediaType === "image" && (!text || text.startsWith("[image:"))) {
         text = "📷 Foto";
@@ -945,7 +1027,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         const quoted: any = rawById.get(String(replyToMessageId));
         if (quoted) {
           let quotedText = String(quoted.text || "");
-          if (quotedText.startsWith("[image:")) quotedText = "📷 Foto";
+          if (quotedText.startsWith("[share:")) quotedText = "🎞️ Reel compartilhado";
+          else if (quotedText.startsWith("[image:")) quotedText = "📷 Foto";
           else if (quotedText.startsWith("[audio:")) quotedText = "🎙️ Mensagem de voz";
           else if (quotedText.startsWith("[video:")) quotedText = "🎥 Vídeo";
           replyTo = {
@@ -1796,10 +1879,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     let text = msg.text || "";
     let mediaUrl = msg.mediaUrl || msg.media_url;
     let mediaType = (msg.mediaType || msg.media_type) as "image" | "audio" | "video" | undefined;
+    const isSharedMedia = isInstagramSharedMediaText(text);
 
     if (!mediaUrl && text) {
       const audioMatch = text.match(/^\[audio:(https?:\/\/[^\]]+)\]$/);
       const imageMatch = text.match(/^\[image:(https?:\/\/[^\]]+)\](?:\s*(.*))?$/);
+      const shareMatch = text.match(/^\[share:(https?:\/\/[^\]]+)\]$/);
       if (audioMatch) {
         mediaUrl = audioMatch[1];
         mediaType = "audio";
@@ -1808,7 +1893,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         mediaUrl = imageMatch[1];
         mediaType = "image";
         text = imageMatch[2] || "📷 Foto";
+      } else if (shareMatch) {
+        mediaUrl = shareMatch[1];
+        mediaType = "video";
       }
+    }
+
+    if (isSharedMedia) {
+      mediaType = "video";
+      text = "🎞️ Reel ou publicação compartilhada";
     }
 
     const realtimeReplyToMid = msg.replyToMessageId || (msg as any).reply_to_message_id || null;
@@ -3264,7 +3357,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           id: replyingToMessage.id,
           senderId: replyingToMessage.senderId,
           senderName: replyingToMessage.isMine ? "Você" : activeChat.fullName || activeChat.username,
-          text: replyingToMessage.text || (replyingToMessage.mediaType === "audio" ? "🎙️ Mensagem de voz" : replyingToMessage.mediaType === "image" ? "📷 Foto" : "Mensagem"),
+          text: isInstagramSharedMediaText(replyingToMessage.text)
+            ? "🎞️ Reel compartilhado"
+            : replyingToMessage.text || (replyingToMessage.mediaType === "audio" ? "🎙️ Mensagem de voz" : replyingToMessage.mediaType === "image" ? "📷 Foto" : replyingToMessage.mediaType === "video" ? "🎥 Vídeo" : "Mensagem"),
         }
       : undefined;
 
@@ -4026,7 +4121,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             senderId: quoted ? quoted.senderId : "",
             senderName: msg.isMine ? activeContactName : "Você",
             text: quoted
-              ? (quoted.text || (quoted.mediaType === "audio" ? "🎙️ Mensagem de voz" : "📷 Foto"))
+              ? (isInstagramSharedMediaText(quoted.text)
+                  ? "🎞️ Reel compartilhado"
+                  : quoted.text || (quoted.mediaType === "audio" ? "🎙️ Mensagem de voz" : quoted.mediaType === "video" ? "🎥 Vídeo" : "📷 Foto"))
               : "Mensagem respondida",
           },
         };
@@ -4295,6 +4392,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             if (currentChatState.status === "waiting_human") {
               const mediaObservation = parseMediaObservationPauseReason(currentChatState.pauseReason);
               if (mediaObservation) {
+                const observedMessage = chatMessages.find((message) => message.id === mediaObservation.messageId);
+                const isSharedObservation =
+                  mediaObservation.kind === "video" &&
+                  isInstagramSharedMediaText(observedMessage?.text);
                 return (
                   <div className="mx-1 mb-2.5 p-3.5 rounded-xl border bg-violet-500/10 border-violet-500/35 text-violet-950 dark:text-violet-100 shadow-lg shadow-violet-500/5 animate-in fade-in slide-in-from-top-2 duration-200">
                     <div className="flex items-start gap-2.5">
@@ -4304,7 +4405,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       <div className="min-w-0 flex-1">
                         <h5 className="text-xs font-bold text-violet-800 dark:text-violet-200">Precisa de observação</h5>
                         <p className="text-[11px] text-zinc-700 dark:text-zinc-300 mt-0.5 leading-snug">
-                          {mediaObservation.kind === "video"
+                          {isSharedObservation
+                            ? "Reel ou publicação recebida. Abra a mídia e descreva abaixo o que é relevante para a conversa."
+                            : mediaObservation.kind === "video"
                             ? "Vídeo recebido. Assista à mensagem e descreva abaixo o que é relevante para a conversa."
                             : "Não consegui interpretar a foto automaticamente. Descreva abaixo o que aparece nela."}
                         </p>
@@ -4314,7 +4417,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       <textarea
                         value={mediaObservationText}
                         onChange={(event) => setMediaObservationText(event.target.value)}
-                        placeholder={mediaObservation.kind === "video"
+                        placeholder={isSharedObservation
+                          ? "Ex: é um Reel de casal viajando e a legenda fala sobre construir uma vida juntos..."
+                          : mediaObservation.kind === "video"
                           ? "Ex: ele mostrou o carro novo e falou que acabou de comprar..."
                           : "Ex: selfie dele numa trilha, sorrindo..."}
                         rows={2}
@@ -4602,7 +4707,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               </span>
                             </div>
                             <p className="text-[11px] truncate block w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap opacity-85 mt-0.5 font-normal">
-                              {(msg.replyTo.text || "").startsWith("[audio:")
+                              {isInstagramSharedMediaText(msg.replyTo.text)
+                                ? "🎞️ Reel compartilhado"
+                                : (msg.replyTo.text || "").startsWith("[audio:")
                                 ? "🎙️ Mensagem de voz"
                                 : (msg.replyTo.text || "").startsWith("[image:")
                                 ? "📷 Foto"
@@ -4645,7 +4752,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               </div>
                             );
                           })()
-                        ) : /* 2. Mídia do tipo Vídeo com player nativo */
+                        ) : /* 2. Reel/publicação compartilhada */
+                        isInstagramSharedMediaText(msg.text) ? (
+                          <InstagramSharedReelCard
+                            isMine={msg.isMine}
+                            url={msg.mediaUrl || extractInstagramSharedMediaUrl(msg.text)}
+                          />
+                        ) : /* 3. Mídia do tipo Vídeo com player nativo */
                         (msg.mediaType === "video" || msg.text.startsWith("[video:")) &&
                         (msg.mediaUrl || msg.text.match(/^\[video:(https?:\/\/[^\]]+)\]/)?.[1]) ? (
                           <video
@@ -4661,7 +4774,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           >
                             Seu navegador não conseguiu reproduzir este vídeo.
                           </video>
-                        ) : /* 3. Mídia do tipo Imagem / Foto com URL */
+                        ) : /* 4. Mídia do tipo Imagem / Foto com URL */
                         (msg.mediaType === "image" || msg.text.startsWith("[image:")) &&
                         (msg.mediaUrl || msg.text.match(/^\[image:(https?:\/\/[^\]]+)\]/)?.[1]) ? (
                           <div>
@@ -4680,7 +4793,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               </p>
                             )}
                           </div>
-                        ) : /* 4. Mídia compartilhada ou temporária da Meta (Foto/Story) */
+                        ) : /* 5. Mídia compartilhada ou temporária da Meta (Foto/Story) */
                         !isTinderChat &&
                         (msg.text === "📷 Mídia compartilhada" ||
                           msg.text === "📷 Mídia ou Story" ||
@@ -4688,7 +4801,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           (msg.mediaType === "image" && !msg.mediaUrl)) ? (
                           <InstagramSharedMediaCard isMine={msg.isMine} />
                         ) : (
-                          /* 5. Mensagem de texto tradicional */
+                          /* 6. Mensagem de texto tradicional */
                           <p className="whitespace-pre-wrap break-words [word-break:break-word] [overflow-wrap:anywhere] min-w-0 max-w-full">{msg.text}</p>
                         )}
 
@@ -4912,7 +5025,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     </span>
                   </div>
                   <p className="text-xs text-zinc-700 dark:text-zinc-300 truncate mt-0.5 font-normal">
-                    {(replyingToMessage.text || "").startsWith("[audio:") || replyingToMessage.mediaType === "audio"
+                    {isInstagramSharedMediaText(replyingToMessage.text)
+                      ? "🎞️ Reel compartilhado"
+                      : (replyingToMessage.text || "").startsWith("[audio:") || replyingToMessage.mediaType === "audio"
                       ? "🎙️ Mensagem de voz"
                       : (replyingToMessage.text || "").startsWith("[image:") || replyingToMessage.mediaType === "image"
                       ? "📷 Foto"

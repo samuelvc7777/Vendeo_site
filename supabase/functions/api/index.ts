@@ -70,6 +70,21 @@ function getSupabaseClient() {
   return createClient(url, key);
 }
 
+function isInstagramSharedMediaAttachment(att: any): boolean {
+  const type = String(att?.type || att?.media_type || "").toLowerCase();
+  return type === "share" || type === "reel" || type === "ig_reel" || type === "media_share";
+}
+
+function getInstagramAttachmentUrl(att: any): string | undefined {
+  const value =
+    att?.payload?.url ||
+    att?.file_url ||
+    att?.url ||
+    att?.image_data?.url ||
+    null;
+  return value ? String(value) : undefined;
+}
+
 async function hasWaitingManualBrainTurn(
   supabase: any,
   conversationId: string,
@@ -501,13 +516,20 @@ serve(async (req: Request) => {
             const messageId = message.mid || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
             let text = message.text || "";
+            const sharedAttachment = message.attachments?.find((a: any) => isInstagramSharedMediaAttachment(a));
+            const isSharedMedia = Boolean(sharedAttachment);
             const isAudioMsg =
-              Boolean(message.is_unsupported) ||
-              message.attachments?.some((a: any) => a.type === "audio" || a.mime_type?.includes("audio"));
+              !isSharedMedia && (
+                Boolean(message.is_unsupported) ||
+                message.attachments?.some((a: any) => a.type === "audio" || a.mime_type?.includes("audio"))
+              );
 
             let audioUrl: string | undefined;
             let imageUrl: string | undefined;
             let videoUrl: string | undefined;
+            let sharedMediaUrl: string | undefined = isSharedMedia
+              ? getInstagramAttachmentUrl(sharedAttachment)
+              : undefined;
 
             if (isAudioMsg) {
               const firstAtt = message.attachments?.[0];
@@ -550,6 +572,10 @@ serve(async (req: Request) => {
               }
 
               text = audioUrl ? `[audio:${audioUrl}]` : "🎙️ Mensagem de voz";
+            } else if (isSharedMedia) {
+              text = sharedMediaUrl
+                ? `[share:${sharedMediaUrl}]`
+                : "🎞️ Reel ou publicação compartilhada";
             } else if (!text && message.attachments && message.attachments.length > 0) {
               const att = message.attachments[0];
               if (att.type === "image" && att.payload?.url) {
@@ -567,6 +593,8 @@ serve(async (req: Request) => {
 
             const previewText = isAudioMsg
               ? "🎙️ Mensagem de voz"
+              : isSharedMedia
+              ? "🎞️ Reel ou publicação compartilhada"
               : imageUrl
               ? "📷 Foto"
               : videoUrl
@@ -617,7 +645,7 @@ serve(async (req: Request) => {
 
             const inboundIsActionable = !isEcho && isActionableInboundMessage({
               text,
-              mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : undefined,
+              mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : (videoUrl || isSharedMedia) ? "video" : undefined,
               audioTranscript,
             });
 
@@ -633,8 +661,8 @@ serve(async (req: Request) => {
                     p_text: text,
                     p_timestamp: timestamp,
                     p_preview_text: previewText,
-                    p_media_url: audioUrl || imageUrl || videoUrl || null,
-                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : null,
+                    p_media_url: audioUrl || imageUrl || videoUrl || sharedMediaUrl || null,
+                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : (videoUrl || isSharedMedia) ? "video" : null,
                     p_reply_to_message_id: replyToMid,
                     p_audio_transcript: audioTranscript,
                     p_audio_transcription_error: audioTranscriptionError,
@@ -686,8 +714,8 @@ serve(async (req: Request) => {
                     p_text: text,
                     p_timestamp: timestamp,
                     p_preview_text: previewText,
-                    p_media_url: audioUrl || imageUrl || videoUrl || null,
-                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : null,
+                    p_media_url: audioUrl || imageUrl || videoUrl || sharedMediaUrl || null,
+                    p_media_type: isAudioMsg ? "audio" : imageUrl ? "image" : (videoUrl || isSharedMedia) ? "video" : null,
                     p_reply_to_message_id: replyToMid,
                     p_audio_transcript: audioTranscript,
                     p_audio_transcription_error: audioTranscriptionError,
@@ -726,8 +754,8 @@ serve(async (req: Request) => {
                       timestamp,
                       isMine: true,
                       status: "sent",
-                      mediaUrl: audioUrl || imageUrl || videoUrl,
-                      mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : videoUrl ? "video" : undefined,
+                      mediaUrl: audioUrl || imageUrl || videoUrl || sharedMediaUrl,
+                      mediaType: isAudioMsg ? "audio" : imageUrl ? "image" : (videoUrl || isSharedMedia) ? "video" : undefined,
                       replyToMessageId: replyToMid,
                     },
                   });
@@ -1581,16 +1609,34 @@ serve(async (req: Request) => {
             const existing = existingMap.get(m.id);
 
             let text = m.message || "";
+            const attachmentData = m.attachments?.data || [];
+            const sharedAtt = attachmentData.find((a: any) => isInstagramSharedMediaAttachment(a));
+            const isSharedMedia = Boolean(sharedAtt);
+            const hasKnownVisual = attachmentData.some((a: any) =>
+              isInstagramSharedMediaAttachment(a) ||
+              a.type === "image" ||
+              a.type === "video" ||
+              Boolean(a.image_data?.url)
+            );
             const isAudio =
-              Boolean(m.is_unsupported) ||
-              (!m.message && Boolean(m.attachments)) ||
-              m.attachments?.data?.some((a: any) => a.mime_type?.includes("audio") || a.type === "audio");
+              !isSharedMedia && (
+                Boolean(m.is_unsupported) ||
+                attachmentData.some((a: any) => a.mime_type?.includes("audio") || a.type === "audio") ||
+                (!m.message && attachmentData.length > 0 && !hasKnownVisual && attachmentData.some((a: any) => a.file_url))
+              );
 
             let audioUrl: string | undefined;
             let imageUrl: string | undefined;
+            let videoUrl: string | undefined;
+            let sharedMediaUrl: string | undefined;
 
-            if (isAudio) {
-              const att = m.attachments?.data?.[0];
+            if (isSharedMedia) {
+              sharedMediaUrl = getInstagramAttachmentUrl(sharedAtt);
+              text = sharedMediaUrl
+                ? `[share:${sharedMediaUrl}]`
+                : (existing?.text || "🎞️ Reel ou publicação compartilhada");
+            } else if (isAudio) {
+              const att = attachmentData[0];
               if (att?.file_url) {
                 audioUrl = att.file_url;
               }
@@ -1599,11 +1645,14 @@ serve(async (req: Request) => {
                 audioUrl = existing.media_url;
               }
               text = audioUrl ? `[audio:${audioUrl}]` : (existing?.text || "🎙️ Mensagem de voz");
-            } else if (!text && m.attachments?.data?.length > 0) {
-              const att = m.attachments.data[0];
+            } else if (!text && attachmentData.length > 0) {
+              const att = attachmentData[0];
               if (att.image_data?.url) {
                 imageUrl = att.image_data.url;
                 text = `[image:${imageUrl}]`;
+              } else if (att.type === "video") {
+                videoUrl = getInstagramAttachmentUrl(att);
+                text = videoUrl ? `[video:${videoUrl}]` : (existing?.text || "🎥 Vídeo");
               } else if (att.file_url) {
                 audioUrl = att.file_url;
                 text = `[audio:${audioUrl}]`;
@@ -1611,13 +1660,15 @@ serve(async (req: Request) => {
             }
 
             // Preserva mídias existentes no banco se a consulta da Meta vier vazia
-            const finalMediaUrl = audioUrl || imageUrl || existing?.media_url || null;
-            const finalMediaType = (audioUrl || existing?.media_type === "audio" || existing?.text?.startsWith("[audio:"))
+            const finalMediaUrl = sharedMediaUrl || videoUrl || audioUrl || imageUrl || existing?.media_url || null;
+            const finalMediaType = (isSharedMedia || videoUrl || existing?.media_type === "video" || existing?.text?.startsWith("[video:") || existing?.text?.startsWith("[share:"))
+              ? "video"
+              : (audioUrl || existing?.media_type === "audio" || existing?.text?.startsWith("[audio:"))
               ? "audio"
               : (imageUrl || existing?.media_type === "image" || existing?.text?.startsWith("[image:"))
               ? "image"
               : null;
-            const textToSave = text || existing?.text || (isAudio ? "🎙️ Mensagem de voz" : "📷 Mídia compartilhada");
+            const textToSave = text || existing?.text || (isSharedMedia ? "🎞️ Reel ou publicação compartilhada" : isAudio ? "🎙️ Mensagem de voz" : "📷 Mídia compartilhada");
 
             await supabase.from("instagram_messages").upsert({
               id: m.id,
@@ -1796,39 +1847,62 @@ serve(async (req: Request) => {
                     const existing = existingMap.get(m.id);
 
                     let text = m.message || "";
+                    const attachmentData = m.attachments?.data || [];
+                    const sharedAtt = attachmentData.find((a: any) => isInstagramSharedMediaAttachment(a));
+                    const isSharedMedia = Boolean(sharedAtt);
+                    const hasKnownVisual = attachmentData.some((a: any) =>
+                      isInstagramSharedMediaAttachment(a) ||
+                      a.type === "image" ||
+                      a.type === "video" ||
+                      Boolean(a.image_data?.url)
+                    );
                     let audioUrl: string | undefined;
                     let imageUrl: string | undefined;
+                    let videoUrl: string | undefined;
+                    let sharedMediaUrl: string | undefined;
 
                     const isAudio =
-                      Boolean(m.is_unsupported) ||
-                      (!m.message && Boolean(m.attachments)) ||
-                      m.attachments?.data?.some((a: any) => a.mime_type?.includes("audio") || a.type === "audio");
+                      !isSharedMedia && (
+                        Boolean(m.is_unsupported) ||
+                        attachmentData.some((a: any) => a.mime_type?.includes("audio") || a.type === "audio") ||
+                        (!m.message && attachmentData.length > 0 && !hasKnownVisual && attachmentData.some((a: any) => a.file_url))
+                      );
 
-                    if (isAudio) {
-                      const att = m.attachments?.data?.[0];
+                    if (isSharedMedia) {
+                      sharedMediaUrl = getInstagramAttachmentUrl(sharedAtt);
+                      text = sharedMediaUrl
+                        ? `[share:${sharedMediaUrl}]`
+                        : (existing?.text || "🎞️ Reel ou publicação compartilhada");
+                    } else if (isAudio) {
+                      const att = attachmentData[0];
                       if (att?.file_url) audioUrl = att.file_url;
                       if (!audioUrl && existing?.media_url && (existing.media_type === "audio" || existing.text?.startsWith("[audio:"))) {
                         audioUrl = existing.media_url;
                       }
                       text = audioUrl ? `[audio:${audioUrl}]` : (existing?.text || "🎙️ Mensagem de voz");
-                    } else if (!text && m.attachments?.data?.length > 0) {
-                      const att = m.attachments.data[0];
+                    } else if (!text && attachmentData.length > 0) {
+                      const att = attachmentData[0];
                       if (att.image_data?.url) {
                         imageUrl = att.image_data.url;
                         text = `[image:${imageUrl}]`;
+                      } else if (att.type === "video") {
+                        videoUrl = getInstagramAttachmentUrl(att);
+                        text = videoUrl ? `[video:${videoUrl}]` : (existing?.text || "🎥 Vídeo");
                       } else if (att.file_url) {
                         audioUrl = att.file_url;
                         text = `[audio:${audioUrl}]`;
                       }
                     }
 
-                    const finalMediaUrl = audioUrl || imageUrl || existing?.media_url || null;
-                    const finalMediaType = (audioUrl || existing?.media_type === "audio" || existing?.text?.startsWith("[audio:"))
+                    const finalMediaUrl = sharedMediaUrl || videoUrl || audioUrl || imageUrl || existing?.media_url || null;
+                    const finalMediaType = (isSharedMedia || videoUrl || existing?.media_type === "video" || existing?.text?.startsWith("[video:") || existing?.text?.startsWith("[share:"))
+                      ? "video"
+                      : (audioUrl || existing?.media_type === "audio" || existing?.text?.startsWith("[audio:"))
                       ? "audio"
                       : (imageUrl || existing?.media_type === "image" || existing?.text?.startsWith("[image:"))
                       ? "image"
                       : null;
-                    const textToSave = text || existing?.text || (isAudio ? "🎙️ Mensagem de voz" : "📷 Foto");
+                    const textToSave = text || existing?.text || (isSharedMedia ? "🎞️ Reel ou publicação compartilhada" : isAudio ? "🎙️ Mensagem de voz" : "📷 Foto");
 
                     rowsToUpsert.push({
                       id: m.id,
@@ -3903,7 +3977,10 @@ serve(async (req: Request) => {
               const convRules = conv.stage_completed_rules || {};
               const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
               const rawLastText = String(lastMsg.text || "");
-              const looksVideo = lastMediaType === "video" || rawLastText.startsWith("[video:");
+              const looksVideo =
+                lastMediaType === "video" ||
+                rawLastText.startsWith("[video:") ||
+                rawLastText.startsWith("[share:");
               const looksImage = lastMediaType === "image" || rawLastText.startsWith("[image:");
               const operatorObservation = String(lastMsg.media_operator_observation || "").trim();
 

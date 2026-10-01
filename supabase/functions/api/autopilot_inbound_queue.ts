@@ -90,6 +90,10 @@ async function persistInboundMediaToVault(
   message: any,
   mediaKind: "image" | "video",
 ): Promise<any> {
+  // Reel/publicação compartilhada usa URL de compartilhamento da Meta. Não trate
+  // essa URL como arquivo de vídeo bruto; a observação humana é quem descreve o conteúdo.
+  if (String(message?.text || "").startsWith("[share:")) return message;
+
   const mediaUrl = String(message?.media_url || "");
   const isMetaCdn =
     mediaUrl.includes("lookaside.fbsbx.com") ||
@@ -400,13 +404,17 @@ async function processClaimedInboundJob(
       if (mediaType === "video") {
         const observation = String(preparedMedia?.media_operator_observation || "").trim();
         if (!observation) {
+          const isSharedMedia = String(preparedMedia?.text || "").startsWith("[share:")
+            || String(preparedMedia?.text || "").includes("Reel ou publicação compartilhada");
           await pauseForMediaObservation(
             supabase,
             workerToken,
             job,
             preparedMedia,
             "video",
-            "Vídeo recebido. Assista e descreva o que é relevante para o Brain continuar.",
+            isSharedMedia
+              ? "Reel ou publicação recebida. Abra a mídia e descreva o que é relevante para o Brain continuar."
+              : "Vídeo recebido. Assista e descreva o que é relevante para o Brain continuar.",
           );
           return;
         }
