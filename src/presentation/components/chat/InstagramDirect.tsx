@@ -5049,18 +5049,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* FILTROS SECUNDÁRIOS: IA + ETAPA */}
         {showFilterBar && hasCanonicalInstagramSnapshot && (
-          <div className="flex flex-wrap items-center gap-2 overflow-visible py-0.5 select-none">
-            <div className="flex shrink-0 items-center gap-1.5">
+          <div className="grid grid-cols-1 items-center gap-2 overflow-visible py-0.5 select-none min-[500px]:grid-cols-[minmax(0,1fr)_176px]">
+            <div className="flex min-w-0 items-center gap-1.5">
               <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-400 dark:text-zinc-500">
                 <Bot className="h-3.5 w-3.5 text-emerald-400" />
                 <span>IA</span>
               </div>
 
-              <div className="flex items-center gap-1 rounded-xl bg-zinc-100/70 p-1 dark:bg-white/[0.035]">
+              <div className="flex min-w-0 flex-1 items-center gap-0.5 rounded-xl bg-zinc-100/70 p-1 dark:bg-white/[0.035]">
                 <button
                   type="button"
                   onClick={() => setAiFilter("todas")}
-                  className={`min-h-8 rounded-lg px-2.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
+                  className={`min-h-8 min-w-0 flex-1 rounded-lg px-1.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
                     aiFilter === "todas"
                       ? "bg-white text-zinc-950 shadow-sm dark:bg-zinc-100 dark:text-black"
                       : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
@@ -5072,7 +5072,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <button
                   type="button"
                   onClick={() => setAiFilter("com_ia")}
-                  className={`min-h-8 rounded-lg px-2.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
+                  className={`min-h-8 min-w-0 flex-1 rounded-lg px-1.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
                     aiFilter === "com_ia"
                       ? "bg-emerald-500/15 text-emerald-700 ring-1 ring-emerald-500/20 dark:text-emerald-300"
                       : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
@@ -5084,7 +5084,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <button
                   type="button"
                   onClick={() => setAiFilter("sem_ia")}
-                  className={`min-h-8 rounded-lg px-2.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
+                  className={`min-h-8 min-w-0 flex-1 rounded-lg px-1.5 text-[11px] font-semibold transition-all active:scale-[0.98] ${
                     aiFilter === "sem_ia"
                       ? "bg-zinc-800 text-white shadow-sm dark:bg-zinc-700"
                       : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
@@ -5122,7 +5122,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               };
 
               return (
-                <div ref={stageFilterMenuRef} className="relative ml-auto w-[184px] shrink-0">
+                <div ref={stageFilterMenuRef} className="relative w-full min-[500px]:w-[176px]">
                   <button
                     type="button"
                     onClick={() => setIsStageFilterOpen((current) => !current)}
