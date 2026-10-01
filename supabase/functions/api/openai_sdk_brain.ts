@@ -128,7 +128,7 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
       const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 80);
       lines.push(`${index + 1}=${JSON.stringify(preview || "mensagem recebida")}`);
     });
-    lines.push("REPLY_TO: em outboundActions, reply_to=N é opcional; use só ao responder diretamente ao alvo N, nunca por padrão.");
+    lines.push("REPLY_TO: use reply_to=N quando a ação responder diretamente a um balão específico, especialmente pergunta direta, áudio/foto ou vários assuntos no turno; omita quando a continuação já for óbvia.");
   }
 
   const repliedInbounds = (params.currentInboundMessages || []).filter((message) =>

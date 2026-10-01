@@ -13,8 +13,8 @@ const autoPilot = readFileSync(join(root, "src/domain/entities/AutoPilot.ts"), "
 const direct = readFileSync(join(root, "src/presentation/components/chat/InstagramDirect.tsx"), "utf8");
 
 test("prompt mantém reply opcional e econômico, sem usar por padrão", () => {
-  assert.match(prompt, /VENDEO_AGENT_INSTRUCTIONS_VERSION: 2\.45\.1/);
-  assert.match(prompt, /reply_to.*opcional[\s\S]*?Não use por padrão/i);
+  assert.match(prompt, /VENDEO_AGENT_INSTRUCTIONS_VERSION: 2\.45\.2/);
+  assert.match(prompt, /reply_to.*pergunta direta[\s\S]*?continuação já for óbvia/i);
   assert.doesNotMatch(
     prompt.match(/"outboundActions": \[[\s\S]*?\n  \]/)?.[0] || "",
     /reply_to/
@@ -25,7 +25,7 @@ test("SDK expõe alvos compactos e limita a quatro mensagens recentes", () => {
   assert.match(sdk, /currentReplyTargets = \(params\.currentInboundMessages \|\| \[\]\)\.slice\(-4\)/);
   assert.match(sdk, /lines\.push\("REPLY_ALVOS:"\)/);
   assert.match(sdk, /slice\(0, 80\)/);
-  assert.match(sdk, /reply_to=N é opcional; use só ao responder diretamente ao alvo N, nunca por padrão/);
+  assert.match(sdk, /reply_to=N quando a ação responder diretamente a um balão específico, especialmente pergunta direta, áudio\/foto ou vários assuntos no turno/);
 });
 
 test("validator converte alias curto em MID real e descarta alvo inválido sem retry", () => {
