@@ -1317,14 +1317,192 @@ serve(async (req: Request) => {
     // ==========================================
     // 2. INSTAGRAM: CONFIG & STATUS
     // ==========================================
-    if (path === "/instagram/config") {
+    if (path === "/instagram/config" && req.method === "GET") {
       const { data, error } = await supabase
         .from("instagram_config")
-        .select("id, instagram_account_id, username, name, profile_picture_url, is_connected, updated_at")
+        .select("id, instagram_account_id, page_id, username, name, profile_picture_url, is_connected, updated_at")
         .eq("id", "default")
         .maybeSingle();
 
-      return new Response(JSON.stringify({ config: data || null, error: error?.message }), {
+      return new Response(JSON.stringify({
+        config: data || null,
+        isConnected: Boolean(data?.is_connected),
+        account: data?.is_connected ? {
+          id: data.instagram_account_id,
+          username: data.username || "instagram_user",
+          name: data.name,
+          profilePictureUrl: data.profile_picture_url,
+          isConnected: true,
+          pageId: data.page_id,
+          updatedAt: data.updated_at,
+        } : null,
+        error: error?.message,
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (path === "/instagram/config" && req.method === "POST") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const body = await req.json().catch(() => ({}));
+      const accessToken = String(body?.accessToken || body?.access_token || "").trim();
+      const appSecret = String(body?.appSecret || body?.app_secret || "").trim();
+      const requestedPageId = String(body?.pageId || body?.page_id || "").trim();
+
+      if (!accessToken) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "O Access Token da Meta/Instagram é obrigatório para a conexão.",
+        }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      let account: any = null;
+      let resolvedPageId = requestedPageId;
+      let resolvedAccessToken = accessToken;
+
+      try {
+        if (/^IG/i.test(accessToken)) {
+          const metaRes = await fetch(
+            `${API_BASE}/me?fields=id,username,name,profile_picture_url,account_type&access_token=${encodeURIComponent(accessToken)}`,
+            { signal: AbortSignal.timeout(9000) },
+          );
+          const metaJson = await metaRes.json().catch(() => ({}));
+          if (!metaRes.ok || !metaJson?.id) {
+            const message = metaJson?.error?.message || "Token do Instagram inválido, expirado ou sem permissão.";
+            return new Response(JSON.stringify({ success: false, error: message }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          account = {
+            id: String(metaJson.id),
+            username: String(metaJson.username || "instagram_user"),
+            name: String(metaJson.name || metaJson.username || "Instagram"),
+            profilePictureUrl: metaJson.profile_picture_url || null,
+            isConnected: true,
+            pageId: String(metaJson.id),
+            updatedAt: new Date().toISOString(),
+          };
+          resolvedPageId = String(metaJson.id);
+        } else {
+          const fbFields = "id,name,accounts{id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}}";
+          const fbUrl = `https://graph.facebook.com/${API_VERSION}/me?fields=${encodeURIComponent(fbFields)}&access_token=${encodeURIComponent(accessToken)}`;
+          const metaRes = await fetch(fbUrl, { signal: AbortSignal.timeout(9000) });
+          const metaJson = await metaRes.json().catch(() => ({}));
+          if (!metaRes.ok) {
+            const message = metaJson?.error?.message || "Token da Meta inválido, expirado ou sem permissão.";
+            return new Response(JSON.stringify({ success: false, error: message }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          const pages = Array.isArray(metaJson?.accounts?.data) ? metaJson.accounts.data : [];
+          const page = pages.find((item: any) => item?.instagram_business_account?.id);
+          const instagram = page?.instagram_business_account;
+          if (!page || !instagram?.id) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: "Nenhuma conta profissional do Instagram vinculada foi encontrada para este token.",
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          resolvedPageId = requestedPageId || String(page.id);
+          resolvedAccessToken = String(page.access_token || accessToken);
+          account = {
+            id: String(instagram.id),
+            username: String(instagram.username || page.name || "instagram_user"),
+            name: String(instagram.name || page.name || instagram.username || "Instagram"),
+            profilePictureUrl: instagram.profile_picture_url || null,
+            isConnected: true,
+            pageId: resolvedPageId,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+
+        const configPayload: Record<string, any> = {
+          id: "default",
+          access_token: resolvedAccessToken,
+          instagram_account_id: account.id,
+          page_id: resolvedPageId,
+          username: account.username,
+          name: account.name,
+          profile_picture_url: account.profilePictureUrl,
+          is_connected: true,
+          updated_at: new Date().toISOString(),
+        };
+        if (appSecret) configPayload.app_secret = appSecret;
+
+        const { error: saveError } = await supabase
+          .from("instagram_config")
+          .upsert(configPayload);
+
+        if (saveError) {
+          console.error("[Instagram Config] Falha ao persistir credenciais:", saveError.message);
+          return new Response(JSON.stringify({
+            success: false,
+            error: "Token validado, mas não foi possível salvar a configuração do Instagram.",
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          account,
+          message: `Conta @${account.username} conectada com sucesso!`,
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (configError) {
+        console.error("[Instagram Config] Falha ao validar token:", configError);
+        return new Response(JSON.stringify({
+          success: false,
+          error: configError instanceof Error ? configError.message : "Falha ao validar o token do Instagram.",
+        }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if (path === "/instagram/config" && req.method === "DELETE") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error } = await supabase
+        .from("instagram_config")
+        .update({
+          access_token: null,
+          is_connected: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", "default");
+
+      return new Response(JSON.stringify({
+        success: !error,
+        error: error?.message,
+      }), {
+        status: error ? 500 : 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
