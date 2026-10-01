@@ -3360,24 +3360,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const confirmedMid = data?.message?.id || data?.id || tempId;
       const confirmedStatus = (queue.hasScheduled || data?.queued) ? "sending" : "sent";
 
-      // Persistência direta no Supabase para garantir salvamento do reply_to_message_id
-      if (currentReply?.id) {
-        try {
-          const supabase = getSupabaseBrowserClient();
-          if (supabase && activeChat.type !== "tinder") {
-            console.log("💾 [Instagram Reply - UI] Gravando reply_to_message_id no Supabase:", {
-              messageId: confirmedMid,
-              replyToMessageId: currentReply.id,
-            });
-            await supabase
-              .from("instagram_messages")
-              .update({ reply_to_message_id: currentReply.id })
-              .eq("id", confirmedMid);
-          }
-        } catch (dbUpdErr) {
-          console.warn("⚠️ [Instagram Reply - UI] Falha ao persistir reply_to_message_id no Supabase:", dbUpdErr);
-        }
-      }
+      // O backend é a fonte canônica da relação reply_to_message_id.
+      // O client mantém apenas a projeção otimista para resposta instantânea na interface.
 
       setMessages((prev) => ({
         ...prev,
@@ -3526,6 +3510,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           audioUrl: audioUrlToSend,
           mediaUrl: failedMsg.mediaType === "image" ? failedMsg.mediaUrl : undefined,
           mediaType: failedMsg.mediaType,
+          replyTo: activeChat.type === "instagram" ? failedMsg.replyTo : undefined,
+          replyToMessageId: activeChat.type === "instagram" ? failedMsg.replyToMessageId : undefined,
         }),
       });
 

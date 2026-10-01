@@ -1969,6 +1969,18 @@ serve(async (req: Request) => {
           };
         }
 
+        const buildMetaSendPayload = () => {
+          const payload: any = {
+            recipient: { id: targetRecipientId },
+            message: metaPayload,
+          };
+          if (replyToMessageId) {
+            payload.reply_to = { mid: replyToMessageId };
+            payload.messaging_type = "RESPONSE";
+          }
+          return payload;
+        };
+
         // Se delaySeconds > 0, executa o fluxo assíncrono desacoplado no servidor (sem travar o app)
         if (delaySeconds > 0) {
           const deliverAtMs = Date.now() + delaySeconds * 1000;
@@ -1988,6 +2000,7 @@ serve(async (req: Request) => {
             deliver_at: deliverAtIso,
             media_url: audioUrl || mediaUrl || null,
             media_type: audioUrl ? "audio" : mediaUrl ? "image" : null,
+            reply_to_message_id: replyToMessageId,
           });
 
           // 2. Atualiza a conversa
@@ -2019,6 +2032,7 @@ serve(async (req: Request) => {
                 delaySeconds,
                 mediaUrl: audioUrl || mediaUrl,
                 mediaType: audioUrl ? "audio" : mediaUrl ? "image" : undefined,
+                replyToMessageId,
               },
             });
             await realtimeChannel.send({
@@ -2050,10 +2064,7 @@ serve(async (req: Request) => {
                   const metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      recipient: { id: targetRecipientId },
-                      message: metaPayload,
-                    }),
+                    body: JSON.stringify(buildMetaSendPayload()),
                   });
 
                   const metaData = await metaRes.json();
@@ -2087,11 +2098,13 @@ serve(async (req: Request) => {
                   deliver_at: null,
                   media_url: audioUrl || mediaUrl || null,
                   media_type: audioUrl ? "audio" : mediaUrl ? "image" : null,
+                  reply_to_message_id: replyToMessageId,
                 });
               } else {
                 await supabase.from("instagram_messages").update({
                   status: finalStatus,
                   deliver_at: null,
+                  reply_to_message_id: replyToMessageId,
                 }).eq("id", queuedMsgId);
               }
 
@@ -2113,6 +2126,7 @@ serve(async (req: Request) => {
                     deliverAt: undefined,
                     mediaUrl: audioUrl || mediaUrl,
                     mediaType: audioUrl ? "audio" : mediaUrl ? "image" : undefined,
+                    replyToMessageId,
                   },
                 });
               } catch {}
@@ -2142,6 +2156,7 @@ serve(async (req: Request) => {
               sentDate: new Date().toISOString(),
               isMine: true,
               status: "sending",
+              replyToMessageId,
             },
           }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -2159,33 +2174,11 @@ serve(async (req: Request) => {
               replyToMessageId,
             });
 
-            const metaSendPayload: any = {
-              recipient: { id: targetRecipientId },
-              message: metaPayload,
-            };
-            if (replyToMessageId) {
-              metaSendPayload.reply_to = { mid: replyToMessageId };
-              metaSendPayload.messaging_type = "RESPONSE";
-            }
-
-            let metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
+            const metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(metaSendPayload),
+              body: JSON.stringify(buildMetaSendPayload()),
             });
-
-            // Fallback resiliente: se falhou e tinha reply_to, reenvia sem reply_to para não perder a mensagem
-            if (!metaRes.ok && replyToMessageId) {
-              const errWithReply = await metaRes.clone().text();
-              console.warn("⚠️ [Meta Graph API] Falha ao enviar com reply_to. Tentando reenvio direto:", errWithReply);
-              delete metaSendPayload.reply_to;
-              delete metaSendPayload.messaging_type;
-              metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(metaSendPayload),
-              });
-            }
 
             const metaData = await metaRes.json();
             if (!metaRes.ok) {
