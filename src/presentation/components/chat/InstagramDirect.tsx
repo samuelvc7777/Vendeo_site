@@ -188,6 +188,25 @@ type TinderFilter = "todos" | "novos" | "sua_vez" | "vez_deles" | "restritos";
 
 const avatarRefreshRequests = new Set<string>();
 
+function isMetaCdnAvatarUrl(value: unknown): boolean {
+  const source = String(value || "");
+  return source.includes("cdninstagram.com") || source.includes("fbcdn.net");
+}
+
+function isExpiredMetaCdnAvatar(value: unknown, nowMs = Date.now()): boolean {
+  const source = String(value || "");
+  if (!isMetaCdnAvatarUrl(source)) return false;
+  try {
+    const url = new URL(source);
+    const expiryHex = url.searchParams.get("oe");
+    if (!expiryHex || !/^[0-9a-f]+$/i.test(expiryHex)) return false;
+    const expiryMs = Number.parseInt(expiryHex, 16) * 1000;
+    return Number.isFinite(expiryMs) && expiryMs <= nowMs;
+  } catch {
+    return false;
+  }
+}
+
 function getApiUrl(path: string): string {
   const cleanPath = path.startsWith("/api/")
     ? path.replace(/^\/api\//, "/")
@@ -203,6 +222,22 @@ function getApiUrl(path: string): string {
     return `/api${cleanPath}`;
   }
   return `https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api${cleanPath}`;
+}
+
+function requestAvatarRefresh(conversationId?: string) {
+  if (!conversationId || avatarRefreshRequests.has(conversationId)) return;
+  avatarRefreshRequests.add(conversationId);
+  void fetch(getApiUrl("/instagram/profile/refresh"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversationId }),
+  })
+    .then((response) => {
+      if (!response.ok) avatarRefreshRequests.delete(conversationId);
+    })
+    .catch(() => {
+      avatarRefreshRequests.delete(conversationId);
+    });
 }
 
 interface InstagramDirectProps {
@@ -230,13 +265,15 @@ function AvatarWithFallback({
   ringClassName = "",
 }: AvatarWithFallbackProps) {
   const [hasError, setHasError] = useState(false);
+  const expiredMetaAvatar = isExpiredMetaCdnAvatar(src);
 
   useEffect(() => {
     setHasError(false);
-  }, [src]);
+    if (expiredMetaAvatar) requestAvatarRefresh(conversationId);
+  }, [src, conversationId, expiredMetaAvatar]);
 
-  // Se o src falhar ou for vazio, utiliza a foto oficial de 'sem foto'
-  const photoToDisplay = (!hasError && src && src.trim().length > 0 && !src.includes("images.unsplash.com"))
+  // Se a URL da Meta já expirou, nem tenta carregá-la: evita 403 no navegador.
+  const photoToDisplay = (!hasError && !expiredMetaAvatar && src && src.trim().length > 0 && !src.includes("images.unsplash.com"))
     ? src.trim()
     : resolveContactAvatar(alt, alt);
 
@@ -252,22 +289,7 @@ function AvatarWithFallback({
         className="object-cover"
         onError={() => {
           setHasError(true);
-          const source = String(src || "");
-          const isMetaCdn = source.includes("cdninstagram.com") || source.includes("fbcdn.net");
-          if (conversationId && isMetaCdn && !avatarRefreshRequests.has(conversationId)) {
-            avatarRefreshRequests.add(conversationId);
-            fetch(getApiUrl("/instagram/profile/refresh"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ conversationId }),
-            })
-              .then((response) => {
-                if (!response.ok) avatarRefreshRequests.delete(conversationId);
-              })
-              .catch(() => {
-                avatarRefreshRequests.delete(conversationId);
-              });
-          }
+          if (isMetaCdnAvatarUrl(src)) requestAvatarRefresh(conversationId);
         }}
       />
     </div>

@@ -40,6 +40,9 @@ test("failed avatar render queues a profile refresh only for Meta CDN URLs", () 
   assert.match(source, /avatarRefreshRequests/);
   assert.match(source, /cdninstagram\.com/);
   assert.match(source, /fbcdn\.net/);
+  assert.match(source, /searchParams\.get\("oe"\)/);
+  assert.match(source, /Number\.parseInt\(expiryHex, 16\)/);
+  assert.match(source, /!expiredMetaAvatar/);
   assert.match(source, /\/instagram\/profile\/refresh/);
   assert.match(source, /conversationId/);
 });
