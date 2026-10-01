@@ -13,6 +13,8 @@ test("profile worker persists Meta avatars into stable Vendeo storage", () => {
   assert.match(source, /upsert: true/);
   assert.match(source, /getPublicUrl\(objectPath\)/);
   assert.match(source, /instagram_avatar_download_failed/);
+  assert.match(source, /Migra primeiro a URL de CDN já conhecida/);
+  assert.match(source, /persistInstagramAvatar\([\s\S]*currentAvatar/);
 });
 
 test("Meta CDN avatar is not treated as permanently resolved", () => {

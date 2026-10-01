@@ -177,18 +177,46 @@ export async function processInstagramProfileQueue(params: {
       }
 
       const currentAvatar = String(currentConversation.avatar || "");
+      const hasResolvedIdentity =
+        Boolean(currentConversation.username) &&
+        !String(currentConversation.username).startsWith("ig_");
       const avatarNeedsMigration =
         Boolean(currentAvatar) &&
         currentAvatar !== "/images/default-avatar.svg" &&
         !isStableAvatarUrl(currentAvatar);
       const alreadyResolved =
-        Boolean(currentConversation.username) &&
-        !String(currentConversation.username).startsWith("ig_") &&
+        hasResolvedIdentity &&
         isStableAvatarUrl(currentAvatar);
 
       if (alreadyResolved) {
         await completeProfileJob(params.supabase, workerToken, job.conversation_id);
         return;
+      }
+
+      // Migra primeiro a URL de CDN já conhecida enquanto ela ainda está válida.
+      // Isso evita depender de a Meta devolver profile_pic novamente no futuro.
+      if (hasResolvedIdentity && avatarNeedsMigration) {
+        try {
+          const stableAvatar = await persistInstagramAvatar(
+            params.supabase,
+            currentAvatar,
+            job.conversation_id,
+          );
+          const { error: avatarUpdateError } = await params.supabase
+            .from("instagram_conversations")
+            .update({
+              avatar: stableAvatar,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.conversation_id);
+
+          if (!avatarUpdateError) {
+            await completeProfileJob(params.supabase, workerToken, job.conversation_id);
+            return;
+          }
+        } catch {
+          // A URL já pode ter expirado; nesse caso tenta resolver uma URL nova abaixo.
+        }
       }
 
       const resolved = await params.resolveProfile(
