@@ -309,12 +309,15 @@ export function InstagramAudioMessage({
         </div>
       </div>
 
-      {variant !== "whatsapp" && (
-        <>
+      <>
       {/* Barra de Ações Rápidas: Baixar Áudio + Transcrever */}
       <div
         className={`mt-2 pt-1.5 border-t ${
-          isMine ? "border-white/15" : "border-zinc-200 dark:border-zinc-800"
+          variant === "whatsapp"
+            ? "border-black/[0.06] dark:border-white/[0.08]"
+            : isMine
+            ? "border-white/15"
+            : "border-zinc-200 dark:border-zinc-800"
         } flex items-center justify-between gap-1.5`}
       >
         {/* Botão de Download em Destaque */}
@@ -323,7 +326,9 @@ export function InstagramAudioMessage({
           onClick={handleDownload}
           disabled={downloading}
           className={`text-[10px] font-semibold flex items-center gap-1.5 px-2 py-1 rounded-md transition-all active:scale-95 cursor-pointer disabled:opacity-50 ${
-            isMine
+            variant === "whatsapp"
+              ? "bg-black/[0.035] text-[#54656f] hover:bg-black/[0.065] dark:bg-white/[0.06] dark:text-[#d1d7db] dark:hover:bg-white/[0.10]"
+              : isMine
               ? "bg-white/20 text-white hover:bg-white/30"
               : "bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-300 dark:hover:bg-zinc-700 border border-zinc-300 dark:border-zinc-700/50"
           }`}
@@ -332,12 +337,12 @@ export function InstagramAudioMessage({
         >
           {downloading ? (
             <>
-              <Loader2 className="w-3 h-3 animate-spin text-[#0095f6]" />
+              <Loader2 className={`w-3 h-3 animate-spin ${variant === "whatsapp" ? "text-[#00a884] dark:text-[#25d366]" : "text-[#0095f6]"}`} />
               <span>Baixando...</span>
             </>
           ) : (
             <>
-              <Download className={`w-3 h-3 ${isMine ? "text-white" : "text-[#0095f6]"}`} />
+              <Download className={`w-3 h-3 ${variant === "whatsapp" ? "text-[#00a884] dark:text-[#25d366]" : isMine ? "text-white" : "text-[#0095f6]"}`} />
               <span>Baixar áudio</span>
             </>
           )}
@@ -349,13 +354,15 @@ export function InstagramAudioMessage({
             type="button"
             onClick={handleTranscribe}
             className={`text-[10px] font-semibold flex items-center gap-1 px-2 py-1 rounded-md transition-all active:scale-95 cursor-pointer ${
-              isMine
+              variant === "whatsapp"
+                ? "bg-black/[0.035] text-[#54656f] hover:bg-black/[0.065] dark:bg-white/[0.06] dark:text-[#d1d7db] dark:hover:bg-white/[0.10]"
+                : isMine
                 ? "bg-white/20 text-white hover:bg-white/30"
                 : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-300 dark:hover:bg-zinc-700 border border-zinc-300 dark:border-zinc-700/50"
             }`}
             title="Transcrever áudio na nuvem com Groq Whisper Large v3"
           >
-            <Sparkles className="w-2.5 h-2.5 text-[#0095f6]" />
+            <Sparkles className={`w-2.5 h-2.5 ${variant === "whatsapp" ? "text-[#00a884] dark:text-[#25d366]" : "text-[#0095f6]"}`} />
             <span>Transcrever</span>
           </button>
         )}
@@ -365,13 +372,21 @@ export function InstagramAudioMessage({
       {currentTranscript && (
         <div
           className={`mt-1.5 pt-1.5 border-t ${
-            isMine ? "border-zinc-200 dark:border-white/15" : "border-zinc-200 dark:border-zinc-800/60"
+            variant === "whatsapp"
+              ? "border-black/[0.06] dark:border-white/[0.08]"
+              : isMine
+              ? "border-zinc-200 dark:border-white/15"
+              : "border-zinc-200 dark:border-zinc-800/60"
           } text-left select-text`}
         >
           <div className="flex items-center justify-between gap-1 mb-1">
             <span
               className={`text-[10px] font-semibold flex items-center gap-1 ${
-                isMine ? "text-white/85" : "text-[#0095f6]"
+                variant === "whatsapp"
+                  ? "text-[#00a884] dark:text-[#25d366]"
+                  : isMine
+                  ? "text-white/85"
+                  : "text-[#0095f6]"
               }`}
             >
               <Sparkles className="w-2.5 h-2.5" />
@@ -384,7 +399,9 @@ export function InstagramAudioMessage({
                 setIsExpanded(!isExpanded);
               }}
               className={`p-0.5 rounded transition-colors cursor-pointer ${
-                isMine
+                variant === "whatsapp"
+                  ? "hover:bg-black/[0.05] text-[#667781] dark:hover:bg-white/[0.08] dark:text-[#aebac1]"
+                  : isMine
                   ? "hover:bg-white/20 text-white/80"
                   : "hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
               }`}
@@ -400,7 +417,11 @@ export function InstagramAudioMessage({
           {isExpanded && (
             <p
               className={`text-[11px] leading-relaxed italic break-words [word-break:break-word] ${
-                isMine ? "text-white/95" : "text-zinc-800 dark:text-zinc-200"
+                variant === "whatsapp"
+                  ? "text-[#111b21] dark:text-[#e9edef]"
+                  : isMine
+                  ? "text-white/95"
+                  : "text-zinc-800 dark:text-zinc-200"
               }`}
             >
               &ldquo;{currentTranscript}&rdquo;
@@ -412,17 +433,24 @@ export function InstagramAudioMessage({
       {isTranscribing && (
         <div
           className={`mt-1.5 pt-1.5 border-t ${
-            isMine ? "border-zinc-200 dark:border-white/15" : "border-zinc-200 dark:border-zinc-800/60"
+            variant === "whatsapp"
+              ? "border-black/[0.06] dark:border-white/[0.08]"
+              : isMine
+              ? "border-zinc-200 dark:border-white/15"
+              : "border-zinc-200 dark:border-zinc-800/60"
           } flex items-center gap-1.5 text-[10px] ${
-            isMine ? "text-white/80" : "text-[#0095f6]"
+            variant === "whatsapp"
+              ? "text-[#00a884] dark:text-[#25d366]"
+              : isMine
+              ? "text-white/80"
+              : "text-[#0095f6]"
           }`}
         >
           <Loader2 className="w-3 h-3 animate-spin" />
           <span>Transcrevendo áudio na nuvem...</span>
         </div>
       )}
-        </>
-      )}
+      </>
     </div>
   );
 }
