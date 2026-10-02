@@ -220,6 +220,7 @@ function toInstagramProfileData(
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
 type WhatsAppQuickFilter = "todas" | "nao_lidas" | "com_ia" | "sem_ia";
+type InboxChannel = "instagram" | "whatsapp" | "whatsapp2";
 
 const avatarRefreshRequests = new Set<string>();
 
@@ -1825,7 +1826,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   };
 
   // Filtros
-  const [activeChannel, setActiveChannel] = useState<"instagram" | "whatsapp">("instagram");
+  const [activeChannel, setActiveChannel] = useState<InboxChannel>("instagram");
+  const isWhatsAppInboxChannel = activeChannel === "whatsapp" || activeChannel === "whatsapp2";
   const [instaFilter, setInstaFilter] = useState<InstagramFilter>("todos");
   const [whatsappQuickFilter, setWhatsappQuickFilter] = useState<WhatsAppQuickFilter>("todas");
   const [whatsappStageFilter, setWhatsappStageFilter] = useState<string>("todas");
@@ -3912,16 +3914,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   const instagramConversationCount = visiblePlatformConversations.filter((c) => c.type === "instagram").length;
   const whatsappConversationCount = visiblePlatformConversations.filter((c) => c.type === "whatsapp").length;
+  const whatsapp2ConversationCount = 0;
   const instagramUnreadCount = visiblePlatformConversations.filter(
     (c) => c.type === "instagram" && isConversationUnread(c)
   ).length;
   const whatsappUnreadCount = visiblePlatformConversations.filter(
     (c) => c.type === "whatsapp" && isConversationUnread(c)
   ).length;
+  const whatsapp2UnreadCount = 0;
 
-  const platformConversations = visiblePlatformConversations.filter(
-    (c) => c.type === activeChannel
-  );
+  const platformConversations = activeChannel === "whatsapp2"
+    ? []
+    : visiblePlatformConversations.filter((c) => c.type === activeChannel);
 
   // Contadores para badges e sub-filtros de Pedidos e Restringidos
   const pedidosCount = platformConversations.filter(
@@ -3935,7 +3939,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const aiEnabledCount = platformConversations.filter((c) => c.aiAutoRespond === true).length;
   const aiDisabledCount = platformConversations.filter((c) => c.aiAutoRespond !== true).length;
 
-  const effectiveStageFilter = activeChannel === "whatsapp" ? whatsappStageFilter : stageFilter;
+  const effectiveStageFilter = isWhatsAppInboxChannel ? whatsappStageFilter : stageFilter;
 
   const filteredConversations = platformConversations
     .filter((c) => {
@@ -3955,7 +3959,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         return false;
       }
 
-      if (activeChannel === "whatsapp") {
+      if (isWhatsAppInboxChannel) {
         if (whatsappQuickFilter === "nao_lidas") return isConversationUnread(c);
         if (whatsappQuickFilter === "com_ia") return c.aiAutoRespond === true;
         if (whatsappQuickFilter === "sem_ia") return c.aiAutoRespond !== true;
@@ -3977,7 +3981,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return true;
     })
     .filter((c) => {
-      if (activeChannel === "whatsapp") return true;
+      if (isWhatsAppInboxChannel) return true;
       if (aiFilter === "todas") return true;
       if (aiFilter === "com_ia") return c.aiAutoRespond === true;
       return c.aiAutoRespond !== true;
@@ -5433,7 +5437,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         {/* Cabeçalho compacto da caixa de entrada */}
         <div
           className={`shrink-0 border-b px-4 backdrop-blur-2xl ${
-            activeChannel === "whatsapp"
+            isWhatsAppInboxChannel
               ? "hidden"
               : "border-zinc-100 dark:border-[#1f1f1f] bg-white/95 dark:bg-black/95 pt-4 pb-3"
           }`}
@@ -5456,7 +5460,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               )}
             </div>
 
-            <div className={`items-center gap-1.5 shrink-0 ${activeChannel === "whatsapp" ? "hidden" : "flex"}`}>
+            <div className={`items-center gap-1.5 shrink-0 ${isWhatsAppInboxChannel ? "hidden" : "flex"}`}>
               <button
                 type="button"
                 onClick={() => {
@@ -5500,12 +5504,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* Canais da caixa de entrada: o motor é o mesmo, a experiência visual muda por canal */}
         <div className={`mt-[10px] mb-[8px] shrink-0 border-b px-3 pb-2 ${
-          activeChannel === "whatsapp"
+          isWhatsAppInboxChannel
             ? "whatsapp-ios border-black/[0.07] bg-white/66 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/68"
             : "border-zinc-100 bg-white dark:border-[#1f1f1f] dark:bg-black"
         }`}>
-          <div className={`grid grid-cols-2 gap-0.5 ${
-            activeChannel === "whatsapp"
+          <div className={`grid grid-cols-3 gap-0.5 ${
+            isWhatsAppInboxChannel
               ? "whatsapp-ios rounded-[10px] bg-[#e9e9eb] p-0.5 dark:bg-[#2c2c2e]"
               : "rounded-2xl bg-zinc-100 p-1 dark:bg-[#171717]"
           }`}>
@@ -5517,7 +5521,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 setShowFilterBar(false);
               }}
               className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
-                activeChannel === "whatsapp" ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
+                isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
               } ${
                 activeChannel === "instagram"
                   ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-[#3a3a3c] dark:text-white dark:ring-white/[0.05]"
@@ -5542,9 +5546,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 setShowFilterBar(false);
               }}
               className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
+                isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
+              } ${
                 activeChannel === "whatsapp"
-                  ? "h-9 rounded-[8px] bg-white text-[#111b21] text-[13px] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
-                  : "h-11 rounded-xl text-xs text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+                  ? "bg-white text-[#111b21] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
+                  : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
               }`}
             >
               <WhatsAppIcon className={`h-4 w-4 ${activeChannel === "whatsapp" ? "text-[#25d366]" : ""}`} />
@@ -5553,6 +5559,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               {whatsappUnreadCount > 0 && (
                 <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#25d366] px-1 text-[9px] font-bold leading-none text-white">
                   {whatsappUnreadCount > 99 ? "99+" : whatsappUnreadCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveChannel("whatsapp2");
+                setInstaFilter("todos");
+                setShowFilterBar(false);
+              }}
+              className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
+                isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
+              } ${
+                activeChannel === "whatsapp2"
+                  ? "bg-white text-[#111b21] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
+                  : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+              }`}
+              title="WhatsApp espelhado por dispositivo vinculado"
+            >
+              <WhatsAppIcon className={`h-4 w-4 ${activeChannel === "whatsapp2" ? "text-[#25d366]" : ""}`} />
+              <span>WhatsApp 2</span>
+              <span className="text-[10px] tabular-nums opacity-55">{whatsapp2ConversationCount}</span>
+              {whatsapp2UnreadCount > 0 && (
+                <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#25d366] px-1 text-[9px] font-bold leading-none text-white">
+                  {whatsapp2UnreadCount > 99 ? "99+" : whatsapp2UnreadCount}
                 </span>
               )}
             </button>
@@ -5597,25 +5629,25 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         <div
           ref={conversationsScrollRef}
           className={`flex-1 ${activeChat ? "overflow-hidden" : "overflow-y-auto"} scrollbar-none overscroll-contain ${
-            activeChannel === "whatsapp" ? "whatsapp-ios px-0 py-2 space-y-0" : "px-3.5 py-3 space-y-2"
+            isWhatsAppInboxChannel ? "whatsapp-ios px-0 py-2 space-y-0" : "px-3.5 py-3 space-y-2"
           }`}
         >
         {/* Pesquisa + acesso compacto aos filtros */}
-        <div className={`flex items-center gap-2 select-none ${activeChannel === "whatsapp" ? "px-3 pb-1.5" : ""}`}>
+        <div className={`flex items-center gap-2 select-none ${isWhatsAppInboxChannel ? "px-3 pb-1.5" : ""}`}>
           <div className="relative flex-1">
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={activeChannel === "whatsapp" ? "Buscar" : "Pesquisar conversas"}
+              placeholder={isWhatsAppInboxChannel ? "Buscar" : "Pesquisar conversas"}
               className={`w-full border border-transparent text-sm focus:outline-none transition-colors ${
-                activeChannel === "whatsapp"
+                isWhatsAppInboxChannel
                   ? "wa-ios-glass h-9 rounded-[12px] pl-9 pr-4 text-[#111b21] placeholder-[#8e8e93] dark:text-white dark:placeholder-[#8e8e93]"
                   : "rounded-2xl bg-zinc-100/80 dark:bg-[#171717] text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] pl-10 pr-4 py-2.5 focus:border-zinc-300 dark:focus:border-[#343434] focus:bg-white dark:focus:bg-[#1d1d1d]"
               }`}
             />
             <Search className={`w-4 h-4 absolute left-3.5 ${
-              activeChannel === "whatsapp"
+              isWhatsAppInboxChannel
                 ? "top-2.5 text-[#8e8e93]"
                 : "top-3 text-zinc-400 dark:text-[#737373]"
             }`} />
@@ -5643,12 +5675,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           )}
         </div>
 
-        {activeChannel === "whatsapp" && (
+        {isWhatsAppInboxChannel && (
           <div className="whatsapp-ios px-3 pt-1.5 pb-1">
             <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none select-none">
               {([
-                { id: "todas", label: "Todas", count: whatsappConversationCount },
-                { id: "nao_lidas", label: "Não lidas", count: whatsappUnreadCount },
+                { id: "todas", label: "Todas", count: activeChannel === "whatsapp2" ? whatsapp2ConversationCount : whatsappConversationCount },
+                { id: "nao_lidas", label: "Não lidas", count: activeChannel === "whatsapp2" ? whatsapp2UnreadCount : whatsappUnreadCount },
                 { id: "com_ia", label: "Com IA", count: aiEnabledCount },
                 { id: "sem_ia", label: "Sem IA", count: aiDisabledCount },
               ] as Array<{ id: WhatsAppQuickFilter; label: string; count: number }>).map((filter) => {
@@ -6070,21 +6102,25 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               <p className="text-center text-[11px] text-zinc-500">Carregando conversas...</p>
               <ConversationSkeletonList count={6} />
             </div>
-          ) : isLoadingList && sortedConversations.length === 0 ? (
+          ) : isLoadingList && activeChannel !== "whatsapp2" && sortedConversations.length === 0 ? (
             <div className="py-1">
               <ConversationSkeletonList count={6} />
             </div>
           ) : sortedConversations.length === 0 ? (
             <div className="py-16 text-center space-y-2.5">
-              {activeChannel === "whatsapp" ? (
+              {isWhatsAppInboxChannel ? (
                 <div className="py-14 text-center space-y-3 px-4">
                   <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#25d366] text-white shadow-lg shadow-[#25d366]/20">
                     <WhatsAppIcon className="h-6 w-6" />
                   </div>
                   <div className="space-y-1">
-                    <p className="text-sm font-bold text-zinc-950 dark:text-white">Nenhuma conversa no WhatsApp</p>
+                    <p className="text-sm font-bold text-zinc-950 dark:text-white">
+                      {activeChannel === "whatsapp2" ? "WhatsApp 2 pronto para conexão" : "Nenhuma conversa no WhatsApp"}
+                    </p>
                     <p className="mx-auto max-w-xs text-xs leading-relaxed text-zinc-500 dark:text-[#8696a0]">
-                      As novas mensagens recebidas pelo seu número aparecem aqui em tempo real.
+                      {activeChannel === "whatsapp2"
+                        ? "Esta aba é separada da Cloud API e será usada para a sessão espelhada por dispositivo vinculado."
+                        : "As novas mensagens recebidas pelo seu número aparecem aqui em tempo real."}
                     </p>
                   </div>
                 </div>
