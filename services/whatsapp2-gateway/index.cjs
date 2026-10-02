@@ -2,6 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const { createClient } = require("@supabase/supabase-js");
 const QRCode = require("qrcode");
 const WA_JS_BUNDLE = require.resolve("@wppconnect/wa-js");
 
@@ -28,12 +29,20 @@ const PORT = Number(process.env.WHATSAPP2_GATEWAY_PORT || 8788);
 const API_TOKEN = String(process.env.WHATSAPP2_GATEWAY_TOKEN || "");
 const WEBHOOK_URL = String(process.env.VENDEO_WHATSAPP2_WEBHOOK_URL || "");
 const WEBHOOK_TOKEN = String(process.env.VENDEO_WHATSAPP2_WEBHOOK_TOKEN || "");
+const SUPABASE_URL = String(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "");
+const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null;
+const WORKER_ID = `wa2-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const DEFAULT_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const CHROME_PATH = process.env.WHATSAPP2_CHROME_PATH || (fs.existsSync(DEFAULT_CHROME) ? DEFAULT_CHROME : undefined);
 let client = null;
 let initializing = null;
 let waJsReadyPromise = null;
 let shuttingDown = false;
+let deliveryWorkerTimer = null;
+let deliveryWorkerRunning = false;
 const sseClients = new Set();
 const profilePicCache = new Map();
 const profilePicPending = new Map();
@@ -221,7 +230,542 @@ async function ensureWaJsReady() {
   return waJsReadyPromise;
 }
 
+function whatsapp2ConversationId(chatId) {
+  return "wa2:" + String(chatId || "").trim();
+}
+
+function mimeExtension(mimeType, fallback = "bin") {
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  if (mime.includes("png")) return "png";
+  if (mime.includes("ogg")) return "ogg";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("mp4")) return "mp4";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("wav")) return "wav";
+  return fallback;
+}
+
+function mediaKindForMessage(message) {
+  const type = String(message?.type || "").toLowerCase();
+  if (type === "ptt" || type === "audio") return "audio";
+  if (type === "image") return "image";
+  if (type === "video") return "video";
+  if (type === "sticker") return "sticker";
+  return null;
+}
+
+function mediaPreview(kind) {
+  if (kind === "audio") return "🎙️ Mensagem de voz";
+  if (kind === "image") return "📷 Foto";
+  if (kind === "video") return "🎥 Vídeo";
+  if (kind === "sticker") return "Figurinha";
+  return "Mensagem";
+}
+
+async function downloadMessageMediaPayload(messageId) {
+  const active = ensureReady();
+  await ensureWaJsReady();
+
+  let payload = null;
+  try {
+    payload = await active.pupPage.evaluate(async (id) => {
+      const blob = await globalThis.WPP.chat.downloadMedia(id);
+      if (!blob) return null;
+      const dataUrl = await globalThis.WPP.util.blobToBase64(blob);
+      return {
+        dataUrl,
+        type: blob.type || "application/octet-stream",
+        size: blob.size || 0,
+      };
+    }, messageId);
+  } catch (error) {
+    console.warn("[whatsapp2] WA-JS downloadMedia falhou, tentando fallback:", error?.message || error);
+  }
+
+  if (!payload?.dataUrl) {
+    const message = await getMessage(messageId);
+    if (!message.hasMedia) throw new Error("Mensagem não possui mídia");
+    const media = await message.downloadMedia();
+    if (!media?.data) throw new Error("Mídia indisponível");
+    payload = {
+      dataUrl: `data:${media.mimetype || "application/octet-stream"};base64,${media.data}`,
+      type: media.mimetype || "application/octet-stream",
+      size: 0,
+    };
+  }
+
+  const dataUrl = String(payload.dataUrl || "");
+  const comma = dataUrl.indexOf(",");
+  if (comma < 0) throw new Error("Mídia retornou formato inválido");
+  const header = dataUrl.slice(0, comma);
+  const base64 = dataUrl.slice(comma + 1);
+  const mimeMatch = header.match(/^data:([^;,]+)/i);
+  const contentType = mimeMatch?.[1] || payload.type || "application/octet-stream";
+  return {
+    buffer: Buffer.from(base64, "base64"),
+    contentType,
+  };
+}
+
+async function persistWhatsApp2Media(messageId, kind) {
+  if (!supabase || !messageId || !kind) return null;
+  const { buffer, contentType } = await downloadMessageMediaPayload(messageId);
+  const safeId = String(messageId).replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const ext = mimeExtension(contentType, kind === "audio" ? "ogg" : "bin");
+  const objectPath = `whatsapp2/${kind}/${safeId}.${ext}`;
+  const { error } = await supabase.storage.from("vendeo_vault").upload(objectPath, buffer, {
+    contentType,
+    upsert: true,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from("vendeo_vault").getPublicUrl(objectPath);
+  return data?.publicUrl || null;
+}
+
+async function resolveQuotedMessageId(message) {
+  if (!message?.hasQuotedMsg) return null;
+  try {
+    const quoted = await message.getQuotedMessage();
+    return quoted?.id?._serialized || quoted?.id?.$1 || null;
+  } catch {
+    return null;
+  }
+}
+
+async function transcribeStoredAudio(messageId, mediaUrl) {
+  if (!mediaUrl || !SUPABASE_URL) return null;
+  try {
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/api/ai/transcribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(SUPABASE_SERVICE_ROLE_KEY ? {
+          authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+        } : {}),
+      },
+      body: JSON.stringify({ messageId, mediaUrl }),
+    });
+    const data = await response.json().catch(() => ({}));
+    return response.ok && typeof data?.text === "string" ? data.text.trim() || null : null;
+  } catch (error) {
+    console.warn("[whatsapp2] transcrição inbound falhou:", error?.message || error);
+    return null;
+  }
+}
+
+async function syncWhatsApp2Message(message) {
+  if (!supabase || !message) return;
+  const messageId = message.id?._serialized || message.id?.$1 || null;
+  if (!messageId) return;
+
+  const chatId = String(message.fromMe ? message.to : message.from || "").trim();
+  if (!chatId || chatId === "status@broadcast" || chatId.endsWith("@g.us")) return;
+
+  let chatName = chatId;
+  try {
+    const chat = await message.getChat();
+    chatName = String(chat?.name || chatId);
+  } catch {}
+  const avatarUrl = await resolveProfilePic(chatId).catch(() => null);
+  const timestamp = new Date(Number(message.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString();
+  const replyToMessageId = await resolveQuotedMessageId(message);
+  const kind = mediaKindForMessage(message);
+  let mediaUrl = null;
+  let transcript = null;
+  let text = String(message.body || "").trim();
+  let preview = text || "Mensagem";
+
+  if (kind) {
+    try {
+      mediaUrl = await persistWhatsApp2Media(messageId, kind);
+    } catch (error) {
+      console.warn("[whatsapp2] persistência de mídia falhou:", messageId, error?.message || error);
+    }
+    preview = mediaPreview(kind);
+    if (mediaUrl) {
+      if (kind === "audio") text = `[audio:${mediaUrl}]`;
+      else if (kind === "image") text = `[image:${mediaUrl}]${text ? " " + text : ""}`;
+      else if (kind === "video") text = `[video:${mediaUrl}]${text ? " " + text : ""}`;
+      else if (kind === "sticker") text = `[sticker:${mediaUrl}]`;
+    } else if (!text) {
+      text = preview;
+    }
+    if (kind === "audio" && mediaUrl) {
+      transcript = await transcribeStoredAudio(messageId, mediaUrl);
+    }
+  }
+
+  const conversationId = whatsapp2ConversationId(chatId);
+  if (!message.fromMe) {
+    const { data, error } = await supabase.rpc("ingest_whatsapp2_inbound_atomic", {
+      p_conversation_id: conversationId,
+      p_raw_contact_id: chatId,
+      p_message_id: messageId,
+      p_sender_id: String(message.from || chatId),
+      p_contact_name: chatName,
+      p_text: text || preview,
+      p_timestamp: timestamp,
+      p_preview_text: preview,
+      p_avatar_url: avatarUrl,
+      p_media_url: mediaUrl,
+      p_media_type: kind,
+      p_reply_to_message_id: replyToMessageId,
+      p_audio_transcript: transcript,
+      p_audio_transcription_error: kind === "audio" && mediaUrl && !transcript ? "transcription_unavailable" : null,
+      p_actionable: kind !== "sticker",
+    });
+    if (error || data?.success !== true) {
+      throw error || new Error(data?.reason || "whatsapp2_inbound_sync_failed");
+    }
+  } else {
+    const { data, error } = await supabase.rpc("record_whatsapp2_outbound_atomic", {
+      p_conversation_id: conversationId,
+      p_raw_contact_id: chatId,
+      p_message_id: messageId,
+      p_contact_name: chatName,
+      p_text: text || preview,
+      p_timestamp: timestamp,
+      p_preview_text: preview,
+      p_avatar_url: avatarUrl,
+      p_media_url: mediaUrl,
+      p_media_type: kind,
+      p_reply_to_message_id: replyToMessageId,
+      p_status: Number(message.ack || 0) >= 3 ? "seen" : Number(message.ack || 0) >= 2 ? "delivered" : "sent",
+    });
+    if (error || data?.success !== true) {
+      throw error || new Error(data?.reason || "whatsapp2_outbound_sync_failed");
+    }
+  }
+}
+
+async function syncWhatsApp2Ack(message, ack) {
+  if (!supabase || !message) return;
+  const messageId = message.id?._serialized || message.id?.$1 || null;
+  if (!messageId) return;
+  const numericAck = Number(ack ?? message.ack ?? 0);
+  const status = numericAck >= 3 ? "seen" : numericAck >= 2 ? "delivered" : "sent";
+  const seenAt = numericAck >= 3 ? new Date().toISOString() : null;
+
+  await supabase
+    .from("instagram_messages")
+    .update({
+      status,
+      ...(seenAt ? { seen_at: seenAt } : {}),
+    })
+    .eq("id", messageId)
+    .eq("channel", "whatsapp2");
+
+  const chatId = String(message.to || "").trim();
+  if (chatId) {
+    await supabase
+      .from("instagram_conversations")
+      .update({
+        last_status: status,
+        ...(seenAt ? { seen_at: seenAt } : {}),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", whatsapp2ConversationId(chatId))
+      .eq("channel", "whatsapp2");
+  }
+}
+
+async function syncWhatsApp2Reaction(reaction) {
+  if (!supabase || !reaction) return;
+  const targetMessageId =
+    reaction.msgId?._serialized ||
+    reaction.msgId?.$1 ||
+    reaction.msgId?.toString?.() ||
+    null;
+  if (!targetMessageId) return;
+  const emoji = String(reaction.reaction || "").trim();
+  const senderId =
+    reaction.senderId?._serialized ||
+    reaction.senderId?.$1 ||
+    String(reaction.senderId || "");
+  const reactedAt = reaction.timestamp
+    ? new Date(Number(reaction.timestamp) * 1000).toISOString()
+    : new Date().toISOString();
+
+  const { error } = await supabase.rpc("apply_instagram_message_reaction_atomic", {
+    p_message_id: targetMessageId,
+    p_sender_id: senderId || "whatsapp2",
+    p_emoji: emoji || null,
+    p_action: emoji ? "react" : "unreact",
+    p_reacted_at: reactedAt,
+  });
+  if (error) console.warn("[whatsapp2] reação não persistida:", error.message);
+}
+
+async function syncWhatsApp2Revoke(after, before) {
+  if (!supabase) return;
+  const target =
+    before?.id?._serialized ||
+    before?.id?.$1 ||
+    after?.protocolMessageKey?._serialized ||
+    after?.protocolMessageKey?.$1 ||
+    null;
+  if (!target) return;
+  try {
+    await supabase
+      .from("instagram_messages")
+      .update({
+        text: "Mensagem apagada",
+        media_url: null,
+        media_type: null,
+        audio_transcript: null,
+      })
+      .eq("id", target)
+      .eq("channel", "whatsapp2");
+  } catch {}
+}
+
+async function syncChatSnapshots() {
+  if (!supabase || state.status !== "ready") return;
+  const active = ensureReady();
+  let chats = [];
+  try {
+    chats = await active.getChats();
+  } catch (error) {
+    console.warn("[whatsapp2] snapshot de chats falhou:", error?.message || error);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const rows = [];
+  for (const chat of chats.slice(0, 300)) {
+    if (!chat || chat.isGroup) continue;
+    const chatId = chat.id?._serialized || chat.id?.$1 || null;
+    if (!chatId) continue;
+    const avatar = getCachedProfilePic(chatId);
+    const last = serializeMessage(chat.lastMessage);
+    const lastAt = last?.timestamp
+      ? new Date(Number(last.timestamp) * 1000).toISOString()
+      : now;
+    rows.push({
+      id: whatsapp2ConversationId(chatId),
+      username: chatId,
+      full_name: String(chat.name || chatId),
+      avatar: avatar || "/images/default-avatar.svg",
+      avatar_url: avatar,
+      contact_id: chatId,
+      channel: "whatsapp2",
+      last_message: formatWhatsApp2PreviewForGateway(last),
+      last_message_preview: formatWhatsApp2PreviewForGateway(last),
+      last_message_at: lastAt,
+      last_direction: last?.fromMe ? "out" : "in",
+      last_status: last?.fromMe ? (Number(last.ack || 0) >= 3 ? "seen" : Number(last.ack || 0) >= 2 ? "delivered" : "sent") : null,
+      unread: Number(chat.unreadCount || 0) > 0,
+      unread_count: Number(chat.unreadCount || 0),
+      updated_at: now,
+      status: "active",
+    });
+  }
+
+  if (!rows.length) return;
+  const { error } = await supabase.from("instagram_conversations").upsert(rows, {
+    onConflict: "id",
+    ignoreDuplicates: false,
+  });
+  if (error) console.warn("[whatsapp2] snapshot Supabase falhou:", error.message);
+}
+
+function formatWhatsApp2PreviewForGateway(message) {
+  if (!message) return "";
+  const body = String(message.body || "").trim();
+  if (body) return body;
+  const type = String(message.type || "").toLowerCase();
+  if (type === "ptt" || type === "audio") return "🎙️ Mensagem de voz";
+  if (type === "image") return "📷 Foto";
+  if (type === "video") return "🎥 Vídeo";
+  if (type === "sticker") return "Figurinha";
+  return type ? `[${type}]` : "";
+}
+
+async function sendTextInternal({ to, text, replyToMessageId }) {
+  const sent = await ensureReady().sendMessage(normalizeChatId(to), String(text || ""), {
+    ...(replyToMessageId ? { quotedMessageId: String(replyToMessageId) } : {}),
+  });
+  return serializeMessage(sent);
+}
+
+async function sendMediaInternal({
+  to,
+  mediaUrl,
+  mediaBase64,
+  mimetype,
+  filename,
+  caption,
+  asVoice,
+  asSticker,
+  replyToMessageId,
+}) {
+  let media;
+  if (mediaUrl) {
+    media = await MessageMedia.fromUrl(String(mediaUrl), {
+      unsafeMime: true,
+      filename: filename ? String(filename) : undefined,
+    });
+  } else if (mediaBase64 && mimetype) {
+    media = new MessageMedia(
+      String(mimetype),
+      String(mediaBase64),
+      filename ? String(filename) : undefined,
+    );
+  } else {
+    throw new Error("Informe mediaUrl ou mediaBase64 + mimetype");
+  }
+
+  const active = ensureReady();
+  await ensureWaJsReady();
+
+  const chatId = normalizeChatId(to);
+  const cleanMime = String(media.mimetype || "application/octet-stream").split(";")[0].trim();
+  const type = asVoice
+    ? "audio"
+    : asSticker
+    ? "sticker"
+    : cleanMime.startsWith("image/")
+    ? "image"
+    : cleanMime.startsWith("video/")
+    ? "video"
+    : cleanMime.startsWith("audio/")
+    ? "audio"
+    : "document";
+  const dataUrl = `data:${cleanMime};base64,${media.data}`;
+  const resolvedFilename = filename
+    ? String(filename)
+    : asVoice
+    ? "voice.ogg"
+    : media.filename || "file";
+
+  const result = await active.pupPage.evaluate(
+    async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
+      let targetId = chatId;
+      if (String(chatId).endsWith("@lid")) {
+        try {
+          const mapping = await globalThis.WPP.contact.getPnLidEntry(chatId);
+          targetId = mapping?.phoneNumber?._serialized || chatId;
+        } catch {
+          targetId = chatId;
+        }
+      }
+
+      const options = {
+        type,
+        mimetype: cleanMime,
+        filename,
+        ...(caption ? { caption } : {}),
+        ...(asVoice ? { isPtt: true, waveform: true } : {}),
+        ...(quotedMsg ? { quotedMsg } : {}),
+      };
+      const sent = await globalThis.WPP.chat.sendFileMessage(targetId, dataUrl, options);
+      return sent ? JSON.parse(JSON.stringify(sent)) : null;
+    },
+    {
+      chatId,
+      dataUrl,
+      type,
+      cleanMime,
+      filename: resolvedFilename,
+      caption: caption ? String(caption) : "",
+      asVoice: Boolean(asVoice),
+      quotedMsg: replyToMessageId ? String(replyToMessageId) : "",
+    },
+  );
+
+  const messageId = typeof result?.id === "string"
+    ? result.id
+    : result?.id?.toString?.() || result?.messageId || null;
+
+  return {
+    id: messageId,
+    fromMe: true,
+    to: chatId,
+    body: caption ? String(caption) : "",
+    type: asVoice ? "ptt" : type,
+    timestamp: Math.floor(Date.now() / 1000),
+    hasMedia: true,
+    hasQuotedMsg: Boolean(replyToMessageId),
+    ack: result?.ack ?? null,
+  };
+}
+
+async function processDeliveryQueue() {
+  if (!supabase || deliveryWorkerRunning || state.status !== "ready") return;
+  deliveryWorkerRunning = true;
+  try {
+    const { data: jobs, error } = await supabase.rpc("claim_whatsapp2_delivery_batch", {
+      p_worker_id: WORKER_ID,
+      p_limit: 5,
+      p_stale_after_seconds: 90,
+    });
+    if (error) throw error;
+
+    for (const job of jobs || []) {
+      try {
+        let sent;
+        if (job.kind === "text") {
+          sent = await sendTextInternal({
+            to: job.recipient_id,
+            text: job.text_content || "",
+            replyToMessageId: job.reply_to_message_id,
+          });
+        } else {
+          sent = await sendMediaInternal({
+            to: job.recipient_id,
+            mediaUrl: job.media_url,
+            caption: job.kind === "image" ? (job.text_content || "") : "",
+            asVoice: job.kind === "audio" && job.voice_note === true,
+            asSticker: job.kind === "sticker",
+            replyToMessageId: job.reply_to_message_id,
+          });
+        }
+
+        const providerMessageId = sent?.id || null;
+        await supabase.rpc("complete_whatsapp2_delivery", {
+          p_id: job.id,
+          p_worker_id: WORKER_ID,
+          p_success: true,
+          p_provider_message_id: providerMessageId,
+          p_error: null,
+          p_uncertain: false,
+        });
+      } catch (error) {
+        const uncertain = /timeout|timed out|connection|socket/i.test(String(error?.message || error));
+        await supabase.rpc("complete_whatsapp2_delivery", {
+          p_id: job.id,
+          p_worker_id: WORKER_ID,
+          p_success: false,
+          p_provider_message_id: null,
+          p_error: String(error?.message || error),
+          p_uncertain: uncertain,
+        }).catch(() => {});
+      }
+    }
+  } catch (error) {
+    console.warn("[whatsapp2] worker de entrega:", error?.message || error);
+  } finally {
+    deliveryWorkerRunning = false;
+  }
+}
+
+function startDeliveryWorker() {
+  if (!supabase || deliveryWorkerTimer) return;
+  void processDeliveryQueue();
+  deliveryWorkerTimer = setInterval(() => void processDeliveryQueue(), 750);
+}
+
+function stopDeliveryWorker() {
+  if (!deliveryWorkerTimer) return;
+  clearInterval(deliveryWorkerTimer);
+  deliveryWorkerTimer = null;
+}
+
 async function destroyClient() {
+  stopDeliveryWorker();
   const current = client;
   client = null;
   initializing = null;
@@ -268,26 +812,52 @@ async function startClient() {
       void ensureWaJsReady()
         .then(() => console.log("[whatsapp2] WA-JS pronto para mídia"))
         .catch((error) => console.warn("[whatsapp2] WA-JS não carregou:", error?.message || error));
+      startDeliveryWorker();
+      void syncChatSnapshots();
+      if (supabase) {
+        console.log("[whatsapp2] ponte Supabase ativa", { workerId: WORKER_ID });
+      } else {
+        console.warn("[whatsapp2] ponte Supabase desativada: credenciais locais ausentes");
+      }
     });
     next.on("auth_failure", async (message) => {
+      stopDeliveryWorker();
       setState({ status: "auth_failure", lastError: String(message || "") });
       await emitEvent("auth_failure", { message: String(message || "") });
     });
     next.on("disconnected", async (reason) => {
+      stopDeliveryWorker();
       setState({ status: "disconnected", lastError: String(reason || "") });
       await emitEvent("disconnected", { reason: String(reason || "") });
     });
-    next.on("message", (message) => emitEvent("message", serializeMessage(message)));
-    next.on("message_create", (message) => {
-      if (message.fromMe) return emitEvent("message_create", serializeMessage(message));
+    next.on("message", (message) => {
+      void emitEvent("message", serializeMessage(message));
+      void syncWhatsApp2Message(message).catch((error) =>
+        console.warn("[whatsapp2] inbound sync:", error?.message || error));
     });
-    next.on("message_ack", (message, ack) =>
-      emitEvent("message_ack", { message: serializeMessage(message), ack }));
-    next.on("message_revoke_everyone", (after, before) =>
-      emitEvent("message_revoke_everyone", {
+    next.on("message_create", (message) => {
+      if (!message.fromMe) return;
+      void emitEvent("message_create", serializeMessage(message));
+      void syncWhatsApp2Message(message).catch((error) =>
+        console.warn("[whatsapp2] outbound sync:", error?.message || error));
+    });
+    next.on("message_ack", (message, ack) => {
+      void emitEvent("message_ack", { message: serializeMessage(message), ack });
+      void syncWhatsApp2Ack(message, ack).catch((error) =>
+        console.warn("[whatsapp2] ack sync:", error?.message || error));
+    });
+    next.on("message_revoke_everyone", (after, before) => {
+      void emitEvent("message_revoke_everyone", {
         after: serializeMessage(after), before: serializeMessage(before)
-      }));
-    next.on("message_reaction", (reaction) => emitEvent("message_reaction", reaction));
+      });
+      void syncWhatsApp2Revoke(after, before).catch((error) =>
+        console.warn("[whatsapp2] revoke sync:", error?.message || error));
+    });
+    next.on("message_reaction", (reaction) => {
+      void emitEvent("message_reaction", reaction);
+      void syncWhatsApp2Reaction(reaction).catch((error) =>
+        console.warn("[whatsapp2] reaction sync:", error?.message || error));
+    });
 
     try { await next.initialize(); }
     catch (error) {
@@ -456,10 +1026,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/messages/send") {
       const body = await readJson(req);
-      const sent = await ensureReady().sendMessage(normalizeChatId(body.to), String(body.text || ""), {
-        ...(body.replyToMessageId ? { quotedMessageId: String(body.replyToMessageId) } : {}),
+      const sent = await sendTextInternal({
+        to: body.to,
+        text: body.text,
+        replyToMessageId: body.replyToMessageId,
       });
-      json(res, 200, { ok: true, message: serializeMessage(sent) }); return;
+      json(res, 200, { ok: true, message: sent }); return;
     }
     if (req.method === "POST" && url.pathname === "/messages/send-media") {
       const body = await readJson(req);
@@ -560,8 +1132,19 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/messages/delete") {
       const body = await readJson(req);
-      const result = await (await getMessage(body.messageId)).delete(body.everyone !== false);
-      json(res, 200, { ok: true, everyone: body.everyone !== false, result: result ?? true }); return;
+      const messageId = String(body.messageId || "");
+      const message = await getMessage(messageId);
+      const chatId = String(message.fromMe ? message.to : message.from || "");
+      if (!chatId) throw new Error("Chat da mensagem não encontrado");
+      await ensureWaJsReady();
+      const revoke = body.everyone !== false;
+      const result = await ensureReady().pupPage.evaluate(
+        async ({ chatId, messageId, revoke }) => {
+          return await globalThis.WPP.chat.deleteMessage(chatId, messageId, true, revoke);
+        },
+        { chatId, messageId, revoke },
+      );
+      json(res, 200, { ok: true, everyone: revoke, result: result ?? true }); return;
     }
     if (req.method === "POST" && url.pathname === "/messages/react") {
       const body = await readJson(req);

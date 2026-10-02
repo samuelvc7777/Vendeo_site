@@ -37,6 +37,7 @@ import {
 } from "./instagram_profile_queue.ts";
 import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
 import { sendWhatsAppCloudMessage } from "./whatsapp_cloud.ts";
+import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
 import { handleWhatsAppWebhook } from "./whatsapp_webhook.ts";
 
 const corsHeaders = {
@@ -2396,8 +2397,11 @@ serve(async (req: Request) => {
           .select("channel, contact_id, username, full_name")
           .eq("id", conversationId)
           .maybeSingle();
-        const conversationChannel = conversationRow?.channel === "whatsapp" ? "whatsapp" : "instagram";
-        if (stickerUrl && conversationChannel !== "whatsapp") {
+        const rawConversationChannel = String(conversationRow?.channel || "instagram");
+        const conversationChannel = rawConversationChannel === "whatsapp" || rawConversationChannel === "whatsapp2"
+          ? rawConversationChannel
+          : "instagram";
+        if (stickerUrl && conversationChannel !== "whatsapp" && conversationChannel !== "whatsapp2") {
           return new Response(JSON.stringify({ error: "Figurinhas são suportadas apenas no WhatsApp." }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -2406,6 +2410,7 @@ serve(async (req: Request) => {
         const outboundMediaUrl = stickerUrl || audioUrl || mediaUrl || null;
         const outboundMediaType = stickerUrl ? "sticker" : audioUrl ? "audio" : mediaUrl ? "image" : null;
         const outboundPreviewText = stickerUrl ? "Figurinha" : audioUrl ? "🎙️ Mensagem de voz" : mediaUrl ? "📷 Foto" : rawText;
+        const whatsapp2DeliveryKey = String(body?.idempotencyKey || body?.clientMessageId || `wa2_manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
 
         // 1. Busca configurações da conta Meta para o canal Instagram.
         const { data: config } = await supabase
@@ -2415,8 +2420,8 @@ serve(async (req: Request) => {
           .maybeSingle();
 
         // 2. Resolve o destinatário oficial do provedor.
-        let targetRecipientId = conversationChannel === "whatsapp"
-          ? (conversationRow?.contact_id || conversationId)
+        let targetRecipientId = conversationChannel === "whatsapp" || conversationChannel === "whatsapp2"
+          ? (conversationRow?.contact_id || conversationId.replace(/^wa2:/, ""))
           : conversationId;
         if (conversationChannel === "instagram" && !/^\d+$/.test(conversationId)) {
           const { data: senderRows } = await supabase
@@ -2484,6 +2489,46 @@ serve(async (req: Request) => {
         };
 
         const sendProviderMessage = async (): Promise<string> => {
+          if (conversationChannel === "whatsapp2") {
+            const kind = stickerUrl ? "sticker" : audioUrl ? "audio" : mediaUrl ? "image" : "text";
+            let providerMediaUrl = stickerUrl || audioUrl || mediaUrl || undefined;
+            let voiceNote = false;
+
+            if (kind === "audio" && audioUrl) {
+              const { data: audioVariant } = await supabase
+                .from("persona_audios")
+                .select("whatsapp_audio_url")
+                .eq("audio_url", audioUrl)
+                .maybeSingle();
+              const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
+              if (whatsappAudioUrl) {
+                providerMediaUrl = whatsappAudioUrl;
+                voiceNote = true;
+              } else if (/\.ogg(?:\?|$)/i.test(audioUrl)) {
+                voiceNote = true;
+              }
+            }
+
+            const delivery = await enqueueAndWaitWhatsApp2Delivery({
+              supabase,
+              queueId: whatsapp2DeliveryKey,
+              conversationId,
+              recipientId: targetRecipientId,
+              kind,
+              text: kind === "text" ? rawText : kind === "image" ? rawText : undefined,
+              mediaUrl: providerMediaUrl,
+              voiceNote,
+              replyToMessageId,
+              timeoutMs: 18_000,
+            });
+            if (!delivery.success || !delivery.providerMessageId) {
+              const error = new Error(delivery.error || "whatsapp2_delivery_failed") as Error & { isUncertain?: boolean };
+              error.isUncertain = delivery.isUncertain === true;
+              throw error;
+            }
+            return delivery.providerMessageId;
+          }
+
           if (conversationChannel === "whatsapp") {
             const kind = stickerUrl ? "sticker" : audioUrl ? "audio" : mediaUrl ? "image" : "text";
             let providerMediaUrl = stickerUrl || audioUrl || mediaUrl || undefined;
@@ -2753,7 +2798,7 @@ serve(async (req: Request) => {
         const myIgUsername = config?.username || "lariresende_0611";
 
         if (convUpdErr || convUpdCount === 0) {
-          let resolved = conversationChannel === "whatsapp"
+          let resolved = conversationChannel === "whatsapp" || conversationChannel === "whatsapp2"
             ? {
                 username: String(conversationRow?.username || targetRecipientId),
                 fullName: String(conversationRow?.full_name || targetRecipientId),
@@ -2778,7 +2823,7 @@ serve(async (req: Request) => {
           await supabase.from("instagram_conversations").insert({
             id: conversationId,
             channel: conversationChannel,
-            contact_id: conversationChannel === "whatsapp" ? targetRecipientId : null,
+            contact_id: conversationChannel === "whatsapp" || conversationChannel === "whatsapp2" ? targetRecipientId : null,
             username: resolved.username,
             full_name: resolved.fullName,
             avatar: resolved.avatar,

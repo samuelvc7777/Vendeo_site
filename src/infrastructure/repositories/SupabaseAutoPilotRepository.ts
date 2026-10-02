@@ -169,7 +169,6 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
   }
 
   private async persistStateToCloud(state: AutoPilotChatState, expectedStateUpdatedAt?: string): Promise<void> {
-    if (state.conversationId.startsWith("wa2:")) return;
     this.cachedStates = { ...(this.cachedStates || {}), [state.conversationId]: state };
     this.lastFetchStatesTime = Date.now();
 

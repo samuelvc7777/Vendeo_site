@@ -5,6 +5,7 @@
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
 import { sendWhatsAppCloudMessage } from "./whatsapp_cloud.ts";
+import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
 import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
 import {
   detectGreetingRepeat,
@@ -3776,6 +3777,75 @@ export async function dispatchOutboxEntry(
       .select("channel, contact_id")
       .eq("id", conversationId)
       .maybeSingle();
+
+    if (channelRow?.channel === "whatsapp2") {
+      let mediaUrl: string | undefined;
+      let voiceNote = false;
+      let kind: "text" | "audio" | "image" | "sticker" = "text";
+
+      if (outboxEntry.messageType === "audio") {
+        kind = "audio";
+        mediaUrl = outboxEntry.mediaUrl || outboxEntry.content;
+        if (mediaUrl?.startsWith("[audio:") && mediaUrl.endsWith("]")) {
+          mediaUrl = mediaUrl.slice(7, -1).trim();
+        }
+        if (outboxEntry.vaultAudioId) {
+          const { data: audioVariant } = await supabase
+            .from("persona_audios")
+            .select("whatsapp_audio_url")
+            .eq("id", outboxEntry.vaultAudioId)
+            .maybeSingle();
+          const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
+          if (whatsappAudioUrl) {
+            mediaUrl = whatsappAudioUrl;
+            voiceNote = true;
+          }
+        }
+      } else if (outboxEntry.messageType === "image") {
+        kind = "image";
+        mediaUrl = outboxEntry.mediaUrl || (
+          typeof outboxEntry.payload?.mediaUrl === "string"
+            ? outboxEntry.payload.mediaUrl
+            : undefined
+        );
+      }
+
+      const replyToMessageId = outboxEntry.replyToMessageId
+        || (typeof outboxEntry.payload?.replyToMessageId === "string"
+          ? outboxEntry.payload.replyToMessageId
+          : null);
+
+      const delivery = await enqueueAndWaitWhatsApp2Delivery({
+        supabase,
+        queueId: outboxEntry.idempotencyKey || outboxEntry.id,
+        conversationId,
+        recipientId: channelRow.contact_id || recipientId || conversationId.replace(/^wa2:/, ""),
+        kind,
+        text: kind === "text" ? outboxEntry.content : undefined,
+        mediaUrl,
+        voiceNote,
+        replyToMessageId,
+        timeoutMs: 18_000,
+      });
+
+      if (!delivery.success) {
+        if (delivery.isUncertain) {
+          outboxEntry.status = "dispatch_uncertain";
+          outboxEntry.isUncertain = true;
+          outboxEntry.lastError = delivery.error || "whatsapp2_delivery_uncertain";
+          return { success: false, isUncertain: true, error: outboxEntry.lastError };
+        }
+        outboxEntry.status = "failed";
+        outboxEntry.lastError = delivery.error || "whatsapp2_delivery_failed";
+        return { success: false, error: outboxEntry.lastError };
+      }
+
+      outboxEntry.status = "sent";
+      outboxEntry.sentAt = new Date().toISOString();
+      outboxEntry.providerMessageId = delivery.providerMessageId;
+      outboxEntry.isUncertain = false;
+      return { success: true, providerMessageId: delivery.providerMessageId };
+    }
 
     if (channelRow?.channel === "whatsapp") {
       let mediaUrl: string | undefined;

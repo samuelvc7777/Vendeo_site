@@ -968,14 +968,147 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [whatsapp2GatewayError, setWhatsapp2GatewayError] = useState<string | null>(null);
   const loadWhatsApp2Conversations = useCallback(async () => {
     setWhatsapp2GatewayStatus("loading");
+
+    const supabase = getSupabaseBrowserClient();
+    let gatewayRows: DirectConversation[] = [];
+    let gatewayError: Error | null = null;
+
     try {
-      const rows = await getWhatsApp2Chats(180);
-      setWhatsApp2Conversations(rows.map(mapWhatsApp2Chat));
+      const rows = await getWhatsApp2Chats(300);
+      gatewayRows = rows.map(mapWhatsApp2Chat);
       setWhatsapp2GatewayStatus("ready");
       setWhatsapp2GatewayError(null);
     } catch (error) {
+      gatewayError = error as Error;
       setWhatsapp2GatewayStatus("offline");
-      setWhatsapp2GatewayError((error as Error).message || "Gateway indisponível");
+      setWhatsapp2GatewayError(gatewayError.message || "Gateway indisponível");
+    }
+
+    let canonicalRows: any[] = [];
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("instagram_conversations")
+        .select(
+          "id, contact_id, username, full_name, avatar, avatar_url, last_message, last_message_at, last_direction, last_status, seen_at, unread, unread_count, status, current_stage_id, is_converted, raffle_status, ai_auto_respond"
+        )
+        .eq("channel", "whatsapp2")
+        .neq("status", "vault")
+        .neq("status", "system")
+        .order("last_message_at", { ascending: false, nullsFirst: false })
+        .limit(500);
+
+      if (error) {
+        console.warn("[WhatsApp 2] Falha ao carregar projeção canônica:", error.message);
+      } else {
+        canonicalRows = data || [];
+      }
+    }
+
+    const canonicalById = new Map<string, any>(
+      canonicalRows.map((row: any) => [String(row.id), row])
+    );
+    const gatewayById = new Map<string, DirectConversation>(
+      gatewayRows.map((row) => [row.id, row])
+    );
+    const allIds = new Set<string>([
+      ...canonicalRows.map((row: any) => String(row.id)),
+      ...gatewayRows.map((row) => row.id),
+    ]);
+
+    const merged = Array.from(allIds).map((id) => {
+      const canonical = canonicalById.get(id);
+      const gateway = gatewayById.get(id);
+      const lastDirection = String(canonical?.last_direction || "");
+      const lastStatus = canonical?.last_status
+        ? String(canonical.last_status)
+        : gateway?.lastStatus;
+      const canonicalAvatar =
+        canonical?.avatar && !String(canonical.avatar).includes("default-avatar.svg")
+          ? canonical.avatar
+          : null;
+      const avatar =
+        canonical?.avatar_url ||
+        canonicalAvatar ||
+        gateway?.avatar ||
+        "/images/default-avatar.svg";
+      const contactId =
+        canonical?.contact_id ||
+        gateway?.providerId ||
+        id.replace(/^wa2:/, "");
+      const fullName =
+        canonical?.full_name ||
+        gateway?.fullName ||
+        canonical?.username ||
+        gateway?.username ||
+        contactId;
+      const username =
+        canonical?.username ||
+        gateway?.username ||
+        contactId;
+      const lastMessageAt =
+        canonical?.last_message_at ||
+        gateway?.lastMessageAt ||
+        null;
+      const rawLastMessage =
+        canonical?.last_message ??
+        gateway?.lastMessage ??
+        "";
+      const isOutbound = lastDirection
+        ? lastDirection === "out"
+        : gateway?.lastSender === "me";
+
+      const conversation: DirectConversation = {
+        ...(gateway || {
+          id,
+          username,
+          fullName,
+          avatar,
+          isOnline: false,
+          lastActive: lastMessageAt ? formatMessageTime(lastMessageAt) : "",
+          lastMessage: rawLastMessage,
+          lastSender: isOutbound ? "me" : "them",
+          unread: false,
+          type: "whatsapp2" as const,
+        }),
+        id,
+        providerId: contactId,
+        username,
+        fullName,
+        avatar,
+        type: "whatsapp2",
+        lastMessage: isOutbound && rawLastMessage && !String(rawLastMessage).startsWith("Você: ")
+          ? `Você: ${rawLastMessage}`
+          : String(rawLastMessage || ""),
+        lastMessageAt: lastMessageAt || undefined,
+        lastActive: lastMessageAt ? formatMessageTime(lastMessageAt) : (gateway?.lastActive || ""),
+        lastSender: isOutbound ? "me" : "them",
+        lastStatus: isOutbound
+          ? ((lastStatus as DirectMessage["status"] | undefined) || "sent")
+          : undefined,
+        seenAt: canonical?.seen_at || gateway?.seenAt,
+        unread: canonical ? Boolean(canonical.unread) : Boolean(gateway?.unread),
+        status: canonical?.status || gateway?.status || "active",
+        currentStageId: canonical?.current_stage_id || null,
+        isConverted: Boolean(canonical?.is_converted),
+        raffleStatus: normalizeRaffleCommercialStatus(canonical?.raffle_status),
+        aiAutoRespond: Boolean(canonical?.ai_auto_respond),
+      };
+      return conversation;
+    });
+
+    merged.sort(
+      (a, b) =>
+        getMessageTimestampMs(b.lastMessageAt || b.lastActive) -
+        getMessageTimestampMs(a.lastMessageAt || a.lastActive)
+    );
+    setWhatsApp2Conversations(merged);
+    setActiveChat((current) => {
+      if (!current || current.type !== "whatsapp2") return current;
+      return merged.find((conversation) => conversation.id === current.id) || current;
+    });
+
+    if (!gatewayRows.length && gatewayError && !canonicalRows.length) {
+      setWhatsapp2GatewayStatus("offline");
     }
   }, []);
   const conversationsRef = useRef<DirectConversation[]>([]);
@@ -1138,7 +1271,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   }, []);
 
   const sendWhatsAppSticker = useCallback(async (sticker: WhatsAppSavedSticker) => {
-    if (!activeChat || activeChat.type !== "whatsapp" || sendingStickerId) return;
+    if (!activeChat || !isWhatsAppLikeType(activeChat.type) || sendingStickerId) return;
     const conversationId = activeChat.id;
     const tempId = `temp_sticker_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const nowIso = new Date().toISOString();
@@ -1160,7 +1293,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       ...prev,
       [conversationId]: [...(prev[conversationId] || []), optimistic],
     }));
-    setConversations((prev) => {
+    const applyStickerConversationPreview = (prev: DirectConversation[]) => {
       const target = prev.find((item) => item.id === conversationId);
       if (!target) return prev;
       const updated: DirectConversation = {
@@ -1174,7 +1307,26 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         seenAt: undefined,
       };
       return [updated, ...prev.filter((item) => item.id !== conversationId)];
-    });
+    };
+    if (activeChat.type === "whatsapp2") {
+      setWhatsApp2Conversations(applyStickerConversationPreview);
+    } else {
+      setConversations(applyStickerConversationPreview);
+    }
+    setActiveChat((prev) =>
+      prev && prev.id === conversationId
+        ? {
+            ...prev,
+            lastMessage: "Você: Figurinha",
+            lastActive: formatMessageTime(nowIso),
+            lastMessageAt: nowIso,
+            lastSender: "me",
+            lastStatus: "sent",
+            unread: false,
+            seenAt: undefined,
+          }
+        : prev
+    );
 
     try {
       const response = await fetch(getApiUrl(`/api/instagram/messages/${conversationId}`), {
@@ -1242,7 +1394,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [isStageFilterOpen]);
 
-  const chatStages = useChatStages(activeChat?.type === "whatsapp2" ? undefined : activeChat?.id, { loadAllProgresses: false });
+  const chatStages = useChatStages(activeChat?.id, { loadAllProgresses: false });
   const {
     stages,
     chatDetail,
@@ -1356,7 +1508,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return null;
     }
 
-    const rows = [...(data || [])].reverse();
+    const rows = [...(data || [])]
+      .reverse()
+      .filter((row: any) => !(
+        String(conversationId).startsWith("wa:")
+        && String(row.text || "").trim().toLowerCase() === "[whatsapp:reaction]"
+      ));
     const rawById = new Map(rows.map((row: any) => [String(row.id), row]));
 
     const formatted = rows.map((row: any): DirectMessage => {
@@ -1526,9 +1683,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // isRealtimeHealthy: sincronizado com isRealtimeConnected via useEffect abaixo.
   // O setInterval de 30s lê o ref dinamicamente, portanto a atualização posterior funciona.
   const [isRealtimeHealthyForAutopilot, setIsRealtimeHealthyForAutopilot] = useState(true);
+  const autoPilotConversations = useMemo(
+    () => [...conversations, ...whatsapp2Conversations],
+    [conversations, whatsapp2Conversations]
+  );
   // Instância do Piloto Automático Inteligente com Fila Sequencial e Debounce
   const autoPilot = useAutoPilot({
-    conversations,
+    conversations: autoPilotConversations,
     messages,
     onSendMessage: handleSendAutoPilotMessage,
     onRefreshMessages: fetchConversationMessages,
@@ -1604,11 +1765,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       setActiveChat((prev) =>
         prev && prev.id === conversationId ? { ...prev, raffleStatus: status } : prev
       );
-      setConversations((prev) =>
+      const apply = (prev: DirectConversation[]) =>
         prev.map((conversation) =>
           conversation.id === conversationId ? { ...conversation, raffleStatus: status } : conversation
-        )
-      );
+        );
+      setConversations(apply);
+      setWhatsApp2Conversations(apply);
     };
 
     setIsUpdatingRaffleStatus(true);
@@ -1810,13 +1972,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       } catch {}
     }
 
-    setConversations((prev) =>
+    const applyUnread = (prev: DirectConversation[]) =>
       prev.map((c) =>
         c.id === conv.id
           ? { ...c, unread: nextUnread, lastSender: nextUnread ? "them" : c.lastSender }
           : c
-      )
-    );
+      );
+    setConversations(applyUnread);
+    setWhatsApp2Conversations(applyUnread);
 
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
@@ -1954,22 +2117,54 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   useEffect(() => {
     if (activeChat?.type !== "whatsapp2") return;
     let cancelled = false;
+
     const refresh = async () => {
       try {
         const providerId = activeChat.providerId || activeChat.id.replace(/^wa2:/, "");
-        const rows = await getWhatsApp2Messages(providerId, 140);
+        const [gatewayRows, canonicalRows] = await Promise.all([
+          getWhatsApp2Messages(providerId, 140),
+          loadInstagramMessagesDirect(activeChat.id),
+        ]);
         if (cancelled) return;
-        setMessages((previous) => ({ ...previous, [activeChat.id]: rows.map(mapWhatsApp2Message) }));
+
+        const gatewayMessages = gatewayRows.map(mapWhatsApp2Message);
+        const mergedMessages = deduplicateMessages([
+          ...gatewayMessages,
+          ...(canonicalRows || []),
+        ]).sort(
+          (left, right) =>
+            getMessageTimestampMs(left.timestamp || left.sentDate || left.createdAt) -
+            getMessageTimestampMs(right.timestamp || right.sentDate || right.createdAt)
+        );
+
+        setMessages((previous) => ({
+          ...previous,
+          [activeChat.id]: deduplicateMessages([
+            ...(previous[activeChat.id] || []),
+            ...mergedMessages,
+          ]).sort(
+            (left, right) =>
+              getMessageTimestampMs(left.timestamp || left.sentDate || left.createdAt) -
+              getMessageTimestampMs(right.timestamp || right.sentDate || right.createdAt)
+          ),
+        }));
       } catch (error) {
         if (!cancelled) console.warn("Falha ao atualizar mensagens do WhatsApp 2:", error);
       }
     };
+
+    void refresh();
     const timer = window.setInterval(() => void refresh(), 3000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeChat?.id, activeChat?.providerId, activeChat?.type]);
+  }, [
+    activeChat?.id,
+    activeChat?.providerId,
+    activeChat?.type,
+    loadInstagramMessagesDirect,
+  ]);
 
   // Carrega conversas reais do Instagram do Supabase (com in-flight dedup e colunas explícitas sem stage_completed_rules)
   const isDirectLoadingConvsRef = useRef<boolean>(false);
@@ -1983,7 +2178,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
       const normalizeInstagramRows = (rows: any[]) =>
         rows
-          .filter((c: any) => !c.id?.startsWith("__") && c.status !== "system" && c.status !== "vault")
+          .filter(
+            (c: any) =>
+              c.channel !== "whatsapp2" &&
+              !c.id?.startsWith("__") &&
+              c.status !== "system" &&
+              c.status !== "vault"
+          )
           .map((c: any) => {
             const lastMsgTime = getMessageTimestampMs(c.last_message_at);
             const readTime = readChatTimestampsRef.current[c.id];
@@ -2021,7 +2222,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const publishInstagramRows = (rows: any[]) => {
         const incoming = normalizeInstagramRows(rows);
         setConversations((prev) => {
-          const currentInstagram = prev;
+          const currentInstagram = prev.filter(
+            (conversation) =>
+              conversation.type !== "whatsapp2" &&
+              !conversation.id.startsWith("wa2:")
+          );
           const currentById = new Map<string, any>(currentInstagram.map((c) => [c.id, c]));
           const nextById = new Map<string, any>(currentInstagram.map((c) => [c.id, c]));
 
@@ -2208,6 +2413,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // SUPABASE REALTIME (WEBSOCKET): Latência Zero (< 50ms)
   // -------------------------------------------------------------
   const handleRealtimeInstagramMessage = useCallback((msg: RealtimeMessagePayload & { media_url?: string; media_type?: string }) => {
+    if (
+      String(msg.conversationId || "").startsWith("wa:")
+      && String(msg.text || "").trim().toLowerCase() === "[whatsapp:reaction]"
+    ) {
+      return;
+    }
+
     let text = msg.text || "";
     let mediaUrl = msg.mediaUrl || msg.media_url;
     let mediaType = (msg.mediaType || msg.media_type) as "image" | "audio" | "video" | "sticker" | undefined;
@@ -3482,9 +3694,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (!textToSend.trim() || !activeChat) return false;
 
     const messageText = textToSend.trim();
-    if (activeChat.type !== "whatsapp2") {
-      void markItemCompletedByExactText(messageText);
-    }
+    void markItemCompletedByExactText(messageText);
     const now = new Date();
     const nowIso = now.toISOString();
     const timeFormatted = formatMessageTime(now);
@@ -3538,10 +3748,29 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
       try {
         const providerId = activeChat.providerId || activeChat.id.replace(/^wa2:/, "");
-        const response = audioUrl
+        let whatsapp2AudioUrl = audioUrl;
+
+        if (audioUrl) {
+          try {
+            const supabase = getSupabaseBrowserClient();
+            if (supabase) {
+              const { data: audioVariant } = await supabase
+                .from("persona_audios")
+                .select("whatsapp_audio_url")
+                .eq("audio_url", audioUrl)
+                .maybeSingle();
+              const nativeVoiceUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
+              if (nativeVoiceUrl) whatsapp2AudioUrl = nativeVoiceUrl;
+            }
+          } catch (error) {
+            console.warn("[WhatsApp 2] Variante OGG/Opus indisponível; usando áudio original.", error);
+          }
+        }
+
+        const response = whatsapp2AudioUrl
           ? await sendWhatsApp2Media({
               to: providerId,
-              mediaUrl: audioUrl,
+              mediaUrl: whatsapp2AudioUrl,
               asVoice: true,
               replyToMessageId: currentReply?.id || null,
             })
@@ -4434,11 +4663,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {/* Clique no avatar ou nome para abrir o perfil completo */}
             <div
               onClick={() => {
-                if (activeChat.type === "whatsapp") {
+                if (isWhatsAppLikeType(activeChat.type)) {
                   setIsWhatsAppContactInfoOpen(true);
                   return;
                 }
-                if (activeChat.type === "whatsapp2") return;
                 setSelectedProfileForModal(activeChat);
                 setIsProfileModalOpen(true);
               }}
@@ -4515,12 +4743,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               </button>
             )}
 
-            {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
+            {(activeChat.type === "instagram" || isWhatsAppLikeType(activeChat.type)) && (
               <button
                 type="button"
                 onClick={() => void handleToggleActiveChatAi()}
                 className={`relative flex items-center justify-center gap-1.5 shrink-0 cursor-pointer transition-all active:scale-90 ${
-                  activeChat.type === "whatsapp"
+                  isWhatsAppLikeType(activeChat.type)
                     ? `wa-ios-glass h-9 w-9 rounded-full ${
                         autoPilot.config?.isEnabledGlobally === false
                           ? "text-[#ff9500]"
@@ -4552,12 +4780,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 }
               >
                 {autoPilot.config?.isEnabledGlobally === false ? (
-                  <BotOff className={activeChat.type === "whatsapp" ? "h-[18px] w-[18px]" : "w-3.5 h-3.5"} />
+                  <BotOff className={isWhatsAppLikeType(activeChat.type) ? "h-[18px] w-[18px]" : "w-3.5 h-3.5"} />
                 ) : (
-                  <Bot className={activeChat.type === "whatsapp" ? "h-[18px] w-[18px]" : "w-3.5 h-3.5"} />
+                  <Bot className={isWhatsAppLikeType(activeChat.type) ? "h-[18px] w-[18px]" : "w-3.5 h-3.5"} />
                 )}
 
-                {activeChat.type === "whatsapp" && autoPilot.config?.isEnabledGlobally !== false && (
+                {isWhatsAppLikeType(activeChat.type) && autoPilot.config?.isEnabledGlobally !== false && (
                   <span
                     className={`absolute bottom-[5px] right-[5px] h-2 w-2 rounded-full ring-2 ring-white/80 dark:ring-[#2c2c2e]/90 ${
                       autoPilot.chatStates[activeChat.id]?.isEnabled
@@ -4582,9 +4810,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         </div>
 
         {/* Checklist/Etapa: skin nativa por canal, mesma lógica e mesmos dados */}
-        {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
+        {(activeChat.type === "instagram" || isWhatsAppLikeType(activeChat.type)) && (
           <ChatStageBar
-            variant={activeChat.type === "whatsapp" ? "whatsapp-ios" : "default"}
+            variant={isWhatsAppLikeType(activeChat.type) ? "whatsapp-ios" : "default"}
             detail={chatDetail}
             onToggleItem={toggleItem}
             onToggleObjective={toggleObjective}
@@ -4601,7 +4829,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         {/* Área de Mensagens */}
         <div
           className={`flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full px-4 pt-3 pb-6 scrollbar-none overscroll-contain ${
-            activeChat.type === "whatsapp"
+            isWhatsAppLikeType(activeChat.type)
               ? "whatsapp-chat-wallpaper space-y-0"
               : "space-y-2.5"
           }`}
@@ -4882,7 +5110,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       variant={activeChat.type === "whatsapp2" ? "whatsapp" : activeChat.type}
                       isMine={msg.isMine}
                       onReply={() => beginReplyToMessage(msg)}
-                      onLongPress={activeChat.type === "whatsapp" ? () => setWhatsappMessageMenu(msg) : undefined}
+                      onLongPress={isWhatsAppLikeType(activeChat.type) ? () => setWhatsappMessageMenu(msg) : undefined}
                     >
                       <div
                         className={`flex items-end gap-1.5 max-w-full min-w-0 ${
@@ -4893,7 +5121,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         <button
                           type="button"
                           onClick={() => beginReplyToMessage(msg)}
-                          className={`${activeChat.type === "whatsapp" ? "hidden" : "hidden sm:inline-flex"} self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0`}
+                          className={`${isWhatsAppLikeType(activeChat.type) ? "hidden" : "hidden sm:inline-flex"} self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0`}
                           title="Responder a esta mensagem"
                           aria-label="Responder a mensagem"
                         >
@@ -5188,7 +5416,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         {msg.reactionEmoji ? (
                           <span
                             className={`absolute -bottom-2 ${msg.isMine ? "-left-1" : "-right-1"} bg-white dark:bg-[#262626] rounded-full px-1.5 py-0.5 border border-zinc-200 dark:border-black shadow-md text-[13px] leading-none select-none`}
-                            title="Reação no Instagram"
+                            title={isWhatsAppLikeType(activeChat.type) ? "Reação no WhatsApp" : "Reação no Instagram"}
                           >
                             {msg.reactionEmoji}
                           </span>
@@ -5230,7 +5458,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                     {/* Indicador Oficial de 'Visto' no Chat Aberto (Exibido logo abaixo do último balão enviado por nós quando visualizado pelo contato) */}
                     {(() => {
-                      if (activeChat.type === "whatsapp") return null;
+                      if (isWhatsAppLikeType(activeChat.type)) return null;
                       // No Instagram, o 'Visto' SÓ APARECE na ÚLTIMA MENSAGEM DO CHAT INTEIRO e enviada por nós
                       const isLastMessageOfChat = index === chatMessages.length - 1;
                       if (!isLastMessageOfChat || !msg.isMine) return null;
@@ -5280,7 +5508,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             return null;
           }
 
-          if (activeChat.type === "whatsapp") {
+          if (isWhatsAppLikeType(activeChat.type)) {
             return (
               <AutoPilotActivityIndicator
                 state={currentChatState}
@@ -5321,7 +5549,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         {isRecording ? (
           <div
             className={`p-3 border-t flex items-center justify-between gap-3 shrink-0 z-10 animate-in fade-in duration-200 ${
-              activeChat.type === "whatsapp"
+              isWhatsAppLikeType(activeChat.type)
                 ? "bg-[#f0f2f5] dark:bg-[#202c33] border-black/[0.06] dark:border-[#222d34]"
                 : "bg-white dark:bg-black border-zinc-200 dark:border-[#262626]"
             }`}
@@ -5331,7 +5559,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               type="button"
               onClick={() => handleStopRecording(false)}
               className={`w-9 h-9 rounded-full active:scale-90 flex items-center justify-center transition-all cursor-pointer ${
-                activeChat.type === "whatsapp"
+                isWhatsAppLikeType(activeChat.type)
                   ? "bg-transparent text-[#ff3b30] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
                   : "bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-red-400"
               }`}
@@ -5343,7 +5571,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             {/* Visualizador de Gravação Ativa com Timer */}
             <div className={`flex-1 rounded-[18px] px-4 py-2 flex items-center gap-3 ${
-              activeChat.type === "whatsapp"
+              isWhatsAppLikeType(activeChat.type)
                 ? "border border-[#d1d1d6] bg-white shadow-[0_0.5px_0_rgba(0,0,0,0.04)] dark:border-[#3a3a3c] dark:bg-[#2c2c2e]"
                 : "bg-zinc-100 dark:bg-[#1c1c1e] border border-red-500/40 shadow-inner"
             }`}>
@@ -5359,7 +5587,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               type="button"
               onClick={() => handleStopRecording(true)}
               className={`w-9 h-9 rounded-full text-white active:scale-90 flex items-center justify-center transition-transform shadow-md cursor-pointer hover:opacity-95 ${
-                activeChat.type === "whatsapp"
+                isWhatsAppLikeType(activeChat.type)
                   ? "bg-[#007aff]"
                   : "bg-gradient-to-tr from-[#0095f6] to-[#0081d6]"
               }`}
@@ -5372,7 +5600,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         ) : (
           <div
             className={`border-t shrink-0 z-10 ${
-              activeChat.type === "whatsapp"
+              isWhatsAppLikeType(activeChat.type)
                 ? "bg-[#f0f2f5] dark:bg-[#202c33] border-black/[0.06] dark:border-[#222d34]"
                 : "bg-white dark:bg-black border-zinc-200 dark:border-[#262626]"
             }`}
@@ -5380,7 +5608,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {/* Prévia de Foto Pendente para envio */}
             {pendingImage && (
               <div className={`mx-3 mt-2.5 p-2 rounded-xl flex items-center gap-3 animate-in fade-in duration-150 ${
-                activeChat.type === "whatsapp"
+                isWhatsAppLikeType(activeChat.type)
                   ? "whatsapp-ios wa-ios-glass"
                   : "bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626]"
               }`}>
@@ -5413,14 +5641,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {replyingToMessage && (
               <div
                 className={`mx-3 mt-2 px-3.5 py-2 border border-l-[3px] rounded-xl flex items-center justify-between gap-3 shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-150 select-none ${
-                  activeChat.type === "whatsapp"
+                  isWhatsAppLikeType(activeChat.type)
                     ? "whatsapp-ios wa-ios-glass border-l-[#00a884]"
                     : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#2f2f2f] border-l-[#0095f6]"
                 }`}
               >
                 <div className="flex-1 min-w-0">
                   <div className={`flex items-center gap-1.5 text-[11px] font-semibold ${
-                    activeChat.type === "whatsapp" ? "text-[#00a884] dark:text-[#25d366]" : "text-[#0095f6]"
+                    isWhatsAppLikeType(activeChat.type) ? "text-[#00a884] dark:text-[#25d366]" : "text-[#0095f6]"
                   }`}>
                     <Reply className="w-3.5 h-3.5 shrink-0" />
                     <span className="truncate">
@@ -5481,7 +5709,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               return null;
             })()}
 
-            {activeChat.type === "whatsapp" && (
+            {isWhatsAppLikeType(activeChat.type) && (
               <WhatsAppStickerTray
                 open={isWhatsAppStickerTrayOpen}
                 stickers={whatsappStickers}
@@ -5517,7 +5745,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               onStartRecording={handleStartRecording}
               onOpenVault={() => setIsPersonaAudioModalOpen(true)}
               onOpenConsole={
-                activeChat.type === "whatsapp"
+                isWhatsAppLikeType(activeChat.type)
                   ? () => {
                       setIsWhatsAppStickerTrayOpen(false);
                       handleOpenBrainConsole(activeChat.id);
@@ -5525,7 +5753,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   : undefined
               }
               onOpenStickers={
-                activeChat.type === "whatsapp"
+                isWhatsAppLikeType(activeChat.type)
                   ? () => {
                       setWhatsappMessageMenu(null);
                       openWhatsAppStickerTray();
@@ -5623,7 +5851,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         <AnimatePresence initial={false}>
-          {isWhatsAppContactInfoOpen && activeChat.type === "whatsapp" && (
+          {isWhatsAppContactInfoOpen && isWhatsAppLikeType(activeChat.type) && (
             <WhatsAppContactInfo
               conversation={{ ...activeChat, type: "whatsapp" as const }}
               messages={messages[activeChat.id] || []}
@@ -6572,7 +6800,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
                     </div>
 
-                    {conv.type === "whatsapp" && (() => {
+                    {isWhatsAppLikeType(conv.type) && (() => {
                       const currentStageId = conv.currentStageId || stages[0]?.id;
                       const currentStage = stages.find((stage) => stage.id === currentStageId);
                       const ai = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : null;
@@ -6799,7 +7027,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       </AnimatePresence>
 
       <AnimatePresence>
-        {whatsappMessageMenu && activeChat?.type === "whatsapp" && (
+        {whatsappMessageMenu && isWhatsAppLikeType(activeChat?.type) && (
           <motion.div
             key="whatsapp-message-menu"
             className="fixed inset-0 z-[140] flex items-end justify-center bg-black/[0.045] px-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] sm:items-center sm:pb-0"
@@ -6926,7 +7154,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       />
 
       {/* Menu contextual da inbox do WhatsApp no padrão visual do iOS */}
-      {selectedChatForActionSheet?.type === "whatsapp" && (
+      {selectedChatForActionSheet && isWhatsAppLikeType(selectedChatForActionSheet.type) && (
         <div
           className="whatsapp-ios fixed inset-0 z-[130] flex items-end justify-center bg-black/[0.045] px-2 pb-[calc(8px+env(safe-area-inset-bottom,0px))] sm:items-center sm:pb-0"
           onClick={() => setSelectedChatForActionSheet(null)}
