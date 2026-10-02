@@ -29,6 +29,7 @@ import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { useTheme } from "@/presentation/context/ThemeContext";
 import { WhatsApp2ConnectionCard } from "./WhatsApp2ConnectionCard";
+import { IS_WHATSAPP2_REMOTE_BUILD } from "@/presentation/components/chat/whatsapp2-client";
 
 function SectionHeading({
   title,
@@ -104,8 +105,10 @@ export function ConfigView() {
   const [isEditingGroqKey, setIsEditingGroqKey] = useState(false);
 
   useEffect(() => {
-    void checkInstagramStatus();
-    void checkWhatsAppStatus();
+    if (!IS_WHATSAPP2_REMOTE_BUILD) {
+      void checkInstagramStatus();
+      void checkWhatsAppStatus();
+    }
     void checkGroqStatus();
   }, []);
 
@@ -177,10 +180,10 @@ export function ConfigView() {
     }
   };
 
-  const connectedChannels =
-    Number(Boolean(isInstagramConnected)) +
-    Number(Boolean(isWhatsAppConnected)) +
-    Number(Boolean(isWhatsApp2Connected));
+  const connectedChannels = IS_WHATSAPP2_REMOTE_BUILD
+    ? Number(Boolean(isWhatsApp2Connected))
+    : Number(Boolean(isInstagramConnected)) + Number(Boolean(isWhatsAppConnected));
+  const availableChannelCount = IS_WHATSAPP2_REMOTE_BUILD ? 1 : 2;
   const activeObjectives = stages.reduce(
     (total, stage) => total + (stage.goals || []).filter((goal) => goal.enabled !== false).length,
     0,
@@ -254,7 +257,7 @@ export function ConfigView() {
                     Canais
                   </div>
                   <p className="mt-1 text-lg font-black text-zinc-950 dark:text-white">
-                    {connectedChannels}<span className="text-xs text-zinc-400">/3</span>
+                    {connectedChannels}<span className="text-xs text-zinc-400">/{availableChannelCount}</span>
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/80 dark:border-white/10 bg-white/75 dark:bg-white/[0.04] p-3 shadow-sm backdrop-blur">
@@ -283,6 +286,8 @@ export function ConfigView() {
             />
 
             <div className="grid grid-cols-1 gap-3">
+              {!IS_WHATSAPP2_REMOTE_BUILD && (
+                <>
               <article className="min-w-0 rounded-2xl border border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#111113] p-4 shadow-sm sm:p-5">
                 <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
@@ -397,8 +402,12 @@ export function ConfigView() {
                   </div>
                 </div>
               </article>
+                </>
+              )}
 
-              <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
+              {IS_WHATSAPP2_REMOTE_BUILD && (
+                <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
+              )}
             </div>
           </section>
 

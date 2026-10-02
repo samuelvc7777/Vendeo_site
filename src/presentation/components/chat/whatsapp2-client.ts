@@ -1,6 +1,8 @@
 export const WHATSAPP2_GATEWAY_URL =
   process.env.NEXT_PUBLIC_WHATSAPP2_GATEWAY_URL || "http://127.0.0.1:8788";
 
+export const IS_WHATSAPP2_REMOTE_BUILD = WHATSAPP2_GATEWAY_URL === "/wa2";
+
 export interface WhatsApp2GatewayMessage {
   id: string | null;
   from: string | null;

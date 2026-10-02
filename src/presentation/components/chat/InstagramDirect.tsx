@@ -106,6 +106,7 @@ import {
   getWhatsApp2MediaUrl,
   getWhatsApp2Messages,
   getWhatsApp2Status,
+  IS_WHATSAPP2_REMOTE_BUILD,
   sendWhatsApp2Media,
   sendWhatsApp2Text,
   type WhatsApp2GatewayChat,
@@ -2107,7 +2108,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   };
 
   // Filtros
-  const [activeChannel, setActiveChannel] = useState<InboxChannel>("instagram");
+  const [activeChannel, setActiveChannel] = useState<InboxChannel>(
+    IS_WHATSAPP2_REMOTE_BUILD ? "whatsapp2" : "instagram"
+  );
   const isWhatsAppInboxChannel = activeChannel === "whatsapp" || activeChannel === "whatsapp2";
   const [instaFilter, setInstaFilter] = useState<InstagramFilter>("todos");
   const [whatsappQuickFilter, setWhatsappQuickFilter] = useState<WhatsAppQuickFilter>("todas");
@@ -2176,6 +2179,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // Carrega conversas reais do Instagram do Supabase (com in-flight dedup e colunas explícitas sem stage_completed_rules)
   const isDirectLoadingConvsRef = useRef<boolean>(false);
   const loadInstagramConversations = useCallback(async () => {
+    if (IS_WHATSAPP2_REMOTE_BUILD) return;
     if (isDirectLoadingConvsRef.current) return;
     isDirectLoadingConvsRef.current = true;
     try {
@@ -2940,10 +2944,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // Inicialização
   useEffect(() => {
     setIsLoadingList(true);
-    Promise.all([loadInstagramConversations(), checkInstagramStatus()])
+    const initialLoad = IS_WHATSAPP2_REMOTE_BUILD
+      ? loadWhatsApp2Conversations()
+      : Promise.all([loadInstagramConversations(), checkInstagramStatus()]);
+    Promise.resolve(initialLoad)
       .catch((e) => console.error("Erro na carga inicial do chat:", e))
       .finally(() => setIsLoadingList(false));
-  }, [loadInstagramConversations, checkInstagramStatus]);
+  }, [loadInstagramConversations, loadWhatsApp2Conversations, checkInstagramStatus]);
 
   // Scroll automático ao abrir chat
   useEffect(() => {
@@ -5980,92 +5987,90 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         </div>
 
-        {/* Canais da caixa de entrada: o motor é o mesmo, a experiência visual muda por canal */}
+        {/* Canais da caixa de entrada: cada build expõe apenas os canais permitidos */}
         <div className={`mt-[10px] mb-[8px] shrink-0 border-b px-3 pb-2 ${
           isWhatsAppInboxChannel
             ? "whatsapp-ios border-black/[0.07] bg-white/66 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/68"
             : "border-zinc-100 bg-white dark:border-[#1f1f1f] dark:bg-black"
         }`}>
-          <div className={`grid grid-cols-3 gap-0.5 ${
+          <div className={`grid ${IS_WHATSAPP2_REMOTE_BUILD ? "grid-cols-1" : "grid-cols-2"} gap-0.5 ${
             isWhatsAppInboxChannel
               ? "whatsapp-ios rounded-[10px] bg-[#e9e9eb] p-0.5 dark:bg-[#2c2c2e]"
               : "rounded-2xl bg-zinc-100 p-1 dark:bg-[#171717]"
           }`}>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveChannel("instagram");
-                setInstaFilter("todos");
-                setShowFilterBar(false);
-              }}
-              className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
-                isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
-              } ${
-                activeChannel === "instagram"
-                  ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-[#3a3a3c] dark:text-white dark:ring-white/[0.05]"
-                  : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
-              }`}
-            >
-              <InstagramIcon className="h-4 w-4" />
-              <span>Instagram</span>
-              <span className="text-[10px] tabular-nums opacity-55">{instagramConversationCount}</span>
-              {instagramUnreadCount > 0 && (
-                <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#0095f6] px-1 text-[9px] font-bold leading-none text-white">
-                  {instagramUnreadCount > 99 ? "99+" : instagramUnreadCount}
-                </span>
-              )}
-            </button>
+            {!IS_WHATSAPP2_REMOTE_BUILD ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveChannel("instagram");
+                    setInstaFilter("todos");
+                    setShowFilterBar(false);
+                  }}
+                  className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
+                    isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
+                  } ${
+                    activeChannel === "instagram"
+                      ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-[#3a3a3c] dark:text-white dark:ring-white/[0.05]"
+                      : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+                  }`}
+                >
+                  <InstagramIcon className="h-4 w-4" />
+                  <span>Instagram</span>
+                  <span className="text-[10px] tabular-nums opacity-55">{instagramConversationCount}</span>
+                  {instagramUnreadCount > 0 && (
+                    <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#0095f6] px-1 text-[9px] font-bold leading-none text-white">
+                      {instagramUnreadCount > 99 ? "99+" : instagramUnreadCount}
+                    </span>
+                  )}
+                </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setActiveChannel("whatsapp");
-                setInstaFilter("todos");
-                setShowFilterBar(false);
-              }}
-              className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
-                isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
-              } ${
-                activeChannel === "whatsapp"
-                  ? "bg-white text-[#111b21] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
-                  : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
-              }`}
-            >
-              <WhatsAppIcon className={`h-4 w-4 ${activeChannel === "whatsapp" ? "text-[#25d366]" : ""}`} />
-              <span>WhatsApp</span>
-              <span className="text-[10px] tabular-nums opacity-55">{whatsappConversationCount}</span>
-              {whatsappUnreadCount > 0 && (
-                <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#25d366] px-1 text-[9px] font-bold leading-none text-white">
-                  {whatsappUnreadCount > 99 ? "99+" : whatsappUnreadCount}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveChannel("whatsapp2");
-                setInstaFilter("todos");
-                setShowFilterBar(false);
-              }}
-              className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
-                isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
-              } ${
-                activeChannel === "whatsapp2"
-                  ? "bg-white text-[#111b21] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
-                  : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
-              }`}
-              title="WhatsApp espelhado por dispositivo vinculado"
-            >
-              <WhatsAppIcon className={`h-4 w-4 ${activeChannel === "whatsapp2" ? "text-[#25d366]" : ""}`} />
-              <span>WhatsApp 2</span>
-              <span className="text-[10px] tabular-nums opacity-55">{whatsapp2ConversationCount}</span>
-              {whatsapp2UnreadCount > 0 && (
-                <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#25d366] px-1 text-[9px] font-bold leading-none text-white">
-                  {whatsapp2UnreadCount > 99 ? "99+" : whatsapp2UnreadCount}
-                </span>
-              )}
-            </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveChannel("whatsapp");
+                    setInstaFilter("todos");
+                    setShowFilterBar(false);
+                  }}
+                  className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
+                    isWhatsAppInboxChannel ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
+                  } ${
+                    activeChannel === "whatsapp"
+                      ? "bg-white text-[#111b21] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
+                      : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+                  }`}
+                >
+                  <WhatsAppIcon className={`h-4 w-4 ${activeChannel === "whatsapp" ? "text-[#25d366]" : ""}`} />
+                  <span>WhatsApp</span>
+                  <span className="text-[10px] tabular-nums opacity-55">{whatsappConversationCount}</span>
+                  {whatsappUnreadCount > 0 && (
+                    <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#25d366] px-1 text-[9px] font-bold leading-none text-white">
+                      {whatsappUnreadCount > 99 ? "99+" : whatsappUnreadCount}
+                    </span>
+                  )}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveChannel("whatsapp2");
+                  setInstaFilter("todos");
+                  setShowFilterBar(false);
+                }}
+                className="relative flex h-9 items-center justify-center gap-2 rounded-[8px] bg-white px-3 text-[13px] font-semibold text-[#111b21] shadow-[0_1px_2px_rgba(0,0,0,0.12)] ring-1 ring-black/[0.04] active:scale-[0.985] dark:bg-[#636366] dark:text-white dark:ring-white/[0.05]"
+                title="WhatsApp espelhado por dispositivo vinculado"
+              >
+                <WhatsAppIcon className="h-4 w-4 text-[#25d366]" />
+                <span>WhatsApp 2</span>
+                <span className="text-[10px] tabular-nums opacity-55">{whatsapp2ConversationCount}</span>
+                {whatsapp2UnreadCount > 0 && (
+                  <span className="absolute right-2 top-2 flex min-w-4 h-4 items-center justify-center rounded-full bg-[#25d366] px-1 text-[9px] font-bold leading-none text-white">
+                    {whatsapp2UnreadCount > 99 ? "99+" : whatsapp2UnreadCount}
+                  </span>
+                )}
+              </button>
+            )}
           </div>
         </div>
 
