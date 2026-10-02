@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ChevronDown,
   ChevronUp,
@@ -31,6 +32,7 @@ interface ChatStageBarProps {
   onSetRaffleStatus?: (status: RaffleCommercialStatus) => void;
   isUpdatingRaffleStatus?: boolean;
   onQuickSendItem?: (item: StageChecklistItem) => void;
+  variant?: "default" | "whatsapp-ios";
 }
 
 export function ChatStageBar({
@@ -43,7 +45,9 @@ export function ChatStageBar({
   raffleStatus = null,
   onSetRaffleStatus,
   isUpdatingRaffleStatus = false,
+  variant = "default",
 }: ChatStageBarProps) {
+  const prefersReducedMotion = useReducedMotion();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSelectingStage, setIsSelectingStage] = useState(false);
 
@@ -88,6 +92,285 @@ export function ChatStageBar({
       onToggleItem(obj.id, !isComp);
     }
   };
+
+  if (variant === "whatsapp-ios") {
+    return (
+      <div className="whatsapp-ios relative z-20 shrink-0 px-2 pt-2">
+        <motion.div
+          layout={!prefersReducedMotion}
+          transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 38, mass: 0.72 }}
+          className="wa-ios-glass overflow-hidden rounded-[18px]"
+        >
+          <button
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+            className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors active:bg-black/[0.035] dark:active:bg-white/[0.04]"
+            aria-expanded={isExpanded}
+          >
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_0_3px_rgba(255,255,255,0.35)]"
+              style={{ backgroundColor: stageColor }}
+            />
+
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-[13px] font-semibold text-[#111b21] dark:text-white">
+                  {stage.name}
+                </span>
+                {isConverted && (
+                  <span className="shrink-0 rounded-full bg-[#ffcc00]/18 px-1.5 py-0.5 text-[9px] font-semibold text-[#9a6d00] dark:text-[#ffd60a]">
+                    Finalizado
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 flex items-center gap-2 text-[10px] text-[#8e8e93]">
+                <span>Etapa {stageIndex + 1} de {totalStages}</span>
+                <span>•</span>
+                <span>{completedObjectivesCount}/{totalObjectives} objetivos</span>
+                {requiredPendingCount > 0 && (
+                  <>
+                    <span>•</span>
+                    <span className="text-[#ff9500]">
+                      {requiredPendingCount} pendente{requiredPendingCount > 1 ? "s" : ""}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <div className="hidden w-16 overflow-hidden rounded-full bg-black/[0.07] sm:block dark:bg-white/[0.10]">
+                <motion.div
+                  className="h-1.5 rounded-full"
+                  animate={{ width: `${percentage}%` }}
+                  transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 360, damping: 34 }}
+                  style={{ backgroundColor: stageColor }}
+                />
+              </div>
+              <span className="min-w-8 text-right text-[11px] font-semibold text-[#8e8e93]">
+                {percentage}%
+              </span>
+              <motion.span
+                animate={{ rotate: isExpanded ? 180 : 0 }}
+                transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
+                className="text-[#007aff]"
+              >
+                <ChevronDown className="h-4 w-4" />
+              </motion.span>
+            </div>
+          </button>
+
+          <AnimatePresence initial={false}>
+            {isExpanded && (
+              <motion.div
+                initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className="overflow-hidden"
+              >
+                <div className="border-t border-black/[0.07] px-3 pb-3 pt-2.5 dark:border-white/[0.07]">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Target className="h-3.5 w-3.5 shrink-0 text-[#007aff]" />
+                      <span className="truncate text-[11px] font-semibold text-[#3c3c43] dark:text-[#d1d1d6]">
+                        Objetivos da etapa
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setIsSelectingStage((current) => !current);
+                      }}
+                      className="shrink-0 text-[11px] font-medium text-[#007aff] active:opacity-60"
+                    >
+                      {isSelectingStage ? "Fechar" : "Mudar etapa"}
+                    </button>
+                  </div>
+
+                  <AnimatePresence initial={false}>
+                    {isSelectingStage && (
+                      <motion.div
+                        initial={prefersReducedMotion ? false : { opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: prefersReducedMotion ? 0 : 0.16 }}
+                        className="mb-2 overflow-hidden rounded-[13px] bg-black/[0.035] p-1 dark:bg-white/[0.045]"
+                      >
+                        <div className="max-h-36 overflow-y-auto">
+                          {allStages.map((candidateStage, idx) => {
+                            const selected = candidateStage.id === stage.id;
+                            return (
+                              <button
+                                key={candidateStage.id}
+                                type="button"
+                                onClick={() => {
+                                  onSetStage(candidateStage.id);
+                                  setIsSelectingStage(false);
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors ${
+                                  selected
+                                    ? "bg-white/85 shadow-sm dark:bg-white/[0.10]"
+                                    : "active:bg-black/[0.05] dark:active:bg-white/[0.06]"
+                                }`}
+                              >
+                                <span
+                                  className="h-2 w-2 shrink-0 rounded-full"
+                                  style={{ backgroundColor: candidateStage.color || "#3b82f6" }}
+                                />
+                                <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[#111b21] dark:text-white">
+                                  {idx + 1}. {candidateStage.name}
+                                </span>
+                                {selected && <Check className="h-3.5 w-3.5 shrink-0 text-[#007aff]" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {objectives.length === 0 ? (
+                    <div className="rounded-[13px] bg-black/[0.035] px-3 py-3 text-center text-[11px] text-[#8e8e93] dark:bg-white/[0.045]">
+                      Nenhum objetivo cadastrado nesta etapa.
+                    </div>
+                  ) : (
+                    <div className="max-h-56 overflow-y-auto rounded-[14px] bg-black/[0.025] dark:bg-white/[0.035]">
+                      {objectives.map((obj, index) => {
+                        const isCompleted = obj.status === "completed";
+                        return (
+                          <button
+                            key={obj.id}
+                            type="button"
+                            onClick={() => handleToggle(obj)}
+                            className={`flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors active:bg-black/[0.04] dark:active:bg-white/[0.05] ${
+                              index > 0 ? "border-t border-black/[0.06] dark:border-white/[0.06]" : ""
+                            }`}
+                          >
+                            <span
+                              className={`mt-0.5 flex h-[19px] w-[19px] shrink-0 items-center justify-center rounded-full border transition-all ${
+                                isCompleted
+                                  ? "border-[#34c759] bg-[#34c759] text-white"
+                                  : "border-[#c7c7cc] bg-white/40 text-transparent dark:border-[#636366] dark:bg-white/[0.04]"
+                              }`}
+                            >
+                              <Check className="h-3 w-3 stroke-[2.6]" />
+                            </span>
+
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className={`block truncate text-[12px] font-medium ${
+                                  isCompleted
+                                    ? "text-[#8e8e93] line-through"
+                                    : "text-[#111b21] dark:text-white"
+                                }`}
+                              >
+                                {obj.title}
+                              </span>
+
+                              {obj.value !== null && obj.value !== undefined ? (
+                                <span className="mt-0.5 block truncate text-[10px] font-medium text-[#34c759]">
+                                  {String(obj.value)}
+                                </span>
+                              ) : obj.description ? (
+                                <span className="mt-0.5 block truncate text-[10px] text-[#8e8e93]">
+                                  {obj.description}
+                                </span>
+                              ) : null}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {isConverted && (
+                    <div className="mt-2 rounded-[14px] bg-black/[0.025] p-2.5 dark:bg-white/[0.035]">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-[11px] font-semibold text-[#111b21] dark:text-white">
+                            Status da rifa
+                          </p>
+                          <p className="text-[9px] text-[#8e8e93]">
+                            {raffleCommercialStatusLabel(raffleStatus)}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                        {RAFFLE_COMMERCIAL_STATUS_OPTIONS.map((option) => {
+                          const selected = raffleStatus === option.value;
+                          return (
+                            <button
+                              key={option.value || "not_offered"}
+                              type="button"
+                              disabled={isUpdatingRaffleStatus || !onSetRaffleStatus}
+                              onClick={() => onSetRaffleStatus?.(option.value)}
+                              className={`rounded-[10px] px-2 py-1.5 text-[10px] font-medium transition-all disabled:opacity-40 ${
+                                selected
+                                  ? "bg-[#007aff] text-white shadow-sm"
+                                  : "bg-white/70 text-[#3c3c43] active:bg-black/[0.05] dark:bg-white/[0.06] dark:text-[#d1d1d6]"
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-2.5 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onToggleConverted(!isConverted)}
+                      className={`flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-transform active:scale-[0.97] ${
+                        isConverted
+                          ? "bg-[#ffcc00]/20 text-[#8a6500] dark:text-[#ffd60a]"
+                          : "bg-black/[0.05] text-[#3c3c43] dark:bg-white/[0.07] dark:text-[#d1d1d6]"
+                      }`}
+                    >
+                      <Trophy className="h-3.5 w-3.5" />
+                      {isConverted ? "Finalizado" : "Finalizar"}
+                    </button>
+
+                    <div className="flex-1" />
+
+                    {isLastStage ? (
+                      <button
+                        type="button"
+                        onClick={() => onToggleConverted(true)}
+                        className={`h-8 rounded-full px-3 text-[11px] font-semibold transition-transform active:scale-[0.97] ${
+                          is100Percent
+                            ? "bg-[#34c759] text-white shadow-sm"
+                            : "bg-black/[0.05] text-[#8e8e93] dark:bg-white/[0.07]"
+                        }`}
+                      >
+                        Finalizar objetivo
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={onAdvanceStage}
+                        className={`flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold transition-transform active:scale-[0.97] ${
+                          is100Percent
+                            ? "bg-[#007aff] text-white shadow-sm"
+                            : "bg-black/[0.05] text-[#3c3c43] dark:bg-white/[0.07] dark:text-[#d1d1d6]"
+                        }`}
+                      >
+                        Próxima etapa
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full bg-zinc-50 dark:bg-[#121214] border-b border-zinc-200 dark:border-[#262626] transition-all duration-200 z-20 shrink-0">

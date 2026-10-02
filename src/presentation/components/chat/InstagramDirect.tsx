@@ -4050,9 +4050,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         </div>
 
-        {/* Barra Superior Retrátil da Etapa & Checklist do Funil (Check-ups) */}
-        {activeChat.type === "instagram" && (
+        {/* Checklist/Etapa: skin nativa por canal, mesma lógica e mesmos dados */}
+        {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
           <ChatStageBar
+            variant={activeChat.type === "whatsapp" ? "whatsapp-ios" : "default"}
             detail={chatDetail}
             onToggleItem={toggleItem}
             onToggleObjective={toggleObjective}
