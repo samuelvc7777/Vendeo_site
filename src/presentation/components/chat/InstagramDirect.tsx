@@ -301,15 +301,48 @@ function AvatarWithFallback({
 }: AvatarWithFallbackProps) {
   const [hasError, setHasError] = useState(false);
   const expiredMetaAvatar = isExpiredMetaCdnAvatar(src);
+  const isWhatsApp = Boolean(conversationId?.startsWith("wa:"));
+  const cleanName = String(alt || "").trim();
+  const nameParts = cleanName
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const initials = nameParts.length >= 2
+    ? `${nameParts[0][0] || ""}${nameParts[nameParts.length - 1][0] || ""}`.toUpperCase()
+    : (nameParts[0]?.slice(0, 2) || "").toUpperCase();
+  const numericOnlyName = /^\+?\d[\d\s()+-]*$/.test(cleanName);
+  const rawSrc = String(src || "").trim();
+  const hasRealPhoto =
+    !hasError &&
+    !expiredMetaAvatar &&
+    /^https?:\/\//i.test(rawSrc) &&
+    !rawSrc.includes("images.unsplash.com");
 
   useEffect(() => {
     setHasError(false);
-    if (expiredMetaAvatar) requestAvatarRefresh(conversationId);
-  }, [src, conversationId, expiredMetaAvatar]);
+    if (!isWhatsApp && expiredMetaAvatar) requestAvatarRefresh(conversationId);
+  }, [src, conversationId, expiredMetaAvatar, isWhatsApp]);
 
-  // Se a URL da Meta já expirou, nem tenta carregá-la: evita 403 no navegador.
-  const photoToDisplay = (!hasError && !expiredMetaAvatar && src && src.trim().length > 0 && !src.includes("images.unsplash.com"))
-    ? src.trim()
+  if (isWhatsApp && !hasRealPhoto) {
+    return (
+      <div
+        className={`relative rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-[#667781] text-white select-none shadow-[inset_0_0_0_0.5px_rgba(255,255,255,0.18)] ${sizeClassName} ${ringClassName}`}
+        aria-label={cleanName || "Contato do WhatsApp"}
+        title={cleanName || "Contato do WhatsApp"}
+      >
+        {initials && !numericOnlyName ? (
+          <span className="text-[0.92em] font-semibold tracking-[-0.03em] leading-none">
+            {initials}
+          </span>
+        ) : (
+          <User className="h-[52%] w-[52%] stroke-[1.8] text-white/90" />
+        )}
+      </div>
+    );
+  }
+
+  const photoToDisplay = hasRealPhoto
+    ? rawSrc
     : resolveContactAvatar(alt, alt);
 
   return (
@@ -324,7 +357,7 @@ function AvatarWithFallback({
         className="object-cover"
         onError={() => {
           setHasError(true);
-          if (isMetaCdnAvatarUrl(src)) requestAvatarRefresh(conversationId);
+          if (!isWhatsApp && isMetaCdnAvatarUrl(src)) requestAvatarRefresh(conversationId);
         }}
       />
     </div>

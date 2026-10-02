@@ -13,6 +13,7 @@ import {
   Search,
   Sparkles,
   Target,
+  User,
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import type { ChatStage, StageObjective } from "@/domain/entities/ChatStage";
@@ -132,6 +133,17 @@ export function WhatsAppContactInfo({
   }, [conversation.id]);
 
   const phone = formatWhatsAppPhone(dbRow?.contact_id || conversation.username || conversation.id.replace(/^wa:/, ""));
+  const rawAvatar = String(conversation.avatar || "").trim();
+  const hasRealAvatar = /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
+  const contactName = String(conversation.fullName || "").trim();
+  const contactNameParts = contactName
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const contactInitials = contactNameParts.length >= 2
+    ? `${contactNameParts[0][0] || ""}${contactNameParts[contactNameParts.length - 1][0] || ""}`.toUpperCase()
+    : (contactNameParts[0]?.slice(0, 2) || "").toUpperCase();
+  const numericOnlyContactName = /^\+?\d[\d\s()+-]*$/.test(contactName);
 
   const media = useMemo(
     () =>
@@ -235,12 +247,20 @@ export function WhatsAppContactInfo({
 
       <div className="flex-1 overflow-y-auto px-3 pb-8 pt-5 scrollbar-none">
         <section className="flex flex-col items-center pb-5 text-center">
-          <div className="relative h-[112px] w-[112px] overflow-hidden rounded-full bg-[#d1d1d6] shadow-sm dark:bg-[#3a3a3c]">
-            <img
-              src={conversation.avatar || "/images/default-avatar.svg"}
-              alt={conversation.fullName}
-              className="h-full w-full object-cover"
-            />
+          <div className="relative flex h-[112px] w-[112px] items-center justify-center overflow-hidden rounded-full bg-[#667781] text-white shadow-sm">
+            {hasRealAvatar ? (
+              <img
+                src={rawAvatar}
+                alt={conversation.fullName}
+                className="h-full w-full object-cover"
+              />
+            ) : contactInitials && !numericOnlyContactName ? (
+              <span className="text-[34px] font-semibold tracking-[-0.04em]">
+                {contactInitials}
+              </span>
+            ) : (
+              <User className="h-12 w-12 stroke-[1.7] text-white/90" />
+            )}
           </div>
           <h2 className="mt-3 max-w-full truncate px-4 text-[24px] font-semibold tracking-[-0.02em]">
             {conversation.fullName}
