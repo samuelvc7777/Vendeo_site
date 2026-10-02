@@ -99,18 +99,21 @@ body {
 .whatsapp-chat-wallpaper {
   background-color: #efeae2;
   background-image:
-    radial-gradient(circle at 12px 14px, rgba(84, 101, 111, 0.055) 1.1px, transparent 1.2px),
-    radial-gradient(circle at 46px 38px, rgba(84, 101, 111, 0.04) 1.2px, transparent 1.3px),
-    linear-gradient(45deg, rgba(84, 101, 111, 0.018) 25%, transparent 25%, transparent 75%, rgba(84, 101, 111, 0.018) 75%);
-  background-size: 58px 58px, 72px 72px, 96px 96px;
+    radial-gradient(circle at 18px 18px, rgba(84, 101, 111, 0.055) 1.1px, transparent 1.35px),
+    radial-gradient(circle at 54px 42px, transparent 7px, rgba(84, 101, 111, 0.035) 7.6px, rgba(84, 101, 111, 0.035) 8.4px, transparent 9px),
+    radial-gradient(ellipse at 72px 68px, transparent 0 8px, rgba(84, 101, 111, 0.025) 8.5px 9.3px, transparent 10px),
+    radial-gradient(circle at 30px 70px, transparent 0 3px, rgba(84, 101, 111, 0.026) 3.5px 4.2px, transparent 4.8px);
+  background-size: 74px 74px, 112px 112px, 138px 138px, 96px 96px;
+  background-position: 0 0, 16px 7px, 4px 31px, 38px 14px;
 }
 
 :root[data-theme="dark"] .whatsapp-chat-wallpaper {
   background-color: #0b141a;
   background-image:
-    radial-gradient(circle at 12px 14px, rgba(134, 150, 160, 0.045) 1.1px, transparent 1.2px),
-    radial-gradient(circle at 46px 38px, rgba(134, 150, 160, 0.035) 1.2px, transparent 1.3px),
-    linear-gradient(45deg, rgba(134, 150, 160, 0.014) 25%, transparent 25%, transparent 75%, rgba(134, 150, 160, 0.014) 75%);
+    radial-gradient(circle at 18px 18px, rgba(134, 150, 160, 0.05) 1.1px, transparent 1.35px),
+    radial-gradient(circle at 54px 42px, transparent 7px, rgba(134, 150, 160, 0.036) 7.6px, rgba(134, 150, 160, 0.036) 8.4px, transparent 9px),
+    radial-gradient(ellipse at 72px 68px, transparent 0 8px, rgba(134, 150, 160, 0.024) 8.5px 9.3px, transparent 10px),
+    radial-gradient(circle at 30px 70px, transparent 0 3px, rgba(134, 150, 160, 0.024) 3.5px 4.2px, transparent 4.8px);
 }
 
 @keyframes whatsapp-bubble-in {
@@ -126,4 +129,136 @@ body {
 
 .whatsapp-bubble-in {
   animation: whatsapp-bubble-in 140ms cubic-bezier(0.2, 0.78, 0.2, 1);
+}
+
+
+.whatsapp-ios {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.wa-ios-bubble {
+  position: relative;
+  border-radius: 17px;
+  box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+}
+
+.wa-ios-bubble-out {
+  background: #dcf8c6;
+  color: #111b21;
+}
+
+.wa-ios-bubble-in {
+  background: #ffffff;
+  color: #111b21;
+}
+
+.wa-ios-bubble-out.wa-ios-tail::after,
+.wa-ios-bubble-in.wa-ios-tail::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 10px;
+  height: 13px;
+}
+
+.wa-ios-bubble-out.wa-ios-tail::after {
+  right: -6px;
+  background: #dcf8c6;
+  clip-path: polygon(0 0, 100% 100%, 0 100%);
+}
+
+.wa-ios-bubble-in.wa-ios-tail::after {
+  left: -6px;
+  background: #ffffff;
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+}
+
+:root[data-theme="dark"] .wa-ios-bubble-out {
+  background: #005c4b;
+  color: #e9edef;
+}
+
+:root[data-theme="dark"] .wa-ios-bubble-in {
+  background: #202c33;
+  color: #e9edef;
+}
+
+:root[data-theme="dark"] .wa-ios-bubble-out.wa-ios-tail::after {
+  background: #005c4b;
+}
+
+:root[data-theme="dark"] .wa-ios-bubble-in.wa-ios-tail::after {
+  background: #202c33;
+}
+
+.wa-ios-bubble.wa-ios-grouped-top {
+  border-top-left-radius: 17px;
+  border-top-right-radius: 17px;
+}
+
+.wa-ios-bubble.wa-ios-grouped-middle {
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .whatsapp-bubble-in {
+    animation: none !important;
+  }
+}
+
+
+.wa-ios-chat-row {
+  position: relative;
+}
+
+.wa-ios-chat-row::after {
+  content: "";
+  position: absolute;
+  left: 69px;
+  right: 0;
+  bottom: 0;
+  height: 0.5px;
+  background: rgba(60, 60, 67, 0.14);
+}
+
+:root[data-theme="dark"] .wa-ios-chat-row::after {
+  background: rgba(84, 84, 88, 0.52);
+}
+
+
+.wa-ios-bubble.wa-ios-continues-out {
+  border-bottom-right-radius: 8px;
+}
+
+.wa-ios-bubble.wa-ios-continues-in {
+  border-bottom-left-radius: 8px;
+}
+
+
+.wa-ios-media-bubble {
+  overflow: hidden;
+  background: transparent !important;
+  box-shadow: none;
+  border-radius: 18px;
+}
+
+.wa-ios-glass {
+  background: rgba(255, 255, 255, 0.66);
+  border: 0.5px solid rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.04),
+    0 6px 22px rgba(0, 0, 0, 0.08);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
+}
+
+:root[data-theme="dark"] .wa-ios-glass {
+  background: rgba(44, 44, 46, 0.72);
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.02),
+    0 8px 28px rgba(0, 0, 0, 0.28);
 }

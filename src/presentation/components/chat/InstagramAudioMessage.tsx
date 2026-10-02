@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useState, useEffect } from "react";
-import { Download, Loader2, Pause, Play, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
+import { Download, Loader2, Pause, Play, Sparkles, ChevronDown, ChevronUp, Mic } from "lucide-react";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { toast } from "sonner";
 
@@ -183,7 +183,11 @@ export function InstagramAudioMessage({
   }
 
   return (
-    <div className="flex flex-col min-w-[190px] max-w-[280px] sm:max-w-[320px] w-full py-1 px-1 select-none">
+    <div className={`flex flex-col w-full py-1 px-1 select-none ${
+      variant === "whatsapp"
+        ? "min-w-[230px] max-w-[290px] sm:max-w-[330px]"
+        : "min-w-[190px] max-w-[280px] sm:max-w-[320px]"
+    }`}>
       {/* Player de Áudio Nativo */}
       <div
         onClick={() => void togglePlayback()}
@@ -274,7 +278,14 @@ export function InstagramAudioMessage({
                   : "text-zinc-600 dark:text-zinc-400 font-mono"
               }
             >
-              {formatDuration(playing || currentTime > 0 ? currentTime : duration)}
+              <span className="inline-flex items-center gap-1">
+                {variant === "whatsapp" && (
+                  <Mic className={`h-2.5 w-2.5 ${
+                    isMine ? "text-[#007aff]" : "text-[#8e8e93]"
+                  }`} />
+                )}
+                {formatDuration(playing || currentTime > 0 ? currentTime : duration)}
+              </span>
             </span>
 
             <div className="flex items-center gap-2">

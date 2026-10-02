@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
 import {
   Search,
@@ -39,6 +40,8 @@ import {
   AlertTriangle,
   RefreshCw,
   ChevronDown,
+  ChevronLeft,
+  Copy,
 } from "lucide-react";
 import {
   ConversationSkeletonList,
@@ -153,7 +156,7 @@ export interface DirectMessage {
   sentDate?: string;
   isMine: boolean;
   liked?: boolean;
-  status?: "sending" | "sent" | "seen" | "failed";
+  status?: "sending" | "sent" | "delivered" | "seen" | "failed";
   seenAt?: string;
   errorReason?: "outside_24h_window" | "generic";
   deliverAt?: number;
@@ -829,7 +832,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+  const prefersReducedMotion = useReducedMotion();
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
+  const [whatsappMessageMenu, setWhatsappMessageMenu] = useState<DirectMessage | null>(null);
   const [brainConsoleRequest, setBrainConsoleRequest] = useState<{ conversationId: string; requestId: number } | null>(null);
   const brainConsoleRequestIdRef = useRef(0);
   const handleBrainConsoleOpenRequestHandled = useCallback((requestId: number) => {
@@ -884,6 +889,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   useEffect(() => {
     setMediaObservationText("");
     setIsSubmittingMediaObservation(false);
+    setWhatsappMessageMenu(null);
   }, [activeChat?.id]);
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
@@ -1404,10 +1410,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     longPressTimerRef.current = setTimeout(() => {
       isLongPressActiveRef.current = true;
       if (typeof navigator !== "undefined" && navigator.vibrate) {
-        try { navigator.vibrate(40); } catch {}
+        try { navigator.vibrate(conv.type === "whatsapp" ? 12 : 40); } catch {}
       }
       setSelectedChatForActionSheet(conv);
-    }, 500);
+    }, conv.type === "whatsapp" ? 390 : 500);
   }, []);
 
   const cancelLongPress = useCallback(() => {
@@ -3870,28 +3876,45 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (!activeChat) return null;
 
     return (
-      <div
-        className={`absolute inset-0 z-30 flex h-full w-full flex-col overflow-hidden text-zinc-950 dark:text-white animate-in fade-in duration-150 ${
+      <motion.div
+        key={activeChat.id}
+        initial={prefersReducedMotion ? false : { x: activeChat.type === "whatsapp" ? "100%" : 18, opacity: activeChat.type === "whatsapp" ? 1 : 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={prefersReducedMotion ? { opacity: 0 } : { x: activeChat.type === "whatsapp" ? "100%" : 18, opacity: activeChat.type === "whatsapp" ? 1 : 0 }}
+        transition={prefersReducedMotion
+          ? { duration: 0 }
+          : activeChat.type === "whatsapp"
+          ? { type: "spring", stiffness: 420, damping: 42, mass: 0.78 }
+          : { duration: 0.16, ease: "easeOut" }}
+        className={`absolute inset-0 z-30 flex h-full w-full flex-col overflow-hidden text-zinc-950 dark:text-white ${
           activeChat.type === "whatsapp"
-            ? "bg-[#efeae2] dark:bg-[#0b141a]"
+            ? "whatsapp-ios whatsapp-chat-wallpaper"
             : "bg-white dark:bg-black"
         }`}
       >
           {/* Header do Chat */}
         <div
-          className={`h-14 px-3.5 border-b flex items-center justify-between shrink-0 z-10 ${
+          className={`border-b flex items-center justify-between shrink-0 z-10 ${
             activeChat.type === "whatsapp"
-              ? "border-black/[0.06] bg-[#f0f2f5] dark:border-[#222d34] dark:bg-[#202c33]"
-              : "border-zinc-200 bg-white dark:border-[#262626] dark:bg-black"
+              ? "h-[58px] px-2.5 border-black/[0.08] bg-white/62 backdrop-blur-3xl shadow-[0_1px_0_rgba(0,0,0,0.035)] dark:border-white/[0.06] dark:bg-[#1c1c1e]/62"
+              : "h-14 px-3.5 border-zinc-200 bg-white dark:border-[#262626] dark:bg-black"
           }`}
         >
           <div className="flex items-center gap-3">
             <button
               onClick={handleCloseChat}
-              className="text-zinc-950 dark:text-white hover:opacity-70 active:scale-90 transition-all cursor-pointer p-1"
+              className={`cursor-pointer p-1 transition-all active:scale-90 ${
+                activeChat.type === "whatsapp"
+                  ? "text-[#007aff] hover:opacity-75"
+                  : "text-zinc-950 dark:text-white hover:opacity-70"
+              }`}
               aria-label="Voltar para lista de conversas"
             >
-              <ArrowLeft className="w-6 h-6 stroke-[2.2]" />
+              {activeChat.type === "whatsapp" ? (
+                <ChevronLeft className="w-7 h-7 stroke-[2.1]" />
+              ) : (
+                <ArrowLeft className="w-6 h-6 stroke-[2.2]" />
+              )}
             </button>
 
             {/* Clique no avatar ou nome para abrir o perfil completo */}
@@ -3917,17 +3940,23 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
               <div className="leading-tight">
                 <div className="flex items-center gap-1">
-                  <span className="text-sm font-semibold tracking-tight text-zinc-950 dark:text-white group-hover:underline">
+                  <span className={`tracking-tight text-zinc-950 dark:text-white ${
+                    activeChat.type === "whatsapp"
+                      ? "text-[16px] font-semibold"
+                      : "text-sm font-semibold group-hover:underline"
+                  }`}>
                     {activeChat.fullName}
                   </span>
                 </div>
-                <span className={`text-[11px] block ${
-                  activeChat.type === "whatsapp"
-                    ? "text-[#667781] dark:text-[#8696a0]"
-                    : "text-zinc-600 dark:text-[#a8a8a8]"
-                }`}>
-                  {activeChat.type === "whatsapp" ? "WhatsApp" : `@${activeChat.username}`}
-                </span>
+                {activeChat.type === "whatsapp" ? (
+                  activeChat.isOnline ? (
+                    <span className="block text-[11px] text-[#8e8e93]">online</span>
+                  ) : null
+                ) : (
+                  <span className="block text-[11px] text-zinc-600 dark:text-[#a8a8a8]">
+                    @{activeChat.username}
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -3972,7 +4001,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               </button>
             )}
 
-            {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
+            {activeChat.type === "instagram" && (
               <button
                 type="button"
                 onClick={async () => {
@@ -4022,7 +4051,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         </div>
 
         {/* Barra Superior Retrátil da Etapa & Checklist do Funil (Check-ups) */}
-        {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
+        {activeChat.type === "instagram" && (
           <ChatStageBar
             detail={chatDetail}
             onToggleItem={toggleItem}
@@ -4039,8 +4068,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* Área de Mensagens */}
         <div
-          className={`flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full px-4 pt-3 pb-6 space-y-2.5 scrollbar-none overscroll-contain ${
-            activeChat.type === "whatsapp" ? "whatsapp-chat-wallpaper" : ""
+          className={`flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full px-4 pt-3 pb-6 scrollbar-none overscroll-contain ${
+            activeChat.type === "whatsapp"
+              ? "whatsapp-chat-wallpaper space-y-0"
+              : "space-y-2.5"
           }`}
         >
           {/* Banner de Conversa Restrita */}
@@ -4247,10 +4278,30 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           ) : (
             chatMessages.map((msg, index) => {
               const prevMsg = index > 0 ? chatMessages[index - 1] : null;
+              const nextMsg = index < chatMessages.length - 1 ? chatMessages[index + 1] : null;
               const showDateDivider = isDifferentDay(msg, prevMsg);
               const dateLabel = showDateDivider
                 ? formatChatDateDivider(msg.timestamp || msg.sentDate || msg.createdAt)
                 : null;
+              const whatsappSameSenderBefore =
+                activeChat.type === "whatsapp" &&
+                Boolean(prevMsg) &&
+                prevMsg!.isMine === msg.isMine &&
+                !showDateDivider;
+              const whatsappSameSenderAfter =
+                activeChat.type === "whatsapp" &&
+                Boolean(nextMsg) &&
+                nextMsg!.isMine === msg.isMine &&
+                !isDifferentDay(nextMsg!, msg);
+              const whatsappEndsGroup = activeChat.type === "whatsapp" && !whatsappSameSenderAfter;
+              const whatsappVisualMedia =
+                activeChat.type === "whatsapp" &&
+                (
+                  msg.mediaType === "image" ||
+                  msg.mediaType === "video" ||
+                  msg.text.startsWith("[image:") ||
+                  msg.text.startsWith("[video:")
+                );
 
               return (
                 <React.Fragment key={msg.id}>
@@ -4278,12 +4329,20 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       }
                     }}
                     data-message-id={msg.id}
-                    className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full scroll-mt-20`}
+                    className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full scroll-mt-20 ${
+                      activeChat.type === "whatsapp"
+                        ? whatsappSameSenderBefore
+                          ? "mt-[2px]"
+                          : "mt-2.5"
+                        : ""
+                    }`}
                   >
                     <InstagramReplyGesture
                       enabled
+                      variant={activeChat.type}
                       isMine={msg.isMine}
                       onReply={() => beginReplyToMessage(msg)}
+                      onLongPress={activeChat.type === "whatsapp" ? () => setWhatsappMessageMenu(msg) : undefined}
                     >
                       <div
                         className={`flex items-end gap-1.5 max-w-full min-w-0 ${
@@ -4294,7 +4353,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         <button
                           type="button"
                           onClick={() => beginReplyToMessage(msg)}
-                          className="hidden sm:inline-flex self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0"
+                          className={`${activeChat.type === "whatsapp" ? "hidden" : "hidden sm:inline-flex"} self-center opacity-0 group-hover/msg:opacity-100 hover:opacity-100 p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-white/10 active:bg-zinc-200 dark:active:bg-white/20 text-zinc-500 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-all cursor-pointer active:scale-90 shrink-0`}
                           title="Responder a esta mensagem"
                           aria-label="Responder a mensagem"
                         >
@@ -4327,10 +4386,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       )}
 
                       <div
-                        className={`relative text-sm leading-relaxed transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
+                        className={`relative transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
                           activeChat.type === "whatsapp"
-                            ? "rounded-[8px] shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] whatsapp-bubble-in"
-                            : "rounded-2xl"
+                            ? `wa-ios-bubble whatsapp-bubble-in text-[15.5px] leading-[20px] ${
+                                whatsappVisualMedia
+                                  ? "wa-ios-media-bubble"
+                                  : msg.isMine
+                                  ? "wa-ios-bubble-out"
+                                  : "wa-ios-bubble-in"
+                              } ${whatsappEndsGroup && !whatsappVisualMedia ? "wa-ios-tail" : ""} ${
+                                whatsappSameSenderBefore ? "wa-ios-grouped-middle" : "wa-ios-grouped-top"
+                              } ${
+                                whatsappSameSenderAfter && !whatsappVisualMedia
+                                  ? msg.isMine
+                                    ? "wa-ios-continues-out"
+                                    : "wa-ios-continues-in"
+                                  : ""
+                              }`
+                            : "rounded-2xl text-sm leading-relaxed"
                         } ${
                           msg.mediaType === "audio" ||
                           msg.mediaType === "video" ||
@@ -4345,15 +4418,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               msg.text.includes("Mídia compartilhada") ||
                               msg.text.includes("Mídia ou Story") ||
                               msg.text.includes("Foto")
-                            ? "p-1.5"
+                            ? activeChat.type === "whatsapp"
+                              ? "p-0"
+                              : "p-1.5"
                             : activeChat.type === "whatsapp"
                             ? "px-2.5 pt-1.5 pb-1"
                             : "px-4 py-2.5"
                         } ${
                           activeChat.type === "whatsapp"
-                            ? msg.isMine
-                              ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-[3px] dark:bg-[#005c4b] dark:text-[#e9edef]"
-                              : "bg-white text-[#111b21] rounded-tl-[3px] dark:bg-[#202c33] dark:text-[#e9edef]"
+                            ? ""
                             : msg.isMine
                             ? "bg-[#0095f6] text-white rounded-br-[4px]"
                             : "bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white rounded-bl-[4px]"
@@ -4382,14 +4455,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             }`}
                           >
                             <div className={`flex items-center gap-1.5 text-[10px] font-semibold min-w-0 ${
-                              msg.isMine ? "text-white/85" : "text-zinc-600 dark:text-zinc-300"
+                              activeChat.type === "whatsapp"
+                                ? "text-[#007aff] dark:text-[#5ac8fa]"
+                                : msg.isMine
+                                ? "text-white/85"
+                                : "text-zinc-600 dark:text-zinc-300"
                             }`}>
                               <Reply className={`w-3 h-3 shrink-0 transition-transform group-hover/replyquote:-translate-x-0.5 ${
-                                msg.isMine ? "text-white/70" : "text-zinc-500 dark:text-zinc-400"
+                                activeChat.type === "whatsapp"
+                                  ? "text-[#007aff] dark:text-[#5ac8fa]"
+                                  : msg.isMine
+                                  ? "text-white/70"
+                                  : "text-zinc-500 dark:text-zinc-400"
                               }`} />
                               <span className="truncate block">
                                 {msg.isMine
-                                  ? (msg.replyTo.senderName && msg.replyTo.senderName !== "Você"
+                                  ? (msg.replyTo.senderName &&
+                                      msg.replyTo.senderName !== "Você" &&
+                                      msg.replyTo.senderName !== "Contato"
                                       ? msg.replyTo.senderName
                                       : activeChat.fullName || activeChat.username || "Contato")
                                   : "Você"}
@@ -4497,14 +4580,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                         {/* Horário da Mensagem (Timestamp estilo Instagram com contador regressivo) */}
                         <div
-                          className={`flex items-center gap-1 mt-1 select-none text-[10px] leading-none ${
-                            msg.isMine
+                          className={`flex items-center gap-1 select-none text-[10px] leading-none ${
+                            activeChat.type === "whatsapp" && whatsappVisualMedia
+                              ? "absolute bottom-1.5 right-1.5 rounded-full bg-black/45 px-1.5 py-1 text-white shadow-sm backdrop-blur-md"
+                              : msg.isMine
                               ? activeChat.type === "whatsapp"
-                                ? "justify-end text-[#667781] dark:text-[#aebac1]"
-                                : "justify-end font-mono text-white/75"
+                                ? "mt-1 justify-end text-[#667781] dark:text-[#aebac1]"
+                                : "mt-1 justify-end font-mono text-white/75"
                               : activeChat.type === "whatsapp"
-                              ? "justify-end text-[#667781] dark:text-[#8696a0]"
-                              : "justify-start font-mono text-zinc-600 dark:text-zinc-400"
+                              ? "mt-1 justify-end text-[#667781] dark:text-[#8696a0]"
+                              : "mt-1 justify-start font-mono text-zinc-600 dark:text-zinc-400"
                           }`}
                         >
                           <span>
@@ -4521,13 +4606,19 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               ) : msg.status === "failed" ? (
                                 <AlertCircle className="w-2.5 h-2.5 text-red-400 inline" />
                               ) : activeChat.type === "whatsapp" ? (
-                                <CheckCheck
-                                  className={`w-4 h-4 inline ${
-                                    msg.status === "seen"
-                                      ? "text-[#53bdeb]"
-                                      : "text-[#8696a0] dark:text-[#aebac1]"
-                                  }`}
-                                />
+                                msg.status === "delivered" || msg.status === "seen" ? (
+                                  <CheckCheck
+                                    className={`w-4 h-4 inline ${
+                                      msg.status === "seen"
+                                        ? "text-[#34b7f1]"
+                                        : whatsappVisualMedia
+                                        ? "text-white/85"
+                                        : "text-[#8e8e93] dark:text-[#aebac1]"
+                                    }`}
+                                  />
+                                ) : (
+                                  <Check className="w-3.5 h-3.5 inline text-[#8e8e93] dark:text-[#aebac1]" />
+                                )
                               ) : (
                                 <Check className="w-3 h-3 text-white/85 inline" />
                               )}
@@ -4625,6 +4716,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* HUD Flutuante do Piloto Automático (Desacoplado da rolagem: zero tremor e zero piscar) */}
         {(() => {
+          if (activeChat.type === "whatsapp") return null;
           const currentChatState = autoPilot.chatStates[activeChat.id];
           if (!currentChatState) {
             return null;
@@ -4668,7 +4760,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <button
               type="button"
               onClick={() => handleStopRecording(false)}
-              className="w-9 h-9 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-red-400 active:scale-90 flex items-center justify-center transition-all cursor-pointer"
+              className={`w-9 h-9 rounded-full active:scale-90 flex items-center justify-center transition-all cursor-pointer ${
+                activeChat.type === "whatsapp"
+                  ? "bg-transparent text-[#ff3b30] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                  : "bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-red-400"
+              }`}
               title="Cancelar gravação"
               aria-label="Cancelar gravação de áudio"
             >
@@ -4676,7 +4772,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </button>
 
             {/* Visualizador de Gravação Ativa com Timer */}
-            <div className="flex-1 bg-zinc-100 dark:bg-[#1c1c1e] border border-red-500/40 rounded-full px-4 py-2 flex items-center gap-3 shadow-inner">
+            <div className={`flex-1 rounded-[18px] px-4 py-2 flex items-center gap-3 ${
+              activeChat.type === "whatsapp"
+                ? "border border-[#d1d1d6] bg-white shadow-[0_0.5px_0_rgba(0,0,0,0.04)] dark:border-[#3a3a3c] dark:bg-[#2c2c2e]"
+                : "bg-zinc-100 dark:bg-[#1c1c1e] border border-red-500/40 shadow-inner"
+            }`}>
               <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
               <span className="text-xs font-medium text-zinc-800 dark:text-white/90">Gravando áudio...</span>
               <span className="ml-auto font-mono text-xs text-red-400 font-bold tracking-wider">
@@ -4688,7 +4788,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <button
               type="button"
               onClick={() => handleStopRecording(true)}
-              className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#0095f6] to-[#0081d6] text-white active:scale-90 flex items-center justify-center transition-transform shadow-md cursor-pointer hover:opacity-95"
+              className={`w-9 h-9 rounded-full text-white active:scale-90 flex items-center justify-center transition-transform shadow-md cursor-pointer hover:opacity-95 ${
+                activeChat.type === "whatsapp"
+                  ? "bg-[#007aff]"
+                  : "bg-gradient-to-tr from-[#0095f6] to-[#0081d6]"
+              }`}
               title="Concluir e enviar áudio"
               aria-label="Enviar nota de voz"
             >
@@ -4705,7 +4809,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           >
             {/* Prévia de Foto Pendente para envio */}
             {pendingImage && (
-              <div className="mx-3 mt-2.5 p-2 bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-xl flex items-center gap-3 animate-in fade-in duration-150">
+              <div className={`mx-3 mt-2.5 p-2 rounded-xl flex items-center gap-3 animate-in fade-in duration-150 ${
+                activeChat.type === "whatsapp"
+                  ? "whatsapp-ios wa-ios-glass"
+                  : "bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626]"
+              }`}>
                 <img
                   src={pendingImage.previewUrl}
                   alt="Prévia da foto selecionada"
@@ -4736,7 +4844,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               <div
                 className={`mx-3 mt-2 px-3.5 py-2 border border-l-[3px] rounded-xl flex items-center justify-between gap-3 shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-150 select-none ${
                   activeChat.type === "whatsapp"
-                    ? "bg-white/90 dark:bg-[#2a3942] border-black/[0.06] dark:border-[#31424d] border-l-[#00a884]"
+                    ? "whatsapp-ios wa-ios-glass border-l-[#00a884]"
                     : "bg-zinc-100 dark:bg-[#1c1c1e] border-zinc-200 dark:border-[#2f2f2f] border-l-[#0095f6]"
                 }`}
               >
@@ -4943,7 +5051,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             />
           </div>
         )}
-      </div>
+      </motion.div>
     );
   };
 
@@ -4952,18 +5060,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       {/* 1. LISTA DE CONVERSAS (OCULTA QUANDO O CHAT ESTIVER ABERTO PARA GARANTIR RIGOROSAMENTE UM ÚNICO SCROLL) */}
       <div className={`flex flex-col h-full w-full overflow-hidden ${activeChat ? "hidden" : ""}`}>
         {/* Cabeçalho compacto da caixa de entrada */}
-        <div className="shrink-0 border-b border-zinc-100 dark:border-[#1f1f1f] bg-white/95 dark:bg-black/95 px-4 pt-4 pb-3 backdrop-blur-xl">
+        <div
+          className={`shrink-0 border-b px-4 backdrop-blur-2xl ${
+            activeChannel === "whatsapp"
+              ? "whatsapp-ios border-black/[0.07] bg-white/66 pt-3 pb-2 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/68"
+              : "border-zinc-100 dark:border-[#1f1f1f] bg-white/95 dark:bg-black/95 pt-4 pb-3"
+          }`}
+        >
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400 dark:text-[#666]">
-                Caixa de entrada
-              </p>
-              <h2 className="mt-0.5 text-[19px] leading-tight font-semibold tracking-tight text-zinc-950 dark:text-white">
-                Conversas
-              </h2>
+              {activeChannel === "instagram" ? (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400 dark:text-[#666]">
+                    Caixa de entrada
+                  </p>
+                  <h2 className="mt-0.5 text-[19px] leading-tight font-semibold tracking-tight text-zinc-950 dark:text-white">
+                    Conversas
+                  </h2>
+                </>
+              ) : (
+                <h2 className="text-[30px] leading-[36px] font-bold tracking-[-0.025em] text-[#111b21] dark:text-white">
+                  Conversas
+                </h2>
+              )}
             </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className={`items-center gap-1.5 shrink-0 ${activeChannel === "whatsapp" ? "hidden" : "flex"}`}>
               <button
                 type="button"
                 onClick={() => {
@@ -5006,17 +5128,28 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         </div>
 
         {/* Canais da caixa de entrada: o motor é o mesmo, a experiência visual muda por canal */}
-        <div className="shrink-0 border-b border-zinc-100 bg-white px-3 pb-2 dark:border-[#1f1f1f] dark:bg-black">
-          <div className="grid grid-cols-2 gap-1 rounded-2xl bg-zinc-100 p-1 dark:bg-[#171717]">
+        <div className={`shrink-0 border-b px-3 pb-2 ${
+          activeChannel === "whatsapp"
+            ? "whatsapp-ios border-black/[0.07] bg-white/66 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/68"
+            : "border-zinc-100 bg-white dark:border-[#1f1f1f] dark:bg-black"
+        }`}>
+          <div className={`grid grid-cols-2 gap-0.5 ${
+            activeChannel === "whatsapp"
+              ? "whatsapp-ios rounded-[10px] bg-[#e9e9eb] p-0.5 dark:bg-[#2c2c2e]"
+              : "rounded-2xl bg-zinc-100 p-1 dark:bg-[#171717]"
+          }`}>
             <button
               type="button"
               onClick={() => {
                 setActiveChannel("instagram");
                 setInstaFilter("todos");
+                setShowFilterBar(false);
               }}
-              className={`relative flex h-11 items-center justify-center gap-2 rounded-xl px-3 text-xs font-semibold transition-all active:scale-[0.985] ${
+              className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
+                activeChannel === "whatsapp" ? "h-9 rounded-[8px] text-[13px]" : "h-11 rounded-xl text-xs"
+              } ${
                 activeChannel === "instagram"
-                  ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-[#262626] dark:text-white dark:ring-white/[0.05]"
+                  ? "bg-white text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-[#3a3a3c] dark:text-white dark:ring-white/[0.05]"
                   : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
               }`}
             >
@@ -5035,14 +5168,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               onClick={() => {
                 setActiveChannel("whatsapp");
                 setInstaFilter("todos");
+                setShowFilterBar(false);
               }}
-              className={`relative flex h-11 items-center justify-center gap-2 rounded-xl px-3 text-xs font-semibold transition-all active:scale-[0.985] ${
+              className={`relative flex items-center justify-center gap-2 px-3 font-semibold transition-all active:scale-[0.985] ${
                 activeChannel === "whatsapp"
-                  ? "bg-[#e9f8f1] text-[#008069] shadow-sm ring-1 ring-[#00a884]/15 dark:bg-[#103529] dark:text-[#25d366]"
-                  : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
+                  ? "h-9 rounded-[8px] bg-white text-[#111b21] text-[13px] shadow-[0_1px_2px_rgba(0,0,0,0.12)] dark:bg-[#636366] dark:text-white"
+                  : "h-11 rounded-xl text-xs text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
               }`}
             >
-              <WhatsAppIcon className="h-4 w-4" />
+              <WhatsAppIcon className={`h-4 w-4 ${activeChannel === "whatsapp" ? "text-[#25d366]" : ""}`} />
               <span>WhatsApp</span>
               <span className="text-[10px] tabular-nums opacity-55">{whatsappConversationCount}</span>
               {whatsappUnreadCount > 0 && (
@@ -5091,21 +5225,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         {/* Conteúdo com scroll isolado e rastreamento de posição */}
         <div
           ref={conversationsScrollRef}
-          className={`flex-1 ${activeChat ? "overflow-hidden" : "overflow-y-auto"} px-3.5 py-3 space-y-2 scrollbar-none overscroll-contain`}
+          className={`flex-1 ${activeChat ? "overflow-hidden" : "overflow-y-auto"} scrollbar-none overscroll-contain ${
+            activeChannel === "whatsapp" ? "whatsapp-ios px-0 py-2 space-y-0" : "px-3.5 py-3 space-y-2"
+          }`}
         >
         {/* Pesquisa + acesso compacto aos filtros */}
-        <div className="flex items-center gap-2 select-none">
+        <div className={`flex items-center gap-2 select-none ${activeChannel === "whatsapp" ? "px-3 pb-1.5" : ""}`}>
           <div className="relative flex-1">
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={activeChannel === "whatsapp" ? "Pesquisar ou iniciar nova conversa" : "Pesquisar conversas"}
-              className="w-full rounded-2xl border border-transparent bg-zinc-100/80 dark:bg-[#171717] text-zinc-950 dark:text-white text-sm placeholder-zinc-400 dark:placeholder-[#737373] pl-10 pr-4 py-2.5 focus:outline-none focus:border-zinc-300 dark:focus:border-[#343434] focus:bg-white dark:focus:bg-[#1d1d1d] transition-colors"
+              placeholder={activeChannel === "whatsapp" ? "Buscar" : "Pesquisar conversas"}
+              className={`w-full border border-transparent text-sm focus:outline-none transition-colors ${
+                activeChannel === "whatsapp"
+                  ? "wa-ios-glass h-9 rounded-[12px] pl-9 pr-4 text-[#111b21] placeholder-[#8e8e93] dark:text-white dark:placeholder-[#8e8e93]"
+                  : "rounded-2xl bg-zinc-100/80 dark:bg-[#171717] text-zinc-950 dark:text-white placeholder-zinc-400 dark:placeholder-[#737373] pl-10 pr-4 py-2.5 focus:border-zinc-300 dark:focus:border-[#343434] focus:bg-white dark:focus:bg-[#1d1d1d]"
+              }`}
             />
-            <Search className="w-4 h-4 text-zinc-400 dark:text-[#737373] absolute left-3.5 top-3" />
+            <Search className={`w-4 h-4 absolute left-3.5 ${
+              activeChannel === "whatsapp"
+                ? "top-2.5 text-[#8e8e93]"
+                : "top-3 text-zinc-400 dark:text-[#737373]"
+            }`} />
           </div>
 
+          {activeChannel === "instagram" && (
           <button
             type="button"
             onClick={() => setShowFilterBar((current) => !current)}
@@ -5121,16 +5266,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             <SlidersHorizontal className="w-4 h-4 stroke-[1.9]" />
             <span className="text-xs font-semibold hidden sm:inline">Filtros</span>
             {isFilterActive && (
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  activeChannel === "whatsapp" ? "bg-[#25d366]" : "bg-[#0095f6]"
-                }`}
-              />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0095f6]" />
             )}
           </button>
+          )}
         </div>
 
-        {showFilterBar && (
+        {activeChannel === "instagram" && showFilterBar && (
           <div className="flex items-center justify-between px-0.5">
             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-zinc-400 dark:text-[#666]">
               Filtros rápidos
@@ -5146,7 +5288,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         )}
 
         {/* PÍLULAS OFICIAIS DO INSTAGRAM (DESIGN IDÊNTICO AO APP OFICIAL) */}
-        {showFilterBar && (
+        {activeChannel === "instagram" && showFilterBar && (
           <div className="space-y-2">
             <div className="flex items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-200/80 bg-zinc-100/70 p-1 scrollbar-none select-none animate-in fade-in duration-150 dark:border-white/[0.06] dark:bg-white/[0.035]">
               <button
@@ -5500,10 +5642,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                   cancelLongPress();
                   setSelectedChatForActionSheet(conv);
                 }}
-                className={`flex items-center justify-between cursor-pointer select-none transition-all active:scale-[0.995] ${
+                className={`flex items-center justify-between cursor-pointer select-none transition-all ${
                   conv.type === "whatsapp"
-                    ? "px-2.5 py-2.5 rounded-xl hover:bg-[#f0f2f5] dark:hover:bg-[#202c33]"
-                    : "py-3 px-2.5 rounded-2xl hover:bg-zinc-100/70 dark:hover:bg-[#121212]"
+                    ? "wa-ios-chat-row px-2.5 py-2.5 rounded-none hover:bg-black/[0.025] active:bg-black/[0.055] dark:hover:bg-white/[0.035] dark:active:bg-white/[0.065]"
+                    : "py-3 px-2.5 rounded-2xl hover:bg-zinc-100/70 dark:hover:bg-[#121212] active:scale-[0.995]"
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -5525,22 +5667,38 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       src={conv.avatar}
                       alt={conv.fullName || conv.username}
                       conversationId={conv.id}
-                      sizeClassName="w-12 h-12"
+                      sizeClassName={conv.type === "whatsapp" ? "w-[52px] h-[52px]" : "w-12 h-12"}
                     />
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className={`flex items-center gap-1.5 ${
+                      conv.type === "whatsapp" ? "flex-nowrap" : "flex-wrap"
+                    }`}>
                       <h4
-                        className={`text-sm tracking-tight truncate ${
+                        className={`min-w-0 flex-1 truncate tracking-tight ${
+                          conv.type === "whatsapp" ? "text-[16px]" : "text-sm"
+                        } ${
                           isConversationUnread(conv) ? "font-bold text-zinc-950 dark:text-white" : "font-semibold text-zinc-900 dark:text-zinc-100"
                         }`}
                       >
                         {conv.fullName}
                       </h4>
 
+                      {conv.type === "whatsapp" && (conv.lastMessageAt || conv.lastActive) && (
+                        <span
+                          className={`shrink-0 text-[11px] ${
+                            isConversationUnread(conv)
+                              ? "font-semibold text-[#00a884] dark:text-[#25d366]"
+                              : "font-normal text-[#8e8e93]"
+                          }`}
+                        >
+                          {formatMessageTime(conv.lastMessageAt || conv.lastActive)}
+                        </span>
+                      )}
+
                       {/* Badges operacionais da conversa */}
-                      {isChatRestricted(conv) && (
+                      {conv.type === "instagram" && isChatRestricted(conv) && (
                         <span className="text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
                           <ShieldAlert className="w-2.5 h-2.5" />
                           Restrito
@@ -5560,39 +5718,29 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                           : conv.lastMessageAt || conv.lastActive;
 
                         if (conv.type === "whatsapp") {
-                          const whatsappTimestamp = conv.lastMessageAt || conv.lastActive;
                           return (
-                            <>
-                              <span className="flex min-w-0 flex-1 items-center gap-1">
-                                {conv.lastSender === "me" && (
+                            <span className="flex min-w-0 flex-1 items-center gap-1">
+                              {conv.lastSender === "me" && (
+                                conv.lastStatus === "delivered" || conv.lastStatus === "seen" ? (
                                   <CheckCheck
                                     className={`h-4 w-4 shrink-0 ${
                                       conv.lastStatus === "seen"
-                                        ? "text-[#53bdeb]"
-                                        : "text-[#8696a0]"
+                                        ? "text-[#34b7f1]"
+                                        : "text-[#8e8e93]"
                                     }`}
                                   />
-                                )}
-                                <span
-                                  className={isConversationUnread(conv)
-                                    ? "truncate font-medium text-[#111b21] dark:text-[#e9edef]"
-                                    : "truncate text-[#667781] dark:text-[#8696a0]"}
-                                >
-                                  {conv.lastMessage}
-                                </span>
-                              </span>
-                              {whatsappTimestamp && (
-                                <span
-                                  className={`ml-2 shrink-0 text-[11px] font-normal ${
-                                    isConversationUnread(conv)
-                                      ? "font-semibold text-[#00a884] dark:text-[#25d366]"
-                                      : "text-[#667781] dark:text-[#8696a0]"
-                                  }`}
-                                >
-                                  {formatMessageTime(whatsappTimestamp)}
-                                </span>
+                                ) : (
+                                  <Check className="h-3.5 w-3.5 shrink-0 text-[#8e8e93]" />
+                                )
                               )}
-                            </>
+                              <span
+                                className={isConversationUnread(conv)
+                                  ? "truncate font-medium text-[#111b21] dark:text-[#e9edef]"
+                                  : "truncate text-[#8e8e93] dark:text-[#98989d]"}
+                              >
+                                {conv.lastMessage}
+                              </span>
+                            </span>
                           );
                         }
 
@@ -5619,7 +5767,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
                     </div>
 
-                    {(conv.type === "instagram" || conv.type === "whatsapp") && (() => {
+                    {conv.type === "instagram" && (() => {
                       const currentStageId = conv.currentStageId || stages[0]?.id;
                       const currentStage = stages.find((stage) => stage.id === currentStageId);
                       const ai = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : null;
@@ -5743,8 +5891,75 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       </div>
     </div>
 
-      {/* 2. CHAT ABERTO (CAMADA SOBREPOSTA COM HISTÓRICO SINCRONIZADO) */}
-      {renderChatThread()}
+      {/* 2. CHAT ABERTO (transição push/pop inspirada na navegação do iOS) */}
+      <AnimatePresence initial={false}>
+        {activeChat ? renderChatThread() : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {whatsappMessageMenu && activeChat?.type === "whatsapp" && (
+          <motion.div
+            key="whatsapp-message-menu"
+            className="fixed inset-0 z-[140] flex items-end justify-center bg-black/[0.045] px-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] sm:items-center sm:pb-0"
+            initial={prefersReducedMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.16 }}
+            onClick={() => setWhatsappMessageMenu(null)}
+          >
+            <motion.div
+              initial={prefersReducedMotion ? false : { y: 24, scale: 0.96, opacity: 0 }}
+              animate={{ y: 0, scale: 1, opacity: 1 }}
+              exit={prefersReducedMotion ? { opacity: 0 } : { y: 16, scale: 0.98, opacity: 0 }}
+              transition={prefersReducedMotion
+                ? { duration: 0 }
+                : { type: "spring", stiffness: 520, damping: 38, mass: 0.62 }}
+              className="whatsapp-ios wa-ios-glass w-full max-w-[330px] overflow-hidden rounded-[22px] shadow-[0_20px_60px_rgba(0,0,0,0.20)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-black/[0.07] px-4 py-3 dark:border-white/[0.07]">
+                <p className="truncate text-[12px] text-[#8e8e93]">
+                  {whatsappMessageMenu.mediaType === "audio"
+                    ? "Mensagem de voz"
+                    : whatsappMessageMenu.mediaType === "image"
+                    ? "Foto"
+                    : whatsappMessageMenu.text || "Mensagem"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = whatsappMessageMenu;
+                  setWhatsappMessageMenu(null);
+                  beginReplyToMessage(target);
+                }}
+                className="flex w-full items-center justify-between px-4 py-3.5 text-left text-[16px] text-[#111b21] transition-colors hover:bg-black/[0.04] active:bg-black/[0.08] dark:text-white dark:hover:bg-white/[0.05]"
+              >
+                <span>Responder</span>
+                <Reply className="h-5 w-5 text-[#007aff]" />
+              </button>
+              <div className="mx-4 h-px bg-black/[0.07] dark:bg-white/[0.07]" />
+              <button
+                type="button"
+                onClick={async () => {
+                  const textToCopy = whatsappMessageMenu.text || "";
+                  try {
+                    await navigator.clipboard.writeText(textToCopy);
+                    toast.success("Mensagem copiada.");
+                  } catch {
+                    toast.error("Não foi possível copiar.");
+                  }
+                  setWhatsappMessageMenu(null);
+                }}
+                className="flex w-full items-center justify-between px-4 py-3.5 text-left text-[16px] text-[#111b21] transition-colors hover:bg-black/[0.04] active:bg-black/[0.08] dark:text-white dark:hover:bg-white/[0.05]"
+              >
+                <span>Copiar</span>
+                <Copy className="h-5 w-5 text-[#007aff]" />
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Modal de Perfil Completo para acesso a partir da lista */}
       <InstagramProfileModal
@@ -5786,8 +6001,54 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         }}
       />
 
-      {/* ACTION SHEET DE OPÇÕES DA CONVERSA (AO CLICAR E SEGURAR) */}
-      {selectedChatForActionSheet && (
+      {/* Menu contextual da inbox do WhatsApp no padrão visual do iOS */}
+      {selectedChatForActionSheet?.type === "whatsapp" && (
+        <div
+          className="whatsapp-ios fixed inset-0 z-[130] flex items-end justify-center bg-black/[0.045] px-2 pb-[calc(8px+env(safe-area-inset-bottom,0px))] sm:items-center sm:pb-0"
+          onClick={() => setSelectedChatForActionSheet(null)}
+        >
+          <div
+            className="w-full max-w-sm animate-in fade-in slide-in-from-bottom-3 zoom-in-95 duration-150"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="wa-ios-glass overflow-hidden rounded-[18px]">
+              <div className="flex items-center gap-3 border-b border-black/[0.08] px-4 py-3 dark:border-white/[0.08]">
+                <AvatarWithFallback
+                  src={selectedChatForActionSheet.avatar}
+                  alt={selectedChatForActionSheet.fullName || selectedChatForActionSheet.username}
+                  conversationId={selectedChatForActionSheet.id}
+                  sizeClassName="w-10 h-10"
+                />
+                <p className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[#111b21] dark:text-white">
+                  {selectedChatForActionSheet.fullName}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleToggleUnreadStatus(selectedChatForActionSheet)}
+                className="flex w-full items-center justify-between px-4 py-3.5 text-[16px] text-[#007aff] transition-colors active:bg-black/[0.06] dark:active:bg-white/[0.06]"
+              >
+                <span>
+                  {isConversationUnread(selectedChatForActionSheet)
+                    ? "Marcar como lida"
+                    : "Marcar como não lida"}
+                </span>
+                <Bell className="h-5 w-5" />
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedChatForActionSheet(null)}
+              className="wa-ios-glass mt-2 w-full rounded-[18px] py-3.5 text-center text-[17px] font-semibold text-[#007aff] active:scale-[0.99]"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ACTION SHEET DE OPÇÕES DA CONVERSA (Instagram) */}
+      {selectedChatForActionSheet?.type === "instagram" && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-200"
           onClick={() => setSelectedChatForActionSheet(null)}
