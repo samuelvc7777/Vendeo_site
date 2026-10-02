@@ -1,3 +1,5 @@
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+
 /**
  * Converte qualquer arquivo de áudio recebido (.mp3, .ogg, .webm, etc.)
  * para o formato WAV / PCM padrão do Instagram Direct usando a Web Audio API.
@@ -175,7 +177,6 @@ async function getWhatsAppVoiceEncoder() {
 
   if (!whatsappVoiceEncoderPromise) {
     whatsappVoiceEncoderPromise = (async () => {
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
       const ffmpeg = new FFmpeg();
       await ffmpeg.load({
         coreURL: "/ffmpeg/ffmpeg-core.js",
