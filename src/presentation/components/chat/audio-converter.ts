@@ -192,7 +192,38 @@ async function getWhatsAppVoiceEncoder() {
   return whatsappVoiceEncoderPromise;
 }
 
+async function isOggOpusFile(file: File): Promise<boolean> {
+  const lowerName = file.name.toLowerCase();
+  const lowerType = (file.type || "").toLowerCase();
+  if (!lowerName.endsWith(".ogg") && !lowerName.endsWith(".opus") && !lowerType.includes("ogg") && !lowerType.includes("opus")) {
+    return false;
+  }
+
+  try {
+    const bytes = new Uint8Array(await file.slice(0, Math.min(file.size, 64 * 1024)).arrayBuffer());
+    const opusHead = [79, 112, 117, 115, 72, 101, 97, 100]; // "OpusHead"
+    outer: for (let i = 0; i <= bytes.length - opusHead.length; i++) {
+      for (let j = 0; j < opusHead.length; j++) {
+        if (bytes[i + j] !== opusHead[j]) continue outer;
+      }
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 export async function convertToWhatsAppVoiceNote(file: File): Promise<File> {
+  if (await isOggOpusFile(file)) {
+    const baseName = file.name.replace(/\.[^.]+$/, "") || `voice_${Date.now()}`;
+    return new File([file], `${baseName}.ogg`, {
+      type: "audio/ogg; codecs=opus",
+      lastModified: file.lastModified,
+    });
+  }
+
   const ffmpeg = await getWhatsAppVoiceEncoder();
   const token = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const inputExt = file.name.split(".").pop()?.replace(/[^a-z0-9]/gi, "") || "bin";
