@@ -391,8 +391,10 @@ serve(async (req: Request) => {
     if (path === "/whatsapp/config" && req.method === "GET") {
       const hasAccessToken = Boolean((Deno.env.get("WHATSAPP_ACCESS_TOKEN") || "").trim());
       const hasPhoneNumberId = Boolean((Deno.env.get("WHATSAPP_PHONE_NUMBER_ID") || "").trim());
+      const hasAppSecret = Boolean((Deno.env.get("WHATSAPP_APP_SECRET") || "").trim());
       return new Response(JSON.stringify({
         isConnected: hasAccessToken && hasPhoneNumberId,
+        webhookReady: hasAccessToken && hasPhoneNumberId && hasAppSecret,
         provider: "WhatsApp Cloud API",
         apiVersion: (Deno.env.get("WHATSAPP_GRAPH_VERSION") || "v26.0").trim(),
       }), {
@@ -437,14 +439,17 @@ serve(async (req: Request) => {
         })();
 
         if (body?.object === "whatsapp_business_account") {
-          const { data: webhookConfig } = await supabase
-            .from("instagram_config")
-            .select("app_secret")
-            .eq("id", "default")
-            .maybeSingle();
-          const appSecret = String(webhookConfig?.app_secret || "").trim();
+          const appSecret = String(Deno.env.get("WHATSAPP_APP_SECRET") || "").trim();
+          if (!appSecret) {
+            console.error("[WhatsApp Webhook] WHATSAPP_APP_SECRET não configurado.");
+            return new Response("WhatsApp webhook signature secret not configured", {
+              status: 503,
+              headers: corsHeaders,
+            });
+          }
+
           const signature = req.headers.get("x-hub-signature-256");
-          if (appSecret && !(await verifyMetaWebhookSignature(rawBody, signature, appSecret))) {
+          if (!(await verifyMetaWebhookSignature(rawBody, signature, appSecret))) {
             console.warn("[WhatsApp Webhook] Assinatura Meta inválida.");
             return new Response("Invalid signature", {
               status: 401,
