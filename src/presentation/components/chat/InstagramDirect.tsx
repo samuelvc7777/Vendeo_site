@@ -6252,6 +6252,103 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
                     </div>
 
+                    {conv.type === "whatsapp" && (() => {
+                      const currentStageId = conv.currentStageId || stages[0]?.id;
+                      const currentStage = stages.find((stage) => stage.id === currentStageId);
+                      const ai = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : null;
+                      const raffleStatus = normalizeRaffleCommercialStatus(conv.raffleStatus);
+                      const showAiState = Boolean(ai || conv.aiAutoRespond);
+
+                      if (!conv.isConverted && !currentStage && !showAiState) return null;
+
+                      const aiVisual = !ai
+                        ? {
+                            dot: "bg-[#34c759]",
+                            chip: "bg-[#34c759]/10 text-[#248a3d] dark:bg-[#30d158]/12 dark:text-[#30d158]",
+                          }
+                        : ai.status === "failed"
+                        ? {
+                            dot: "bg-[#ff3b30]",
+                            chip: "bg-[#ff3b30]/9 text-[#d70015] dark:bg-[#ff453a]/12 dark:text-[#ff6961]",
+                          }
+                        : ai.status === "waiting_human"
+                        ? {
+                            dot: "bg-[#af52de]",
+                            chip: "bg-[#af52de]/9 text-[#8944ab] dark:bg-[#bf5af2]/12 dark:text-[#bf5af2]",
+                          }
+                        : ai.status === "waiting_delay" || ai.status === "queued"
+                        ? {
+                            dot: "bg-[#ff9500]",
+                            chip: "bg-[#ff9500]/10 text-[#c93400] dark:bg-[#ff9f0a]/12 dark:text-[#ff9f0a]",
+                          }
+                        : ai.status === "processing"
+                        ? {
+                            dot: "bg-[#007aff]",
+                            chip: "bg-[#007aff]/9 text-[#0066cc] dark:bg-[#0a84ff]/12 dark:text-[#0a84ff]",
+                          }
+                        : ai.status === "sending" || ai.status === "completed"
+                        ? {
+                            dot: "bg-[#34c759]",
+                            chip: "bg-[#34c759]/10 text-[#248a3d] dark:bg-[#30d158]/12 dark:text-[#30d158]",
+                          }
+                        : {
+                            dot: "bg-[#8e8e93]",
+                            chip: "bg-black/[0.035] text-[#6e6e73] dark:bg-white/[0.055] dark:text-[#98989d]",
+                          };
+
+                      const detailsTitle = [
+                        ai?.detail,
+                        ai?.objectiveLabel ? `Objetivo: ${ai.objectiveLabel}` : null,
+                        ai?.actionTypes?.length ? `Ações: ${ai.actionTypes.join(", ")}` : null,
+                      ].filter(Boolean).join(" • ");
+
+                      return (
+                        <div
+                          className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] leading-[15px]"
+                          title={detailsTitle || undefined}
+                        >
+                          {showAiState && (
+                            <span
+                              className={`inline-flex max-w-[148px] shrink-0 items-center gap-1 rounded-[7px] px-1.5 py-[1px] font-semibold ${aiVisual.chip}`}
+                            >
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiVisual.dot}`} />
+                              <span className="truncate">
+                                {ai ? <InboxAiStatusLabel ai={ai} /> : "Brain ativo"}
+                              </span>
+                            </span>
+                          )}
+
+                          {conv.isConverted ? (
+                            <>
+                              <span className="shrink-0 text-[#8e8e93]">Finalizado</span>
+                              <span className="shrink-0 text-[#c7c7cc] dark:text-[#48484a]">·</span>
+                              <span className="truncate text-[#8e8e93]">
+                                Rifa: {raffleCommercialStatusLabel(raffleStatus)}
+                              </span>
+                            </>
+                          ) : currentStage ? (
+                            <>
+                              {showAiState && <span className="shrink-0 text-[#c7c7cc] dark:text-[#48484a]">·</span>}
+                              <span className="flex min-w-0 items-center gap-1 text-[#8e8e93]">
+                                <span
+                                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                  style={{ backgroundColor: currentStage.color || "#8e8e93" }}
+                                />
+                                <span className="truncate">{currentStage.name}</span>
+                              </span>
+                            </>
+                          ) : null}
+
+                          {!conv.isConverted && ai?.objectiveLabel && (
+                            <>
+                              <span className="shrink-0 text-[#c7c7cc] dark:text-[#48484a]">·</span>
+                              <span className="truncate text-[#8e8e93]">{ai.objectiveLabel}</span>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     {conv.type === "instagram" && (() => {
                       const currentStageId = conv.currentStageId || stages[0]?.id;
                       const currentStage = stages.find((stage) => stage.id === currentStageId);
