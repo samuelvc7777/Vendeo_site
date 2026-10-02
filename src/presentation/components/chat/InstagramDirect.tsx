@@ -4001,7 +4001,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               </button>
             )}
 
-            {activeChat.type === "instagram" && (
+            {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
               <button
                 type="button"
                 onClick={async () => {
@@ -4018,12 +4018,22 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     setIsAutoPilotActivationModalOpen(true);
                   }
                 }}
-                className={`px-2.5 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shrink-0 ${
-                  autoPilot.config?.isEnabledGlobally === false
-                    ? "bg-zinc-100 dark:bg-[#171719] text-zinc-500 dark:text-zinc-500 border-zinc-200 dark:border-[#2e2e30] hover:bg-amber-500/10 hover:text-amber-700 dark:hover:text-amber-300 hover:border-amber-500/30"
-                    : autoPilot.chatStates[activeChat.id]?.isEnabled
-                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25"
-                    : "bg-zinc-100 dark:bg-[#1c1c1e] text-zinc-600 dark:text-[#a8a8a8] border-zinc-200 dark:border-[#2e2e30] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-[#2c2c2e]"
+                className={`relative flex items-center justify-center gap-1.5 shrink-0 cursor-pointer transition-all active:scale-90 ${
+                  activeChat.type === "whatsapp"
+                    ? `wa-ios-glass h-9 w-9 rounded-full ${
+                        autoPilot.config?.isEnabledGlobally === false
+                          ? "text-[#ff9500]"
+                          : autoPilot.chatStates[activeChat.id]?.isEnabled
+                          ? "text-[#34c759]"
+                          : "text-[#007aff]"
+                      }`
+                    : `px-2.5 py-1.5 rounded-full border text-xs font-semibold active:scale-95 ${
+                        autoPilot.config?.isEnabledGlobally === false
+                          ? "bg-zinc-100 dark:bg-[#171719] text-zinc-500 dark:text-zinc-500 border-zinc-200 dark:border-[#2e2e30] hover:bg-amber-500/10 hover:text-amber-700 dark:hover:text-amber-300 hover:border-amber-500/30"
+                          : autoPilot.chatStates[activeChat.id]?.isEnabled
+                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25"
+                          : "bg-zinc-100 dark:bg-[#1c1c1e] text-zinc-600 dark:text-[#a8a8a8] border-zinc-200 dark:border-[#2e2e30] hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-[#2c2c2e]"
+                      }`
                 }`}
                 title={
                   autoPilot.config?.isEnabledGlobally === false
@@ -4032,19 +4042,39 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     ? "Desativar IA nesta conversa"
                     : "Ativar IA nesta conversa"
                 }
+                aria-label={
+                  autoPilot.config?.isEnabledGlobally === false
+                    ? "IA desativada globalmente"
+                    : autoPilot.chatStates[activeChat.id]?.isEnabled
+                    ? "IA ativa nesta conversa"
+                    : "Ativar IA nesta conversa"
+                }
               >
                 {autoPilot.config?.isEnabledGlobally === false ? (
-                  <BotOff className="w-3.5 h-3.5" />
+                  <BotOff className={activeChat.type === "whatsapp" ? "h-[18px] w-[18px]" : "w-3.5 h-3.5"} />
                 ) : (
-                  <Bot className="w-3.5 h-3.5" />
+                  <Bot className={activeChat.type === "whatsapp" ? "h-[18px] w-[18px]" : "w-3.5 h-3.5"} />
                 )}
-                <span className="hidden md:inline">
-                  {autoPilot.config?.isEnabledGlobally === false
-                    ? "IA global off"
-                    : autoPilot.chatStates[activeChat.id]?.isEnabled
-                    ? "IA ativa"
-                    : "Ativar IA"}
-                </span>
+
+                {activeChat.type === "whatsapp" && autoPilot.config?.isEnabledGlobally !== false && (
+                  <span
+                    className={`absolute bottom-[5px] right-[5px] h-2 w-2 rounded-full ring-2 ring-white/80 dark:ring-[#2c2c2e]/90 ${
+                      autoPilot.chatStates[activeChat.id]?.isEnabled
+                        ? "bg-[#34c759]"
+                        : "bg-[#8e8e93]"
+                    }`}
+                  />
+                )}
+
+                {activeChat.type === "instagram" && (
+                  <span className="hidden md:inline">
+                    {autoPilot.config?.isEnabledGlobally === false
+                      ? "IA global off"
+                      : autoPilot.chatStates[activeChat.id]?.isEnabled
+                      ? "IA ativa"
+                      : "Ativar IA"}
+                  </span>
+                )}
               </button>
             )}
           </div>
