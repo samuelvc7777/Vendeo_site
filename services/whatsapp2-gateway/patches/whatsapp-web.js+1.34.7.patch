@@ -1,0 +1,76 @@
+diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+index 540078a..ca9d01b 100644
+--- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
++++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+@@ -582,7 +582,7 @@ exports.LoadUtils = () => {
+
+         return window
+             .require('WAWebCollections')
+-            .Msg.get(newMsgKey._serialized);
++            .Msg.get(newMsgKey._serialized || newMsgKey.$1);
+     };
+
+     window.WWebJS.editMessage = async (msg, content, options = {}) => {
+@@ -625,7 +625,7 @@ exports.LoadUtils = () => {
+         await window
+             .require('WAWebSendMessageEditAction')
+             .sendMessageEdit(msg, content, internalOptions);
+-        return window.require('WAWebCollections').Msg.get(msg.id._serialized);
++        return window.require('WAWebCollections').Msg.get(msg.id._serialized || msg.id.$1);
+     };
+
+     window.WWebJS.toStickerData = async (mediaInfo) => {
+@@ -830,7 +830,7 @@ exports.LoadUtils = () => {
+
+         if (typeof msg.id.remote === 'object') {
+             msg.id = Object.assign({}, msg.id, {
+-                remote: msg.id.remote._serialized,
++                remote: msg.id.remote._serialized || msg.id.remote.$1,
+             });
+         }
+
+@@ -919,10 +919,16 @@ exports.LoadUtils = () => {
+
+     window.WWebJS.getChats = async () => {
+         const chats = window.require('WAWebCollections').Chat.getModelsArray();
+-        const chatPromises = chats.map((chat) =>
+-            window.WWebJS.getChatModel(chat),
+-        );
+-        return await Promise.all(chatPromises);
++        const chatPromises = chats.map(async (chat) => {
++            try {
++                return await window.WWebJS.getChatModel(chat);
++            } catch (error) {
++                console.warn('[wwebjs-compat] getChatModel skipped', error);
++                return null;
++            }
++        });
++        const models = await Promise.all(chatPromises);
++        return models.filter(Boolean);
+     };
+
+     window.WWebJS.getChannels = async () => {
+@@ -953,7 +959,7 @@ exports.LoadUtils = () => {
+             model.isGroup = true;
+             const chatWid = window
+                 .require('WAWebWidFactory')
+-                .createWid(chat.id._serialized);
++                .createWid(chat.id._serialized || chat.id.$1);
+             const groupMetadata =
+                 window.require('WAWebCollections').GroupMetadata ||
+                 window.require('WAWebCollections').WAWebGroupMetadataCollection;
+@@ -984,12 +990,12 @@ exports.LoadUtils = () => {
+             const lastMessage = chat.lastReceivedKey
+                 ? window
+                       .require('WAWebCollections')
+-                      .Msg.get(chat.lastReceivedKey._serialized) ||
++                      .Msg.get(chat.lastReceivedKey._serialized || chat.lastReceivedKey.$1) ||
+                   (
+                       await window
+                           .require('WAWebCollections')
+                           .Msg.getMessagesById([
+-                              chat.lastReceivedKey._serialized,
++                              chat.lastReceivedKey._serialized || chat.lastReceivedKey.$1,
+                           ])
+                   )?.messages?.[0]
+                 : null;

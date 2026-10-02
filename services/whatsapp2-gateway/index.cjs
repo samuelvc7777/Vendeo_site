@@ -83,7 +83,7 @@ function setState(patch) {
 
 function serializeMessage(message) {
   return message ? {
-    id: message.id?._serialized || null,
+    id: message.id?._serialized || message.id?.$1 || null,
     from: message.from || null,
     to: message.to || null,
     body: message.body || "",
@@ -119,6 +119,9 @@ function applyCors(req, res) {
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  if (String(req.headers["access-control-request-private-network"] || "").toLowerCase() === "true") {
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+  }
 }
 
 function json(res, status, body) {
@@ -244,6 +247,56 @@ const server = http.createServer(async (req, res) => {
           ? `<h1>Conectar WhatsApp 2</h1><p>WhatsApp > Dispositivos conectados > Conectar dispositivo</p><img src="${state.qrDataUrl}" width="360" height="360" />`
           : `<h1>WhatsApp 2</h1><p>Aguardando QR... status: ${state.status}</p>`;
       res.end(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><style>body{font-family:system-ui;background:#0b141a;color:#e9edef;display:grid;place-items:center;min-height:90vh;text-align:center}img{background:white;padding:12px;border-radius:18px}p{color:#aebac1}</style><main>${content}</main>`);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/chats") {
+      const active = ensureReady();
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 120), 300));
+      const includeGroups = url.searchParams.get("includeGroups") === "true";
+      const chats = await active.getChats();
+      const rows = chats
+        .filter((chat) => includeGroups || !chat.isGroup)
+        .sort((a, b) => Number(b.timestamp || b.lastMessage?.timestamp || 0) - Number(a.timestamp || a.lastMessage?.timestamp || 0))
+        .slice(0, limit)
+        .map((chat) => ({
+          id: chat.id?._serialized || null,
+          name: chat.name || chat.id?.user || "Contato",
+          isGroup: Boolean(chat.isGroup),
+          unreadCount: Number(chat.unreadCount || 0),
+          timestamp: Number(chat.timestamp || chat.lastMessage?.timestamp || 0),
+          archived: Boolean(chat.archived),
+          pinned: Boolean(chat.pinned),
+          lastMessage: serializeMessage(chat.lastMessage),
+        }));
+      json(res, 200, { ok: true, chats: rows }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/chat/messages") {
+      const active = ensureReady();
+      const chatId = String(url.searchParams.get("chatId") || "");
+      if (!chatId) throw new Error("chatId obrigatório");
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 80), 250));
+      const chat = await active.getChatById(chatId);
+      if (!chat) throw new Error("Conversa não encontrada");
+      const messages = await chat.fetchMessages({ limit });
+      const rows = messages
+        .map(serializeMessage)
+        .filter(Boolean)
+        .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+      json(res, 200, { ok: true, chat: { id: chatId, name: chat.name || chatId }, messages: rows }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/message/media") {
+      const messageId = String(url.searchParams.get("messageId") || "");
+      if (!messageId) throw new Error("messageId obrigatório");
+      const message = await getMessage(messageId);
+      if (!message.hasMedia) throw new Error("Mensagem não possui mídia");
+      const media = await message.downloadMedia();
+      if (!media?.data) throw new Error("Mídia indisponível");
+      const buffer = Buffer.from(media.data, "base64");
+      res.statusCode = 200;
+      res.setHeader("content-type", media.mimetype || "application/octet-stream");
+      res.setHeader("cache-control", "private, max-age=300");
+      res.setHeader("content-length", String(buffer.length));
+      res.end(buffer);
       return;
     }
     if (req.method === "GET" && url.pathname === "/events") {
