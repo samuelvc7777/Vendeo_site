@@ -402,6 +402,74 @@ serve(async (req: Request) => {
       });
     }
 
+    if (path === "/whatsapp/stickers" && req.method === "GET") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const { data, error } = await supabase
+        .from("whatsapp_stickers")
+        .select("id, sticker_url, source_message_id, title, usage_count, last_used_at, created_at")
+        .order("last_used_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false })
+        .limit(250);
+      return new Response(JSON.stringify({ success: !error, stickers: data || [], error: error?.message }), {
+        status: error ? 500 : 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    if (path === "/whatsapp/stickers" && req.method === "POST") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const body = await req.json().catch(() => ({}));
+      const stickerUrl = String(body?.stickerUrl || body?.sticker_url || "").trim();
+      const sourceMessageId = String(body?.sourceMessageId || body?.source_message_id || "").trim() || null;
+      const title = String(body?.title || "").trim() || null;
+      if (!/^https:\/\//i.test(stickerUrl)) {
+        return new Response(JSON.stringify({ success: false, error: "sticker_url_invalid" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from("whatsapp_stickers")
+        .upsert({
+          sticker_url: stickerUrl,
+          source_message_id: sourceMessageId,
+          title,
+          updated_at: now,
+        }, { onConflict: "sticker_url" })
+        .select("id, sticker_url, source_message_id, title, usage_count, last_used_at, created_at")
+        .single();
+      return new Response(JSON.stringify({ success: !error, sticker: data || null, error: error?.message }), {
+        status: error ? 500 : 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    const deleteStickerMatch = path.match(/^\/whatsapp\/stickers\/([^/]+)$/);
+    if (deleteStickerMatch && req.method === "DELETE") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const { error } = await supabase.from("whatsapp_stickers").delete().eq("id", deleteStickerMatch[1]);
+      return new Response(JSON.stringify({ success: !error, error: error?.message }), {
+        status: error ? 500 : 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ==========================================
     // 1. INSTAGRAM / META WEBHOOK (Handshake & Events)
     // ==========================================
@@ -2297,10 +2365,12 @@ serve(async (req: Request) => {
         const rawText = (body.text || body.message || "").trim();
         const audioUrl = (body.audioUrl || "").trim() || (rawText.startsWith("[audio:") ? rawText.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1] : undefined);
         const mediaUrl = (body.mediaUrl || "").trim() || (rawText.startsWith("[image:") ? rawText.match(/^\[image:(https?:\/\/[^\]]+)\]/)?.[1] : undefined);
+        const stickerUrl = (body.stickerUrl || body.sticker_url || "").trim()
+          || (rawText.startsWith("[sticker:") ? rawText.match(/^\[sticker:(https?:\/\/[^\]]+)\]/)?.[1] : undefined);
         const delaySeconds = typeof body.delaySeconds === "number" ? Math.max(0, Math.min(300, Math.round(body.delaySeconds))) : 0;
         const replyToMessageId = body.replyToMessageId || body.reply_to_message_id || body.replyTo?.id || null;
 
-        if (!rawText && !audioUrl && !mediaUrl) {
+        if (!rawText && !audioUrl && !mediaUrl && !stickerUrl) {
           return new Response(JSON.stringify({ error: "Mensagem não pode ser vazia." }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -2309,7 +2379,9 @@ serve(async (req: Request) => {
 
         const nowIso = new Date().toISOString();
         let textToSave = rawText;
-        if (audioUrl && !textToSave.startsWith("[audio:")) {
+        if (stickerUrl && !textToSave.startsWith("[sticker:")) {
+          textToSave = `[sticker:${stickerUrl}]`;
+        } else if (audioUrl && !textToSave.startsWith("[audio:")) {
           textToSave = `[audio:${audioUrl}]`;
         } else if (mediaUrl && !textToSave.startsWith("[image:")) {
           textToSave = `[image:${mediaUrl}]${rawText ? ` ${rawText}` : ""}`;
@@ -2321,6 +2393,15 @@ serve(async (req: Request) => {
           .eq("id", conversationId)
           .maybeSingle();
         const conversationChannel = conversationRow?.channel === "whatsapp" ? "whatsapp" : "instagram";
+        if (stickerUrl && conversationChannel !== "whatsapp") {
+          return new Response(JSON.stringify({ error: "Figurinhas são suportadas apenas no WhatsApp." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const outboundMediaUrl = stickerUrl || audioUrl || mediaUrl || null;
+        const outboundMediaType = stickerUrl ? "sticker" : audioUrl ? "audio" : mediaUrl ? "image" : null;
+        const outboundPreviewText = stickerUrl ? "Figurinha" : audioUrl ? "🎙️ Mensagem de voz" : mediaUrl ? "📷 Foto" : rawText;
 
         // 1. Busca configurações da conta Meta para o canal Instagram.
         const { data: config } = await supabase
@@ -2400,8 +2481,8 @@ serve(async (req: Request) => {
 
         const sendProviderMessage = async (): Promise<string> => {
           if (conversationChannel === "whatsapp") {
-            const kind = audioUrl ? "audio" : mediaUrl ? "image" : "text";
-            let providerMediaUrl = audioUrl || mediaUrl || undefined;
+            const kind = stickerUrl ? "sticker" : audioUrl ? "audio" : mediaUrl ? "image" : "text";
+            let providerMediaUrl = stickerUrl || audioUrl || mediaUrl || undefined;
             let voiceNote = false;
 
             // Áudios do cofre mantêm o arquivo canônico do Instagram, mas podem
@@ -2452,7 +2533,7 @@ serve(async (req: Request) => {
           const deliverAtMs = Date.now() + delaySeconds * 1000;
           const deliverAtIso = new Date(deliverAtMs).toISOString();
           const queuedMsgId = `fwd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-          const previewText = audioUrl ? "🎙️ Mensagem de voz" : mediaUrl ? "📷 Foto" : rawText;
+          const previewText = outboundPreviewText;
 
           // 1. Grava no banco com status 'sending' e deliver_at
           await supabase.from("instagram_messages").upsert({
@@ -2465,8 +2546,8 @@ serve(async (req: Request) => {
             is_mine: true,
             status: "sending",
             deliver_at: deliverAtIso,
-            media_url: audioUrl || mediaUrl || null,
-            media_type: audioUrl ? "audio" : mediaUrl ? "image" : null,
+            media_url: outboundMediaUrl,
+            media_type: outboundMediaType,
             reply_to_message_id: replyToMessageId,
           });
 
@@ -2497,8 +2578,8 @@ serve(async (req: Request) => {
                 status: "sending",
                 deliverAt: deliverAtMs,
                 delaySeconds,
-                mediaUrl: audioUrl || mediaUrl,
-                mediaType: audioUrl ? "audio" : mediaUrl ? "image" : undefined,
+                mediaUrl: outboundMediaUrl || undefined,
+                mediaType: outboundMediaType || undefined,
                 replyToMessageId,
               },
             });
@@ -2548,8 +2629,8 @@ serve(async (req: Request) => {
                   is_mine: true,
                   status: finalStatus,
                   deliver_at: null,
-                  media_url: audioUrl || mediaUrl || null,
-                  media_type: audioUrl ? "audio" : mediaUrl ? "image" : null,
+                  media_url: outboundMediaUrl,
+                  media_type: outboundMediaType,
                   reply_to_message_id: replyToMessageId,
                 });
               } else {
@@ -2576,8 +2657,8 @@ serve(async (req: Request) => {
                     isMine: true,
                     status: finalStatus,
                     deliverAt: undefined,
-                    mediaUrl: audioUrl || mediaUrl,
-                    mediaType: audioUrl ? "audio" : mediaUrl ? "image" : undefined,
+                    mediaUrl: outboundMediaUrl || undefined,
+                    mediaType: outboundMediaType || undefined,
                     replyToMessageId,
                   },
                 });
@@ -2608,6 +2689,8 @@ serve(async (req: Request) => {
               sentDate: new Date().toISOString(),
               isMine: true,
               status: "sending",
+              mediaUrl: outboundMediaUrl || undefined,
+              mediaType: outboundMediaType || undefined,
               replyToMessageId,
             },
           }), {
@@ -2643,12 +2726,12 @@ serve(async (req: Request) => {
           timestamp: nowIso,
           is_mine: true,
           status: msgStatus,
-          media_url: audioUrl || mediaUrl || null,
-          media_type: audioUrl ? "audio" : mediaUrl ? "image" : null,
+          media_url: outboundMediaUrl,
+          media_type: outboundMediaType,
           reply_to_message_id: replyToMessageId,
         });
 
-        const previewText = audioUrl ? "🎙️ Mensagem de voz" : mediaUrl ? "📷 Foto" : rawText;
+        const previewText = outboundPreviewText;
 
         const { error: convUpdErr, count: convUpdCount } = await supabase
           .from("instagram_conversations")
@@ -2759,8 +2842,8 @@ serve(async (req: Request) => {
               timestamp: nowIso,
               isMine: true,
               status: msgStatus,
-              mediaUrl: audioUrl || mediaUrl,
-              mediaType: audioUrl ? "audio" : mediaUrl ? "image" : undefined,
+              mediaUrl: outboundMediaUrl || undefined,
+              mediaType: outboundMediaType || undefined,
               replyToMessageId: replyToMessageId,
             },
           });
@@ -2815,6 +2898,8 @@ serve(async (req: Request) => {
             sentDate: new Date().toISOString(),
             isMine: true,
             status: "sent",
+            mediaUrl: outboundMediaUrl || undefined,
+            mediaType: outboundMediaType || undefined,
             replyToMessageId: replyToMessageId,
           }
         }), {

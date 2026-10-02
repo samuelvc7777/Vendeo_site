@@ -1,6 +1,6 @@
 const DEFAULT_WHATSAPP_GRAPH_VERSION = "v26.0";
 
-export type WhatsAppOutboundKind = "text" | "audio" | "image";
+export type WhatsAppOutboundKind = "text" | "audio" | "image" | "sticker";
 
 export interface WhatsAppCloudConfig {
   accessToken: string;
@@ -61,6 +61,9 @@ export async function sendWhatsAppCloudMessage(
       link: params.mediaUrl,
       ...(params.voiceNote ? { voice: true } : {}),
     };
+  } else if (params.kind === "sticker") {
+    if (!params.mediaUrl) throw new Error("URL da figurinha do WhatsApp ausente.");
+    payload.sticker = { link: params.mediaUrl };
   } else {
     if (!params.mediaUrl) throw new Error("URL da imagem do WhatsApp ausente.");
     payload.image = { link: params.mediaUrl };
@@ -103,7 +106,7 @@ function extensionForContentType(contentType: string, kind: string): string {
   if (type.includes("png")) return "png";
   if (type.includes("webp")) return "webp";
   if (type.includes("jpeg") || type.includes("jpg")) return "jpg";
-  return kind === "audio" ? "ogg" : kind === "video" ? "mp4" : "jpg";
+  return kind === "audio" ? "ogg" : kind === "video" ? "mp4" : kind === "sticker" ? "webp" : "jpg";
 }
 
 export async function persistWhatsAppInboundMedia(
@@ -111,7 +114,7 @@ export async function persistWhatsAppInboundMedia(
   params: {
     mediaId: string;
     messageId: string;
-    kind: "audio" | "image" | "video";
+    kind: "audio" | "image" | "video" | "sticker";
   },
 ): Promise<string | null> {
   const config = getWhatsAppCloudConfig();

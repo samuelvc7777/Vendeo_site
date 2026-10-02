@@ -162,12 +162,17 @@ export function isActionableInboundMessage(msg: {
     return true;
   }
 
-  // 4. Arquivos isolados continuam sem processamento automático.
-  if (mediaType === "file" || text.startsWith("[file:")) {
+  // 4. Figurinhas e arquivos isolados entram no histórico, mas não acordam o Brain.
+  if (
+    mediaType === "sticker" ||
+    text.startsWith("[sticker:") ||
+    mediaType === "file" ||
+    text.startsWith("[file:")
+  ) {
     return false;
   }
 
-  // 4. Mensagens vazias NÃO são acionáveis
+  // 5. Mensagens vazias NÃO são acionáveis
   if (!text) {
     return false;
   }

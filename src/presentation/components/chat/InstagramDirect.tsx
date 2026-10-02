@@ -42,6 +42,8 @@ import {
   ChevronDown,
   ChevronLeft,
   Copy,
+  BookmarkPlus,
+  Sticker,
 } from "lucide-react";
 import {
   ConversationSkeletonList,
@@ -71,6 +73,7 @@ import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
 import { InstagramReplyGesture } from "./InstagramReplyGesture";
 import { WhatsAppContactInfo } from "./WhatsAppContactInfo";
+import { WhatsAppStickerTray, type WhatsAppSavedSticker } from "./WhatsAppStickerTray";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
 import {
@@ -148,7 +151,7 @@ export interface DirectMessage {
   senderId: string;
   text: string;
   mediaUrl?: string;
-  mediaType?: "image" | "audio" | "video";
+  mediaType?: "image" | "audio" | "video" | "sticker";
   audioTranscript?: string;
   reactionEmoji?: string;
   reactionAt?: string;
@@ -838,6 +841,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
   const [whatsappMessageMenu, setWhatsappMessageMenu] = useState<DirectMessage | null>(null);
   const [isWhatsAppContactInfoOpen, setIsWhatsAppContactInfoOpen] = useState(false);
+  const [isWhatsAppStickerTrayOpen, setIsWhatsAppStickerTrayOpen] = useState(false);
+  const [whatsappStickers, setWhatsappStickers] = useState<WhatsAppSavedSticker[]>([]);
+  const [isLoadingWhatsAppStickers, setIsLoadingWhatsAppStickers] = useState(false);
+  const [sendingStickerId, setSendingStickerId] = useState<string | null>(null);
   const [brainConsoleRequest, setBrainConsoleRequest] = useState<{ conversationId: string; requestId: number } | null>(null);
   const brainConsoleRequestIdRef = useRef(0);
   const handleBrainConsoleOpenRequestHandled = useCallback((requestId: number) => {
@@ -896,11 +903,181 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [isSubmittingMediaObservation, setIsSubmittingMediaObservation] = useState(false);
   const [isUpdatingRaffleStatus, setIsUpdatingRaffleStatus] = useState(false);
 
+  const loadWhatsAppStickers = useCallback(async () => {
+    setIsLoadingWhatsAppStickers(true);
+    try {
+      const response = await fetch(getApiUrl("/api/whatsapp/stickers"), { cache: "no-store" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.error || "Não foi possível carregar as figurinhas.");
+      }
+      const list: WhatsAppSavedSticker[] = (result?.stickers || []).map((row: any) => ({
+        id: String(row.id),
+        stickerUrl: String(row.sticker_url || ""),
+        sourceMessageId: row.source_message_id || null,
+        title: row.title || null,
+        usageCount: Number(row.usage_count || 0),
+        lastUsedAt: row.last_used_at || null,
+        createdAt: row.created_at || null,
+      })).filter((item: WhatsAppSavedSticker) => Boolean(item.stickerUrl));
+      setWhatsappStickers(list);
+    } catch (error: any) {
+      console.error("[WhatsApp Stickers] Falha ao carregar:", error);
+      toast.error(error?.message || "Não foi possível carregar as figurinhas.");
+    } finally {
+      setIsLoadingWhatsAppStickers(false);
+    }
+  }, []);
+
+  const openWhatsAppStickerTray = useCallback(() => {
+    setIsWhatsAppStickerTrayOpen(true);
+    void loadWhatsAppStickers();
+  }, [loadWhatsAppStickers]);
+
+  const saveWhatsAppSticker = useCallback(async (message: DirectMessage) => {
+    const stickerUrl =
+      message.mediaUrl ||
+      message.text.match(/^\[sticker:(https?:\/\/[^\]]+)\]/)?.[1] ||
+      "";
+    if (!stickerUrl) {
+      toast.error("Essa figurinha não possui arquivo disponível para salvar.");
+      return;
+    }
+    try {
+      const response = await fetch(getApiUrl("/api/whatsapp/stickers"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stickerUrl,
+          sourceMessageId: message.id,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success !== true || !result?.sticker) {
+        throw new Error(result?.error || "Não foi possível salvar a figurinha.");
+      }
+      const saved: WhatsAppSavedSticker = {
+        id: String(result.sticker.id),
+        stickerUrl: String(result.sticker.sticker_url),
+        sourceMessageId: result.sticker.source_message_id || null,
+        title: result.sticker.title || null,
+        usageCount: Number(result.sticker.usage_count || 0),
+        lastUsedAt: result.sticker.last_used_at || null,
+        createdAt: result.sticker.created_at || null,
+      };
+      setWhatsappStickers((current) => [
+        saved,
+        ...current.filter((item) => item.id !== saved.id && item.stickerUrl !== saved.stickerUrl),
+      ]);
+      toast.success("Figurinha salva.");
+    } catch (error: any) {
+      console.error("[WhatsApp Stickers] Falha ao salvar:", error);
+      toast.error(error?.message || "Não foi possível salvar a figurinha.");
+    }
+  }, []);
+
+  const deleteWhatsAppSticker = useCallback(async (sticker: WhatsAppSavedSticker) => {
+    try {
+      const response = await fetch(getApiUrl(`/api/whatsapp/stickers/${encodeURIComponent(sticker.id)}`), {
+        method: "DELETE",
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.error || "Não foi possível excluir a figurinha.");
+      }
+      setWhatsappStickers((current) => current.filter((item) => item.id !== sticker.id));
+    } catch (error: any) {
+      console.error("[WhatsApp Stickers] Falha ao excluir:", error);
+      toast.error(error?.message || "Não foi possível excluir a figurinha.");
+    }
+  }, []);
+
+  const sendWhatsAppSticker = useCallback(async (sticker: WhatsAppSavedSticker) => {
+    if (!activeChat || activeChat.type !== "whatsapp" || sendingStickerId) return;
+    const conversationId = activeChat.id;
+    const tempId = `temp_sticker_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const nowIso = new Date().toISOString();
+    const optimistic: DirectMessage = {
+      id: tempId,
+      senderId: "me",
+      text: `[sticker:${sticker.stickerUrl}]`,
+      mediaUrl: sticker.stickerUrl,
+      mediaType: "sticker",
+      createdAt: formatMessageTime(nowIso),
+      timestamp: Date.now(),
+      sentDate: nowIso,
+      isMine: true,
+      status: "sending",
+    };
+
+    setSendingStickerId(sticker.id);
+    setMessages((prev) => ({
+      ...prev,
+      [conversationId]: [...(prev[conversationId] || []), optimistic],
+    }));
+    setConversations((prev) => {
+      const target = prev.find((item) => item.id === conversationId);
+      if (!target) return prev;
+      const updated: DirectConversation = {
+        ...target,
+        lastMessage: "Você: Figurinha",
+        lastActive: formatMessageTime(nowIso),
+        lastMessageAt: nowIso,
+        lastSender: "me",
+        lastStatus: "sent",
+        unread: false,
+        seenAt: undefined,
+      };
+      return [updated, ...prev.filter((item) => item.id !== conversationId)];
+    });
+
+    try {
+      const response = await fetch(getApiUrl(`/api/instagram/messages/${conversationId}`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: optimistic.text,
+          message: optimistic.text,
+          stickerUrl: sticker.stickerUrl,
+          mediaType: "sticker",
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success !== true) {
+        throw new Error(result?.error || result?.message || "Falha ao enviar figurinha.");
+      }
+      const confirmedId = String(result?.message?.id || tempId);
+      setMessages((prev) => ({
+        ...prev,
+        [conversationId]: (prev[conversationId] || []).map((message) =>
+          message.id === tempId ? { ...message, id: confirmedId, status: "sent" } : message
+        ),
+      }));
+      setWhatsappStickers((current) => current.map((item) =>
+        item.id === sticker.id
+          ? { ...item, usageCount: (item.usageCount || 0) + 1, lastUsedAt: new Date().toISOString() }
+          : item
+      ));
+    } catch (error: any) {
+      console.error("[WhatsApp Stickers] Falha no envio:", error);
+      setMessages((prev) => ({
+        ...prev,
+        [conversationId]: (prev[conversationId] || []).map((message) =>
+          message.id === tempId ? { ...message, status: "failed" } : message
+        ),
+      }));
+      toast.error(error?.message || "Falha ao enviar figurinha.");
+    } finally {
+      setSendingStickerId(null);
+    }
+  }, [activeChat, sendingStickerId]);
+
   useEffect(() => {
     setMediaObservationText("");
     setIsSubmittingMediaObservation(false);
     setWhatsappMessageMenu(null);
     setIsWhatsAppContactInfoOpen(false);
+    setIsWhatsAppStickerTrayOpen(false);
   }, [activeChat?.id]);
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
@@ -1040,13 +1217,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const formatted = rows.map((row: any): DirectMessage => {
       let text = String(row.text || "");
       let mediaUrl = row.media_url || undefined;
-      let mediaType = row.media_type as "image" | "audio" | "video" | undefined;
+      let mediaType = row.media_type as "image" | "audio" | "video" | "sticker" | undefined;
       const isSharedMedia = isInstagramSharedMediaText(text);
 
       if (!mediaUrl && text) {
         const audioMatch = text.match(/^\[audio:(https?:\/\/[^\]]+)\]$/);
         const imageMatch = text.match(/^\[image:(https?:\/\/[^\]]+)\](?:\s*(.*))?$/);
         const videoMatch = text.match(/^\[video:(https?:\/\/[^\]]+)\](?:\s*(.*))?$/);
+        const stickerMatch = text.match(/^\[sticker:(https?:\/\/[^\]]+)\]$/);
         const shareMatch = text.match(/^\[share:(https?:\/\/[^\]]+)\]$/);
         if (audioMatch) {
           mediaUrl = audioMatch[1];
@@ -1060,6 +1238,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           mediaUrl = videoMatch[1];
           mediaType = "video";
           text = videoMatch[2] || "🎥 Vídeo";
+        } else if (stickerMatch) {
+          mediaUrl = stickerMatch[1];
+          mediaType = "sticker";
+          text = "Figurinha";
         } else if (shareMatch) {
           mediaUrl = shareMatch[1];
           mediaType = "video";
@@ -1075,6 +1257,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         text = "📷 Foto";
       } else if (mediaType === "video" && (!text || text.startsWith("[video:"))) {
         text = "🎥 Vídeo";
+      } else if (mediaType === "sticker" && (!text || text.startsWith("[sticker:"))) {
+        text = "Figurinha";
       }
 
       const replyToMessageId = row.reply_to_message_id || null;
@@ -1087,6 +1271,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           else if (quotedText.startsWith("[image:")) quotedText = "📷 Foto";
           else if (quotedText.startsWith("[audio:")) quotedText = "🎙️ Mensagem de voz";
           else if (quotedText.startsWith("[video:")) quotedText = "🎥 Vídeo";
+          else if (quotedText.startsWith("[sticker:")) quotedText = "Figurinha";
           replyTo = {
             id: String(quoted.id),
             senderId: quoted.is_mine ? "me" : String(quoted.sender_id || ""),
@@ -1852,12 +2037,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const handleRealtimeInstagramMessage = useCallback((msg: RealtimeMessagePayload & { media_url?: string; media_type?: string }) => {
     let text = msg.text || "";
     let mediaUrl = msg.mediaUrl || msg.media_url;
-    let mediaType = (msg.mediaType || msg.media_type) as "image" | "audio" | "video" | undefined;
+    let mediaType = (msg.mediaType || msg.media_type) as "image" | "audio" | "video" | "sticker" | undefined;
     const isSharedMedia = isInstagramSharedMediaText(text);
 
     if (!mediaUrl && text) {
       const audioMatch = text.match(/^\[audio:(https?:\/\/[^\]]+)\]$/);
       const imageMatch = text.match(/^\[image:(https?:\/\/[^\]]+)\](?:\s*(.*))?$/);
+      const stickerMatch = text.match(/^\[sticker:(https?:\/\/[^\]]+)\]$/);
       const shareMatch = text.match(/^\[share:(https?:\/\/[^\]]+)\]$/);
       if (audioMatch) {
         mediaUrl = audioMatch[1];
@@ -1867,6 +2053,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         mediaUrl = imageMatch[1];
         mediaType = "image";
         text = imageMatch[2] || "📷 Foto";
+      } else if (stickerMatch) {
+        mediaUrl = stickerMatch[1];
+        mediaType = "sticker";
+        text = "Figurinha";
       } else if (shareMatch) {
         mediaUrl = shareMatch[1];
         mediaType = "video";
@@ -1894,7 +2084,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const formatted: DirectMessage = {
       id: msg.id,
       senderId: msg.isMine ? "me" : msg.senderId,
-      text: text || (mediaType === "audio" ? "🎙️ Mensagem de voz" : mediaType === "image" ? "📷 Foto" : ""),
+      text: text || (
+        mediaType === "audio"
+          ? "🎙️ Mensagem de voz"
+          : mediaType === "image"
+          ? "📷 Foto"
+          : mediaType === "sticker"
+          ? "Figurinha"
+          : ""
+      ),
       mediaUrl,
       mediaType,
       audioTranscript: msg.audio_transcript || msg.audioTranscript,
@@ -3416,6 +3614,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           text: textToSend,
           audioUrl: audioUrlToSend,
           mediaUrl: failedMsg.mediaType === "image" ? failedMsg.mediaUrl : undefined,
+          stickerUrl: failedMsg.mediaType === "sticker" ? failedMsg.mediaUrl : undefined,
           mediaType: failedMsg.mediaType,
           replyTo: failedMsg.replyTo,
           replyToMessageId: failedMsg.replyToMessageId,
@@ -4351,9 +4550,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 nextMsg!.isMine === msg.isMine &&
                 !isDifferentDay(nextMsg!, msg);
               const whatsappEndsGroup = activeChat.type === "whatsapp" && !whatsappSameSenderAfter;
+              const whatsappSticker =
+                activeChat.type === "whatsapp" &&
+                (
+                  msg.mediaType === "sticker" ||
+                  msg.text.startsWith("[sticker:")
+                );
               const whatsappVisualMedia =
                 activeChat.type === "whatsapp" &&
                 (
+                  whatsappSticker ||
                   msg.mediaType === "image" ||
                   msg.mediaType === "video" ||
                   msg.text.startsWith("[image:") ||
@@ -4446,7 +4652,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         className={`relative transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
                           activeChat.type === "whatsapp"
                             ? `wa-ios-bubble whatsapp-bubble-in text-[15.5px] leading-[20px] ${
-                                whatsappVisualMedia
+                                whatsappSticker
+                                  ? "wa-ios-sticker-message"
+                                  : whatsappVisualMedia
                                   ? "wa-ios-media-bubble"
                                   : msg.isMine
                                   ? "wa-ios-bubble-out"
@@ -4462,7 +4670,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               }`
                             : "rounded-2xl text-sm leading-relaxed"
                         } ${
-                          msg.mediaType === "audio" ||
+                          whatsappSticker
+                            ? "p-0"
+                            : msg.mediaType === "audio" ||
                           msg.mediaType === "video" ||
                           msg.text.startsWith("[audio:") ||
                           msg.text.startsWith("[video:") ||
@@ -4589,7 +4799,20 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             url={msg.mediaUrl || extractInstagramSharedMediaUrl(msg.text)}
                             instagramUsername={activeChat.username}
                           />
-                        ) : /* 3. Mídia do tipo Vídeo com player nativo */
+                        ) : /* 3. Figurinha nativa do WhatsApp (sem balão) */
+                        (msg.mediaType === "sticker" || msg.text.startsWith("[sticker:")) &&
+                        (msg.mediaUrl || msg.text.match(/^\[sticker:(https?:\/\/[^\]]+)\]/)?.[1]) ? (
+                          <img
+                            src={
+                              msg.mediaUrl ||
+                              msg.text.match(/^\[sticker:(https?:\/\/[^\]]+)\]/)?.[1] ||
+                              ""
+                            }
+                            alt="Figurinha"
+                            draggable={false}
+                            className="block h-auto max-h-[180px] w-auto max-w-[180px] select-none object-contain drop-shadow-sm"
+                          />
+                        ) : /* 4. Mídia do tipo Vídeo com player nativo */
                         (msg.mediaType === "video" || msg.text.startsWith("[video:")) &&
                         (msg.mediaUrl || msg.text.match(/^\[video:(https?:\/\/[^\]]+)\]/)?.[1]) ? (
                           <video
@@ -4638,7 +4861,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         {/* Horário da Mensagem (Timestamp estilo Instagram com contador regressivo) */}
                         <div
                           className={`flex items-center gap-1 select-none text-[10px] leading-none ${
-                            activeChat.type === "whatsapp" && whatsappVisualMedia
+                            activeChat.type === "whatsapp" && whatsappSticker
+                              ? "mt-0.5 justify-end pr-1 text-[#667781] dark:text-[#8696a0]"
+                              : activeChat.type === "whatsapp" && whatsappVisualMedia
                               ? "absolute bottom-1.5 right-1.5 rounded-full bg-black/45 px-1.5 py-1 text-white shadow-sm backdrop-blur-md"
                               : msg.isMine
                               ? activeChat.type === "whatsapp"
@@ -4934,6 +5159,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       ? "📷 Foto"
                       : (replyingToMessage.text || "").startsWith("[video:") || replyingToMessage.mediaType === "video"
                       ? "🎥 Vídeo"
+                      : (replyingToMessage.text || "").startsWith("[sticker:") || replyingToMessage.mediaType === "sticker"
+                      ? "Figurinha"
                       : replyingToMessage.text || "Mensagem"}
                   </p>
                 </div>
@@ -4977,6 +5204,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               return null;
             })()}
 
+            {activeChat.type === "whatsapp" && (
+              <WhatsAppStickerTray
+                open={isWhatsAppStickerTrayOpen}
+                stickers={whatsappStickers}
+                loading={isLoadingWhatsAppStickers}
+                sendingStickerId={sendingStickerId}
+                onClose={() => setIsWhatsAppStickerTrayOpen(false)}
+                onSend={sendWhatsAppSticker}
+                onDelete={deleteWhatsAppSticker}
+              />
+            )}
+
             {/* Barra de Digitação Isolada (Zero Lag / 60 FPS com State Colocation) */}
             <InstagramChatComposer
               ref={composerRef}
@@ -5002,7 +5241,18 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               onOpenVault={() => setIsPersonaAudioModalOpen(true)}
               onOpenConsole={
                 activeChat.type === "whatsapp"
-                  ? () => handleOpenBrainConsole(activeChat.id)
+                  ? () => {
+                      setIsWhatsAppStickerTrayOpen(false);
+                      handleOpenBrainConsole(activeChat.id);
+                    }
+                  : undefined
+              }
+              onOpenStickers={
+                activeChat.type === "whatsapp"
+                  ? () => {
+                      setWhatsappMessageMenu(null);
+                      openWhatsAppStickerTray();
+                    }
                   : undefined
               }
             />
@@ -6158,6 +6408,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     ? "Mensagem de voz"
                     : whatsappMessageMenu.mediaType === "image"
                     ? "Foto"
+                    : whatsappMessageMenu.mediaType === "sticker" || whatsappMessageMenu.text.startsWith("[sticker:")
+                    ? "Figurinha"
                     : whatsappMessageMenu.text || "Mensagem"}
                 </p>
               </div>
@@ -6173,24 +6425,44 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <span>Responder</span>
                 <Reply className="h-5 w-5 text-[#007aff]" />
               </button>
-              <div className="mx-4 h-px bg-black/[0.07] dark:bg-white/[0.07]" />
-              <button
-                type="button"
-                onClick={async () => {
-                  const textToCopy = whatsappMessageMenu.text || "";
-                  try {
-                    await navigator.clipboard.writeText(textToCopy);
-                    toast.success("Mensagem copiada.");
-                  } catch {
-                    toast.error("Não foi possível copiar.");
-                  }
-                  setWhatsappMessageMenu(null);
-                }}
-                className="flex w-full items-center justify-between px-4 py-3.5 text-left text-[16px] text-[#111b21] transition-colors hover:bg-black/[0.04] active:bg-black/[0.08] dark:text-white dark:hover:bg-white/[0.05]"
-              >
-                <span>Copiar</span>
-                <Copy className="h-5 w-5 text-[#007aff]" />
-              </button>
+              {(whatsappMessageMenu.mediaType === "sticker" || whatsappMessageMenu.text.startsWith("[sticker:")) ? (
+                <>
+                  <div className="mx-4 h-px bg-black/[0.07] dark:bg-white/[0.07]" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = whatsappMessageMenu;
+                      setWhatsappMessageMenu(null);
+                      void saveWhatsAppSticker(target);
+                    }}
+                    className="flex w-full items-center justify-between px-4 py-3.5 text-left text-[16px] text-[#111b21] transition-colors hover:bg-black/[0.04] active:bg-black/[0.08] dark:text-white dark:hover:bg-white/[0.05]"
+                  >
+                    <span>Salvar figurinha</span>
+                    <BookmarkPlus className="h-5 w-5 text-[#007aff]" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="mx-4 h-px bg-black/[0.07] dark:bg-white/[0.07]" />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const textToCopy = whatsappMessageMenu.text || "";
+                      try {
+                        await navigator.clipboard.writeText(textToCopy);
+                        toast.success("Mensagem copiada.");
+                      } catch {
+                        toast.error("Não foi possível copiar.");
+                      }
+                      setWhatsappMessageMenu(null);
+                    }}
+                    className="flex w-full items-center justify-between px-4 py-3.5 text-left text-[16px] text-[#111b21] transition-colors hover:bg-black/[0.04] active:bg-black/[0.08] dark:text-white dark:hover:bg-white/[0.05]"
+                  >
+                    <span>Copiar</span>
+                    <Copy className="h-5 w-5 text-[#007aff]" />
+                  </button>
+                </>
+              )}
             </motion.div>
           </motion.div>
         )}

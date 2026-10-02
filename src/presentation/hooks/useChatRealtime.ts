@@ -19,7 +19,7 @@ export interface RealtimeMessagePayload {
   deliverAt?: number;
   delaySeconds?: number;
   mediaUrl?: string;
-  mediaType?: "image" | "audio" | "video";
+  mediaType?: "image" | "audio" | "video" | "sticker";
   audio_transcript?: string;
   audioTranscript?: string;
   replyToMessageId?: string | null;
@@ -257,6 +257,8 @@ export function useChatRealtime({
             timestamp: row.timestamp || new Date().toISOString(),
             isMine: Boolean(row.is_mine),
             status: "sent",
+            mediaUrl: row.media_url || undefined,
+            mediaType: row.media_type || undefined,
             replyToMessageId: row.reply_to_message_id || null,
           });
         }

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useImperativeHandle, forwardRef, memo } from "react";
-import { MessageSquareText, Paperclip, Loader2, Mic, Send, Plus, Camera, SquareTerminal } from "lucide-react";
+import { MessageSquareText, Paperclip, Loader2, Mic, Send, Plus, Camera, SquareTerminal, Sticker } from "lucide-react";
 
 export interface InstagramChatComposerRef {
   appendText: (text: string) => void;
@@ -20,6 +20,7 @@ export interface InstagramChatComposerProps {
   onStartRecording: () => void;
   onOpenVault: () => void;
   onOpenConsole?: () => void;
+  onOpenStickers?: () => void;
   variant?: "instagram" | "whatsapp";
 }
 
@@ -35,6 +36,7 @@ export const InstagramChatComposer = memo(
       onStartRecording,
       onOpenVault,
       onOpenConsole,
+      onOpenStickers,
       variant = "instagram",
     },
     ref
@@ -191,16 +193,28 @@ export const InstagramChatComposer = memo(
             {isUploadingMedia ? (
               <Loader2 className="mb-0.5 h-4 w-4 animate-spin text-[#8e8e93]" />
             ) : (
-              <button
-                type="button"
-                onClick={onOpenConsole}
-                disabled={!onOpenConsole}
-                className="ml-2 mb-0.5 text-[#007aff] transition-transform active:scale-90 disabled:opacity-35"
-                aria-label="Abrir console do Brain"
-                title="Console do Brain"
-              >
-                <SquareTerminal className="h-5 w-5 stroke-[1.8]" />
-              </button>
+              <div className="ml-2 mb-0.5 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={onOpenStickers}
+                  disabled={!onOpenStickers}
+                  className="text-[#007aff] transition-transform active:scale-90 disabled:opacity-35"
+                  aria-label="Abrir figurinhas"
+                  title="Figurinhas"
+                >
+                  <Sticker className="h-5 w-5 stroke-[1.8]" />
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenConsole}
+                  disabled={!onOpenConsole}
+                  className="text-[#007aff] transition-transform active:scale-90 disabled:opacity-35"
+                  aria-label="Abrir console do Brain"
+                  title="Console do Brain"
+                >
+                  <SquareTerminal className="h-5 w-5 stroke-[1.8]" />
+                </button>
+              </div>
             )}
           </div>
 

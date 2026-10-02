@@ -312,3 +312,12 @@ body {
 .brain-console-whatsapp details[open] > summary {
   color: #25d366;
 }
+
+
+.wa-ios-sticker-message {
+  overflow: visible;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}

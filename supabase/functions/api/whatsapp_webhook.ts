@@ -66,7 +66,7 @@ async function resolveInboundContent(
     return { text, preview: text, mediaUrl: null, mediaType: null };
   }
 
-  if (type === "audio" || type === "image" || type === "video") {
+  if (type === "audio" || type === "image" || type === "video" || type === "sticker") {
     const mediaId = String(message?.[type]?.id || "");
     if (!mediaId) throw new Error(`WhatsApp enviou ${type} sem media id.`);
 
@@ -81,6 +81,8 @@ async function resolveInboundContent(
       ? "🎙️ Mensagem de voz"
       : type === "image"
       ? "📷 Foto"
+      : type === "sticker"
+      ? "Figurinha"
       : "🎬 Vídeo";
     return {
       text: `[${type}:${mediaUrl}]`,

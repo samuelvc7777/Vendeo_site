@@ -32,7 +32,7 @@ type ContactMessage = {
   id: string;
   text: string;
   mediaUrl?: string;
-  mediaType?: "image" | "audio" | "video";
+  mediaType?: "image" | "audio" | "video" | "sticker";
   isMine: boolean;
   timestamp?: number;
   sentDate?: string;
