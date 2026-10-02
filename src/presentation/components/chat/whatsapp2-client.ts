@@ -17,6 +17,7 @@ export interface WhatsApp2GatewayMessage {
 export interface WhatsApp2GatewayChat {
   id: string;
   name: string;
+  avatarUrl?: string | null;
   isGroup: boolean;
   unreadCount: number;
   timestamp: number;

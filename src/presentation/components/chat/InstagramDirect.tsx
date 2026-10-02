@@ -267,7 +267,7 @@ function mapWhatsApp2Chat(chat: WhatsApp2GatewayChat): DirectConversation {
     providerId: chat.id,
     username: chat.id.replace(/@.*$/, ""),
     fullName: name,
-    avatar: "/images/default-avatar.svg",
+    avatar: chat.avatarUrl || "/images/default-avatar.svg",
     isOnline: false,
     lastActive: formatMessageTime(timestampMs || Date.now()),
     lastMessage: chat.lastMessage?.fromMe && preview ? `Você: ${preview}` : preview,
@@ -393,7 +393,7 @@ function AvatarWithFallback({
 }: AvatarWithFallbackProps) {
   const [hasError, setHasError] = useState(false);
   const expiredMetaAvatar = isExpiredMetaCdnAvatar(src);
-  const isWhatsApp = Boolean(conversationId?.startsWith("wa:"));
+  const isWhatsApp = Boolean(conversationId?.startsWith("wa:") || conversationId?.startsWith("wa2:"));
   const cleanName = String(alt || "").trim();
   const nameParts = cleanName
     .replace(/[^\p{L}\p{N}\s]/gu, " ")

@@ -35,6 +35,9 @@ let initializing = null;
 let waJsReadyPromise = null;
 let shuttingDown = false;
 const sseClients = new Set();
+const profilePicCache = new Map();
+const profilePicPending = new Map();
+const PROFILE_PIC_TTL_MS = 30 * 60 * 1000;
 
 const state = {
   status: "idle",
@@ -147,6 +150,54 @@ async function readJson(req, maxBytes = 25 * 1024 * 1024) {
     throw new Error("WhatsApp 2 não está pronto: " + state.status);
   }
   return client;
+}
+
+function getCachedProfilePic(chatId) {
+  const cached = profilePicCache.get(chatId);
+  if (!cached) return null;
+  if (Date.now() - cached.updatedAt > PROFILE_PIC_TTL_MS) {
+    profilePicCache.delete(chatId);
+    return null;
+  }
+  return cached.url || null;
+}
+
+async function resolveProfilePic(chatId) {
+  const cached = profilePicCache.get(chatId);
+  if (cached && Date.now() - cached.updatedAt <= PROFILE_PIC_TTL_MS) {
+    return cached.url || null;
+  }
+  if (profilePicPending.has(chatId)) return profilePicPending.get(chatId);
+
+  const pending = (async () => {
+    try {
+      const active = ensureReady();
+      const url = await active.getProfilePicUrl(chatId);
+      profilePicCache.set(chatId, { url: url || null, updatedAt: Date.now() });
+      return url || null;
+    } catch (error) {
+      console.warn("[whatsapp2] foto de perfil indisponível para", chatId, error?.message || error);
+      profilePicCache.set(chatId, { url: null, updatedAt: Date.now() });
+      return null;
+    } finally {
+      profilePicPending.delete(chatId);
+    }
+  })();
+
+  profilePicPending.set(chatId, pending);
+  return pending;
+}
+
+function warmProfilePics(chatIds) {
+  const queue = chatIds.filter((id) => id && !getCachedProfilePic(id) && !profilePicPending.has(id));
+  const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+    while (queue.length) {
+      const id = queue.shift();
+      if (!id) break;
+      await resolveProfilePic(id);
+    }
+  });
+  void Promise.allSettled(workers);
 }
 
 async function ensureWaJsReady() {
@@ -287,17 +338,28 @@ const server = http.createServer(async (req, res) => {
         .filter((chat) => includeGroups || !chat.isGroup)
         .sort((a, b) => Number(b.timestamp || b.lastMessage?.timestamp || 0) - Number(a.timestamp || a.lastMessage?.timestamp || 0))
         .slice(0, limit)
-        .map((chat) => ({
-          id: chat.id?._serialized || null,
-          name: chat.name || chat.id?.user || "Contato",
-          isGroup: Boolean(chat.isGroup),
-          unreadCount: Number(chat.unreadCount || 0),
-          timestamp: Number(chat.timestamp || chat.lastMessage?.timestamp || 0),
-          archived: Boolean(chat.archived),
-          pinned: Boolean(chat.pinned),
-          lastMessage: serializeMessage(chat.lastMessage),
-        }));
+        .map((chat) => {
+          const id = chat.id?._serialized || null;
+          return {
+            id,
+            name: chat.name || chat.id?.user || "Contato",
+            avatarUrl: id ? getCachedProfilePic(id) : null,
+            isGroup: Boolean(chat.isGroup),
+            unreadCount: Number(chat.unreadCount || 0),
+            timestamp: Number(chat.timestamp || chat.lastMessage?.timestamp || 0),
+            archived: Boolean(chat.archived),
+            pinned: Boolean(chat.pinned),
+            lastMessage: serializeMessage(chat.lastMessage),
+          };
+        });
+      warmProfilePics(rows.slice(0, 80).map((chat) => chat.id).filter(Boolean));
       json(res, 200, { ok: true, chats: rows }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/chat/profile") {
+      const chatId = String(url.searchParams.get("chatId") || "");
+      if (!chatId) throw new Error("chatId obrigatório");
+      const avatarUrl = await resolveProfilePic(chatId);
+      json(res, 200, { ok: true, chatId, avatarUrl }); return;
     }
     if (req.method === "GET" && url.pathname === "/chat/messages") {
       const active = ensureReady();
