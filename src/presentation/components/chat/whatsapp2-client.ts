@@ -40,9 +40,29 @@ export async function getWhatsApp2Status() {
   return request<{
     ok: true;
     status: string;
+    hasPairingCode?: boolean;
+    pairingCode?: string | null;
+    pairingPhone?: string | null;
+    pairingUpdatedAt?: string | null;
+    pairingExpiresAt?: string | null;
     readyAt?: string | null;
     me?: { wid?: string | null; pushname?: string | null; platform?: string | null } | null;
   }>("/status");
+}
+
+export async function requestWhatsApp2PairingCode(phoneNumber: string) {
+  return request<{
+    ok: true;
+    status: "pairing_code";
+    code: string;
+    phoneNumber: string;
+    updatedAt: string;
+    expiresAt: string;
+  }>("/pairing-code", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phoneNumber }),
+  });
 }
 
 export async function getWhatsApp2Chats(limit = 160) {

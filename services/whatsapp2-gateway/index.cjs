@@ -3,7 +3,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { createClient } = require("@supabase/supabase-js");
-const QRCode = require("qrcode");
 const WA_JS_BUNDLE = require.resolve("@wppconnect/wa-js");
 
 const ROOT = __dirname;
@@ -52,6 +51,10 @@ const state = {
   status: "idle",
   qrDataUrl: null,
   qrUpdatedAt: null,
+  pairingCode: null,
+  pairingPhone: null,
+  pairingUpdatedAt: null,
+  pairingExpiresAt: null,
   readyAt: null,
   me: null,
   lastError: null,
@@ -59,7 +62,11 @@ const state = {
 };
 
 function snapshot() {
-  return { ...state, hasQr: Boolean(state.qrDataUrl) };
+  return {
+    ...state,
+    hasQr: false,
+    hasPairingCode: Boolean(state.pairingCode),
+  };
 }
 
 function pushSse(res, event, data) {
@@ -791,13 +798,47 @@ async function startClient() {
     });
     client = next;
 
-    next.on("qr", async (qr) => {
-      const qrDataUrl = await QRCode.toDataURL(qr, { width: 360, margin: 1 });
-      setState({ status: "qr", qrDataUrl, qrUpdatedAt: new Date().toISOString() });
-      await emitEvent("qr", { qrDataUrl, qrUpdatedAt: state.qrUpdatedAt });
-      console.log("[whatsapp2] QR gerado");
-    });    next.on("authenticated", async () => {
-      setState({ status: "authenticated", qrDataUrl: null, lastError: null });
+    next.on("qr", async () => {
+      const updatedAt = new Date().toISOString();
+      setState({
+        status: "awaiting_pairing",
+        qrDataUrl: null,
+        qrUpdatedAt: updatedAt,
+        pairingCode: null,
+        pairingUpdatedAt: null,
+        pairingExpiresAt: null,
+      });
+      await emitEvent("awaiting_pairing", { updatedAt });
+      console.log("[whatsapp2] aguardando pareamento por número");
+    });
+    next.on("code", async (code) => {
+      const updatedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 180_000).toISOString();
+      setState({
+        status: "pairing_code",
+        qrDataUrl: null,
+        pairingCode: String(code || ""),
+        pairingUpdatedAt: updatedAt,
+        pairingExpiresAt: expiresAt,
+        lastError: null,
+      });
+      await emitEvent("pairing_code", {
+        code: String(code || ""),
+        phoneNumber: state.pairingPhone,
+        updatedAt,
+        expiresAt,
+      });
+      console.log("[whatsapp2] código de pareamento gerado");
+    });
+    next.on("authenticated", async () => {
+      setState({
+        status: "authenticated",
+        qrDataUrl: null,
+        pairingCode: null,
+        pairingUpdatedAt: null,
+        pairingExpiresAt: null,
+        lastError: null,
+      });
       await emitEvent("authenticated");
     });
     next.on("ready", async () => {
@@ -806,7 +847,16 @@ async function startClient() {
         pushname: next.info.pushname || null,
         platform: next.info.platform || null,
       } : null;
-      setState({ status: "ready", readyAt: new Date().toISOString(), qrDataUrl: null, me });
+      setState({
+        status: "ready",
+        readyAt: new Date().toISOString(),
+        qrDataUrl: null,
+        pairingCode: null,
+        pairingPhone: null,
+        pairingUpdatedAt: null,
+        pairingExpiresAt: null,
+        me,
+      });
       await emitEvent("ready", { me });
       console.log("[whatsapp2] pronto", me || "");
       void ensureWaJsReady()
@@ -888,15 +938,66 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/status") {
       json(res, 200, { ok: true, ...snapshot() }); return;
     }
+    if (req.method === "POST" && url.pathname === "/pairing-code") {
+      if (state.status === "ready") {
+        json(res, 409, {
+          ok: false,
+          error: "WhatsApp 2 já está conectado.",
+          status: state.status,
+          me: state.me,
+        });
+        return;
+      }
+      const body = await readJson(req, 32 * 1024);
+      const phoneNumber = String(body.phoneNumber || "").replace(/\D/g, "");
+      if (phoneNumber.length < 8 || phoneNumber.length > 15) {
+        throw new Error("Informe o número com código do país e DDD, somente números.");
+      }
+      if (!client?.pupPage) {
+        throw new Error("WhatsApp Web ainda está iniciando. Tente novamente em alguns segundos.");
+      }
+
+      setState({
+        status: "requesting_pairing_code",
+        pairingPhone: phoneNumber,
+        pairingCode: null,
+        pairingUpdatedAt: null,
+        pairingExpiresAt: null,
+        lastError: null,
+      });
+      const code = await client.requestPairingCode(phoneNumber, true, 180_000);
+      const updatedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 180_000).toISOString();
+      setState({
+        status: "pairing_code",
+        pairingPhone: phoneNumber,
+        pairingCode: String(code || ""),
+        pairingUpdatedAt: updatedAt,
+        pairingExpiresAt: expiresAt,
+        lastError: null,
+      });
+      json(res, 200, {
+        ok: true,
+        status: "pairing_code",
+        code: String(code || ""),
+        phoneNumber,
+        updatedAt,
+        expiresAt,
+      });
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/qr") {
       res.statusCode = 200;
       res.setHeader("content-type", "text/html; charset=utf-8");
+      const formattedCode = state.pairingCode
+        ? String(state.pairingCode).replace(/(.{4})(?=.)/g, "$1-")
+        : "";
       const content = state.status === "ready"
         ? `<h1>WhatsApp 2 conectado</h1><p>${state.me?.pushname || "Sessão pronta"}</p>`
-        : state.qrDataUrl
-          ? `<h1>Conectar WhatsApp 2</h1><p>WhatsApp > Dispositivos conectados > Conectar dispositivo</p><img src="${state.qrDataUrl}" width="360" height="360" />`
-          : `<h1>WhatsApp 2</h1><p>Aguardando QR... status: ${state.status}</p>`;
-      res.end(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><style>body{font-family:system-ui;background:#0b141a;color:#e9edef;display:grid;place-items:center;min-height:90vh;text-align:center}img{background:white;padding:12px;border-radius:18px}p{color:#aebac1}</style><main>${content}</main>`);
+        : formattedCode
+          ? `<h1>Código de conexão</h1><div class="code">${formattedCode}</div><p>No celular: WhatsApp → Dispositivos conectados → Conectar dispositivo → Conectar com número de telefone.</p>`
+          : `<h1>WhatsApp 2</h1><p>Conecte pelo Vendeo informando o número do WhatsApp para gerar o código de 8 caracteres.</p><small>Status: ${state.status}</small>`;
+      res.end(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><style>body{font-family:system-ui;background:#0b141a;color:#e9edef;display:grid;place-items:center;min-height:90vh;text-align:center;padding:24px}main{max-width:560px}.code{font-size:42px;font-weight:800;letter-spacing:6px;margin:22px 0}p,small{color:#aebac1;line-height:1.5}</style><main>${content}</main>`);
       return;
     }
     if (req.method === "GET" && url.pathname === "/chats") {
