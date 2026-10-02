@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sourceDir = path.join(root, "node_modules", "@ffmpeg", "core", "dist", "esm");
+const sourceDir = path.join(root, "node_modules", "@ffmpeg", "core", "dist", "umd");
 const targetDir = path.join(root, "public", "ffmpeg");
 
 const assets = ["ffmpeg-core.js", "ffmpeg-core.wasm"];
