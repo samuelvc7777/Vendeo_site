@@ -3477,7 +3477,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (!textToSend.trim() || !activeChat) return false;
 
     const messageText = textToSend.trim();
-    void markItemCompletedByExactText(messageText);
+    if (activeChat.type !== "whatsapp2") {
+      void markItemCompletedByExactText(messageText);
+    }
     const now = new Date();
     const nowIso = now.toISOString();
     const timeFormatted = formatMessageTime(now);
@@ -5543,7 +5545,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           }
           onSendAudioToChat={async (audio) => {
             if (!activeChat) return;
-            await sendMessageWithText(`[audio:${audio.audioUrl}]`);
+            const audioUrl = activeChat.type === "whatsapp2"
+              ? (audio.whatsappAudioUrl || audio.audioUrl)
+              : audio.audioUrl;
+            await sendMessageWithText(`[audio:${audioUrl}]`);
             toast.success(`Áudio "${audio.title}" enviado com sucesso.`);
           }}
         />
