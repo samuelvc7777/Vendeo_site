@@ -1,0 +1,15 @@
+{
+  "name": "vendeo-whatsapp2-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gateway isolado do WhatsApp 2 via dispositivo vinculado",
+  "main": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs",
+    "dev": "node --watch index.cjs"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "whatsapp-web.js": "1.34.7"
+  }
+}
