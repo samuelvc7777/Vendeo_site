@@ -5216,7 +5216,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         </div>
 
         {/* Canais da caixa de entrada: o motor é o mesmo, a experiência visual muda por canal */}
-        <div className={`mt-[10px] shrink-0 border-b px-3 pb-2 ${
+        <div className={`mt-[10px] mb-[8px] shrink-0 border-b px-3 pb-2 ${
           activeChannel === "whatsapp"
             ? "whatsapp-ios border-black/[0.07] bg-white/66 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/68"
             : "border-zinc-100 bg-white dark:border-[#1f1f1f] dark:bg-black"
