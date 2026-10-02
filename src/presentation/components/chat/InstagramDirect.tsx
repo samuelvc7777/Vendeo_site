@@ -216,6 +216,7 @@ function toInstagramProfileData(
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
+type WhatsAppQuickFilter = "todas" | "nao_lidas" | "com_ia" | "sem_ia";
 
 const avatarRefreshRequests = new Set<string>();
 
@@ -1608,6 +1609,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // Filtros
   const [activeChannel, setActiveChannel] = useState<"instagram" | "whatsapp">("instagram");
   const [instaFilter, setInstaFilter] = useState<InstagramFilter>("todos");
+  const [whatsappQuickFilter, setWhatsappQuickFilter] = useState<WhatsAppQuickFilter>("todas");
+  const [whatsappStageFilter, setWhatsappStageFilter] = useState<string>("todas");
+  const [showWhatsAppStages, setShowWhatsAppStages] = useState(false);
 
   // Carrega conversas reais do Instagram do Supabase (com in-flight dedup e colunas explícitas sem stage_completed_rules)
   const isDirectLoadingConvsRef = useRef<boolean>(false);
@@ -3699,6 +3703,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const aiEnabledCount = platformConversations.filter((c) => c.aiAutoRespond === true).length;
   const aiDisabledCount = platformConversations.filter((c) => c.aiAutoRespond !== true).length;
 
+  const effectiveStageFilter = activeChannel === "whatsapp" ? whatsappStageFilter : stageFilter;
+
   const filteredConversations = platformConversations
     .filter((c) => {
       const isRestr = isChatRestricted(c);
@@ -3717,21 +3723,29 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         return false;
       }
 
+      if (activeChannel === "whatsapp") {
+        if (whatsappQuickFilter === "nao_lidas") return isConversationUnread(c);
+        if (whatsappQuickFilter === "com_ia") return c.aiAutoRespond === true;
+        if (whatsappQuickFilter === "sem_ia") return c.aiAutoRespond !== true;
+        return true;
+      }
+
       if (instaFilter === "respondidos") return c.lastSender === "me";
       if (instaFilter === "nao_respondidos") return c.lastSender === "them" || isConversationUnread(c);
       return true;
     })
     .filter((c) => {
-      if (stageFilter === "concluidos") {
+      if (effectiveStageFilter === "concluidos") {
         return Boolean(c.isConverted);
       }
-      if (stageFilter !== "todas") {
+      if (effectiveStageFilter !== "todas") {
         const currentStageId = c.currentStageId || (stages.length > 0 ? stages[0].id : "");
-        return currentStageId === stageFilter && !c.isConverted;
+        return currentStageId === effectiveStageFilter && !c.isConverted;
       }
       return true;
     })
     .filter((c) => {
+      if (activeChannel === "whatsapp") return true;
       if (aiFilter === "todas") return true;
       if (aiFilter === "com_ia") return c.aiAutoRespond === true;
       return c.aiAutoRespond !== true;
@@ -3750,7 +3764,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const timeA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
     const timeB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
 
-    if (sortOrder === "antigas") {
+    if (activeChannel === "instagram" && sortOrder === "antigas") {
       return timeA - timeB;
     }
     return timeB - timeA;
@@ -5137,7 +5151,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         <div
           className={`shrink-0 border-b px-4 backdrop-blur-2xl ${
             activeChannel === "whatsapp"
-              ? "whatsapp-ios border-black/[0.07] bg-white/66 pt-3 pb-2 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/68"
+              ? "hidden"
               : "border-zinc-100 dark:border-[#1f1f1f] bg-white/95 dark:bg-black/95 pt-4 pb-3"
           }`}
         >
@@ -5345,6 +5359,153 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </button>
           )}
         </div>
+
+        {activeChannel === "whatsapp" && (
+          <div className="whatsapp-ios px-3 pt-1.5 pb-1">
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none select-none">
+              {([
+                { id: "todas", label: "Todas", count: whatsappConversationCount },
+                { id: "nao_lidas", label: "Não lidas", count: whatsappUnreadCount },
+                { id: "com_ia", label: "Com IA", count: aiEnabledCount },
+                { id: "sem_ia", label: "Sem IA", count: aiDisabledCount },
+              ] as Array<{ id: WhatsAppQuickFilter; label: string; count: number }>).map((filter) => {
+                const active = whatsappQuickFilter === filter.id;
+                return (
+                  <motion.button
+                    layout
+                    key={filter.id}
+                    type="button"
+                    onClick={() => setWhatsappQuickFilter(filter.id)}
+                    whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
+                    transition={{ duration: prefersReducedMotion ? 0 : 0.14 }}
+                    className={`flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                      active
+                        ? "bg-[#d9fdd3] text-[#008069] shadow-[inset_0_0_0_0.5px_rgba(0,128,105,0.10)] dark:bg-[#103529] dark:text-[#25d366]"
+                        : "bg-[#f0f2f5] text-[#54656f] hover:bg-[#e9edef] dark:bg-[#202c33] dark:text-[#8696a0] dark:hover:bg-[#26343c]"
+                    }`}
+                  >
+                    <span>{filter.label}</span>
+                    {filter.count > 0 && filter.id !== "todas" && (
+                      <span
+                        className={`min-w-[16px] rounded-full px-1 text-center text-[9px] font-semibold tabular-nums ${
+                          active
+                            ? "bg-[#00a884]/12 text-[#008069] dark:bg-[#25d366]/12 dark:text-[#25d366]"
+                            : "bg-black/[0.05] text-[#667781] dark:bg-white/[0.06] dark:text-[#aebac1]"
+                        }`}
+                      >
+                        {filter.count > 99 ? "99+" : filter.count}
+                      </span>
+                    )}
+                  </motion.button>
+                );
+              })}
+
+              <motion.button
+                layout
+                type="button"
+                onClick={() => setShowWhatsAppStages((current) => !current)}
+                whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
+                transition={{ duration: prefersReducedMotion ? 0 : 0.14 }}
+                className={`flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                  showWhatsAppStages || whatsappStageFilter !== "todas"
+                    ? "bg-[#d9fdd3] text-[#008069] shadow-[inset_0_0_0_0.5px_rgba(0,128,105,0.10)] dark:bg-[#103529] dark:text-[#25d366]"
+                    : "bg-[#f0f2f5] text-[#54656f] hover:bg-[#e9edef] dark:bg-[#202c33] dark:text-[#8696a0] dark:hover:bg-[#26343c]"
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                <span>
+                  {whatsappStageFilter === "concluidos"
+                    ? "Finalizados"
+                    : whatsappStageFilter !== "todas"
+                    ? stages.find((stage) => stage.id === whatsappStageFilter)?.name || "Etapas"
+                    : "Etapas"}
+                </span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${
+                    showWhatsAppStages ? "rotate-180" : ""
+                  }`}
+                />
+              </motion.button>
+            </div>
+
+            <AnimatePresence initial={false}>
+              {showWhatsAppStages && (
+                <motion.div
+                  initial={prefersReducedMotion ? false : { height: 0, opacity: 0, y: -4 }}
+                  animate={{ height: "auto", opacity: 1, y: 0 }}
+                  exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -4 }}
+                  transition={{ duration: prefersReducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+                  className="overflow-hidden"
+                >
+                  <div className="flex items-center gap-2 overflow-x-auto pt-1.5 pb-1 scrollbar-none">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWhatsappStageFilter("todas");
+                        setShowWhatsAppStages(false);
+                      }}
+                      className={`h-8 shrink-0 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                        whatsappStageFilter === "todas"
+                          ? "bg-[#00a884] text-white"
+                          : "wa-ios-glass text-[#54656f] dark:text-[#aebac1]"
+                      }`}
+                    >
+                      Todas as etapas
+                    </button>
+
+                    {stages.map((stage, index) => {
+                      const count = platformConversations.filter((conversation) => {
+                        if (isChatRestricted(conversation) || conversation.isConverted) return false;
+                        const currentStageId = conversation.currentStageId || stages[0]?.id;
+                        return currentStageId === stage.id;
+                      }).length;
+                      const active = whatsappStageFilter === stage.id;
+
+                      return (
+                        <button
+                          key={stage.id}
+                          type="button"
+                          onClick={() => {
+                            setWhatsappStageFilter(stage.id);
+                            setShowWhatsAppStages(false);
+                          }}
+                          className={`flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                            active
+                              ? "bg-[#00a884] text-white"
+                              : "wa-ios-glass text-[#54656f] dark:text-[#aebac1]"
+                          }`}
+                        >
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{ backgroundColor: active ? "currentColor" : stage.color || "#00a884" }}
+                          />
+                          <span>{index + 1}. {stage.name}</span>
+                          {count > 0 && <span className="text-[9px] opacity-65">{count}</span>}
+                        </button>
+                      );
+                    })}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWhatsappStageFilter("concluidos");
+                        setShowWhatsAppStages(false);
+                      }}
+                      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                        whatsappStageFilter === "concluidos"
+                          ? "bg-[#00a884] text-white"
+                          : "wa-ios-glass text-[#54656f] dark:text-[#aebac1]"
+                      }`}
+                    >
+                      <Trophy className="h-3.5 w-3.5" />
+                      <span>Finalizados</span>
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
 
         {activeChannel === "instagram" && showFilterBar && (
           <div className="flex items-center justify-between px-0.5">
