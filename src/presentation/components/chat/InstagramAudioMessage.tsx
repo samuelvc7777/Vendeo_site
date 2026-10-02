@@ -13,6 +13,7 @@ interface InstagramAudioMessageProps {
   onForward?: () => void;
   onDurationLoaded?: (duration: number) => void;
   onTranscribed?: (transcript: string) => void;
+  variant?: "instagram" | "whatsapp";
 }
 
 const DEFAULT_WAVEFORM = [
@@ -37,6 +38,7 @@ export function InstagramAudioMessage({
   onForward,
   onDurationLoaded,
   onTranscribed,
+  variant = "instagram",
 }: InstagramAudioMessageProps) {
   if (!audioUrl || audioUrl.trim().length === 0) {
     return (
@@ -215,10 +217,12 @@ export function InstagramAudioMessage({
         <button
           type="button"
           onClick={(e) => void togglePlayback(e)}
-          className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-all active:scale-90 cursor-pointer ${
-            isMine
-              ? "bg-white text-[#0095f6] hover:bg-white/95"
-              : "bg-gradient-to-tr from-[#0095f6] to-[#0081d6] text-white hover:opacity-95"
+          className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all active:scale-90 cursor-pointer ${
+            variant === "whatsapp"
+              ? "bg-transparent text-[#00a884] hover:bg-black/[0.04] dark:text-[#25d366] dark:hover:bg-white/[0.05]"
+              : isMine
+              ? "bg-white text-[#0095f6] hover:bg-white/95 shadow-md"
+              : "bg-gradient-to-tr from-[#0095f6] to-[#0081d6] text-white hover:opacity-95 shadow-md"
           }`}
           aria-label={playing ? "Pausar áudio" : "Reproduzir áudio"}
         >
@@ -243,7 +247,11 @@ export function InstagramAudioMessage({
                   key={`${height}-${index}`}
                   style={{ height: `${(height / 30) * 100}%` }}
                   className={`w-[3px] rounded-full transition-colors ${
-                    isPlayed
+                    variant === "whatsapp"
+                      ? isPlayed
+                        ? "bg-[#00a884] dark:bg-[#25d366]"
+                        : "bg-[#8696a0]/55 dark:bg-[#8696a0]/45"
+                      : isPlayed
                       ? isMine
                         ? "bg-white"
                         : "bg-[#0095f6]"
@@ -259,7 +267,9 @@ export function InstagramAudioMessage({
           <div className="flex items-center justify-between text-[10px] font-medium leading-none">
             <span
               className={
-                isMine
+                variant === "whatsapp"
+                  ? "text-[#667781] dark:text-[#8696a0]"
+                  : isMine
                   ? "text-white/85 font-mono"
                   : "text-zinc-600 dark:text-zinc-400 font-mono"
               }
@@ -273,7 +283,9 @@ export function InstagramAudioMessage({
                 type="button"
                 onClick={cycleSpeed}
                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-tight transition-colors cursor-pointer ${
-                  isMine
+                  variant === "whatsapp"
+                    ? "bg-black/[0.05] text-[#667781] hover:bg-black/[0.08] dark:bg-white/[0.06] dark:text-[#aebac1] dark:hover:bg-white/[0.10]"
+                    : isMine
                     ? "bg-white/20 text-white hover:bg-white/30"
                     : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-700"
                 }`}
@@ -286,6 +298,8 @@ export function InstagramAudioMessage({
         </div>
       </div>
 
+      {variant !== "whatsapp" && (
+        <>
       {/* Barra de Ações Rápidas: Baixar Áudio + Transcrever */}
       <div
         className={`mt-2 pt-1.5 border-t ${
@@ -395,6 +409,8 @@ export function InstagramAudioMessage({
           <Loader2 className="w-3 h-3 animate-spin" />
           <span>Transcrevendo áudio na nuvem...</span>
         </div>
+      )}
+        </>
       )}
     </div>
   );

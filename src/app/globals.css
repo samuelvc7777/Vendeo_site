@@ -93,3 +93,37 @@ body {
 .animate-shimmer {
   animation: shimmer 1.8s ease-in-out infinite;
 }
+
+
+/* WhatsApp: wallpaper sutil e movimento curto, sem usar assets externos. */
+.whatsapp-chat-wallpaper {
+  background-color: #efeae2;
+  background-image:
+    radial-gradient(circle at 12px 14px, rgba(84, 101, 111, 0.055) 1.1px, transparent 1.2px),
+    radial-gradient(circle at 46px 38px, rgba(84, 101, 111, 0.04) 1.2px, transparent 1.3px),
+    linear-gradient(45deg, rgba(84, 101, 111, 0.018) 25%, transparent 25%, transparent 75%, rgba(84, 101, 111, 0.018) 75%);
+  background-size: 58px 58px, 72px 72px, 96px 96px;
+}
+
+:root[data-theme="dark"] .whatsapp-chat-wallpaper {
+  background-color: #0b141a;
+  background-image:
+    radial-gradient(circle at 12px 14px, rgba(134, 150, 160, 0.045) 1.1px, transparent 1.2px),
+    radial-gradient(circle at 46px 38px, rgba(134, 150, 160, 0.035) 1.2px, transparent 1.3px),
+    linear-gradient(45deg, rgba(134, 150, 160, 0.014) 25%, transparent 25%, transparent 75%, rgba(134, 150, 160, 0.014) 75%);
+}
+
+@keyframes whatsapp-bubble-in {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.whatsapp-bubble-in {
+  animation: whatsapp-bubble-in 140ms cubic-bezier(0.2, 0.78, 0.2, 1);
+}

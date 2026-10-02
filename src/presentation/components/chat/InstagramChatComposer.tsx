@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useImperativeHandle, forwardRef, memo } from "react";
-import { MessageSquareText, Paperclip, Loader2, Mic } from "lucide-react";
+import { MessageSquareText, Paperclip, Loader2, Mic, Send, Smile } from "lucide-react";
 
 export interface InstagramChatComposerRef {
   appendText: (text: string) => void;
@@ -19,6 +19,7 @@ export interface InstagramChatComposerProps {
   onSelectMediaFile: (file: File) => void;
   onStartRecording: () => void;
   onOpenVault: () => void;
+  variant?: "instagram" | "whatsapp";
 }
 
 export const InstagramChatComposer = memo(
@@ -32,6 +33,7 @@ export const InstagramChatComposer = memo(
       onSelectMediaFile,
       onStartRecording,
       onOpenVault,
+      variant = "instagram",
     },
     ref
   ) {
@@ -74,11 +76,37 @@ export const InstagramChatComposer = memo(
       ? "Adicionar legenda à foto..."
       : replyingToName
       ? `Respondendo a ${replyingToName}...`
+      : variant === "whatsapp"
+      ? "Digite uma mensagem"
       : "Mensagem...";
 
     return (
-      <form onSubmit={handleSubmit} className="p-3 flex items-center gap-2">
-        <div className="flex-1 bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-full px-3.5 py-2 flex items-center gap-2.5">
+      <form
+        onSubmit={handleSubmit}
+        className={`flex items-center gap-2 ${
+          variant === "whatsapp"
+            ? "p-2.5 bg-[#f0f2f5] dark:bg-[#202c33]"
+            : "p-3"
+        }`}
+      >
+        <div
+          className={`flex-1 border px-3.5 py-2 flex items-center gap-2.5 ${
+            variant === "whatsapp"
+              ? "rounded-xl border-transparent bg-white dark:bg-[#2a3942]"
+              : "rounded-full border-zinc-200 bg-zinc-100 dark:border-[#262626] dark:bg-[#1c1c1e]"
+          }`}
+        >
+          {variant === "whatsapp" && (
+            <button
+              type="button"
+              onClick={() => inputRef.current?.focus()}
+              className="p-0.5 text-[#54656f] transition-all hover:text-[#00a884] active:scale-90 dark:text-[#8696a0] dark:hover:text-[#25d366]"
+              title="Emoji"
+              aria-label="Emoji"
+            >
+              <Smile className="h-5 w-5 stroke-[1.8]" />
+            </button>
+          )}
           {/* Botão de abrir Pastas e Cofre Flutuante de Respostas Rápidas / Mídias */}
           <button
             type="button"
@@ -149,9 +177,18 @@ export const InstagramChatComposer = memo(
             <button
               type="submit"
               disabled={isUploadingMedia}
-              className="text-[#0095f6] font-semibold text-sm px-1 hover:text-[#1877f2] active:scale-95 transition-all cursor-pointer"
+              className={`active:scale-90 transition-all cursor-pointer disabled:opacity-40 ${
+                variant === "whatsapp"
+                  ? "flex h-8 w-8 items-center justify-center rounded-full bg-[#00a884] text-white hover:bg-[#06cf9c]"
+                  : "text-[#0095f6] font-semibold text-sm px-1 hover:text-[#1877f2]"
+              }`}
+              aria-label="Enviar mensagem"
             >
-              Enviar
+              {variant === "whatsapp" ? (
+                <Send className="h-4 w-4 fill-current stroke-[1.7]" />
+              ) : (
+                "Enviar"
+              )}
             </button>
           ) : (
             <button
@@ -159,7 +196,11 @@ export const InstagramChatComposer = memo(
               onClick={onStartRecording}
               disabled={isUploadingMedia}
               title="Gravar mensagem de voz"
-              className="text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white active:scale-90 transition-all p-0.5 cursor-pointer disabled:opacity-40"
+              className={`active:scale-90 transition-all cursor-pointer disabled:opacity-40 ${
+                variant === "whatsapp"
+                  ? "p-0.5 text-[#54656f] hover:text-[#00a884] dark:text-[#8696a0] dark:hover:text-[#25d366]"
+                  : "p-0.5 text-zinc-600 dark:text-[#a8a8a8] hover:text-zinc-950 dark:hover:text-white"
+              }`}
               aria-label="Gravar áudio"
             >
               <Mic className="w-5 h-5 stroke-[1.8]" />
