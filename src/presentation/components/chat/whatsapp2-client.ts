@@ -65,6 +65,16 @@ export async function requestWhatsApp2PairingCode(phoneNumber: string) {
   });
 }
 
+export async function disconnectWhatsApp2() {
+  return request<{
+    ok: true;
+    disconnected: boolean;
+    status: string;
+  }>("/disconnect", {
+    method: "POST",
+  });
+}
+
 export async function getWhatsApp2Chats(limit = 160) {
   const data = await request<{ ok: true; chats: WhatsApp2GatewayChat[] }>(
     `/chats?limit=${Math.max(1, Math.min(limit, 300))}`,

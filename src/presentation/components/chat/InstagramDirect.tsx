@@ -106,7 +106,6 @@ import {
   getWhatsApp2MediaUrl,
   getWhatsApp2Messages,
   getWhatsApp2Status,
-  requestWhatsApp2PairingCode,
   sendWhatsApp2Media,
   sendWhatsApp2Text,
   type WhatsApp2GatewayChat,
@@ -968,11 +967,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [whatsapp2Conversations, setWhatsApp2Conversations] = useState<DirectConversation[]>([]);
   const [whatsapp2GatewayStatus, setWhatsapp2GatewayStatus] = useState("idle");
   const [whatsapp2GatewayError, setWhatsapp2GatewayError] = useState<string | null>(null);
-  const [whatsapp2PairingPhone, setWhatsapp2PairingPhone] = useState("");
-  const [whatsapp2PairingCode, setWhatsapp2PairingCode] = useState<string | null>(null);
-  const [whatsapp2PairingExpiresAt, setWhatsapp2PairingExpiresAt] = useState<string | null>(null);
-  const [isRequestingWhatsapp2PairingCode, setIsRequestingWhatsapp2PairingCode] = useState(false);
-  const [whatsapp2PairingError, setWhatsapp2PairingError] = useState<string | null>(null);
 
   const loadWhatsApp2Conversations = useCallback(async () => {
     setWhatsapp2GatewayStatus("loading");
@@ -984,11 +978,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     try {
       const gatewayStatus = await getWhatsApp2Status();
       setWhatsapp2GatewayStatus(gatewayStatus.status || "idle");
-      setWhatsapp2PairingCode(gatewayStatus.pairingCode || null);
-      setWhatsapp2PairingExpiresAt(gatewayStatus.pairingExpiresAt || null);
-      if (gatewayStatus.pairingPhone) {
-        setWhatsapp2PairingPhone(gatewayStatus.pairingPhone);
-      }
       setWhatsapp2GatewayError(null);
 
       if (gatewayStatus.status === "ready") {
@@ -1128,28 +1117,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       setWhatsapp2GatewayStatus("offline");
     }
   }, []);
-
-  const handleRequestWhatsapp2PairingCode = useCallback(async () => {
-    const normalizedPhone = whatsapp2PairingPhone.replace(/\D/g, "");
-    if (normalizedPhone.length < 8 || normalizedPhone.length > 15) {
-      setWhatsapp2PairingError("Informe o número com código do país e DDD.");
-      return;
-    }
-
-    setIsRequestingWhatsapp2PairingCode(true);
-    setWhatsapp2PairingError(null);
-    try {
-      const result = await requestWhatsApp2PairingCode(normalizedPhone);
-      setWhatsapp2PairingPhone(result.phoneNumber);
-      setWhatsapp2PairingCode(result.code);
-      setWhatsapp2PairingExpiresAt(result.expiresAt);
-      setWhatsapp2GatewayStatus("pairing_code");
-    } catch (error) {
-      setWhatsapp2PairingError((error as Error).message || "Não foi possível gerar o código.");
-    } finally {
-      setIsRequestingWhatsapp2PairingCode(false);
-    }
-  }, [whatsapp2PairingPhone]);
 
   const conversationsRef = useRef<DirectConversation[]>([]);
   useEffect(() => {
@@ -6101,82 +6068,6 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </button>
           </div>
         </div>
-
-        {activeChannel === "whatsapp2" && whatsapp2GatewayStatus !== "ready" && (
-          <div className="whatsapp-ios mx-3 mb-2 rounded-[18px] border border-black/[0.07] bg-white/90 p-4 shadow-sm backdrop-blur-2xl dark:border-white/[0.07] dark:bg-[#1c1c1e]/92">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#25d366] text-white">
-                <WhatsAppIcon className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[14px] font-semibold text-[#111b21] dark:text-white">
-                  Conectar WhatsApp 2
-                </p>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-[#667781] dark:text-[#aebac1]">
-                  Informe o número com código do país e DDD. O WhatsApp vai gerar um código de 8 caracteres — sem QR.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-3 flex gap-2">
-              <input
-                type="tel"
-                inputMode="tel"
-                value={whatsapp2PairingPhone}
-                onChange={(event) => {
-                  setWhatsapp2PairingPhone(event.target.value);
-                  setWhatsapp2PairingError(null);
-                }}
-                placeholder="5537999999999"
-                className="h-10 min-w-0 flex-1 rounded-[12px] border border-black/[0.08] bg-[#f0f2f5] px-3 text-[13px] text-[#111b21] outline-none transition focus:border-[#00a884] dark:border-white/[0.08] dark:bg-[#202c33] dark:text-white"
-              />
-              <button
-                type="button"
-                onClick={() => void handleRequestWhatsapp2PairingCode()}
-                disabled={isRequestingWhatsapp2PairingCode}
-                className="h-10 shrink-0 rounded-[12px] bg-[#00a884] px-4 text-[12px] font-semibold text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                {isRequestingWhatsapp2PairingCode ? "Gerando..." : "Gerar código"}
-              </button>
-            </div>
-
-            {whatsapp2PairingError && (
-              <p className="mt-2 text-[11px] font-medium text-red-500">
-                {whatsapp2PairingError}
-              </p>
-            )}
-
-            {whatsapp2PairingCode && (
-              <div className="mt-3 rounded-[14px] bg-[#f0f2f5] p-3 text-center dark:bg-[#202c33]">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#667781] dark:text-[#8696a0]">
-                  Código de conexão
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void navigator.clipboard?.writeText(whatsapp2PairingCode)}
-                  className="mt-1 font-mono text-[28px] font-bold tracking-[0.18em] text-[#111b21] dark:text-white"
-                  title="Copiar código"
-                >
-                  {whatsapp2PairingCode.replace(/(.{4})(?=.)/g, "$1-")}
-                </button>
-                <p className="mt-2 text-[11px] leading-relaxed text-[#667781] dark:text-[#aebac1]">
-                  No celular: WhatsApp → Dispositivos conectados → Conectar dispositivo → Conectar com número de telefone.
-                </p>
-                {whatsapp2PairingExpiresAt && (
-                  <p className="mt-1 text-[10px] text-[#8696a0]">
-                    O código é renovado automaticamente a cada poucos minutos até a conexão.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {!whatsapp2PairingCode && whatsapp2GatewayStatus === "offline" && whatsapp2GatewayError && (
-              <p className="mt-2 text-[10px] text-[#8696a0]">
-                {whatsapp2GatewayError}
-              </p>
-            )}
-          </div>
-        )}
 
         {/* BANNER DE NOTIFICAÇÃO: PROPOSTAS DA IA AGUARDANDO APROVAÇÃO */}
         {(() => {

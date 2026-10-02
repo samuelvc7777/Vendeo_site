@@ -938,6 +938,55 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/status") {
       json(res, 200, { ok: true, ...snapshot() }); return;
     }
+    if (req.method === "POST" && url.pathname === "/disconnect") {
+      if (!client || state.status !== "ready") {
+        json(res, 200, { ok: true, disconnected: true, status: state.status });
+        return;
+      }
+
+      stopDeliveryWorker();
+      const current = client;
+      client = null;
+      initializing = null;
+      waJsReadyPromise = null;
+      setState({
+        status: "disconnecting",
+        readyAt: null,
+        me: null,
+        pairingCode: null,
+        pairingPhone: null,
+        pairingUpdatedAt: null,
+        pairingExpiresAt: null,
+        lastError: null,
+      });
+
+      try {
+        await current.logout();
+      } catch (error) {
+        console.warn("[whatsapp2] logout:", error?.message || error);
+        try { await current.destroy(); } catch {}
+      }
+
+      setState({
+        status: "disconnected",
+        qrDataUrl: null,
+        qrUpdatedAt: null,
+        readyAt: null,
+        me: null,
+        pairingCode: null,
+        pairingPhone: null,
+        pairingUpdatedAt: null,
+        pairingExpiresAt: null,
+        lastError: null,
+      });
+
+      void startClient().catch((error) => {
+        console.error("[whatsapp2] restart after disconnect:", error);
+      });
+
+      json(res, 200, { ok: true, disconnected: true, status: "disconnected" });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/pairing-code") {
       if (state.status === "ready") {
         json(res, 409, {

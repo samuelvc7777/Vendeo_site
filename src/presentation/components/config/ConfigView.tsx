@@ -28,6 +28,7 @@ import { ChatStagesManager } from "./ChatStagesManager";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { useTheme } from "@/presentation/context/ThemeContext";
+import { WhatsApp2ConnectionCard } from "./WhatsApp2ConnectionCard";
 
 function SectionHeading({
   title,
@@ -93,6 +94,7 @@ export function ConfigView() {
   const [isInstagramConnected, setIsInstagramConnected] = useState<boolean | null>(null);
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState<boolean | null>(null);
+  const [isWhatsApp2Connected, setIsWhatsApp2Connected] = useState<boolean | null>(null);
 
   const [groqKeyInput, setGroqKeyInput] = useState("");
   const [isGroqConfigured, setIsGroqConfigured] = useState(false);
@@ -176,7 +178,9 @@ export function ConfigView() {
   };
 
   const connectedChannels =
-    Number(Boolean(isInstagramConnected)) + Number(Boolean(isWhatsAppConnected));
+    Number(Boolean(isInstagramConnected)) +
+    Number(Boolean(isWhatsAppConnected)) +
+    Number(Boolean(isWhatsApp2Connected));
   const activeObjectives = stages.reduce(
     (total, stage) => total + (stage.goals || []).filter((goal) => goal.enabled !== false).length,
     0,
@@ -250,7 +254,7 @@ export function ConfigView() {
                     Canais
                   </div>
                   <p className="mt-1 text-lg font-black text-zinc-950 dark:text-white">
-                    {connectedChannels}<span className="text-xs text-zinc-400">/2</span>
+                    {connectedChannels}<span className="text-xs text-zinc-400">/3</span>
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/80 dark:border-white/10 bg-white/75 dark:bg-white/[0.04] p-3 shadow-sm backdrop-blur">
@@ -393,6 +397,8 @@ export function ConfigView() {
                   </div>
                 </div>
               </article>
+
+              <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
             </div>
           </section>
 
