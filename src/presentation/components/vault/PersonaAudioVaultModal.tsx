@@ -26,7 +26,7 @@ import { PersonaAudioAsset, ChatStage } from "@/domain/entities/ChatStage";
 import { usePersonaAudios } from "@/presentation/hooks/usePersonaAudios";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { getApiUrl } from "@/infrastructure/http/network";
-import { ensureInstagramCompatibleAudio } from "@/presentation/components/chat/audio-converter";
+import { convertToWhatsAppVoiceNote, ensureInstagramCompatibleAudio } from "@/presentation/components/chat/audio-converter";
 
 interface PersonaAudioVaultModalProps {
   isOpen: boolean;
@@ -72,6 +72,7 @@ export function PersonaAudioVaultModal({
   const [formTitle, setFormTitle] = useState("");
   const [formObjectiveId, setFormObjectiveId] = useState("");
   const [formAudioUrl, setFormAudioUrl] = useState("");
+  const [formWhatsAppAudioUrl, setFormWhatsAppAudioUrl] = useState("");
   const [formTranscript, setFormTranscript] = useState("");
   const [formUsageInstruction, setFormUsageInstruction] = useState("");
   const [formDuration, setFormDuration] = useState<number>(0);
@@ -164,6 +165,7 @@ export function PersonaAudioVaultModal({
     setFormTitle("");
     setFormObjectiveId("");
     setFormAudioUrl("");
+    setFormWhatsAppAudioUrl("");
     setFormTranscript("");
     setFormUsageInstruction("");
     setFormDuration(0);
@@ -177,6 +179,7 @@ export function PersonaAudioVaultModal({
     setFormTitle(audio.title);
     setFormObjectiveId(audio.objectiveId || "");
     setFormAudioUrl(audio.audioUrl);
+    setFormWhatsAppAudioUrl(audio.whatsappAudioUrl || "");
     setFormTranscript(audio.transcript || "");
     setFormUsageInstruction(audio.usageInstruction || "");
     setFormDuration(audio.duration || 0);
@@ -212,6 +215,7 @@ export function PersonaAudioVaultModal({
       // 2. Normaliza o áudio antes do upload. Arquivos podem chegar com extensão/MIME
       // incompatíveis com os bytes reais (ex.: ".mp3" contendo AAC/M4A), que a Meta rejeita.
       const compatibleFile = await ensureInstagramCompatibleAudio(file);
+      const whatsappVoiceFile = await convertToWhatsAppVoiceNote(file);
       const formData = new FormData();
       formData.append("file", compatibleFile, compatibleFile.name);
       formData.append("type", "audio");
@@ -230,12 +234,27 @@ export function PersonaAudioVaultModal({
         throw new Error(upData?.error || "Servidor não retornou URL pública do áudio");
       }
 
+      const whatsappFormData = new FormData();
+      whatsappFormData.append("file", whatsappVoiceFile, whatsappVoiceFile.name);
+      whatsappFormData.append("type", "audio");
+
+      const whatsappUpRes = await fetch(getApiUrl("/api/instagram/upload"), {
+        method: "POST",
+        body: whatsappFormData,
+      });
+      const whatsappUpData = await whatsappUpRes.json().catch(() => ({}));
+      if (!whatsappUpRes.ok || !whatsappUpData?.url) {
+        throw new Error(whatsappUpData?.error || "Falha ao hospedar variante OGG/Opus do WhatsApp");
+      }
+
       setFormAudioUrl(upData.url);
-      toast.success("Arquivo de áudio enviado e hospedado com sucesso!");
+      setFormWhatsAppAudioUrl(String(whatsappUpData.url));
+      toast.success("Áudio preparado para Instagram e WhatsApp!");
     } catch (err: any) {
       console.error("[PersonaAudioVaultModal] Erro no upload:", err);
       toast.error("Erro ao hospedar áudio no servidor: " + (err?.message || "Tente novamente"));
       setFormAudioUrl("");
+      setFormWhatsAppAudioUrl("");
     } finally {
       setIsUploading(false);
     }
@@ -243,8 +262,8 @@ export function PersonaAudioVaultModal({
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formTitle.trim() || !formAudioUrl.trim()) {
-      toast.error("Título e arquivo de áudio são obrigatórios.");
+    if (!formTitle.trim() || !formAudioUrl.trim() || !formWhatsAppAudioUrl.trim()) {
+      toast.error("Título e as variantes de áudio para Instagram/WhatsApp são obrigatórios.");
       return;
     }
     if (!formObjectiveId) {
@@ -252,7 +271,7 @@ export function PersonaAudioVaultModal({
       return;
     }
 
-    if (formAudioUrl.startsWith("blob:") || formAudioUrl.startsWith("data:")) {
+    if (formAudioUrl.startsWith("blob:") || formAudioUrl.startsWith("data:") || formWhatsAppAudioUrl.startsWith("blob:") || formWhatsAppAudioUrl.startsWith("data:")) {
       toast.error("O áudio ainda não foi hospedado no servidor. Por favor, selecione o arquivo novamente.");
       return;
     }
@@ -264,6 +283,7 @@ export function PersonaAudioVaultModal({
           title: formTitle.trim(),
           objectiveId: formObjectiveId || undefined,
           audioUrl: formAudioUrl.trim(),
+          whatsappAudioUrl: formWhatsAppAudioUrl.trim(),
           transcript: formTranscript.trim(),
           usageInstruction: formUsageInstruction.trim(),
           duration: formDuration || undefined,
@@ -274,6 +294,7 @@ export function PersonaAudioVaultModal({
           title: formTitle.trim(),
           objectiveId: formObjectiveId || undefined,
           audioUrl: formAudioUrl.trim(),
+          whatsappAudioUrl: formWhatsAppAudioUrl.trim(),
           transcript: formTranscript.trim(),
           usageInstruction: formUsageInstruction.trim(),
           duration: formDuration || undefined,

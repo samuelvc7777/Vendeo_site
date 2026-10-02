@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "node scripts/build-static-export.mjs",
+    "dev": "node scripts/copy-ffmpeg-assets.mjs && next dev",
+    "build": "node scripts/copy-ffmpeg-assets.mjs && node scripts/build-static-export.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "node --test tests/*.mjs",
@@ -13,6 +13,8 @@
     "prompt:check": "node scripts/build-larissa-canonical-prompt.mjs --check"
   },
   "dependencies": {
+    "@ffmpeg/core": "0.12.10",
+    "@ffmpeg/ffmpeg": "0.12.15",
     "@openai/agents": "^0.18.0",
     "@supabase/supabase-js": "^2.116.0",
     "clsx": "^2.1.1",

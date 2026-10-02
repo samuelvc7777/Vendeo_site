@@ -166,6 +166,70 @@ export async function convertAndAnalyzeAudio(file: File): Promise<ConvertedAudio
   };
 }
 
+let whatsappVoiceEncoderPromise: Promise<any> | null = null;
+
+async function getWhatsAppVoiceEncoder() {
+  if (typeof window === "undefined") {
+    throw new Error("Conversão de voz do WhatsApp só está disponível no navegador.");
+  }
+
+  if (!whatsappVoiceEncoderPromise) {
+    whatsappVoiceEncoderPromise = (async () => {
+      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load({
+        coreURL: "/ffmpeg/ffmpeg-core.js",
+        wasmURL: "/ffmpeg/ffmpeg-core.wasm",
+      });
+      return ffmpeg;
+    })().catch((error) => {
+      whatsappVoiceEncoderPromise = null;
+      throw error;
+    });
+  }
+
+  return whatsappVoiceEncoderPromise;
+}
+
+export async function convertToWhatsAppVoiceNote(file: File): Promise<File> {
+  const ffmpeg = await getWhatsAppVoiceEncoder();
+  const token = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const inputExt = file.name.split(".").pop()?.replace(/[^a-z0-9]/gi, "") || "bin";
+  const inputName = `input_${token}.${inputExt}`;
+  const outputName = `voice_${token}.ogg`;
+
+  try {
+    await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+    const exitCode = await ffmpeg.exec([
+      "-i", inputName,
+      "-vn",
+      "-ac", "1",
+      "-ar", "48000",
+      "-c:a", "libopus",
+      "-b:a", "32k",
+      "-application", "voip",
+      outputName,
+    ]);
+
+    if (exitCode !== 0) {
+      throw new Error(`FFmpeg encerrou com código ${exitCode}`);
+    }
+
+    const output = await ffmpeg.readFile(outputName);
+    if (typeof output === "string") {
+      throw new Error("FFmpeg retornou uma saída de áudio inválida.");
+    }
+
+    const bytes = new Uint8Array(output);
+    return new File([bytes.slice().buffer], outputName, {
+      type: "audio/ogg; codecs=opus",
+    });
+  } finally {
+    await ffmpeg.deleteFile(inputName).catch(() => undefined);
+    await ffmpeg.deleteFile(outputName).catch(() => undefined);
+  }
+}
+
 export async function ensureInstagramCompatibleAudio(file: File): Promise<File> {
   const result = await convertAndAnalyzeAudio(file);
   return result.file;

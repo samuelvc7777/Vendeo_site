@@ -62,6 +62,7 @@ export interface PersonaAudioAsset {
   objectiveId?: string;
   title: string;
   audioUrl: string;
+  whatsappAudioUrl?: string;
   duration?: number; // Duração em segundos
   transcript: string; // Conteúdo persistido para busca semântica
   usageInstruction: string; // Quando usar este áudio

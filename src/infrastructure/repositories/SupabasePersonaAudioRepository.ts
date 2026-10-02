@@ -43,6 +43,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
       objectiveId: row.objective_id || undefined,
       title: row.title,
       audioUrl: row.audio_url,
+      whatsappAudioUrl: row.whatsapp_audio_url || undefined,
       duration: row.duration != null ? Number(row.duration) : undefined,
       transcript: row.transcript || "",
       usageInstruction: row.usage_instruction || "",
@@ -156,6 +157,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
       objective_id: data.objectiveId || null,
       title: data.title.trim(),
       audio_url: data.audioUrl,
+      whatsapp_audio_url: data.whatsappAudioUrl || null,
       duration: data.duration != null ? Math.round(data.duration) : null,
       transcript: data.transcript || "",
       usage_instruction: data.usageInstruction || "",
@@ -192,6 +194,7 @@ export class SupabasePersonaAudioRepository implements IPersonaAudioRepository {
     if (updates.objectiveId !== undefined) updatePayload.objective_id = updates.objectiveId || null;
     if (updates.title !== undefined) updatePayload.title = updates.title.trim();
     if (updates.audioUrl !== undefined) updatePayload.audio_url = updates.audioUrl;
+    if (updates.whatsappAudioUrl !== undefined) updatePayload.whatsapp_audio_url = updates.whatsappAudioUrl || null;
     if (updates.duration !== undefined) updatePayload.duration = updates.duration != null ? Math.round(updates.duration) : null;
     if (updates.transcript !== undefined) updatePayload.transcript = updates.transcript;
     if (updates.usageInstruction !== undefined) updatePayload.usage_instruction = updates.usageInstruction;

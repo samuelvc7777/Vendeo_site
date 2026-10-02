@@ -965,10 +965,13 @@ serve(async (req: Request) => {
         let contentType = file.type || "audio/wav";
 
         if (mediaType === "audio") {
-          if (file.type?.includes("m4a") || file.name?.endsWith(".m4a")) {
+          if (file.type?.includes("ogg") || file.name?.toLowerCase().endsWith(".ogg")) {
+            ext = "ogg";
+            contentType = "audio/ogg; codecs=opus";
+          } else if (file.type?.includes("m4a") || file.name?.toLowerCase().endsWith(".m4a")) {
             ext = "m4a";
             contentType = "audio/m4a";
-          } else if (file.type?.includes("mp3") || file.name?.endsWith(".mp3")) {
+          } else if (file.type?.includes("mp3") || file.name?.toLowerCase().endsWith(".mp3")) {
             ext = "mp3";
             contentType = "audio/mpeg";
           } else {
