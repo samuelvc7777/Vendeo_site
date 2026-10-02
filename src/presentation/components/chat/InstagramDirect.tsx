@@ -70,6 +70,7 @@ import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
 import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
 import { InstagramReplyGesture } from "./InstagramReplyGesture";
+import { WhatsAppContactInfo } from "./WhatsAppContactInfo";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
 import {
@@ -835,6 +836,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const prefersReducedMotion = useReducedMotion();
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
   const [whatsappMessageMenu, setWhatsappMessageMenu] = useState<DirectMessage | null>(null);
+  const [isWhatsAppContactInfoOpen, setIsWhatsAppContactInfoOpen] = useState(false);
   const [brainConsoleRequest, setBrainConsoleRequest] = useState<{ conversationId: string; requestId: number } | null>(null);
   const brainConsoleRequestIdRef = useRef(0);
   const handleBrainConsoleOpenRequestHandled = useCallback((requestId: number) => {
@@ -890,6 +892,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     setMediaObservationText("");
     setIsSubmittingMediaObservation(false);
     setWhatsappMessageMenu(null);
+    setIsWhatsAppContactInfoOpen(false);
   }, [activeChat?.id]);
 
   // Estados do Funil de Etapas e Checklists (Check-ups)
@@ -1200,6 +1203,22 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   useEffect(() => {
     autoPilotRef.current = autoPilot;
   }, [autoPilot]);
+
+  const handleToggleActiveChatAi = useCallback(async () => {
+    if (!activeChat) return;
+    const globalEnabled = autoPilot.config?.isEnabledGlobally === false
+      ? false
+      : await autoPilot.isGlobalAutoPilotEnabled();
+    if (!globalEnabled) {
+      setIsGlobalAutoPilotDisabledModalOpen(true);
+      return;
+    }
+    if (autoPilot.chatStates[activeChat.id]?.isEnabled) {
+      await autoPilot.toggleAutoPilotForChat(activeChat.id, false);
+    } else {
+      setIsAutoPilotActivationModalOpen(true);
+    }
+  }, [activeChat, autoPilot]);
 
   const submitMediaObservation = useCallback(async (
     media: { kind: "video" | "image"; messageId: string },
@@ -3920,16 +3939,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {/* Clique no avatar ou nome para abrir o perfil completo */}
             <div
               onClick={() => {
-                if (activeChat.type !== "instagram") return;
+                if (activeChat.type === "whatsapp") {
+                  setIsWhatsAppContactInfoOpen(true);
+                  return;
+                }
                 setSelectedProfileForModal(activeChat);
                 setIsProfileModalOpen(true);
               }}
-              className={`flex items-center gap-3 group select-none transition-all ${
-                activeChat.type === "instagram"
-                  ? "cursor-pointer hover:opacity-90 active:scale-98"
-                  : "cursor-default"
-              }`}
-              title={activeChat.type === "instagram" ? "Toque para ver o perfil completo" : "Conversa do WhatsApp"}
+              className="flex items-center gap-3 group select-none transition-all cursor-pointer hover:opacity-90 active:scale-[0.98]"
+              title={activeChat.type === "instagram" ? "Toque para ver o perfil completo" : "Ver dados do contato"}
             >
               <AvatarWithFallback
                 src={activeChat.avatar}
@@ -4004,20 +4022,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
               <button
                 type="button"
-                onClick={async () => {
-                  const globalEnabled = autoPilot.config?.isEnabledGlobally === false
-                    ? false
-                    : await autoPilot.isGlobalAutoPilotEnabled();
-                  if (!globalEnabled) {
-                    setIsGlobalAutoPilotDisabledModalOpen(true);
-                    return;
-                  }
-                  if (autoPilot.chatStates[activeChat.id]?.isEnabled) {
-                    await autoPilot.toggleAutoPilotForChat(activeChat.id, false);
-                  } else {
-                    setIsAutoPilotActivationModalOpen(true);
-                  }
-                }}
+                onClick={() => void handleToggleActiveChatAi()}
                 className={`relative flex items-center justify-center gap-1.5 shrink-0 cursor-pointer transition-all active:scale-90 ${
                   activeChat.type === "whatsapp"
                     ? `wa-ios-glass h-9 w-9 rounded-full ${
@@ -5049,6 +5054,21 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             </div>
           </div>
         )}
+
+        <AnimatePresence initial={false}>
+          {isWhatsAppContactInfoOpen && activeChat.type === "whatsapp" && (
+            <WhatsAppContactInfo
+              conversation={activeChat}
+              messages={messages[activeChat.id] || []}
+              stages={stages}
+              chatDetail={chatDetail}
+              aiEnabled={Boolean(autoPilot.chatStates[activeChat.id]?.isEnabled)}
+              globalAiEnabled={autoPilot.config?.isEnabledGlobally !== false}
+              onClose={() => setIsWhatsAppContactInfoOpen(false)}
+              onToggleAi={handleToggleActiveChatAi}
+            />
+          )}
+        </AnimatePresence>
 
         {/* Modal de Perfil Completo */}
         <InstagramProfileModal
