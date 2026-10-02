@@ -35,6 +35,8 @@ import {
   processInstagramProfileQueue,
 } from "./instagram_profile_queue.ts";
 import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
+import { sendWhatsAppCloudMessage } from "./whatsapp_cloud.ts";
+import { handleWhatsAppWebhook } from "./whatsapp_webhook.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -68,6 +70,36 @@ function getSupabaseClient() {
   const url = Deno.env.get("SUPABASE_URL") || "";
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
   return createClient(url, key);
+}
+
+async function verifyMetaWebhookSignature(
+  rawBody: string,
+  signature: string | null,
+  appSecret: string,
+): Promise<boolean> {
+  if (!signature?.startsWith("sha256=") || !appSecret) return false;
+  const provided = signature.slice("sha256=".length).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(provided)) return false;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(appSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const bytes = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody)),
+  );
+  const expected = Array.from(bytes)
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+
+  let mismatch = expected.length ^ provided.length;
+  for (let index = 0; index < Math.min(expected.length, provided.length); index += 1) {
+    mismatch |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
+  }
+  return mismatch === 0;
 }
 
 function isInstagramSharedMediaAttachment(att: any): boolean {
@@ -356,6 +388,18 @@ serve(async (req: Request) => {
       return await handleOperatorChatProgress(req, supabase, brainOperatorAllowedOrigin(req), corsHeaders);
     }
 
+    if (path === "/whatsapp/config" && req.method === "GET") {
+      const hasAccessToken = Boolean((Deno.env.get("WHATSAPP_ACCESS_TOKEN") || "").trim());
+      const hasPhoneNumberId = Boolean((Deno.env.get("WHATSAPP_PHONE_NUMBER_ID") || "").trim());
+      return new Response(JSON.stringify({
+        isConnected: hasAccessToken && hasPhoneNumberId,
+        provider: "WhatsApp Cloud API",
+        apiVersion: (Deno.env.get("WHATSAPP_GRAPH_VERSION") || "v26.0").trim(),
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
     // ==========================================
     // 1. INSTAGRAM / META WEBHOOK (Handshake & Events)
     // ==========================================
@@ -381,9 +425,51 @@ serve(async (req: Request) => {
         return new Response("Forbidden", { status: 403, headers: corsHeaders });
       }
 
-      // POST: Recepção de mensagens do Instagram (incluindo echoes enviadas pelo app oficial)
+      // POST: Recepção dos webhooks oficiais da Meta.
       if (req.method === "POST") {
-        const body = await req.json().catch(() => ({}));
+        const rawBody = await req.text();
+        const body = (() => {
+          try {
+            return JSON.parse(rawBody);
+          } catch {
+            return {};
+          }
+        })();
+
+        if (body?.object === "whatsapp_business_account") {
+          const { data: webhookConfig } = await supabase
+            .from("instagram_config")
+            .select("app_secret")
+            .eq("id", "default")
+            .maybeSingle();
+          const appSecret = String(webhookConfig?.app_secret || "").trim();
+          const signature = req.headers.get("x-hub-signature-256");
+          if (appSecret && !(await verifyMetaWebhookSignature(rawBody, signature, appSecret))) {
+            console.warn("[WhatsApp Webhook] Assinatura Meta inválida.");
+            return new Response("Invalid signature", {
+              status: 401,
+              headers: corsHeaders,
+            });
+          }
+
+          try {
+            const result = await handleWhatsAppWebhook(supabase, body);
+            return new Response(JSON.stringify(result), {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          } catch (whatsappError: any) {
+            console.error("[WhatsApp Webhook] Falha no processamento:", whatsappError);
+            return new Response(JSON.stringify({
+              error: "whatsapp_webhook_processing_failed",
+              retryable: true,
+            }), {
+              status: 503,
+              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+            });
+          }
+        }
+
         const entries = body.entry || [];
 
         for (const entry of entries) {
@@ -2224,16 +2310,25 @@ serve(async (req: Request) => {
           textToSave = `[image:${mediaUrl}]${rawText ? ` ${rawText}` : ""}`;
         }
 
-        // 1. Busca configurações da conta Meta
+        const { data: conversationRow } = await supabase
+          .from("instagram_conversations")
+          .select("channel, contact_id, username, full_name")
+          .eq("id", conversationId)
+          .maybeSingle();
+        const conversationChannel = conversationRow?.channel === "whatsapp" ? "whatsapp" : "instagram";
+
+        // 1. Busca configurações da conta Meta para o canal Instagram.
         const { data: config } = await supabase
           .from("instagram_config")
           .select("access_token, instagram_account_id, username")
           .eq("id", "default")
           .maybeSingle();
 
-        // 2. Resolve o IGSID numérico do destinatário
-        let targetRecipientId = conversationId;
-        if (!/^\d+$/.test(conversationId)) {
+        // 2. Resolve o destinatário oficial do provedor.
+        let targetRecipientId = conversationChannel === "whatsapp"
+          ? (conversationRow?.contact_id || conversationId)
+          : conversationId;
+        if (conversationChannel === "instagram" && !/^\d+$/.test(conversationId)) {
           const { data: senderRows } = await supabase
             .from("instagram_messages")
             .select("sender_id")
@@ -2298,6 +2393,36 @@ serve(async (req: Request) => {
           return payload;
         };
 
+        const sendProviderMessage = async (): Promise<string> => {
+          if (conversationChannel === "whatsapp") {
+            const kind = audioUrl ? "audio" : mediaUrl ? "image" : "text";
+            const sent = await sendWhatsAppCloudMessage({
+              recipientId: targetRecipientId,
+              kind,
+              text: kind === "text" ? rawText : undefined,
+              mediaUrl: audioUrl || mediaUrl || undefined,
+              replyToMessageId,
+            });
+            return sent.messageId;
+          }
+
+          if (!config?.access_token) {
+            throw new Error("Instagram não configurado ou sem access_token ativo.");
+          }
+
+          const metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildMetaSendPayload()),
+          });
+          const metaData = await metaRes.json().catch(() => ({}));
+          if (!metaRes.ok) {
+            throw new Error(metaData?.error?.message || `Erro Meta API status ${metaRes.status}`);
+          }
+          if (!metaData?.message_id) throw new Error("Instagram não retornou message_id.");
+          return String(metaData.message_id);
+        };
+
         // Se delaySeconds > 0, executa o fluxo assíncrono desacoplado no servidor (sem travar o app)
         if (delaySeconds > 0) {
           const deliverAtMs = Date.now() + delaySeconds * 1000;
@@ -2309,6 +2434,7 @@ serve(async (req: Request) => {
           await supabase.from("instagram_messages").upsert({
             id: queuedMsgId,
             conversation_id: conversationId,
+            channel: conversationChannel,
             sender_id: "me",
             text: textToSave,
             timestamp: nowIso,
@@ -2376,27 +2502,11 @@ serve(async (req: Request) => {
               let metaMid: string | undefined;
               let metaError: string | undefined;
 
-              if (config?.access_token) {
-                try {
-                  const metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(buildMetaSendPayload()),
-                  });
-
-                  const metaData = await metaRes.json();
-                  if (!metaRes.ok) {
-                    console.error("[Queue] Erro da Meta:", metaData);
-                    metaError = metaData?.error?.message || `Erro Meta API status ${metaRes.status}`;
-                  } else {
-                    metaMid = metaData.message_id;
-                    console.log(`[Queue] Mensagem entregue na Meta com sucesso! ID: ${metaMid}`);
-                  }
-                } catch (netErr: any) {
-                  metaError = netErr?.message || "Falha de conexão com a Meta";
-                }
-              } else {
-                metaError = "Instagram não configurado";
+              try {
+                metaMid = await sendProviderMessage();
+                console.log(`[Queue] Mensagem entregue via ${conversationChannel} com sucesso! ID: ${metaMid}`);
+              } catch (netErr: any) {
+                metaError = netErr?.message || "Falha de conexão com a Meta";
               }
 
               const finalStatus = metaError ? "failed" : "sent";
@@ -2407,6 +2517,7 @@ serve(async (req: Request) => {
                 await supabase.from("instagram_messages").upsert({
                   id: metaMid,
                   conversation_id: conversationId,
+                  channel: conversationChannel,
                   sender_id: "me",
                   text: textToSave,
                   timestamp: new Date().toISOString(),
@@ -2483,34 +2594,17 @@ serve(async (req: Request) => {
         let metaMid: string | undefined;
         let metaError: string | undefined;
 
-        // 4. Envia para a Meta Graph API (suporte a Quote Reply oficial na raiz do payload)
-        if (config?.access_token) {
-          try {
-            console.log(`Enviando mensagem no Instagram para recipientId: ${targetRecipientId}...`, {
-              hasReplyTo: Boolean(replyToMessageId),
-              replyToMessageId,
-            });
-
-            const metaRes = await fetch(`${API_BASE}/me/messages?access_token=${config.access_token}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(buildMetaSendPayload()),
-            });
-
-            const metaData = await metaRes.json();
-            if (!metaRes.ok) {
-              console.error("Erro retornado pela Meta Graph API:", metaData);
-              metaError = metaData?.error?.message || `Erro Meta API status ${metaRes.status}`;
-            } else {
-              metaMid = metaData.message_id;
-              console.log(`Mensagem entregue na Meta com sucesso! message_id: ${metaMid}`);
-            }
-          } catch (netErr: any) {
-            console.error("Falha de rede ao disparar na Meta:", netErr);
-            metaError = netErr?.message || "Falha de conexão com a Meta";
-          }
-        } else {
-          metaError = "Instagram não configurado ou sem access_token ativo.";
+        // 4. Envia pelo provedor da conversa.
+        try {
+          console.log(`Enviando mensagem via ${conversationChannel} para recipientId: ${targetRecipientId}...`, {
+            hasReplyTo: Boolean(replyToMessageId),
+            replyToMessageId,
+          });
+          metaMid = await sendProviderMessage();
+          console.log(`Mensagem entregue via ${conversationChannel} com sucesso! message_id: ${metaMid}`);
+        } catch (netErr: any) {
+          console.error(`Falha ao disparar via ${conversationChannel}:`, netErr);
+          metaError = netErr?.message || "Falha de conexão com a Meta";
         }
 
         const finalMsgId = metaMid || `msg_local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2519,6 +2613,7 @@ serve(async (req: Request) => {
         await supabase.from("instagram_messages").upsert({
           id: finalMsgId,
           conversation_id: conversationId,
+          channel: conversationChannel,
           sender_id: "me",
           text: textToSave,
           timestamp: nowIso,
@@ -2547,13 +2642,19 @@ serve(async (req: Request) => {
         const myIgUsername = config?.username || "lariresende_0611";
 
         if (convUpdErr || convUpdCount === 0) {
-          let resolved = {
-            username: `ig_${conversationId.slice(-6)}`,
-            fullName: `ig_${conversationId.slice(-6)}`,
-            avatar: "/images/default-avatar.svg",
-          };
+          let resolved = conversationChannel === "whatsapp"
+            ? {
+                username: String(conversationRow?.username || targetRecipientId),
+                fullName: String(conversationRow?.full_name || targetRecipientId),
+                avatar: "/images/default-avatar.svg",
+              }
+            : {
+                username: `ig_${conversationId.slice(-6)}`,
+                fullName: `ig_${conversationId.slice(-6)}`,
+                avatar: "/images/default-avatar.svg",
+              };
 
-          if (config?.access_token) {
+          if (conversationChannel === "instagram" && config?.access_token) {
             resolved = await resolveInstagramContactProfile(
               supabase,
               config.access_token,
@@ -2565,6 +2666,8 @@ serve(async (req: Request) => {
 
           await supabase.from("instagram_conversations").insert({
             id: conversationId,
+            channel: conversationChannel,
+            contact_id: conversationChannel === "whatsapp" ? targetRecipientId : null,
             username: resolved.username,
             full_name: resolved.fullName,
             avatar: resolved.avatar,
@@ -2587,6 +2690,7 @@ serve(async (req: Request) => {
             .maybeSingle();
 
           if (
+            conversationChannel === "instagram" &&
             currentConv &&
             (currentConv.username?.startsWith("ig_") ||
               !currentConv.avatar ||

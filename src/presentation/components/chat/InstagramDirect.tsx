@@ -43,7 +43,10 @@ import {
   ConversationSkeletonList,
   ChatMessageSkeletonList,
 } from "@/presentation/components/ui/LoadingState";
-import { InstagramProfileModal } from "@/presentation/components/instagram/InstagramProfileModal";
+import {
+  InstagramProfileModal,
+  type InstagramProfileData,
+} from "@/presentation/components/instagram/InstagramProfileModal";
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { ChatFilterModal, SortOrder } from "./ChatFilterModal";
 import { resolveContactAvatar } from "@/domain/services/AvatarResolverService";
@@ -165,7 +168,7 @@ export interface DirectConversation {
   lastActive: string;
   lastMessage: string;
   unread: boolean;
-  type: "instagram";
+  type: "instagram" | "whatsapp";
   lastSender: "me" | "them";
   lastStatus?: string;
   seenAt?: string;
@@ -180,6 +183,23 @@ export interface DirectConversation {
   raffleStatus?: RaffleCommercialStatus;
   aiAutoRespond?: boolean;
   status?: "active" | "archived" | "blocked" | "restricted" | "pending" | "system" | "vault";
+}
+
+function toInstagramProfileData(
+  conversation: DirectConversation | null,
+): InstagramProfileData | null {
+  if (!conversation || conversation.type !== "instagram") return null;
+  return {
+    id: conversation.id,
+    fullName: conversation.fullName,
+    username: conversation.username,
+    avatar: conversation.avatar,
+    photos: conversation.photos,
+    bio: conversation.bio,
+    city: conversation.city,
+    lastActive: conversation.lastActive,
+    type: "instagram",
+  };
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
@@ -1427,7 +1447,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     );
 
     const supabase = getSupabaseBrowserClient();
-    if (supabase && conv.type === "instagram") {
+    if (supabase) {
       supabase
         .from("instagram_conversations")
         .update({ unread: nextUnread, updated_at: new Date().toISOString() })
@@ -1573,8 +1593,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
             return {
               id: c.id,
-              username: c.username || `ig_${c.id.slice(-6)}`,
-              fullName: c.full_name || c.username || "Usuário Instagram",
+              username: c.username || (c.channel === "whatsapp" ? c.contact_id || c.id : `ig_${c.id.slice(-6)}`),
+              fullName: c.full_name || c.username || (c.channel === "whatsapp" ? "Contato WhatsApp" : "Usuário Instagram"),
               avatar: c.avatar || "/images/default-avatar.svg",
               isOnline: false,
               lastActive: formatMessageTime(c.last_message_at),
@@ -1583,7 +1603,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               lastStatus: isValidSeen ? "seen" : (c.last_direction === "out" ? "sent" : undefined),
               seenAt: isValidSeen ? c.seen_at : undefined,
               unread: isRead ? false : Boolean(c.unread),
-              type: "instagram" as const,
+              type: c.channel === "whatsapp" ? ("whatsapp" as const) : ("instagram" as const),
               lastMessageAt: c.last_message_at,
               isRestricted,
               currentStageId: c.current_stage_id || c.currentStageId || null,
@@ -1629,7 +1649,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       // last_message_at porque chats ativos mudam de posição enquanto a carga roda.
       if (supabase) {
         const selectColumns =
-          "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, raffle_status, ai_auto_respond, created_at, updated_at";
+          "id, channel, contact_id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, current_stage_id, is_converted, raffle_status, ai_auto_respond, created_at, updated_at";
 
         const { data: recentRows, error: recentError } = await supabase
           .from("instagram_conversations")
@@ -1960,6 +1980,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   const handleRealtimeInstagramConversationUpdate = useCallback((conv: {
     id: string;
+    channel?: "instagram" | "whatsapp";
     lastMessage?: string;
     lastMessageAt?: string;
     lastDirection?: string;
@@ -2063,6 +2084,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
       const updated: DirectConversation = {
         ...target,
+        type: conv.channel || target.type,
         fullName: conv.fullName || target.fullName,
         username: conv.username || target.username,
         avatar: conv.avatar || target.avatar,
@@ -2130,6 +2152,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   // Handler de INSERT de nova conversa via Realtime — adiciona incrementalmente à lista sem full fetch
   const handleRealtimeInstagramConversationInsert = useCallback((conv: {
     id: string;
+    channel?: "instagram" | "whatsapp";
     lastMessage?: string;
     lastMessageAt?: string;
     lastDirection?: string;
@@ -2151,8 +2174,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const isSentByMe = conv.lastDirection === "out" || conv.lastDirection === "outbound";
       const newConv: DirectConversation = {
         id: conv.id,
-        username: conv.username || `ig_${conv.id.slice(-6)}`,
-        fullName: conv.fullName || "Usuário Instagram",
+        username: conv.username || (conv.channel === "whatsapp" ? conv.id.replace(/^wa:/, "") : `ig_${conv.id.slice(-6)}`),
+        fullName: conv.fullName || (conv.channel === "whatsapp" ? "Contato WhatsApp" : "Usuário Instagram"),
         avatar: conv.avatar || "/images/default-avatar.svg",
         isOnline: false,
         lastActive: conv.lastMessageAt ? formatMessageTime(conv.lastMessageAt) : "agora",
@@ -2785,10 +2808,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return;
     }
 
-    // Auto-check do item na barra de etapas se pertencer à etapa ativa (apenas Instagram)
-    if (activeChat.type === "instagram") {
-      void markItemCompletedByVaultItem(item.id);
-    }
+    // Auto-check do item na barra de etapas se pertencer à etapa ativa.
+    void markItemCompletedByVaultItem(item.id);
 
     const now = new Date();
     const nowIso = now.toISOString();
@@ -3044,9 +3065,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (!textToSend.trim() || !activeChat) return false;
 
     const messageText = textToSend.trim();
-    if (activeChat.type === "instagram") {
-      void markItemCompletedByExactText(messageText);
-    }
+    void markItemCompletedByExactText(messageText);
     const now = new Date();
     const nowIso = now.toISOString();
     const timeFormatted = formatMessageTime(now);
@@ -3907,7 +3926,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               </button>
             )}
 
-            {activeChat.type === "instagram" && (
+            {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
               <button
                 type="button"
                 onClick={async () => {
@@ -3956,8 +3975,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           </div>
         </div>
 
-        {/* Barra Superior Retrátil da Etapa & Checklist do Funil (Check-ups) - Exclusivo Instagram Direct */}
-        {activeChat.type === "instagram" && (
+        {/* Barra Superior Retrátil da Etapa & Checklist do Funil (Check-ups) */}
+        {(activeChat.type === "instagram" || activeChat.type === "whatsapp") && (
           <ChatStageBar
             detail={chatDetail}
             onToggleItem={toggleItem}
@@ -4788,7 +4807,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             setIsProfileModalOpen(false);
             setSelectedProfileForModal(null);
           }}
-          profile={selectedProfileForModal || activeChat}
+          profile={toInstagramProfileData(selectedProfileForModal || activeChat)}
         />
 
         {/* Modal de Foto Expandida (Lightbox) */}
@@ -5331,8 +5350,8 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         {conv.fullName}
                       </h4>
 
-                      {/* BADGES DO INSTAGRAM */}
-                      {conv.type === "instagram" && isChatRestricted(conv) && (
+                      {/* Badges operacionais da conversa */}
+                      {isChatRestricted(conv) && (
                         <span className="text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-bold px-1.5 py-0.5 rounded-full shrink-0 leading-none flex items-center gap-1">
                           <ShieldAlert className="w-2.5 h-2.5" />
                           Restrito
@@ -5374,7 +5393,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                       })()}
                     </div>
 
-                    {conv.type === "instagram" && (() => {
+                    {(conv.type === "instagram" || conv.type === "whatsapp") && (() => {
                       const currentStageId = conv.currentStageId || stages[0]?.id;
                       const currentStage = stages.find((stage) => stage.id === currentStageId);
                       const ai = brainInboxOverviewAvailable ? brainInboxOverview[conv.id] : null;
@@ -5502,7 +5521,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           setIsProfileModalOpen(false);
           setSelectedProfileForModal(null);
         }}
-        profile={selectedProfileForModal}
+        profile={toInstagramProfileData(selectedProfileForModal)}
       />
 
       {/* Modal de Conexão com o Instagram Oficial */}

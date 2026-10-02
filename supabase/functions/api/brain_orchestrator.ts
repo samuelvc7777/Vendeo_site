@@ -4,6 +4,7 @@
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import { sendWhatsAppCloudMessage } from "./whatsapp_cloud.ts";
 import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
 import {
   detectGreetingRepeat,
@@ -3769,7 +3770,44 @@ export async function dispatchOutboxEntry(
       return { success: true, providerMessageId: providerId };
     }
 
-    // Despacho oficial Meta Graph API
+    const conversationId = outboxEntry.conversationId || recipientId;
+    const { data: channelRow } = await supabase
+      .from("instagram_conversations")
+      .select("channel, contact_id")
+      .eq("id", conversationId)
+      .maybeSingle();
+
+    if (channelRow?.channel === "whatsapp") {
+      let mediaUrl: string | undefined;
+      let kind: "text" | "audio" | "image" = "text";
+      if (outboxEntry.messageType === "audio") {
+        kind = "audio";
+        mediaUrl = outboxEntry.mediaUrl || outboxEntry.content;
+        if (mediaUrl?.startsWith("[audio:") && mediaUrl.endsWith("]")) {
+          mediaUrl = mediaUrl.slice(7, -1).trim();
+        }
+      }
+
+      const replyToMessageId = outboxEntry.replyToMessageId
+        || (typeof outboxEntry.payload?.replyToMessageId === "string"
+          ? outboxEntry.payload.replyToMessageId
+          : null);
+      const sent = await sendWhatsAppCloudMessage({
+        recipientId: channelRow.contact_id || recipientId || conversationId,
+        kind,
+        text: kind === "text" ? outboxEntry.content : undefined,
+        mediaUrl,
+        replyToMessageId,
+      });
+
+      outboxEntry.status = "sent";
+      outboxEntry.sentAt = new Date().toISOString();
+      outboxEntry.providerMessageId = sent.messageId;
+      outboxEntry.isUncertain = false;
+      return { success: true, providerMessageId: sent.messageId };
+    }
+
+    // Despacho oficial Meta Graph API (Instagram)
     const { data: configRow } = await supabase
       .from("instagram_config")
       .select("access_token")

@@ -33,6 +33,7 @@ export interface RealtimeMessagePayload {
 
 export interface RealtimeConversationUpdatePayload {
   id: string;
+  channel?: "instagram" | "whatsapp";
   lastMessage?: string;
   lastMessageAt?: string;
   lastDirection?: "in" | "out" | "inbound" | "outbound";
@@ -281,6 +282,7 @@ export function useChatRealtime({
 
           callbacksRef.current.onInstagramConversationUpdate?.({
             id: String(row.id),
+            channel: row.channel === "whatsapp" ? "whatsapp" : "instagram",
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,
             lastDirection: row.last_direction || undefined,
@@ -316,6 +318,7 @@ export function useChatRealtime({
 
           callbacksRef.current.onInstagramConversationInsert?.({
             id: String(row.id),
+            channel: row.channel === "whatsapp" ? "whatsapp" : "instagram",
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,
             lastDirection: row.last_direction || undefined,

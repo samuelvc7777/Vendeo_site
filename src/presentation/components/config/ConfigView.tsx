@@ -17,6 +17,7 @@ import {
   Bot,
   Workflow,
   Link2,
+  MessageCircle,
   Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -91,6 +92,7 @@ export function ConfigView() {
   const [instagramAccount, setInstagramAccount] = useState<InstagramAccount | null>(null);
   const [isInstagramConnected, setIsInstagramConnected] = useState<boolean | null>(null);
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
+  const [isWhatsAppConnected, setIsWhatsAppConnected] = useState<boolean | null>(null);
 
   const [groqKeyInput, setGroqKeyInput] = useState("");
   const [isGroqConfigured, setIsGroqConfigured] = useState(false);
@@ -101,6 +103,7 @@ export function ConfigView() {
 
   useEffect(() => {
     void checkInstagramStatus();
+    void checkWhatsAppStatus();
     void checkGroqStatus();
   }, []);
 
@@ -159,7 +162,21 @@ export function ConfigView() {
     }
   };
 
-  const connectedChannels = Number(Boolean(isInstagramConnected));
+  const checkWhatsAppStatus = async () => {
+    try {
+      const res = await fetch(getApiUrl("/api/whatsapp/config"), { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data?.isConnected === "boolean") {
+        setIsWhatsAppConnected(data.isConnected);
+      }
+    } catch {
+      // Mantém o último estado conhecido em oscilações de rede.
+    }
+  };
+
+  const connectedChannels =
+    Number(Boolean(isInstagramConnected)) + Number(Boolean(isWhatsAppConnected));
   const activeObjectives = stages.reduce(
     (total, stage) => total + (stage.goals || []).filter((goal) => goal.enabled !== false).length,
     0,
@@ -233,7 +250,7 @@ export function ConfigView() {
                     Canais
                   </div>
                   <p className="mt-1 text-lg font-black text-zinc-950 dark:text-white">
-                    {connectedChannels}<span className="text-xs text-zinc-400">/1</span>
+                    {connectedChannels}<span className="text-xs text-zinc-400">/2</span>
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/80 dark:border-white/10 bg-white/75 dark:bg-white/[0.04] p-3 shadow-sm backdrop-blur">
@@ -334,6 +351,46 @@ export function ConfigView() {
                       </button>
                     </div>
                   )}
+                </div>
+              </article>
+
+              <article className="min-w-0 rounded-2xl border border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#111113] p-4 shadow-sm sm:p-5">
+                <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500">
+                      <MessageCircle className="h-5 w-5 text-white" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">
+                        WhatsApp Cloud API
+                      </h3>
+                      <p className="mt-0.5 text-[11px] text-zinc-500">
+                        Mesmo Brain, objetivos e automação em um canal oficial da Meta
+                      </p>
+                    </div>
+                  </div>
+                  {isWhatsAppConnected === null ? (
+                    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 dark:border-zinc-800 bg-zinc-100 dark:bg-zinc-900 px-2.5 py-1 text-[10px] text-zinc-600 dark:text-zinc-400">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Verificando
+                    </span>
+                  ) : (
+                    <StatusPill
+                      active={isWhatsAppConnected}
+                      activeLabel="Conectado"
+                      inactiveLabel="Credenciais pendentes"
+                    />
+                  )}
+                </div>
+
+                <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800/80 pt-4">
+                  <div className="rounded-2xl border border-emerald-200/80 dark:border-emerald-500/15 bg-emerald-50/70 dark:bg-emerald-500/[0.06] p-3">
+                    <p className="text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300">
+                      {isWhatsAppConnected
+                        ? "Cloud API pronta no servidor. Mensagens do WhatsApp entram na mesma caixa e usam o mesmo Brain."
+                        : "A Meta já pode estar configurada; faltam as credenciais seguras da Cloud API no servidor para ativar o canal."}
+                    </p>
+                  </div>
                 </div>
               </article>
             </div>
