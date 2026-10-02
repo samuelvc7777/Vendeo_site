@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const QRCode = require("qrcode");
+const WA_JS_BUNDLE = require.resolve("@wppconnect/wa-js");
 
 const ROOT = __dirname;
 const SESSION_DIR = path.join(ROOT, ".session");
@@ -28,8 +29,10 @@ const API_TOKEN = String(process.env.WHATSAPP2_GATEWAY_TOKEN || "");
 const WEBHOOK_URL = String(process.env.VENDEO_WHATSAPP2_WEBHOOK_URL || "");
 const WEBHOOK_TOKEN = String(process.env.VENDEO_WHATSAPP2_WEBHOOK_TOKEN || "");
 const DEFAULT_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const CHROME_PATH = process.env.WHATSAPP2_CHROME_PATH || (fs.existsSync(DEFAULT_CHROME) ? DEFAULT_CHROME : undefined);let client = null;
+const CHROME_PATH = process.env.WHATSAPP2_CHROME_PATH || (fs.existsSync(DEFAULT_CHROME) ? DEFAULT_CHROME : undefined);
+let client = null;
 let initializing = null;
+let waJsReadyPromise = null;
 let shuttingDown = false;
 const sseClients = new Set();
 
@@ -146,10 +149,32 @@ async function readJson(req, maxBytes = 25 * 1024 * 1024) {
   return client;
 }
 
+async function ensureWaJsReady() {
+  if (waJsReadyPromise) return waJsReadyPromise;
+  const active = client;
+  if (!active?.pupPage) throw new Error("Página do WhatsApp Web indisponível");
+
+  waJsReadyPromise = (async () => {
+    const page = active.pupPage;
+    const alreadyReady = await page.evaluate(() => Boolean(globalThis.WPP && globalThis.WPP.isReady));
+    if (!alreadyReady) {
+      await page.addScriptTag({ path: WA_JS_BUNDLE });
+      await page.waitForFunction(() => Boolean(globalThis.WPP && globalThis.WPP.isReady), { timeout: 30000 });
+    }
+    return true;
+  })().catch((error) => {
+    waJsReadyPromise = null;
+    throw error;
+  });
+
+  return waJsReadyPromise;
+}
+
 async function destroyClient() {
   const current = client;
   client = null;
   initializing = null;
+  waJsReadyPromise = null;
   if (!current) return;
   try { await current.destroy(); }
   catch (error) { console.warn("[whatsapp2] destroy:", error?.message || error); }
@@ -161,6 +186,7 @@ async function startClient() {
 
   initializing = (async () => {
     const next = new Client({
+      bypassCSP: true,
       authStrategy: new LocalAuth({ clientId: "vendeo-whatsapp2", dataPath: SESSION_DIR }),
       puppeteer: {
         headless: true,
@@ -188,6 +214,9 @@ async function startClient() {
       setState({ status: "ready", readyAt: new Date().toISOString(), qrDataUrl: null, me });
       await emitEvent("ready", { me });
       console.log("[whatsapp2] pronto", me || "");
+      void ensureWaJsReady()
+        .then(() => console.log("[whatsapp2] WA-JS pronto para mídia"))
+        .catch((error) => console.warn("[whatsapp2] WA-JS não carregou:", error?.message || error));
     });
     next.on("auth_failure", async (message) => {
       setState({ status: "auth_failure", lastError: String(message || "") });
@@ -338,18 +367,97 @@ const server = http.createServer(async (req, res) => {
       let media;
       if (body.mediaUrl) {
         media = await MessageMedia.fromUrl(String(body.mediaUrl), {
-          unsafeMime: true, filename: body.filename ? String(body.filename) : undefined,
+          unsafeMime: true,
+          filename: body.filename ? String(body.filename) : undefined,
         });
       } else if (body.mediaBase64 && body.mimetype) {
-        media = new MessageMedia(String(body.mimetype), String(body.mediaBase64),
-          body.filename ? String(body.filename) : undefined);
-      } else throw new Error("Informe mediaUrl ou mediaBase64 + mimetype");      const sent = await ensureReady().sendMessage(normalizeChatId(body.to), media, {
-        ...(body.caption ? { caption: String(body.caption) } : {}),
-        ...(body.asVoice ? { sendAudioAsVoice: true } : {}),
-        ...(body.asSticker ? { sendMediaAsSticker: true } : {}),
-        ...(body.replyToMessageId ? { quotedMessageId: String(body.replyToMessageId) } : {}),
+        media = new MessageMedia(
+          String(body.mimetype),
+          String(body.mediaBase64),
+          body.filename ? String(body.filename) : undefined,
+        );
+      } else {
+        throw new Error("Informe mediaUrl ou mediaBase64 + mimetype");
+      }
+
+      const active = ensureReady();
+      await ensureWaJsReady();
+
+      const chatId = normalizeChatId(body.to);
+      const cleanMime = String(media.mimetype || "application/octet-stream").split(";")[0].trim();
+      const type = body.asVoice
+        ? "audio"
+        : body.asSticker
+        ? "sticker"
+        : cleanMime.startsWith("image/")
+        ? "image"
+        : cleanMime.startsWith("video/")
+        ? "video"
+        : cleanMime.startsWith("audio/")
+        ? "audio"
+        : "document";
+      const dataUrl = `data:${cleanMime};base64,${media.data}`;
+      const filename = body.filename
+        ? String(body.filename)
+        : body.asVoice
+        ? "voice.ogg"
+        : media.filename || "file";
+
+      const result = await active.pupPage.evaluate(
+        async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
+          let targetId = chatId;
+          if (String(chatId).endsWith("@lid")) {
+            try {
+              const mapping = await globalThis.WPP.contact.getPnLidEntry(chatId);
+              targetId = mapping?.phoneNumber?._serialized || chatId;
+            } catch {
+              targetId = chatId;
+            }
+          }
+
+          const options = {
+            type,
+            mimetype: cleanMime,
+            filename,
+            ...(caption ? { caption } : {}),
+            ...(asVoice ? { isPtt: true, waveform: true } : {}),
+            ...(quotedMsg ? { quotedMsg } : {}),
+          };
+          const sent = await globalThis.WPP.chat.sendFileMessage(targetId, dataUrl, options);
+          return sent ? JSON.parse(JSON.stringify(sent)) : null;
+        },
+        {
+          chatId,
+          dataUrl,
+          type,
+          cleanMime,
+          filename,
+          caption: body.caption ? String(body.caption) : "",
+          asVoice: Boolean(body.asVoice),
+          quotedMsg: body.replyToMessageId ? String(body.replyToMessageId) : "",
+        },
+      );
+
+      const messageId = typeof result?.id === "string"
+        ? result.id
+        : result?.id?.toString?.() || result?.messageId || null;
+
+      json(res, 200, {
+        ok: true,
+        message: {
+          id: messageId,
+          fromMe: true,
+          to: chatId,
+          body: body.caption ? String(body.caption) : "",
+          type: body.asVoice ? "ptt" : type,
+          timestamp: Math.floor(Date.now() / 1000),
+          hasMedia: true,
+          hasQuotedMsg: Boolean(body.replyToMessageId),
+          ack: result?.ack ?? null,
+        },
+        provider: "wa-js",
       });
-      json(res, 200, { ok: true, message: serializeMessage(sent) }); return;
+      return;
     }
     if (req.method === "POST" && url.pathname === "/messages/delete") {
       const body = await readJson(req);

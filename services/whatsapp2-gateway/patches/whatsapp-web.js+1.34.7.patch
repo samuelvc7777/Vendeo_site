@@ -1,8 +1,19 @@
 diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-index 540078a..ca9d01b 100644
+index 540078a..6b2777e 100644
 --- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 +++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-@@ -582,7 +582,7 @@ exports.LoadUtils = () => {
+@@ -483,6 +483,10 @@ exports.LoadUtils = () => {
+             ...extraOptions,
+         };
+
++        // MediaData is a model whose private ID collides with the outgoing Msg ID.
++        // WhatsApp Web 2.3000.x exposes this field as enumerable.
++        delete message.__x_id;
++
+         // Bot's won't reply if canonicalUrl is set (linking)
+         if (botOptions) {
+             delete message.canonicalUrl;
+@@ -582,7 +586,7 @@ exports.LoadUtils = () => {
 
          return window
              .require('WAWebCollections')
@@ -11,7 +22,7 @@ index 540078a..ca9d01b 100644
      };
 
      window.WWebJS.editMessage = async (msg, content, options = {}) => {
-@@ -625,7 +625,7 @@ exports.LoadUtils = () => {
+@@ -625,7 +629,7 @@ exports.LoadUtils = () => {
          await window
              .require('WAWebSendMessageEditAction')
              .sendMessageEdit(msg, content, internalOptions);
@@ -20,7 +31,7 @@ index 540078a..ca9d01b 100644
      };
 
      window.WWebJS.toStickerData = async (mediaInfo) => {
-@@ -830,7 +830,7 @@ exports.LoadUtils = () => {
+@@ -830,7 +834,7 @@ exports.LoadUtils = () => {
 
          if (typeof msg.id.remote === 'object') {
              msg.id = Object.assign({}, msg.id, {
@@ -29,7 +40,7 @@ index 540078a..ca9d01b 100644
              });
          }
 
-@@ -919,10 +919,16 @@ exports.LoadUtils = () => {
+@@ -919,10 +923,16 @@ exports.LoadUtils = () => {
 
      window.WWebJS.getChats = async () => {
          const chats = window.require('WAWebCollections').Chat.getModelsArray();
@@ -50,7 +61,7 @@ index 540078a..ca9d01b 100644
      };
 
      window.WWebJS.getChannels = async () => {
-@@ -953,7 +959,7 @@ exports.LoadUtils = () => {
+@@ -953,7 +963,7 @@ exports.LoadUtils = () => {
              model.isGroup = true;
              const chatWid = window
                  .require('WAWebWidFactory')
@@ -59,7 +70,7 @@ index 540078a..ca9d01b 100644
              const groupMetadata =
                  window.require('WAWebCollections').GroupMetadata ||
                  window.require('WAWebCollections').WAWebGroupMetadataCollection;
-@@ -984,12 +990,12 @@ exports.LoadUtils = () => {
+@@ -984,12 +994,12 @@ exports.LoadUtils = () => {
              const lastMessage = chat.lastReceivedKey
                  ? window
                        .require('WAWebCollections')
