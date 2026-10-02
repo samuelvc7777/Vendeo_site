@@ -79,7 +79,7 @@ export async function disconnectWhatsApp2() {
 
 export async function getWhatsApp2Chats(limit = 160) {
   const data = await request<{ ok: true; chats: WhatsApp2GatewayChat[] }>(
-    `/chats?limit=${Math.max(1, Math.min(limit, 300))}`,
+    `/chats?limit=${Math.max(1, Math.min(limit, 500))}`,
   );
   return data.chats || [];
 }export function getWhatsApp2MediaUrl(messageId: string) {

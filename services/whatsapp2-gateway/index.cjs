@@ -178,6 +178,23 @@ function getCachedProfilePic(chatId) {
   return cached.url || null;
 }
 
+async function persistProfilePic(chatId, url) {
+  if (!supabase || !chatId || !url) return;
+  try {
+    await supabase
+      .from("instagram_conversations")
+      .update({
+        avatar: url,
+        avatar_url: url,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", whatsapp2ConversationId(chatId))
+      .eq("channel", "whatsapp2");
+  } catch (error) {
+    console.warn("[whatsapp2] não foi possível persistir avatar:", error?.message || error);
+  }
+}
+
 async function resolveProfilePic(chatId) {
   const cached = profilePicCache.get(chatId);
   if (cached && Date.now() - cached.updatedAt <= PROFILE_PIC_TTL_MS) {
@@ -190,6 +207,7 @@ async function resolveProfilePic(chatId) {
       const active = ensureReady();
       const url = await active.getProfilePicUrl(chatId);
       profilePicCache.set(chatId, { url: url || null, updatedAt: Date.now() });
+      if (url) void persistProfilePic(chatId, url);
       return url || null;
     } catch (error) {
       console.warn("[whatsapp2] foto de perfil indisponível para", chatId, error?.message || error);
@@ -541,22 +559,33 @@ async function syncChatSnapshots() {
   }
 
   const now = new Date().toISOString();
+  const oneWeekAgoSeconds = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
+  const recentChats = chats
+    .filter((chat) => {
+      if (!chat || chat.isGroup) return false;
+      const timestamp = Number(chat.lastMessage?.timestamp || chat.timestamp || 0);
+      return timestamp >= oneWeekAgoSeconds;
+    })
+    .sort(
+      (a, b) =>
+        Number(b.lastMessage?.timestamp || b.timestamp || 0) -
+        Number(a.lastMessage?.timestamp || a.timestamp || 0),
+    )
+    .slice(0, 500);
+
   const rows = [];
-  for (const chat of chats.slice(0, 300)) {
-    if (!chat || chat.isGroup) continue;
+  for (const chat of recentChats) {
     const chatId = chat.id?._serialized || chat.id?.$1 || null;
     if (!chatId) continue;
     const avatar = getCachedProfilePic(chatId);
     const last = serializeMessage(chat.lastMessage);
-    const lastAt = last?.timestamp
-      ? new Date(Number(last.timestamp) * 1000).toISOString()
-      : now;
+    const rawLastTimestamp = Number(last?.timestamp || chat.timestamp || 0);
+    const lastAt = new Date(rawLastTimestamp * 1000).toISOString();
     rows.push({
       id: whatsapp2ConversationId(chatId),
       username: chatId,
       full_name: String(chat.name || chatId),
-      avatar: avatar || "/images/default-avatar.svg",
-      avatar_url: avatar,
+      ...(avatar ? { avatar, avatar_url: avatar } : {}),
       contact_id: chatId,
       channel: "whatsapp2",
       last_message: formatWhatsApp2PreviewForGateway(last),
@@ -1051,12 +1080,17 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/chats") {
       const active = ensureReady();
-      const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 120), 300));
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 120), 500));
       const includeGroups = url.searchParams.get("includeGroups") === "true";
       const chats = await active.getChats();
+      const oneWeekAgoSeconds = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
       const rows = chats
-        .filter((chat) => includeGroups || !chat.isGroup)
-        .sort((a, b) => Number(b.timestamp || b.lastMessage?.timestamp || 0) - Number(a.timestamp || a.lastMessage?.timestamp || 0))
+        .filter((chat) => {
+          if (!includeGroups && chat.isGroup) return false;
+          const timestamp = Number(chat.lastMessage?.timestamp || chat.timestamp || 0);
+          return timestamp >= oneWeekAgoSeconds;
+        })
+        .sort((a, b) => Number(b.lastMessage?.timestamp || b.timestamp || 0) - Number(a.lastMessage?.timestamp || a.timestamp || 0))
         .slice(0, limit)
         .map((chat) => {
           const id = chat.id?._serialized || null;
@@ -1066,13 +1100,13 @@ const server = http.createServer(async (req, res) => {
             avatarUrl: id ? getCachedProfilePic(id) : null,
             isGroup: Boolean(chat.isGroup),
             unreadCount: Number(chat.unreadCount || 0),
-            timestamp: Number(chat.timestamp || chat.lastMessage?.timestamp || 0),
+            timestamp: Number(chat.lastMessage?.timestamp || chat.timestamp || 0),
             archived: Boolean(chat.archived),
             pinned: Boolean(chat.pinned),
             lastMessage: serializeMessage(chat.lastMessage),
           };
         });
-      warmProfilePics(rows.slice(0, 80).map((chat) => chat.id).filter(Boolean));
+      warmProfilePics(rows.map((chat) => chat.id).filter(Boolean));
       json(res, 200, { ok: true, chats: rows }); return;
     }
     if (req.method === "GET" && url.pathname === "/chat/profile") {

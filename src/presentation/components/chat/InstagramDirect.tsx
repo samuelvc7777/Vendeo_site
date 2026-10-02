@@ -262,7 +262,7 @@ function formatWhatsApp2Preview(message: WhatsApp2GatewayMessage | null): string
 }
 
 function mapWhatsApp2Chat(chat: WhatsApp2GatewayChat): DirectConversation {
-  const timestampMs = Number(chat.timestamp || chat.lastMessage?.timestamp || 0) * 1000;
+  const timestampMs = Number(chat.lastMessage?.timestamp || chat.timestamp || 0) * 1000;
   const name = String(chat.name || chat.id || "Contato");
   const preview = formatWhatsApp2Preview(chat.lastMessage);
   return {
@@ -272,12 +272,17 @@ function mapWhatsApp2Chat(chat: WhatsApp2GatewayChat): DirectConversation {
     fullName: name,
     avatar: chat.avatarUrl || "/images/default-avatar.svg",
     isOnline: false,
-    lastActive: formatMessageTime(timestampMs || Date.now()),
+    lastActive: timestampMs ? formatMessageTime(timestampMs) : "",
     lastMessage: chat.lastMessage?.fromMe && preview ? `Você: ${preview}` : preview,
     unread: Number(chat.unreadCount || 0) > 0,
     type: "whatsapp2",
     lastSender: chat.lastMessage?.fromMe ? "me" : "them",
-    lastStatus: chat.lastMessage?.ack != null && chat.lastMessage.ack >= 4 ? "seen" : "sent",
+    lastStatus:
+      chat.lastMessage?.ack != null && chat.lastMessage.ack >= 3
+        ? "seen"
+        : chat.lastMessage?.ack != null && chat.lastMessage.ack >= 2
+        ? "delivered"
+        : "sent",
     lastMessageAt: timestampMs ? new Date(timestampMs).toISOString() : undefined,
     aiAutoRespond: false,
     status: "active",
@@ -973,6 +978,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     setWhatsapp2GatewayStatus("loading");
 
     const supabase = getSupabaseBrowserClient();
+    const oneWeekAgoIso = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
     let gatewayRows: DirectConversation[] = [];
     let gatewayError: Error | null = null;
 
@@ -982,7 +988,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       setWhatsapp2GatewayError(null);
 
       if (gatewayStatus.status === "ready") {
-        const rows = await getWhatsApp2Chats(300);
+        const rows = await getWhatsApp2Chats(500);
         gatewayRows = rows.map(mapWhatsApp2Chat);
       }
     } catch (error) {
@@ -1001,6 +1007,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         .eq("channel", "whatsapp2")
         .neq("status", "vault")
         .neq("status", "system")
+        .gte("last_message_at", oneWeekAgoIso)
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(500);
 
@@ -1017,10 +1024,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const gatewayById = new Map<string, DirectConversation>(
       gatewayRows.map((row) => [row.id, row])
     );
-    const allIds = new Set<string>([
-      ...canonicalRows.map((row: any) => String(row.id)),
-      ...gatewayRows.map((row) => row.id),
-    ]);
+    const allIds = new Set<string>(
+      gatewayRows.map((row) => row.id)
+    );
 
     const merged = Array.from(allIds).map((id) => {
       const canonical = canonicalById.get(id);
@@ -1029,14 +1035,26 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const lastStatus = canonical?.last_status
         ? String(canonical.last_status)
         : gateway?.lastStatus;
+      const gatewayAvatar =
+        gateway?.avatar && /^https?:\/\//i.test(String(gateway.avatar))
+          ? gateway.avatar
+          : null;
+      const canonicalAvatarUrl =
+        canonical?.avatar_url &&
+        /^https?:\/\//i.test(String(canonical.avatar_url)) &&
+        !String(canonical.avatar_url).includes("default-avatar.svg")
+          ? canonical.avatar_url
+          : null;
       const canonicalAvatar =
-        canonical?.avatar && !String(canonical.avatar).includes("default-avatar.svg")
+        canonical?.avatar &&
+        /^https?:\/\//i.test(String(canonical.avatar)) &&
+        !String(canonical.avatar).includes("default-avatar.svg")
           ? canonical.avatar
           : null;
       const avatar =
-        canonical?.avatar_url ||
+        gatewayAvatar ||
+        canonicalAvatarUrl ||
         canonicalAvatar ||
-        gateway?.avatar ||
         "/images/default-avatar.svg";
       const contactId =
         canonical?.contact_id ||
@@ -1053,16 +1071,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         gateway?.username ||
         contactId;
       const lastMessageAt =
-        canonical?.last_message_at ||
         gateway?.lastMessageAt ||
+        canonical?.last_message_at ||
         null;
       const rawLastMessage =
-        canonical?.last_message ??
         gateway?.lastMessage ??
+        canonical?.last_message ??
         "";
-      const isOutbound = lastDirection
-        ? lastDirection === "out"
-        : gateway?.lastSender === "me";
+      const isOutbound = gateway
+        ? gateway.lastSender === "me"
+        : lastDirection === "out";
 
       const conversation: DirectConversation = {
         ...(gateway || {
