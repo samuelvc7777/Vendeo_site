@@ -46,6 +46,7 @@ import {
 import type { BrainDecisionAction, BrainOperationalEvent, DeliveryProjection } from "./brain-turn-view-model";
 
 export type Variant = "banner" | "inbox" | "bubble" | "floating" | "console-only";
+type BrainConsoleTheme = "default" | "whatsapp-ios";
 
 type MediaObservationRequest = {
   kind: "video" | "image";
@@ -632,6 +633,7 @@ function BrainTurnTimeline({
   manualResolution,
   onManualResolution,
   onManualResolutionChange,
+  theme = "default",
 }: {
   turn: ReturnType<typeof groupBrainTurns>[number];
   turnNumber: number;
@@ -644,7 +646,9 @@ function BrainTurnTimeline({
   manualResolution: { answer: string; question: string; submitting: boolean };
   onManualResolution: (saveForFuture: boolean) => void;
   onManualResolutionChange: (value: string) => void;
+  theme?: BrainConsoleTheme;
 }) {
+  const whatsappTheme = theme === "whatsapp-ios";
   const decision = [...turn.events].reverse().find((event) => event.event === "brain_decision");
   const decisionMetadata = decision?.metadata || {};
   const decisionSummary = eventMetadataText(decisionMetadata, "reasoningSummary");
@@ -666,7 +670,19 @@ function BrainTurnTimeline({
   const model = formatConsoleModel(eventMetadataText(modelEvent?.metadata || {}, "executedModel") || eventMetadataText(modelEvent?.metadata || {}, "model"));
   const delivery = turn.delivery;
   const deliveryActions = turn.deliveryActions || [];
-  const statusTone = turn.status === "stale"
+  const statusTone = whatsappTheme
+    ? turn.status === "stale"
+      ? "border-white/[0.08] bg-white/[0.04] text-[#8696a0]"
+      : turn.status === "running"
+      ? "border-[#25d366]/25 bg-[#25d366]/10 text-[#25d366]"
+      : turn.status === "waiting_human"
+      ? "border-[#ffb020]/25 bg-[#ffb020]/10 text-[#ffb020]"
+      : turn.status === "completed"
+      ? "border-[#00a884]/30 bg-[#00a884]/10 text-[#25d366]"
+      : turn.status === "cancelled"
+      ? "border-white/[0.08] bg-white/[0.04] text-[#8696a0]"
+      : "border-[#ff453a]/25 bg-[#ff453a]/10 text-[#ff6b64]"
+    : turn.status === "stale"
     ? "border-zinc-300 dark:border-zinc-700 bg-zinc-800/50 text-zinc-600 dark:text-zinc-400"
     : turn.status === "running"
     ? "border-purple-400/30 bg-purple-400/10 text-purple-800 dark:text-purple-200"
@@ -680,7 +696,23 @@ function BrainTurnTimeline({
   const turnEvents = turn.events;
 
   return (
-    <article id={`brain-turn-${turnNumber}`} data-turn-id={turn.id} className={`overflow-hidden rounded-2xl border ${active ? "border-purple-300 dark:border-purple-400/35 bg-purple-50 dark:bg-[#111018] shadow-sm dark:shadow-lg dark:shadow-purple-950/20" : "border-zinc-200 dark:border-zinc-800 bg-zinc-900/50"}`}>
+    <article
+      id={`brain-turn-${turnNumber}`}
+      data-turn-id={turn.id}
+      className={`overflow-hidden transition-colors ${
+        whatsappTheme
+          ? `rounded-[18px] border ${
+              active
+                ? "border-[#25d366]/25 bg-[#103529]/55 shadow-[0_8px_28px_rgba(0,0,0,0.16)]"
+                : "border-white/[0.07] bg-[#111b21]/88"
+            }`
+          : `rounded-2xl border ${
+              active
+                ? "border-purple-300 dark:border-purple-400/35 bg-purple-50 dark:bg-[#111018] shadow-sm dark:shadow-lg dark:shadow-purple-950/20"
+                : "border-zinc-200 dark:border-zinc-800 bg-zinc-900/50"
+            }`
+      }`}
+    >
       <div className="flex items-stretch">
         <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 sm:px-4">
           <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${statusTone}`}>
@@ -688,9 +720,17 @@ function BrainTurnTimeline({
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Turno {turnNumber}</h3>
+              <h3 className={`text-sm font-semibold ${
+                whatsappTheme ? "text-[#e9edef]" : "text-zinc-900 dark:text-zinc-100"
+              }`}>Turno {turnNumber}</h3>
               <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusTone}`}>{turn.provisional && active ? "Iniciando" : formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}</span>
-              {active && <span className="text-[11px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-300">Agora</span>}
+              {active && (
+                <span className={`text-[11px] font-semibold uppercase tracking-wide ${
+                  whatsappTheme ? "text-[#25d366]" : "text-purple-700 dark:text-purple-300"
+                }`}>
+                  Agora
+                </span>
+              )}
             </div>
             <p className="mt-1 text-xs leading-5 text-zinc-600 dark:text-zinc-400">
               {formatConsoleTime(turn.startedAt)}
@@ -704,14 +744,20 @@ function BrainTurnTimeline({
           aria-label={`${expanded ? "Recolher" : "Abrir"} detalhes do Turno ${turnNumber}`}
           aria-expanded={expanded}
           onClick={() => onToggleTurn(turn.id)}
-          className="flex min-h-14 w-14 shrink-0 items-center justify-center border-l border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors hover:bg-zinc-800/70 active:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-purple-300"
+          className={`flex min-h-14 w-14 shrink-0 items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset ${
+            whatsappTheme
+              ? "text-[#8696a0] hover:bg-white/[0.04] active:scale-95 focus-visible:ring-[#25d366]/50"
+              : "border-l border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-800/70 active:bg-zinc-700 focus-visible:ring-purple-300"
+          }`}
         >
           {expanded ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
         </button>
       </div>
 
       {expanded && (
-        <div className="border-t border-zinc-200 dark:border-zinc-800 px-3 pb-4 pt-3 sm:px-4">
+        <div className={`border-t px-3 pb-4 pt-3 sm:px-4 ${
+          whatsappTheme ? "border-white/[0.07]" : "border-zinc-200 dark:border-zinc-800"
+        }`}>
           {delivery && delivery.actionCount > 0 && (
             <section aria-label="Estado de entrega" className={`mb-4 rounded-xl border p-3 ${deliveryStatusTone(delivery.status)}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -729,8 +775,14 @@ function BrainTurnTimeline({
             </section>
           )}
           {decision && (
-            <section className="mb-4 rounded-xl border border-purple-400/20 bg-purple-400/[0.06] p-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-purple-800 dark:text-purple-200"><BrainCircuit className="h-4 w-4" />Decisão</div>
+            <section className={`mb-4 rounded-xl border p-3 ${
+              whatsappTheme
+                ? "border-[#25d366]/15 bg-[#25d366]/[0.045]"
+                : "border-purple-400/20 bg-purple-400/[0.06]"
+            }`}>
+              <div className={`flex items-center gap-2 text-xs font-semibold ${
+                whatsappTheme ? "text-[#25d366]" : "text-purple-800 dark:text-purple-200"
+              }`}><BrainCircuit className="h-4 w-4" />Decisão</div>
               {decisionSummary && <p className="mt-2 line-clamp-3 text-sm leading-6 text-zinc-800 dark:text-zinc-200">{decisionSummary}</p>}
               {objectiveLabel && (
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -825,6 +877,7 @@ function BrainOperationalConsole({
   mediaObservationSubmitting,
   onMediaObservationChange,
   onMediaObservationSubmit,
+  theme = "default",
 }: {
   open: boolean;
   events: AutoPilotCycleEvent[];
@@ -845,7 +898,9 @@ function BrainOperationalConsole({
   mediaObservationSubmitting: boolean;
   onMediaObservationChange: (value: string) => void;
   onMediaObservationSubmit: () => void;
+  theme?: BrainConsoleTheme;
 }) {
+  const whatsappTheme = theme === "whatsapp-ios";
   const groupedTurns = attachDeliveryActionsToTurns(groupBrainTurns(events), deliveryActions);
   const selectorRuntime = { ...runtimeState, now: Date.now() };
   const activeTurn = selectActiveBrainTurn(groupedTurns, selectorRuntime);
@@ -903,20 +958,89 @@ function BrainOperationalConsole({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/80 p-2 backdrop-blur-sm sm:p-6" role="dialog" aria-modal="true" aria-label="Console operacional do Brain">
-      <div className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-300 dark:border-zinc-700 bg-[#0b0b0f] text-zinc-900 dark:text-zinc-100 shadow-2xl">
-        <header className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-purple-400/25 bg-purple-400/10 text-purple-800 dark:text-purple-200"><BrainCircuit className="h-5 w-5" /></span><div className="min-w-0"><h2 className="truncate text-base font-semibold">Console do Brain</h2><p className="text-xs text-zinc-600 dark:text-zinc-400">Acompanhe o turno atual e consulte o histórico</p></div></div>
-          <button type="button" onClick={onClose} aria-label="Fechar console" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"><X className="h-5 w-5" /></button>
+    <div
+      className={`fixed inset-0 z-[100] p-2 sm:p-6 ${
+        whatsappTheme
+          ? "whatsapp-ios bg-black/35 backdrop-blur-[2px]"
+          : "bg-black/80 backdrop-blur-sm"
+      }`}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Console operacional do Brain"
+    >
+      <div
+        className={`mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden shadow-2xl ${
+          whatsappTheme
+            ? "brain-console-whatsapp rounded-[24px] border border-white/[0.08] bg-[#0b141a]/96 text-[#e9edef] shadow-black/40 backdrop-blur-3xl"
+            : "rounded-2xl border border-zinc-300 dark:border-zinc-700 bg-[#0b0b0f] text-zinc-900 dark:text-zinc-100"
+        }`}
+      >
+        <header
+          className={`flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-5 ${
+            whatsappTheme
+              ? "border-white/[0.07] bg-[#111b21]/84 backdrop-blur-2xl"
+              : "border-zinc-200 dark:border-zinc-800"
+          }`}
+        >
+          <div className="flex min-w-0 items-center gap-3">
+            <span
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] border ${
+                whatsappTheme
+                  ? "border-[#25d366]/20 bg-[#25d366]/10 text-[#25d366]"
+                  : "border-purple-400/25 bg-purple-400/10 text-purple-800 dark:text-purple-200"
+              }`}
+            >
+              <BrainCircuit className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <h2 className={`truncate text-base font-semibold ${whatsappTheme ? "text-[#e9edef]" : ""}`}>
+                Console do Brain
+              </h2>
+              <p className={`text-xs ${whatsappTheme ? "text-[#8696a0]" : "text-zinc-600 dark:text-zinc-400"}`}>
+                Acompanhe o turno atual e consulte o histórico
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fechar console"
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 ${
+              whatsappTheme
+                ? "text-[#8696a0] hover:bg-white/[0.06] hover:text-[#e9edef] focus-visible:ring-[#25d366]/50"
+                : "rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 focus-visible:ring-purple-300"
+            }`}
+          >
+            <X className="h-5 w-5" />
+          </button>
         </header>
         {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-900 dark:text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
-        <div ref={scrollContainerRef} onScroll={(event) => { const element = event.currentTarget; followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88; }} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5">
+        <div
+          ref={scrollContainerRef}
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88;
+          }}
+          className={`min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5 ${
+            whatsappTheme ? "bg-[#0b141a]" : ""
+          }`}
+        >
           {mediaObservation && (
             <section aria-label="Observação de mídia pendente">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3>
-              <div className="rounded-2xl border border-violet-400/30 bg-violet-400/[0.07] p-4">
+              <h3 className={`mb-2 text-xs font-semibold uppercase tracking-widest ${
+                whatsappTheme ? "text-[#25d366]" : "text-purple-700 dark:text-purple-300"
+              }`}>Agora</h3>
+              <div className={`rounded-2xl border p-4 ${
+                whatsappTheme
+                  ? "border-[#ff9500]/20 bg-[#ff9500]/[0.06]"
+                  : "border-violet-400/30 bg-violet-400/[0.07]"
+              }`}>
                 <div className="flex items-start gap-3">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-violet-400/25 bg-violet-400/10 text-violet-700 dark:text-violet-200">
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${
+                    whatsappTheme
+                      ? "border-[#ff9500]/20 bg-[#ff9500]/10 text-[#ff9500]"
+                      : "border-violet-400/25 bg-violet-400/10 text-violet-700 dark:text-violet-200"
+                  }`}>
                     <AlertTriangle className="h-4 w-4" />
                   </span>
                   <div className="min-w-0 flex-1">
@@ -936,7 +1060,11 @@ function BrainOperationalConsole({
                   placeholder={mediaObservation.kind === "video"
                     ? "Ex: ele mostrou o carro novo e comentou que acabou de comprar..."
                     : "Ex: selfie dele numa trilha, sorrindo..."}
-                  className="mt-3 min-h-24 w-full resize-y rounded-xl border border-violet-400/25 bg-white/80 p-3 text-sm leading-5 text-zinc-900 outline-none focus:border-violet-400/60 dark:bg-black/25 dark:text-zinc-100"
+                  className={`mt-3 min-h-24 w-full resize-y rounded-xl border p-3 text-sm leading-5 outline-none ${
+                    whatsappTheme
+                      ? "border-white/[0.08] bg-[#202c33] text-[#e9edef] placeholder:text-[#8696a0] focus:border-[#25d366]/40"
+                      : "border-violet-400/25 bg-white/80 text-zinc-900 focus:border-violet-400/60 dark:bg-black/25 dark:text-zinc-100"
+                  }`}
                   disabled={mediaObservationSubmitting}
                 />
                 <div className="mt-3 flex justify-end">
@@ -944,7 +1072,9 @@ function BrainOperationalConsole({
                     type="button"
                     onClick={onMediaObservationSubmit}
                     disabled={mediaObservationSubmitting || !mediaObservationAnswer.trim()}
-                    className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                    className={`inline-flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      whatsappTheme ? "bg-[#00a884] hover:bg-[#06cf9c]" : "bg-violet-600 hover:bg-violet-500"
+                    }`}
                   >
                     {mediaObservationSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                     {mediaObservationSubmitting ? "Retomando..." : "Enviar observação e retomar"}
@@ -953,8 +1083,53 @@ function BrainOperationalConsole({
               </div>
             </section>
           )}
-          {activeTurn && !mediaObservation && <section aria-label="Turno atual"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-purple-700 dark:text-purple-300">Agora</h3><BrainTurnTimeline turn={activeTurn} turnNumber={turns.length - turns.indexOf(activeTurn)} expanded={uiState.expandedTurnIds.has(activeTurn.id)} active failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} /></section>}
-          {turns.some((turn) => turn !== activeTurn) && <section aria-label="Histórico de turnos"><h3 className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">Histórico</h3><div className="space-y-2">{turns.filter((turn) => turn !== activeTurn).map((turn) => <BrainTurnTimeline key={turn.id} turn={turn} turnNumber={turns.length - turns.indexOf(turn)} expanded={uiState.expandedTurnIds.has(turn.id)} active={false} failedActions={failedActions} retryingActionId={retryingActionId} onRetryAction={onRetryAction} onToggleTurn={toggleTurn} manualResolution={manualResolution} onManualResolution={onManualResolution} onManualResolutionChange={onManualResolutionChange} />)}</div></section>}
+          {activeTurn && !mediaObservation && (
+            <section aria-label="Turno atual">
+              <h3 className={`mb-2 text-xs font-semibold uppercase tracking-widest ${
+                whatsappTheme ? "text-[#25d366]" : "text-purple-700 dark:text-purple-300"
+              }`}>Agora</h3>
+              <BrainTurnTimeline
+                turn={activeTurn}
+                turnNumber={turns.length - turns.indexOf(activeTurn)}
+                expanded={uiState.expandedTurnIds.has(activeTurn.id)}
+                active
+                failedActions={failedActions}
+                retryingActionId={retryingActionId}
+                onRetryAction={onRetryAction}
+                onToggleTurn={toggleTurn}
+                manualResolution={manualResolution}
+                onManualResolution={onManualResolution}
+                onManualResolutionChange={onManualResolutionChange}
+                theme={theme}
+              />
+            </section>
+          )}
+          {turns.some((turn) => turn !== activeTurn) && (
+            <section aria-label="Histórico de turnos">
+              <h3 className={`mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] ${
+                whatsappTheme ? "text-[#8696a0]" : "text-zinc-500"
+              }`}>Histórico</h3>
+              <div className={whatsappTheme ? "space-y-2.5" : "space-y-2"}>
+                {turns.filter((turn) => turn !== activeTurn).map((turn) => (
+                  <BrainTurnTimeline
+                    key={turn.id}
+                    turn={turn}
+                    turnNumber={turns.length - turns.indexOf(turn)}
+                    expanded={uiState.expandedTurnIds.has(turn.id)}
+                    active={false}
+                    failedActions={failedActions}
+                    retryingActionId={retryingActionId}
+                    onRetryAction={onRetryAction}
+                    onToggleTurn={toggleTurn}
+                    manualResolution={manualResolution}
+                    onManualResolution={onManualResolution}
+                    onManualResolutionChange={onManualResolutionChange}
+                    theme={theme}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
           {turns.length === 0 && !mediaObservation && <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 px-4 py-10 text-center"><Clock3 className="mx-auto h-6 w-6 text-zinc-500" /><p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">Nenhuma atividade do Brain foi registrada nesta conversa.</p><p className="mt-1 text-xs text-zinc-500">Os turnos aparecerão aqui assim que começarem.</p></div>}
         </div>
       </div>
@@ -1678,6 +1853,7 @@ export function AutoPilotActivityIndicator({
         mediaObservationSubmitting={isSubmittingMediaObservation}
         onMediaObservationChange={setMediaObservationAnswer}
         onMediaObservationSubmit={handleSubmitMediaObservation}
+        theme="whatsapp-ios"
       />
     );
   }

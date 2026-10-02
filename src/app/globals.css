@@ -262,3 +262,53 @@ body {
     0 1px 0 rgba(255, 255, 255, 0.02),
     0 8px 28px rgba(0, 0, 0, 0.28);
 }
+
+
+/* Brain Console quando aberto pelo WhatsApp: mesma linguagem visual do iPhone/WhatsApp. */
+.brain-console-whatsapp [class*="text-purple-"],
+.brain-console-whatsapp [class*="text-violet-"] {
+  color: #25d366 !important;
+}
+
+.brain-console-whatsapp [class*="border-purple-"],
+.brain-console-whatsapp [class*="border-violet-"] {
+  border-color: rgba(37, 211, 102, 0.20) !important;
+}
+
+.brain-console-whatsapp [class*="bg-purple-"],
+.brain-console-whatsapp [class*="bg-violet-"] {
+  background-color: rgba(37, 211, 102, 0.07) !important;
+}
+
+.brain-console-whatsapp .text-zinc-900,
+.brain-console-whatsapp .text-zinc-800,
+.brain-console-whatsapp .text-zinc-700 {
+  color: #e9edef !important;
+}
+
+.brain-console-whatsapp .text-zinc-600,
+.brain-console-whatsapp .text-zinc-500,
+.brain-console-whatsapp .text-zinc-400 {
+  color: #8696a0 !important;
+}
+
+.brain-console-whatsapp .border-zinc-200,
+.brain-console-whatsapp .border-zinc-300,
+.brain-console-whatsapp .border-zinc-700,
+.brain-console-whatsapp .border-zinc-800 {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+
+.brain-console-whatsapp .bg-zinc-200,
+.brain-console-whatsapp .bg-zinc-800,
+.brain-console-whatsapp .bg-zinc-900\/50 {
+  background-color: #202c33 !important;
+}
+
+.brain-console-whatsapp details > summary {
+  color: #8696a0;
+}
+
+.brain-console-whatsapp details[open] > summary {
+  color: #25d366;
+}
