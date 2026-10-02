@@ -1237,7 +1237,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [isStageFilterOpen]);
 
-  const chatStages = useChatStages(activeChat?.id, { loadAllProgresses: false });
+  const chatStages = useChatStages(activeChat?.type === "whatsapp2" ? undefined : activeChat?.id, { loadAllProgresses: false });
   const {
     stages,
     chatDetail,
