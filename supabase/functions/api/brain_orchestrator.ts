@@ -3786,6 +3786,19 @@ export async function dispatchOutboxEntry(
         if (mediaUrl?.startsWith("[audio:") && mediaUrl.endsWith("]")) {
           mediaUrl = mediaUrl.slice(7, -1).trim();
         }
+
+        // O mesmo áudio do cofre pode ter uma variante própria do WhatsApp.
+        // Mantemos o arquivo canônico do Instagram intacto e, no WhatsApp,
+        // preferimos OGG/Opus para preservar a experiência de mensagem de voz.
+        if (outboxEntry.vaultAudioId) {
+          const { data: audioVariant } = await supabase
+            .from("persona_audios")
+            .select("whatsapp_audio_url")
+            .eq("id", outboxEntry.vaultAudioId)
+            .maybeSingle();
+          const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
+          if (whatsappAudioUrl) mediaUrl = whatsappAudioUrl;
+        }
       }
 
       const replyToMessageId = outboxEntry.replyToMessageId

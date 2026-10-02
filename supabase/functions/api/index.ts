@@ -2401,11 +2401,25 @@ serve(async (req: Request) => {
         const sendProviderMessage = async (): Promise<string> => {
           if (conversationChannel === "whatsapp") {
             const kind = audioUrl ? "audio" : mediaUrl ? "image" : "text";
+            let providerMediaUrl = audioUrl || mediaUrl || undefined;
+
+            // Áudios do cofre mantêm o arquivo canônico do Instagram, mas podem
+            // possuir uma variante OGG/Opus específica para o WhatsApp.
+            if (kind === "audio" && audioUrl) {
+              const { data: audioVariant } = await supabase
+                .from("persona_audios")
+                .select("whatsapp_audio_url")
+                .eq("audio_url", audioUrl)
+                .maybeSingle();
+              const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
+              if (whatsappAudioUrl) providerMediaUrl = whatsappAudioUrl;
+            }
+
             const sent = await sendWhatsAppCloudMessage({
               recipientId: targetRecipientId,
               kind,
               text: kind === "text" ? rawText : undefined,
-              mediaUrl: audioUrl || mediaUrl || undefined,
+              mediaUrl: providerMediaUrl,
               replyToMessageId,
             });
             return sent.messageId;
