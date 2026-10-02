@@ -13,6 +13,7 @@ export interface SendWhatsAppCloudMessageParams {
   kind: WhatsAppOutboundKind;
   text?: string;
   mediaUrl?: string;
+  voiceNote?: boolean;
   replyToMessageId?: string | null;
 }
 
@@ -56,7 +57,10 @@ export async function sendWhatsAppCloudMessage(
     payload.text = { body: String(params.text || ""), preview_url: false };
   } else if (params.kind === "audio") {
     if (!params.mediaUrl) throw new Error("URL do áudio do WhatsApp ausente.");
-    payload.audio = { link: params.mediaUrl };
+    payload.audio = {
+      link: params.mediaUrl,
+      ...(params.voiceNote ? { voice: true } : {}),
+    };
   } else {
     if (!params.mediaUrl) throw new Error("URL da imagem do WhatsApp ausente.");
     payload.image = { link: params.mediaUrl };

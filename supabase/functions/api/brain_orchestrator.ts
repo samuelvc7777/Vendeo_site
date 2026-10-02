@@ -3779,6 +3779,7 @@ export async function dispatchOutboxEntry(
 
     if (channelRow?.channel === "whatsapp") {
       let mediaUrl: string | undefined;
+      let voiceNote = false;
       let kind: "text" | "audio" | "image" = "text";
       if (outboxEntry.messageType === "audio") {
         kind = "audio";
@@ -3789,7 +3790,7 @@ export async function dispatchOutboxEntry(
 
         // O mesmo áudio do cofre pode ter uma variante própria do WhatsApp.
         // Mantemos o arquivo canônico do Instagram intacto e, no WhatsApp,
-        // preferimos OGG/Opus para preservar a experiência de mensagem de voz.
+        // preferimos OGG/Opus marcado explicitamente como voice message.
         if (outboxEntry.vaultAudioId) {
           const { data: audioVariant } = await supabase
             .from("persona_audios")
@@ -3797,7 +3798,10 @@ export async function dispatchOutboxEntry(
             .eq("id", outboxEntry.vaultAudioId)
             .maybeSingle();
           const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
-          if (whatsappAudioUrl) mediaUrl = whatsappAudioUrl;
+          if (whatsappAudioUrl) {
+            mediaUrl = whatsappAudioUrl;
+            voiceNote = true;
+          }
         }
       }
 
@@ -3810,6 +3814,7 @@ export async function dispatchOutboxEntry(
         kind,
         text: kind === "text" ? outboxEntry.content : undefined,
         mediaUrl,
+        voiceNote,
         replyToMessageId,
       });
 

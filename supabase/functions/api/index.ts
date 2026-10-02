@@ -2402,6 +2402,7 @@ serve(async (req: Request) => {
           if (conversationChannel === "whatsapp") {
             const kind = audioUrl ? "audio" : mediaUrl ? "image" : "text";
             let providerMediaUrl = audioUrl || mediaUrl || undefined;
+            let voiceNote = false;
 
             // Áudios do cofre mantêm o arquivo canônico do Instagram, mas podem
             // possuir uma variante OGG/Opus específica para o WhatsApp.
@@ -2412,7 +2413,10 @@ serve(async (req: Request) => {
                 .eq("audio_url", audioUrl)
                 .maybeSingle();
               const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
-              if (whatsappAudioUrl) providerMediaUrl = whatsappAudioUrl;
+              if (whatsappAudioUrl) {
+                providerMediaUrl = whatsappAudioUrl;
+                voiceNote = true;
+              }
             }
 
             const sent = await sendWhatsAppCloudMessage({
@@ -2420,6 +2424,7 @@ serve(async (req: Request) => {
               kind,
               text: kind === "text" ? rawText : undefined,
               mediaUrl: providerMediaUrl,
+              voiceNote,
               replyToMessageId,
             });
             return sent.messageId;
