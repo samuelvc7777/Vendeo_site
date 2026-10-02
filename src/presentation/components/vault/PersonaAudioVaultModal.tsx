@@ -153,7 +153,9 @@ export function PersonaAudioVaultModal({
   }, [audios, selectedStageFilter, searchQuery]);
 
   const objectives = useMemo(() => stages.flatMap((stage) =>
-    (stage.objectives || stage.goals || []).map((objective) => ({
+    (stage.objectives || stage.goals || [])
+      .filter((objective) => objective.enabled !== false)
+      .map((objective) => ({
       id: objective.id,
       label: objective.title || objective.label || objective.id,
       stageName: stage.name,
