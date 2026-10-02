@@ -70,13 +70,36 @@ export function InstagramAudioMessage({
     setIsTranscribing(true);
 
     try {
+      const isLocalWhatsApp2Media =
+        /^http:\/\/(?:127\.0\.0\.1|localhost):8788\/message\/media\?/i.test(audioUrl);
+
+      let transcriptionPayload: Record<string, unknown> = {
+        messageId,
+        mediaUrl: audioUrl,
+      };
+
+      if (isLocalWhatsApp2Media) {
+        const localAudio = await fetch(audioUrl);
+        if (!localAudio.ok) throw new Error("Não foi possível carregar o áudio do WhatsApp 2.");
+        const blob = await localAudio.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+        }
+        transcriptionPayload = {
+          messageId,
+          mediaBase64: btoa(binary),
+          mimeType: blob.type || "audio/ogg",
+        };
+      }
+
       const res = await fetch(getApiUrl("/api/ai/transcribe"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messageId,
-          mediaUrl: audioUrl,
-        }),
+        body: JSON.stringify(transcriptionPayload),
       });
 
       const data = await res.json();

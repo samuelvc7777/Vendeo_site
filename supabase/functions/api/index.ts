@@ -13,11 +13,12 @@ import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "
 import { enrichBrainDecisionActionRows, enrichBrainTurnEventRows } from "./brain_event_enrichment.ts";
 import {
   getGroqApiKey,
+  transcribeAudioBytesWithGroqCloud,
   transcribeWithGroqCloud,
   resolveInboundAudioMessage,
 } from "./audio_transcription.ts";
 import { resolveInboundImageMessage } from "./image_analysis.ts";
-export { getGroqApiKey, transcribeWithGroqCloud, resolveInboundAudioMessage };
+export { getGroqApiKey, transcribeAudioBytesWithGroqCloud, transcribeWithGroqCloud, resolveInboundAudioMessage };
 import {
   isActionableInboundMessage,
   isPureEmojiMessage,
@@ -2968,12 +2969,21 @@ serve(async (req: Request) => {
         const body = await req.json().catch(() => ({}));
         const messageId = typeof body?.messageId === "string" ? body.messageId.trim() : "";
         const mediaUrl = typeof body?.mediaUrl === "string" ? body.mediaUrl.trim() : "";
+        const mediaBase64 = typeof body?.mediaBase64 === "string" ? body.mediaBase64.trim() : "";
+        const mediaMimeType = typeof body?.mimeType === "string" ? body.mimeType.trim() : "audio/ogg";
         const apiKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : undefined;
 
-        if (!mediaUrl && !messageId) {
+        if (!mediaUrl && !mediaBase64 && !messageId) {
           return new Response(
-            JSON.stringify({ error: "Informe 'mediaUrl' ou 'messageId'." }),
+            JSON.stringify({ error: "Informe 'mediaUrl', 'mediaBase64' ou 'messageId'." }),
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        if (mediaBase64.length > 28_000_000) {
+          return new Response(
+            JSON.stringify({ error: "Áudio grande demais para transcrição direta." }),
+            { status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
 
@@ -2997,7 +3007,7 @@ serve(async (req: Request) => {
           }
         }
 
-        if (!mediaUrl) {
+        if (!mediaUrl && !mediaBase64) {
           return new Response(
             JSON.stringify({ error: "Mídia não informada e transcrição não encontrada em cache." }),
             { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -3005,7 +3015,22 @@ serve(async (req: Request) => {
         }
 
         // 2. Dispara transcrição na nuvem com a Groq
-        const transcript = await transcribeWithGroqCloud(supabase, mediaUrl, apiKey);
+        let transcript: string | null = null;
+        if (mediaBase64) {
+          try {
+            const bytes = Uint8Array.from(atob(mediaBase64), (char) => char.charCodeAt(0));
+            transcript = await transcribeAudioBytesWithGroqCloud(
+              supabase,
+              bytes,
+              mediaMimeType || "audio/ogg",
+              apiKey
+            );
+          } catch (error) {
+            console.warn("[ai/transcribe] Base64 inválido:", error);
+          }
+        } else if (mediaUrl) {
+          transcript = await transcribeWithGroqCloud(supabase, mediaUrl, apiKey);
+        }
         if (!transcript) {
           return new Response(
             JSON.stringify({ error: "Não foi possível transcrever o áudio na nuvem com a Groq." }),

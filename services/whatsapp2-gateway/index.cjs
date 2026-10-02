@@ -378,15 +378,52 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/message/media") {
       const messageId = String(url.searchParams.get("messageId") || "");
       if (!messageId) throw new Error("messageId obrigatório");
-      const message = await getMessage(messageId);
-      if (!message.hasMedia) throw new Error("Mensagem não possui mídia");
-      const media = await message.downloadMedia();
-      if (!media?.data) throw new Error("Mídia indisponível");
-      const buffer = Buffer.from(media.data, "base64");
+
+      const active = ensureReady();
+      await ensureWaJsReady();
+
+      let payload = null;
+      try {
+        payload = await active.pupPage.evaluate(async (id) => {
+          const blob = await globalThis.WPP.chat.downloadMedia(id);
+          if (!blob) return null;
+          const dataUrl = await globalThis.WPP.util.blobToBase64(blob);
+          return {
+            dataUrl,
+            type: blob.type || "application/octet-stream",
+            size: blob.size || 0,
+          };
+        }, messageId);
+      } catch (error) {
+        console.warn("[whatsapp2] WA-JS downloadMedia falhou, tentando fallback:", error?.message || error);
+      }
+
+      if (!payload?.dataUrl) {
+        const message = await getMessage(messageId);
+        if (!message.hasMedia) throw new Error("Mensagem não possui mídia");
+        const media = await message.downloadMedia();
+        if (!media?.data) throw new Error("Mídia indisponível");
+        payload = {
+          dataUrl: `data:${media.mimetype || "application/octet-stream"};base64,${media.data}`,
+          type: media.mimetype || "application/octet-stream",
+          size: 0,
+        };
+      }
+
+      const dataUrl = String(payload.dataUrl || "");
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) throw new Error("Mídia retornou formato inválido");
+      const header = dataUrl.slice(0, comma);
+      const base64 = dataUrl.slice(comma + 1);
+      const mimeMatch = header.match(/^data:([^;,]+)/i);
+      const contentType = mimeMatch?.[1] || payload.type || "application/octet-stream";
+      const buffer = Buffer.from(base64, "base64");
+
       res.statusCode = 200;
-      res.setHeader("content-type", media.mimetype || "application/octet-stream");
+      res.setHeader("content-type", contentType);
       res.setHeader("cache-control", "private, max-age=300");
       res.setHeader("content-length", String(buffer.length));
+      res.setHeader("x-whatsapp2-media-provider", "wa-js");
       res.end(buffer);
       return;
     }

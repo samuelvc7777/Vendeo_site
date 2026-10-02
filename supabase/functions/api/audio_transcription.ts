@@ -33,43 +33,31 @@ export async function getGroqApiKey(supabase: any): Promise<string | null> {
   return null;
 }
 
-/**
- * Transcreve um arquivo de áudio acessível via URL usando o Groq Cloud Whisper Large v3 em português.
- */
-export async function transcribeWithGroqCloud(
+function resolveAudioExtension(mimeType: string): string {
+  if (mimeType.includes("mp3") || mimeType.includes("mpeg")) return "mp3";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("wav")) return "wav";
+  if (mimeType.includes("webm")) return "webm";
+  if (mimeType.includes("mp4")) return "m4a";
+  return "m4a";
+}
+
+export async function transcribeAudioBytesWithGroqCloud(
   supabase: any,
-  mediaUrl: string,
+  rawBytes: ArrayBuffer | Uint8Array,
+  mimeType = "audio/m4a",
   providedKey?: string
 ): Promise<string | null> {
   const apiKey = (providedKey || (await getGroqApiKey(supabase)) || "").trim();
-  if (!apiKey) {
-    console.warn("[transcribeWithGroqCloud] Nenhuma chave GROQ_API_KEY configurada.");
-    return null;
-  }
+  if (!apiKey) return null;
 
   try {
-    const audioRes = await fetch(mediaUrl, { signal: AbortSignal.timeout(15_000) });
-    if (!audioRes.ok) {
-      console.warn(`[transcribeWithGroqCloud] Falha ao baixar áudio: HTTP ${audioRes.status}`);
-      return null;
-    }
-
-    const rawBytes = await audioRes.arrayBuffer();
-    if (!rawBytes || rawBytes.byteLength === 0) return null;
-
-    const detectedMime = audioRes.headers.get("content-type")?.split(";")[0] || "audio/m4a";
-    const mimeType = detectedMime === "application/octet-stream" ? "audio/m4a" : detectedMime;
-
-    let extension = "m4a";
-    if (mimeType.includes("mp3") || mimeType.includes("mpeg")) extension = "mp3";
-    else if (mimeType.includes("ogg")) extension = "ogg";
-    else if (mimeType.includes("wav")) extension = "wav";
-    else if (mimeType.includes("webm")) extension = "webm";
-    else if (mimeType.includes("mp4")) extension = "m4a";
-
+    const normalizedMime = mimeType === "application/octet-stream" ? "audio/m4a" : mimeType;
     const form = new FormData();
-    const audioBlob = new Blob([rawBytes], { type: mimeType });
-    form.set("file", audioBlob, `audio.${extension}`);
+    const bytes = rawBytes instanceof Uint8Array ? rawBytes : new Uint8Array(rawBytes);
+    if (bytes.byteLength === 0) return null;
+    const audioBlob = new Blob([bytes], { type: normalizedMime });
+    form.set("file", audioBlob, `audio.${resolveAudioExtension(normalizedMime)}`);
     form.set("model", "whisper-large-v3");
     form.set("language", "pt");
     form.set("temperature", "0");
@@ -84,13 +72,35 @@ export async function transcribeWithGroqCloud(
 
     const payload = await groqRes.json().catch(() => ({}));
     if (!groqRes.ok) {
-      console.error(`[transcribeWithGroqCloud] Erro Groq HTTP ${groqRes.status}:`, payload);
+      console.error(`[transcribeAudioBytesWithGroqCloud] Erro Groq HTTP ${groqRes.status}:`, payload);
       return null;
     }
-
     const text = typeof payload?.text === "string" ? payload.text.trim() : "";
     return text || null;
-  } catch (err: unknown) {
+  } catch (err) {
+    console.error("[transcribeAudioBytesWithGroqCloud] Exceção:", err);
+    return null;
+  }
+}
+
+/**
+ * Transcreve um arquivo de áudio acessível via URL usando o Groq Cloud Whisper Large v3 em português.
+ */
+export async function transcribeWithGroqCloud(
+  supabase: any,
+  mediaUrl: string,
+  providedKey?: string
+): Promise<string | null> {
+  try {
+    const audioRes = await fetch(mediaUrl, { signal: AbortSignal.timeout(15_000) });
+    if (!audioRes.ok) {
+      console.warn(`[transcribeWithGroqCloud] Falha ao baixar áudio: HTTP ${audioRes.status}`);
+      return null;
+    }
+    const rawBytes = await audioRes.arrayBuffer();
+    const detectedMime = audioRes.headers.get("content-type")?.split(";")[0] || "audio/m4a";
+    return await transcribeAudioBytesWithGroqCloud(supabase, rawBytes, detectedMime, providedKey);
+  } catch (err) {
     console.error("[transcribeWithGroqCloud] Exceção na transcrição:", err);
     return null;
   }

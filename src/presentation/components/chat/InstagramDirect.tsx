@@ -103,6 +103,7 @@ import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 import {
   getWhatsApp2Chats,
+  getWhatsApp2MediaUrl,
   getWhatsApp2Messages,
   sendWhatsApp2Media,
   sendWhatsApp2Text,
@@ -295,11 +296,15 @@ function mapWhatsApp2Message(message: WhatsApp2GatewayMessage): DirectMessage {
       ? "sticker"
       : undefined;
 
+  const messageId = String(message.id || `wa2-msg-${timestampMs || Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const mediaUrl = message.hasMedia && mediaType ? getWhatsApp2MediaUrl(messageId) : undefined;
+
   return {
-    id: String(message.id || `wa2-msg-${timestampMs || Date.now()}-${Math.random().toString(36).slice(2, 7)}`),
+    id: messageId,
     senderId: message.fromMe ? "me" : String(message.from || ""),
     text,
-    mediaType: undefined,
+    mediaType,
+    mediaUrl,
     createdAt: formatMessageTime(timestampMs || Date.now()),
     timestamp: timestampMs || Date.now(),
     sentDate: timestampMs ? new Date(timestampMs).toISOString() : new Date().toISOString(),
@@ -4810,25 +4815,26 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               const dateLabel = showDateDivider
                 ? formatChatDateDivider(msg.timestamp || msg.sentDate || msg.createdAt)
                 : null;
+              const whatsappMessageUi = isWhatsAppLikeType(activeChat.type);
               const whatsappSameSenderBefore =
-                activeChat.type === "whatsapp" &&
+                whatsappMessageUi &&
                 Boolean(prevMsg) &&
                 prevMsg!.isMine === msg.isMine &&
                 !showDateDivider;
               const whatsappSameSenderAfter =
-                activeChat.type === "whatsapp" &&
+                whatsappMessageUi &&
                 Boolean(nextMsg) &&
                 nextMsg!.isMine === msg.isMine &&
                 !isDifferentDay(nextMsg!, msg);
-              const whatsappEndsGroup = activeChat.type === "whatsapp" && !whatsappSameSenderAfter;
+              const whatsappEndsGroup = whatsappMessageUi && !whatsappSameSenderAfter;
               const whatsappSticker =
-                activeChat.type === "whatsapp" &&
+                whatsappMessageUi &&
                 (
                   msg.mediaType === "sticker" ||
                   msg.text.startsWith("[sticker:")
                 );
               const whatsappVisualMedia =
-                activeChat.type === "whatsapp" &&
+                whatsappMessageUi &&
                 (
                   whatsappSticker ||
                   msg.mediaType === "image" ||
@@ -4844,7 +4850,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     <div className="flex items-center justify-center my-3.5 w-full select-none">
                       <span
                         className={`text-[11px] font-medium tracking-tight ${
-                          activeChat.type === "whatsapp"
+                          whatsappMessageUi
                             ? "rounded-lg bg-white/90 px-2.5 py-1 text-[#54656f] shadow-sm dark:bg-[#182229]/95 dark:text-[#8696a0]"
                             : "text-zinc-500 dark:text-[#8e8e8e]"
                         }`}
@@ -4864,7 +4870,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                     }}
                     data-message-id={msg.id}
                     className={`flex flex-col ${msg.isMine ? "items-end" : "items-start"} group/msg relative w-full min-w-0 max-w-full scroll-mt-20 ${
-                      activeChat.type === "whatsapp"
+                      whatsappMessageUi
                         ? whatsappSameSenderBefore
                           ? "mt-[2px]"
                           : "mt-2.5"
@@ -4921,7 +4927,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
                       <div
                         className={`relative transition-all min-w-0 max-w-full break-words [word-break:break-word] [overflow-wrap:anywhere] ${
-                          activeChat.type === "whatsapp"
+                          whatsappMessageUi
                             ? `wa-ios-bubble whatsapp-bubble-in text-[15.5px] leading-[20px] ${
                                 whatsappSticker
                                   ? "wa-ios-sticker-message"
@@ -4956,21 +4962,21 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                               msg.text.includes("Mídia compartilhada") ||
                               msg.text.includes("Mídia ou Story") ||
                               msg.text.includes("Foto")
-                            ? activeChat.type === "whatsapp"
+                            ? whatsappMessageUi
                               ? "p-0"
                               : "p-1.5"
-                            : activeChat.type === "whatsapp"
+                            : whatsappMessageUi
                             ? "px-2.5 pt-1.5 pb-1"
                             : "px-4 py-2.5"
                         } ${
-                          activeChat.type === "whatsapp"
+                          whatsappMessageUi
                             ? ""
                             : msg.isMine
                             ? "bg-[#0095f6] text-white rounded-br-[4px]"
                             : "bg-zinc-100 dark:bg-[#262626] text-zinc-950 dark:text-white rounded-bl-[4px]"
                         } ${msg.status === "failed" ? "border border-red-500/50 bg-red-950/30" : ""} ${
                           highlightedReplyTargetId === msg.id
-                            ? activeChat.type === "whatsapp"
+                            ? whatsappMessageUi
                               ? "ring-2 ring-[#00a884]/70 shadow-[0_0_0_5px_rgba(0,168,132,0.10)] scale-[1.015]"
                               : "ring-2 ring-[#0095f6]/70 shadow-[0_0_0_5px_rgba(0,149,246,0.12)] scale-[1.015]"
                             : ""
@@ -4983,7 +4989,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             onClick={() => jumpToRepliedMessage(msg.replyTo!.id)}
                             title="Ir para a mensagem original"
                             className={`group/replyquote mb-2 w-full px-2.5 py-2 rounded-md text-left min-w-0 max-w-full overflow-hidden transition-all cursor-pointer active:scale-[0.985] ${
-                              activeChat.type === "whatsapp"
+                              whatsappMessageUi
                                 ? msg.isMine
                                   ? "border-l-[3px] border-l-[#00a884] bg-[#c7f3c1] text-[#111b21] hover:bg-[#bfeeb9] dark:bg-[#045445] dark:text-[#e9edef] dark:hover:bg-[#075d4d]"
                                   : "border-l-[3px] border-l-[#00a884] bg-[#f0f2f5] text-[#111b21] hover:bg-[#e7e9eb] dark:bg-[#111b21] dark:text-[#e9edef] dark:hover:bg-[#17242c]"
@@ -4993,14 +4999,14 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                             }`}
                           >
                             <div className={`flex items-center gap-1.5 text-[10px] font-semibold min-w-0 ${
-                              activeChat.type === "whatsapp"
+                              whatsappMessageUi
                                 ? "text-[#007aff] dark:text-[#5ac8fa]"
                                 : msg.isMine
                                 ? "text-white/85"
                                 : "text-zinc-600 dark:text-zinc-300"
                             }`}>
                               <Reply className={`w-3 h-3 shrink-0 transition-transform group-hover/replyquote:-translate-x-0.5 ${
-                                activeChat.type === "whatsapp"
+                                whatsappMessageUi
                                   ? "text-[#007aff] dark:text-[#5ac8fa]"
                                   : msg.isMine
                                   ? "text-white/70"
@@ -5132,15 +5138,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                         {/* Horário da Mensagem (Timestamp estilo Instagram com contador regressivo) */}
                         <div
                           className={`flex items-center gap-1 select-none text-[10px] leading-none ${
-                            activeChat.type === "whatsapp" && whatsappSticker
+                            whatsappMessageUi && whatsappSticker
                               ? "mt-0.5 justify-end pr-1 text-[#667781] dark:text-[#8696a0]"
-                              : activeChat.type === "whatsapp" && whatsappVisualMedia
+                              : whatsappMessageUi && whatsappVisualMedia
                               ? "absolute bottom-1.5 right-1.5 rounded-full bg-black/45 px-1.5 py-1 text-white shadow-sm backdrop-blur-md"
                               : msg.isMine
-                              ? activeChat.type === "whatsapp"
+                              ? whatsappMessageUi
                                 ? "mt-1 justify-end text-[#667781] dark:text-[#aebac1]"
                                 : "mt-1 justify-end font-mono text-white/75"
-                              : activeChat.type === "whatsapp"
+                              : whatsappMessageUi
                               ? "mt-1 justify-end text-[#667781] dark:text-[#8696a0]"
                               : "mt-1 justify-start font-mono text-zinc-600 dark:text-zinc-400"
                           }`}
@@ -5158,7 +5164,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                                 )
                               ) : msg.status === "failed" ? (
                                 <AlertCircle className="w-2.5 h-2.5 text-red-400 inline" />
-                              ) : activeChat.type === "whatsapp" ? (
+                              ) : whatsappMessageUi ? (
                                 msg.status === "delivered" || msg.status === "seen" ? (
                                   <CheckCheck
                                     className={`w-4 h-4 inline ${

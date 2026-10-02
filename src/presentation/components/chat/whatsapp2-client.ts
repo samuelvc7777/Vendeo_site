@@ -50,7 +50,11 @@ export async function getWhatsApp2Chats(limit = 160) {
     `/chats?limit=${Math.max(1, Math.min(limit, 300))}`,
   );
   return data.chats || [];
-}export async function getWhatsApp2Messages(chatId: string, limit = 120) {
+}export function getWhatsApp2MediaUrl(messageId: string) {
+  return `${WHATSAPP2_GATEWAY_URL}/message/media?messageId=${encodeURIComponent(messageId)}`;
+}
+
+export async function getWhatsApp2Messages(chatId: string, limit = 120) {
   const data = await request<{
     ok: true;
     messages: WhatsApp2GatewayMessage[];
