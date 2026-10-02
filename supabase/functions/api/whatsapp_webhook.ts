@@ -131,16 +131,33 @@ export async function handleWhatsAppWebhook(
 
   for (const entry of body?.entry || []) {
     for (const change of entry?.changes || []) {
-      if (String(change?.field || "") !== "messages") continue;
+      const field = String(change?.field || "");
       const value = change?.value || {};
-      if (String(value?.messaging_product || "") !== "whatsapp") continue;
-
+      const messagingProduct = String(value?.messaging_product || "");
       const incomingPhoneNumberId = String(value?.metadata?.phone_number_id || "");
+      const mask = (value: string) => value ? `***${value.slice(-4)}` : "(empty)";
+
+      console.log("[WhatsApp Webhook] Evento recebido", {
+        field,
+        messagingProduct,
+        messages: Array.isArray(value?.messages) ? value.messages.length : 0,
+        statuses: Array.isArray(value?.statuses) ? value.statuses.length : 0,
+        incomingPhoneNumberId: mask(incomingPhoneNumberId),
+        configuredPhoneNumberId: mask(configuredPhoneNumberId),
+      });
+
+      if (field !== "messages") continue;
+      if (messagingProduct !== "whatsapp") continue;
+
       if (
         configuredPhoneNumberId
         && incomingPhoneNumberId
         && incomingPhoneNumberId !== configuredPhoneNumberId
       ) {
+        console.warn("[WhatsApp Webhook] phone_number_id diferente do configurado", {
+          incoming: mask(incomingPhoneNumberId),
+          configured: mask(configuredPhoneNumberId),
+        });
         continue;
       }
 
