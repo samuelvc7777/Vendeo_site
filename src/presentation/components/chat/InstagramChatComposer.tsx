@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useImperativeHandle, forwardRef, memo } from "react";
-import { MessageSquareText, Paperclip, Loader2, Mic, Send, Plus, Camera } from "lucide-react";
+import { MessageSquareText, Paperclip, Loader2, Mic, Send, Plus, Camera, SquareTerminal } from "lucide-react";
 
 export interface InstagramChatComposerRef {
   appendText: (text: string) => void;
@@ -19,6 +19,7 @@ export interface InstagramChatComposerProps {
   onSelectMediaFile: (file: File) => void;
   onStartRecording: () => void;
   onOpenVault: () => void;
+  onOpenConsole?: () => void;
   variant?: "instagram" | "whatsapp";
 }
 
@@ -33,6 +34,7 @@ export const InstagramChatComposer = memo(
       onSelectMediaFile,
       onStartRecording,
       onOpenVault,
+      onOpenConsole,
       variant = "instagram",
     },
     ref
@@ -191,11 +193,13 @@ export const InstagramChatComposer = memo(
             ) : (
               <button
                 type="button"
-                onClick={() => imageInputRef.current?.click()}
-                className="ml-2 mb-0.5 text-[#007aff] transition-transform active:scale-90"
-                aria-label="Câmera"
+                onClick={onOpenConsole}
+                disabled={!onOpenConsole}
+                className="ml-2 mb-0.5 text-[#007aff] transition-transform active:scale-90 disabled:opacity-35"
+                aria-label="Abrir console do Brain"
+                title="Console do Brain"
               >
-                <Camera className="h-5 w-5 stroke-[1.8]" />
+                <SquareTerminal className="h-5 w-5 stroke-[1.8]" />
               </button>
             )}
           </div>

@@ -45,7 +45,7 @@ import {
 } from "./brain-turn-view-model";
 import type { BrainDecisionAction, BrainOperationalEvent, DeliveryProjection } from "./brain-turn-view-model";
 
-export type Variant = "banner" | "inbox" | "bubble" | "floating";
+export type Variant = "banner" | "inbox" | "bubble" | "floating" | "console-only";
 
 type MediaObservationRequest = {
   kind: "video" | "image";
@@ -1370,7 +1370,9 @@ export function AutoPilotActivityIndicator({
           : sourceState.pauseReason,
       }
     : sourceState;
-  const shouldRender = variant === "floating"
+  const shouldRender = variant === "console-only"
+    ? consoleOpen
+    : variant === "floating"
     ? state.isEnabled || state.status === "waiting_human" || state.status === "failed"
     : hasLiveScheduledWait || isAutoPilotWorking(state) || hasUnresolvedDelivery;
   const rawCopy = getCopy(state);
@@ -1649,6 +1651,36 @@ export function AutoPilotActivityIndicator({
   };
 
   if (!shouldRender) return null;
+
+
+  if (variant === "console-only") {
+    return (
+      <BrainOperationalConsole
+        open={consoleOpen}
+        events={canonicalEvents}
+        deliveryActions={canonicalDeliveryActions}
+        runtimeState={{ activeCycleToken: state.activeCycleToken }}
+        failedActions={failedConfirmedActions}
+        isRetryExhausted={isRetryExhausted}
+        isRetryingManual={isRetryingManual}
+        retryingActionId={retryingActionId}
+        onRetryAction={handleManualFailedAction}
+        onManualRetry={handleManualRetryOnce}
+        onClose={() => {
+          setIsConsoleOpen(false);
+          if (openConsoleRequestId !== undefined) onConsoleOpenRequestDismissed?.(openConsoleRequestId);
+        }}
+        manualResolution={{ answer: manualResolutionAnswer, question: formatVisibleBrainIdentity(state.pauseReason), submitting: isSubmittingResolution }}
+        onManualResolution={handleSubmitManualResolution}
+        onManualResolutionChange={setManualResolutionAnswer}
+        mediaObservation={mediaObservation}
+        mediaObservationAnswer={mediaObservationAnswer}
+        mediaObservationSubmitting={isSubmittingMediaObservation}
+        onMediaObservationChange={setMediaObservationAnswer}
+        onMediaObservationSubmit={handleSubmitMediaObservation}
+      />
+    );
+  }
 
   // VARIANTE INBOX (Lista de conversas - limpa e elegante)
   if (variant === "inbox") {

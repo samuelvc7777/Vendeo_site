@@ -842,6 +842,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const handleBrainConsoleOpenRequestHandled = useCallback((requestId: number) => {
     setBrainConsoleRequest((current) => current?.requestId === requestId ? null : current);
   }, []);
+  const handleOpenBrainConsole = useCallback((conversationId: string) => {
+    brainConsoleRequestIdRef.current += 1;
+    setBrainConsoleRequest({
+      conversationId,
+      requestId: brainConsoleRequestIdRef.current,
+    });
+  }, []);
   const [messages, setMessages] = useState<Record<string, DirectMessage[]>>({});
   const messagesRef = useRef<Record<string, DirectMessage[]>>({});
   const messageFetchesRef = useRef(new Map<string, Promise<void>>());
@@ -4752,10 +4759,21 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
         {/* HUD Flutuante do Piloto Automático (Desacoplado da rolagem: zero tremor e zero piscar) */}
         {(() => {
-          if (activeChat.type === "whatsapp") return null;
           const currentChatState = autoPilot.chatStates[activeChat.id];
           if (!currentChatState) {
             return null;
+          }
+
+          if (activeChat.type === "whatsapp") {
+            return (
+              <AutoPilotActivityIndicator
+                state={currentChatState}
+                variant="console-only"
+                conversationId={activeChat.id}
+                openConsoleRequestId={brainConsoleRequest?.conversationId === activeChat.id ? brainConsoleRequest.requestId : undefined}
+                onConsoleOpenRequestDismissed={handleBrainConsoleOpenRequestHandled}
+              />
+            );
           }
           const isActivelyWorking = Boolean(
             currentChatState.activity ||
@@ -4968,6 +4986,11 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
               }}
               onStartRecording={handleStartRecording}
               onOpenVault={() => setIsPersonaAudioModalOpen(true)}
+              onOpenConsole={
+                activeChat.type === "whatsapp"
+                  ? () => handleOpenBrainConsole(activeChat.id)
+                  : undefined
+              }
             />
           </div>
         )}
