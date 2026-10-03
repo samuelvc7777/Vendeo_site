@@ -1237,7 +1237,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         isConverted: Boolean(canonical?.is_converted),
         raffleStatus: normalizeRaffleCommercialStatus(canonical?.raffle_status),
         aiAutoRespond: Boolean(canonical?.ai_auto_respond),
-        archived: Boolean(gateway?.archived),
+        archived: gateway
+          ? Boolean(gateway.archived)
+          : String(canonical?.status || "") === "archived",
         isLocked: Boolean(gateway?.isLocked),
       };
       return conversation;
