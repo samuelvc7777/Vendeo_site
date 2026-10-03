@@ -374,7 +374,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
   try {
     const { data: lastOutboundRows } = await supabase
       .from("instagram_messages")
-      .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript, image_description, media_operator_observation")
+      .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, provider_type, attachment_metadata, message_metadata, audio_transcript, image_description, media_operator_observation")
       .eq("conversation_id", conversationId)
       .or("is_mine.eq.true,direction.eq.outbound,sender_id.eq.me,sender_id.eq.larissa")
       .order("created_at", { ascending: false })
@@ -391,7 +391,7 @@ export async function loadMandatoryBrainContextCandidates(params: {
     try {
       const { data: replyTargetRows } = await supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript, image_description, media_operator_observation")
+        .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, provider_type, attachment_metadata, message_metadata, audio_transcript, image_description, media_operator_observation")
         .eq("conversation_id", conversationId)
         .in("id", replyTargetIds);
       if (Array.isArray(replyTargetRows)) {
@@ -769,6 +769,46 @@ export type MessageProcessingStatus =
   | "processed"
   | "failed";
 
+export interface CanonicalAttachment {
+  kind: "audio" | "image" | "video" | "sticker" | "document" | "file" | "unsupported";
+  providerType?: string | null;
+  mimeType?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
+  mediaUrl?: string | null;
+  caption?: string | null;
+  duration?: number | null;
+  width?: number | null;
+  height?: number | null;
+  pageCount?: number | null;
+  isGif?: boolean;
+  isAnimated?: boolean;
+  isViewOnce?: boolean;
+  isForwarded?: boolean;
+  forwardingScore?: number | null;
+  downloadable?: boolean;
+  previewable?: boolean;
+  textExtraction?: {
+    source?: string;
+    status?: string;
+    text?: string | null;
+    extractedChars?: number;
+    extractedPages?: number;
+    totalPages?: number | null;
+    truncated?: boolean;
+    errorCode?: string | null;
+  } | null;
+  documentMetadata?: {
+    title?: string | null;
+    author?: string | null;
+    subject?: string | null;
+    creator?: string | null;
+    producer?: string | null;
+  } | null;
+  documentKind?: string | null;
+  documentStructure?: Record<string, unknown> | null;
+}
+
 export interface CanonicalMessage {
   id: string;
   conversationId: string;
@@ -779,6 +819,8 @@ export interface CanonicalMessage {
   text: string;
   replyToMessageId?: string | null;
   mediaUrl?: string | null;
+  attachment?: CanonicalAttachment | null;
+  nativeMetadata?: Record<string, any> | null;
   audioTranscript?: string | null;
   hasValidTranscript?: boolean;
   status: MessageProcessingStatus;
@@ -1374,30 +1416,52 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
   const isMine = Boolean(raw.is_mine || raw.is_from_me || raw.sender_id === "me" || raw.sender === "larissa");
   let msgType: "text" | "audio" | "image" | "video" | "file" = "text";
   const rawText = String(raw.text || raw.message || "").trim();
+  const rawAttachmentCandidate =
+    raw.attachment_metadata && typeof raw.attachment_metadata === "object"
+      ? raw.attachment_metadata
+      : raw.attachment && typeof raw.attachment === "object"
+      ? raw.attachment
+      : null;
+  const rawAttachment =
+    rawAttachmentCandidate &&
+    Object.keys(rawAttachmentCandidate).length > 0 &&
+    (rawAttachmentCandidate.kind || raw.media_type || raw.mediaType)
+      ? rawAttachmentCandidate
+      : null;
+  const rawNativeMetadata =
+    raw.message_metadata && typeof raw.message_metadata === "object"
+      ? raw.message_metadata
+      : raw.messageMetadata && typeof raw.messageMetadata === "object"
+      ? raw.messageMetadata
+      : null;
+  const attachmentKind = String(
+    rawAttachment?.kind || raw.media_type || raw.mediaType || "",
+  ).toLowerCase();
 
   if (
-    raw.media_type === "audio" ||
-    raw.mediaType === "audio" ||
+    attachmentKind === "audio" ||
     raw.type === "audio" ||
     rawText.startsWith("[audio:") ||
     rawText.includes("[audio:")
   ) {
     msgType = "audio";
   } else if (
-    raw.media_type === "image" ||
-    raw.mediaType === "image" ||
+    attachmentKind === "image" ||
     raw.type === "image" ||
     rawText.startsWith("[image:")
   ) {
     msgType = "image";
   } else if (
-    raw.media_type === "video" ||
-    raw.mediaType === "video" ||
+    attachmentKind === "video" ||
     raw.type === "video" ||
     rawText.startsWith("[video:")
   ) {
     msgType = "video";
   } else if (
+    ["document", "file", "unsupported"].includes(attachmentKind) ||
+    raw.media_type === "document" ||
+    raw.mediaType === "document" ||
+    raw.type === "document" ||
     raw.media_type === "file" ||
     raw.mediaType === "file" ||
     raw.type === "file" ||
@@ -1405,6 +1469,54 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
   ) {
     msgType = "file";
   }
+
+  const normalizedAttachment: CanonicalAttachment | null = rawAttachment
+    ? {
+        kind: (
+          ["audio", "image", "video", "sticker", "document", "file", "unsupported"].includes(
+            String(rawAttachment.kind || "").toLowerCase(),
+          )
+            ? String(rawAttachment.kind).toLowerCase()
+            : msgType === "file"
+            ? "file"
+            : msgType
+        ) as CanonicalAttachment["kind"],
+        providerType: rawAttachment.providerType || raw.provider_type || raw.providerType || null,
+        mimeType: rawAttachment.mimeType || null,
+        fileName: rawAttachment.fileName || null,
+        fileSize: Number.isFinite(Number(rawAttachment.fileSize)) ? Number(rawAttachment.fileSize) : null,
+        mediaUrl: rawAttachment.mediaUrl || raw.media_url || raw.mediaUrl || null,
+        caption: rawAttachment.caption || null,
+        duration: Number.isFinite(Number(rawAttachment.duration)) ? Number(rawAttachment.duration) : null,
+        width: Number.isFinite(Number(rawAttachment.width)) ? Number(rawAttachment.width) : null,
+        height: Number.isFinite(Number(rawAttachment.height)) ? Number(rawAttachment.height) : null,
+        pageCount: Number.isFinite(Number(rawAttachment.pageCount)) ? Number(rawAttachment.pageCount) : null,
+        isGif: Boolean(rawAttachment.isGif),
+        isAnimated: Boolean(rawAttachment.isAnimated),
+        isViewOnce: Boolean(rawAttachment.isViewOnce),
+        isForwarded: Boolean(rawAttachment.isForwarded),
+        forwardingScore: Number.isFinite(Number(rawAttachment.forwardingScore))
+          ? Number(rawAttachment.forwardingScore)
+          : null,
+        downloadable: Boolean(rawAttachment.downloadable),
+        previewable: Boolean(rawAttachment.previewable),
+        textExtraction:
+          rawAttachment.textExtraction && typeof rawAttachment.textExtraction === "object"
+            ? rawAttachment.textExtraction
+            : null,
+        documentMetadata:
+          rawAttachment.documentMetadata && typeof rawAttachment.documentMetadata === "object"
+            ? rawAttachment.documentMetadata
+            : null,
+        documentKind: rawAttachment.documentKind
+          ? String(rawAttachment.documentKind)
+          : null,
+        documentStructure:
+          rawAttachment.documentStructure && typeof rawAttachment.documentStructure === "object"
+            ? rawAttachment.documentStructure
+            : null,
+      }
+    : null;
 
   const rawAudioTranscript = raw.audio_transcript || raw.audioTranscript || null;
   const imageDescription = String(raw.image_description || raw.imageDescription || "").trim();
@@ -1429,9 +1541,195 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
       ? `[IMAGEM RECEBIDA — descrição visual automática]\n${imageDescription}`
       : "[imagem recebida — descrição visual indisponível]";
   } else if (msgType === "video") {
-    text = operatorObservation
+    text = normalizedAttachment?.isGif
+      ? "[GIF recebido — conteúdo visual não descrito automaticamente]"
+      : operatorObservation
       ? `[VÍDEO OBSERVADO PELO OPERADOR]\n${operatorObservation}`
       : "[vídeo recebido — observação humana pendente]";
+  } else if (attachmentKind === "sticker") {
+    text = normalizedAttachment?.isAnimated
+      ? "[figurinha animada recebida]"
+      : "[figurinha recebida]";
+  } else if (msgType === "file") {
+    const fileName = String(normalizedAttachment?.fileName || "arquivo").trim() || "arquivo";
+    const mimeType = String(normalizedAttachment?.mimeType || "").toLowerCase();
+    const isPdf =
+      mimeType === "application/pdf" ||
+      fileName.toLowerCase().endsWith(".pdf");
+    const extraction = normalizedAttachment?.textExtraction;
+
+    if (isPdf && extraction?.status === "extracted" && extraction.text) {
+      const pages = Number(extraction.totalPages || normalizedAttachment?.pageCount || 0) || null;
+      const pageLabel = pages ? ` (${pages} pág.${pages === 1 ? "" : "s"})` : "";
+      const truncation = extraction.truncated
+        ? "\n[extração truncada pelos limites de segurança]"
+        : "";
+      text = `[PDF recebido: ${fileName}${pageLabel}]\nConteúdo extraído:\n${String(extraction.text).trim()}${truncation}`;
+    } else if (isPdf && extraction?.status === "no_text") {
+      const scope = extraction.truncated
+        ? "não foi encontrado texto extraível nas páginas processadas"
+        : "não foi encontrado texto extraível";
+      text = `[PDF recebido: ${fileName} — ${scope}; o arquivo pode ser escaneado ou composto por imagens]`;
+    } else if (isPdf && extraction?.status === "too_large") {
+      text = `[PDF recebido: ${fileName} — conteúdo não extraído porque o arquivo excede o limite seguro de processamento]`;
+    } else if (isPdf && extraction?.status === "protected") {
+      text = `[PDF recebido: ${fileName} — conteúdo não extraído porque o PDF é protegido por senha]`;
+    } else if (isPdf && extraction?.status) {
+      text = `[PDF recebido: ${fileName} — conteúdo textual indisponível]`;
+    } else if (!isPdf) {
+      const extension = fileName.includes(".")
+        ? fileName.split(".").pop()?.toLowerCase() || ""
+        : "";
+      const documentKind = String(
+        normalizedAttachment?.documentKind || extension,
+      ).toLowerCase();
+      const supportedKinds = ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv"];
+
+      if (supportedKinds.includes(documentKind)) {
+        const label = documentKind.toUpperCase();
+        const structure = normalizedAttachment?.documentStructure || {};
+        let structureLine = "";
+        if (
+          documentKind === "xlsx" &&
+          Array.isArray((structure as any).sheetNames) &&
+          (structure as any).sheetNames.length
+        ) {
+          structureLine = `\nAbas: ${(structure as any).sheetNames.join(", ")}.`;
+        } else if (
+          documentKind === "pptx" &&
+          Number((structure as any).slideCount || 0) > 0
+        ) {
+          structureLine = `\nSlides: ${Number((structure as any).slideCount)}.`;
+        }
+
+        if (extraction?.status === "extracted" && extraction.text) {
+          const truncation = extraction.truncated
+            ? "\n[extração truncada pelos limites de segurança]"
+            : "";
+          text = `[${label} recebido: ${fileName}]${structureLine}\nConteúdo extraído:\n${String(extraction.text).trim()}${truncation}`;
+        } else if (extraction?.status === "no_text") {
+          text = `[${label} recebido: ${fileName} — não foi encontrado texto extraível]`;
+        } else if (extraction?.status === "too_large") {
+          text = `[${label} recebido: ${fileName} — conteúdo não extraído porque o arquivo excede o limite seguro de processamento]`;
+        } else if (extraction?.status === "unsupported_legacy_binary") {
+          text = `[${label} recebido: ${fileName} — formato Office legado recebido, mas o conteúdo não foi interpretado automaticamente]`;
+        } else if (extraction?.status === "error") {
+          text = `[${label} recebido: ${fileName} — não foi possível extrair o conteúdo com segurança]`;
+        }
+      }
+
+      if (!text || text === fileName) {
+        text = normalizedAttachment?.fileName
+          ? `[arquivo recebido: ${normalizedAttachment.fileName}]`
+          : "[arquivo recebido — conteúdo ainda não interpretado]";
+      }
+    } else if (!text || text === fileName) {
+      text = normalizedAttachment?.fileName
+        ? `[arquivo recebido: ${normalizedAttachment.fileName}]`
+        : "[arquivo recebido — conteúdo ainda não interpretado]";
+    }
+  }
+
+  const nativeKind = String(rawNativeMetadata?.nativeKind || "").toLowerCase();
+  if (nativeKind === "contact") {
+    const contacts = Array.isArray(rawNativeMetadata?.contacts)
+      ? rawNativeMetadata.contacts.slice(0, 20)
+      : [];
+    const lines = contacts.map((contact: any, index: number) => {
+      const name = String(contact?.name || `Contato ${index + 1}`).trim();
+      const phones = Array.isArray(contact?.phones)
+        ? contact.phones.filter(Boolean).slice(0, 6).join(", ")
+        : "";
+      const emails = Array.isArray(contact?.emails)
+        ? contact.emails.filter(Boolean).slice(0, 6).join(", ")
+        : "";
+      const org = String(contact?.organization || "").trim();
+      return [
+        name,
+        phones ? `telefone: ${phones}` : "",
+        emails ? `email: ${emails}` : "",
+        org ? `organização: ${org}` : "",
+      ].filter(Boolean).join(" | ");
+    });
+    text = contacts.length > 1
+      ? `[contatos recebidos: ${contacts.length}]\n${lines.join("\n")}`
+      : `[contato recebido]\n${lines[0] || "dados do contato indisponíveis"}`;
+  } else if (nativeKind === "location") {
+    const location = rawNativeMetadata?.location || {};
+    const name = String(location.name || "").trim();
+    const address = String(location.address || "").trim();
+    const latitude = Number(location.latitude);
+    const longitude = Number(location.longitude);
+    const coordinates =
+      Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? `${latitude}, ${longitude}`
+        : "";
+    text = [
+      location.isLive ? "[localização ao vivo recebida]" : "[localização recebida]",
+      name,
+      address,
+      coordinates ? `coordenadas: ${coordinates}` : "",
+    ].filter(Boolean).join("\n");
+  } else if (nativeKind === "poll") {
+    const poll = rawNativeMetadata?.poll || {};
+    const options = Array.isArray(poll.options)
+      ? poll.options
+          .slice(0, 20)
+          .map((option: any) => String(option?.name || "").trim())
+          .filter(Boolean)
+      : [];
+    text = `[enquete recebida]\nPergunta: ${String(poll.question || rawText || "Enquete").trim()}${
+      options.length ? `\nOpções: ${options.join("; ")}` : ""
+    }`;
+  } else if (nativeKind === "album") {
+    const expectedItems = Number(rawNativeMetadata?.album?.expectedItems || 0);
+    text = expectedItems > 0
+      ? `[álbum recebido — ${expectedItems} itens esperados]`
+      : "[álbum recebido]";
+  } else if (nativeKind === "call") {
+    text = `[registro de chamada recebido${rawNativeMetadata?.call?.summary ? `: ${rawNativeMetadata.call.summary}` : ""}]`;
+  } else if (nativeKind === "group_invite") {
+    text = `[convite de grupo recebido: ${String(rawNativeMetadata?.groupInvite?.groupName || "grupo")}]`;
+  } else if (nativeKind === "interactive") {
+    const selected =
+      rawNativeMetadata?.interactive?.selectedButtonId ||
+      rawNativeMetadata?.interactive?.selectedRowId ||
+      null;
+    text = selected
+      ? `[resposta interativa recebida: ${String(selected)}]`
+      : "[mensagem interativa recebida]";
+  } else if (nativeKind === "order") {
+    text = "[pedido recebido]";
+  } else if (nativeKind === "product") {
+    text = "[produto recebido]";
+  } else if (nativeKind === "payment") {
+    text = "[informação de pagamento recebida]";
+  } else if (nativeKind === "revoked") {
+    text = "Mensagem apagada";
+  } else if (nativeKind === "unsupported") {
+    text = `[mensagem nativa do WhatsApp ainda não suportada: ${String(rawNativeMetadata?.providerType || "tipo desconhecido")}]`;
+  } else if (nativeKind === "link" && rawNativeMetadata?.linkPreview) {
+    const preview = rawNativeMetadata.linkPreview;
+    const previewBits = [
+      preview.title ? `título: ${String(preview.title)}` : "",
+      preview.description ? `descrição: ${String(preview.description)}` : "",
+      preview.url ? `url: ${String(preview.url)}` : "",
+    ].filter(Boolean);
+    if (previewBits.length) {
+      text = `${text || rawText}\n[prévia de link — ${previewBits.join(" | ")}]`.trim();
+    }
+  }
+
+  if (rawNativeMetadata?.isForwarded && nativeKind !== "revoked") {
+    const score = Number(rawNativeMetadata?.forwardingScore || 0);
+    const label = score >= 5
+      ? "[mensagem encaminhada muitas vezes]"
+      : "[mensagem encaminhada]";
+    text = `${label}\n${text}`.trim();
+  }
+
+  if (normalizedAttachment?.isViewOnce) {
+    text = `[mídia de visualização única]\n${text}`.trim();
   }
 
   return {
@@ -1443,7 +1741,9 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
     type: msgType,
     text,
     replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId || raw.quoted_message_id || raw.quotedMessageId || null,
-    mediaUrl: raw.media_url || raw.mediaUrl || null,
+    mediaUrl: normalizedAttachment?.mediaUrl || raw.media_url || raw.mediaUrl || null,
+    attachment: normalizedAttachment,
+    nativeMetadata: rawNativeMetadata,
     audioTranscript: rawAudioTranscript ? String(rawAudioTranscript).trim() : null,
     hasValidTranscript,
     status: raw.status || "received",
@@ -7417,7 +7717,7 @@ export async function runBrainOrchestration(
     while (hasMore) {
       const q = supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, direction, audio_transcript, image_description, media_operator_observation")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, provider_type, attachment_metadata, message_metadata, direction, audio_transcript, image_description, media_operator_observation")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false });
 
@@ -7921,7 +8221,7 @@ export async function runBrainOrchestration(
       try {
         const { data: recentDbRows } = await supabase
           .from("instagram_messages")
-          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, audio_transcript, image_description, media_operator_observation")
+          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, provider_type, attachment_metadata, message_metadata, audio_transcript, image_description, media_operator_observation")
           .eq("conversation_id", conversationId)
           .order("created_at", { ascending: false })
           .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);

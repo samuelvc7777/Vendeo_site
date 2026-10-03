@@ -33,7 +33,7 @@ type ContactMessage = {
   id: string;
   text: string;
   mediaUrl?: string;
-  mediaType?: "image" | "audio" | "video" | "sticker";
+  mediaType?: "image" | "audio" | "video" | "sticker" | "document" | "file" | "unsupported";
   isMine: boolean;
   timestamp?: number;
   sentDate?: string;

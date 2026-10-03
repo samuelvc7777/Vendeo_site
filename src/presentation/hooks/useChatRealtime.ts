@@ -33,7 +33,7 @@ export interface RealtimeMessagePayload {
 
 export interface RealtimeConversationUpdatePayload {
   id: string;
-  channel?: "instagram" | "whatsapp";
+  channel?: "instagram" | "whatsapp" | "whatsapp2";
   lastMessage?: string;
   lastMessageAt?: string;
   lastDirection?: "in" | "out" | "inbound" | "outbound";
@@ -68,6 +68,8 @@ interface UseChatRealtimeProps {
   onInstagramMessage?: (msg: RealtimeMessagePayload) => void;
   onInstagramConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
   onInstagramConversationInsert?: (conv: RealtimeConversationUpdatePayload) => void;
+  onWhatsApp2ConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
+  onWhatsApp2ConversationInsert?: (conv: RealtimeConversationUpdatePayload) => void;
   onInstagramSeen?: (payload: RealtimeSeenPayload) => void;
   onInstagramReaction?: (payload: RealtimeInstagramReactionPayload) => void;
   onAutoPilotStateUpdate?: (
@@ -98,6 +100,8 @@ export function useChatRealtime({
   onInstagramMessage,
   onInstagramConversationUpdate,
   onInstagramConversationInsert,
+  onWhatsApp2ConversationUpdate,
+  onWhatsApp2ConversationInsert,
   onInstagramSeen,
   onInstagramReaction,
   onAutoPilotStateUpdate,
@@ -107,6 +111,8 @@ export function useChatRealtime({
     onInstagramMessage,
     onInstagramConversationUpdate,
     onInstagramConversationInsert,
+    onWhatsApp2ConversationUpdate,
+    onWhatsApp2ConversationInsert,
     onInstagramSeen,
     onInstagramReaction,
     onAutoPilotStateUpdate,
@@ -118,6 +124,8 @@ export function useChatRealtime({
       onInstagramMessage,
       onInstagramConversationUpdate,
       onInstagramConversationInsert,
+      onWhatsApp2ConversationUpdate,
+      onWhatsApp2ConversationInsert,
       onInstagramSeen,
       onInstagramReaction,
       onAutoPilotStateUpdate,
@@ -126,6 +134,8 @@ export function useChatRealtime({
     onInstagramMessage,
     onInstagramConversationUpdate,
     onInstagramConversationInsert,
+    onWhatsApp2ConversationUpdate,
+    onWhatsApp2ConversationInsert,
     onInstagramSeen,
     onInstagramReaction,
     onAutoPilotStateUpdate,
@@ -152,11 +162,16 @@ export function useChatRealtime({
           if (!payload) return;
 
           if (type === "instagram_message" && payload.id) {
+            if (String(payload.conversationId || "").startsWith("wa2:")) return;
             if (processedMessageIdsRef.current.has(payload.id)) return;
             markMessageProcessed(payload.id);
             callbacksRef.current.onInstagramMessage?.(payload);
           } else if (type === "instagram_conversation_update" && payload.id) {
-            callbacksRef.current.onInstagramConversationUpdate?.(payload);
+            if (payload.channel === "whatsapp2" || String(payload.id).startsWith("wa2:")) {
+              callbacksRef.current.onWhatsApp2ConversationUpdate?.(payload);
+            } else {
+              callbacksRef.current.onInstagramConversationUpdate?.(payload);
+            }
           } else if (type === "instagram_seen" && payload.conversationId) {
             callbacksRef.current.onInstagramSeen?.(payload);
           } else if (
@@ -183,6 +198,7 @@ export function useChatRealtime({
         { event: "instagram_message" },
         ({ payload }: { payload: RealtimeMessagePayload }) => {
           if (!payload || !payload.id || !payload.conversationId) return;
+          if (String(payload.conversationId).startsWith("wa2:")) return;
           if (processedMessageIdsRef.current.has(payload.id)) return;
           markMessageProcessed(payload.id);
           callbacksRef.current.onInstagramMessage?.(payload);
@@ -193,7 +209,11 @@ export function useChatRealtime({
         { event: "instagram_conversation_update" },
         ({ payload }: { payload: RealtimeConversationUpdatePayload }) => {
           if (!payload || !payload.id) return;
-          callbacksRef.current.onInstagramConversationUpdate?.(payload);
+          if (payload.channel === "whatsapp2" || String(payload.id).startsWith("wa2:")) {
+            callbacksRef.current.onWhatsApp2ConversationUpdate?.(payload);
+          } else {
+            callbacksRef.current.onInstagramConversationUpdate?.(payload);
+          }
         }
       )
       .on(
@@ -246,6 +266,9 @@ export function useChatRealtime({
         (payload: any) => {
           const row = payload?.new;
           if (!row || !row.id || !row.conversation_id) return;
+          if (row.channel === "whatsapp2" || String(row.conversation_id).startsWith("wa2:")) {
+            return;
+          }
           if (processedMessageIdsRef.current.has(String(row.id))) return;
           markMessageProcessed(String(row.id));
 
@@ -282,21 +305,35 @@ export function useChatRealtime({
             return;
           }
 
-          callbacksRef.current.onInstagramConversationUpdate?.({
+          const normalizedChannel =
+            row.channel === "whatsapp2"
+              ? "whatsapp2"
+              : row.channel === "whatsapp"
+              ? "whatsapp"
+              : "instagram";
+          const conversationPayload: RealtimeConversationUpdatePayload = {
             id: String(row.id),
-            channel: row.channel === "whatsapp" ? "whatsapp" : "instagram",
+            channel: normalizedChannel,
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,
             lastDirection: row.last_direction || undefined,
+            lastStatus: row.last_status || undefined,
+            seenAt: row.seen_at || undefined,
             unread: Boolean(row.unread),
             fullName: row.full_name || undefined,
             username: row.username || undefined,
-            avatar: row.avatar || undefined,
+            avatar: row.avatar_url || row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
             raffleStatus: normalizeRaffleCommercialStatus(row.raffle_status),
             aiAutoRespond: Boolean(row.ai_auto_respond),
-          });
+          };
+
+          if (normalizedChannel === "whatsapp2" || String(row.id).startsWith("wa2:")) {
+            callbacksRef.current.onWhatsApp2ConversationUpdate?.(conversationPayload);
+          } else {
+            callbacksRef.current.onInstagramConversationUpdate?.(conversationPayload);
+          }
         }
       )
       .on(
@@ -318,21 +355,35 @@ export function useChatRealtime({
             return;
           }
 
-          callbacksRef.current.onInstagramConversationInsert?.({
+          const normalizedChannel =
+            row.channel === "whatsapp2"
+              ? "whatsapp2"
+              : row.channel === "whatsapp"
+              ? "whatsapp"
+              : "instagram";
+          const conversationPayload: RealtimeConversationUpdatePayload = {
             id: String(row.id),
-            channel: row.channel === "whatsapp" ? "whatsapp" : "instagram",
+            channel: normalizedChannel,
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,
             lastDirection: row.last_direction || undefined,
+            lastStatus: row.last_status || undefined,
+            seenAt: row.seen_at || undefined,
             unread: Boolean(row.unread),
             fullName: row.full_name || undefined,
             username: row.username || undefined,
-            avatar: row.avatar || undefined,
+            avatar: row.avatar_url || row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
             raffleStatus: normalizeRaffleCommercialStatus(row.raffle_status),
             aiAutoRespond: Boolean(row.ai_auto_respond),
-          });
+          };
+
+          if (normalizedChannel === "whatsapp2" || String(row.id).startsWith("wa2:")) {
+            callbacksRef.current.onWhatsApp2ConversationInsert?.(conversationPayload);
+          } else {
+            callbacksRef.current.onInstagramConversationInsert?.(conversationPayload);
+          }
         }
       )
       .subscribe((status: string) => {
