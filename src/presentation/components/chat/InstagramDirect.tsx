@@ -44,6 +44,8 @@ import {
   Copy,
   BookmarkPlus,
   Sticker,
+  Lock,
+  LockOpen,
 } from "lucide-react";
 import {
   ConversationSkeletonList,
@@ -115,6 +117,7 @@ import {
   openWhatsApp2EventStream,
   sendWhatsApp2Media,
   sendWhatsApp2Text,
+  setWhatsApp2ChatLocked,
   subscribeWhatsApp2Presence,
   unsubscribeWhatsApp2Presence,
   type WhatsApp2GatewayChat,
@@ -2215,6 +2218,48 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     toast.success(nextUnread ? "Conversa marcada como não lida." : "Conversa marcada como lida.");
     setSelectedChatForActionSheet(null);
   }, [isConversationUnread]);
+
+  const handleToggleWhatsApp2Lock = useCallback(async (chat: DirectConversation) => {
+    if (chat.type !== "whatsapp2") return;
+
+    const nextLocked = !Boolean(chat.isLocked);
+    const providerId = chat.providerId || chat.id.replace(/^wa2:/, "");
+    setSelectedChatForActionSheet(null);
+
+    try {
+      const result = await setWhatsApp2ChatLocked(providerId, nextLocked);
+      const resolvedLocked = Boolean(result.isLocked);
+
+      const applyLockState = (prev: DirectConversation[]) =>
+        prev.map((item) =>
+          item.id === chat.id
+            ? { ...item, isLocked: resolvedLocked }
+            : item
+        );
+
+      setWhatsApp2Conversations(applyLockState);
+      setActiveChat((prev) =>
+        prev?.id === chat.id
+          ? { ...prev, isLocked: resolvedLocked }
+          : prev
+      );
+
+      toast.success(
+        resolvedLocked
+          ? "Conversa trancada no WhatsApp."
+          : "Conversa destrancada no WhatsApp."
+      );
+
+      void loadWhatsApp2Conversations();
+    } catch (error) {
+      toast.error(
+        (error as Error).message ||
+          (nextLocked
+            ? "Não foi possível trancar a conversa."
+            : "Não foi possível destrancar a conversa.")
+      );
+    }
+  }, [loadWhatsApp2Conversations]);
 
   const markConversationAsReadLocally = useCallback((chatId: string) => {
     if (!chatId) return;
@@ -8347,6 +8392,25 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 </span>
                 <Bell className="h-5 w-5" />
               </button>
+
+              {selectedChatForActionSheet.type === "whatsapp2" && (
+                <button
+                  type="button"
+                  onClick={() => handleToggleWhatsApp2Lock(selectedChatForActionSheet)}
+                  className="flex w-full items-center justify-between border-t border-black/[0.08] px-4 py-3.5 text-[16px] text-[#007aff] transition-colors active:bg-black/[0.06] dark:border-white/[0.08] dark:active:bg-white/[0.06]"
+                >
+                  <span>
+                    {selectedChatForActionSheet.isLocked
+                      ? "Destrancar conversa"
+                      : "Trancar conversa"}
+                  </span>
+                  {selectedChatForActionSheet.isLocked ? (
+                    <LockOpen className="h-5 w-5" />
+                  ) : (
+                    <Lock className="h-5 w-5" />
+                  )}
+                </button>
+              )}
             </div>
             <button
               type="button"

@@ -253,6 +253,19 @@ export async function getWhatsApp2Chats(limit = 160) {
   return `${WHATSAPP2_GATEWAY_URL}/message/media?messageId=${encodeURIComponent(messageId)}`;
 }
 
+export async function setWhatsApp2ChatLocked(chatId: string, locked: boolean) {
+  return request<{
+    ok: true;
+    chatId: string;
+    isLocked: boolean;
+    changed: boolean;
+  }>("/chat/lock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chatId, locked }),
+  });
+}
+
 export async function getWhatsApp2Messages(chatId: string, limit = 120) {
   const data = await request<{
     ok: true;

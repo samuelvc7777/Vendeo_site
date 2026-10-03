@@ -336,6 +336,58 @@ async function getRecentChatSnapshot({ force = false } = {}) {
   }
 }
 
+async function setWhatsApp2ChatLockState(chatId, locked) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!normalizedChatId) throw new Error("chatId obrigatório");
+
+  const active = ensureReady();
+  if (!active?.pupPage) throw new Error("Página do WhatsApp Web indisponível");
+
+  const result = await active.pupPage.evaluate(
+    async (id, nextLocked) => {
+      const collections = window.require("WAWebCollections");
+      const chat = await collections.Chat.find(id);
+      if (!chat) throw new Error("Conversa não encontrada");
+
+      const currentLocked = Boolean(chat.isLocked);
+      if (currentLocked === nextLocked) {
+        return { isLocked: currentLocked, changed: false };
+      }
+
+      const action = window.require("WAWebChatLockAction");
+      if (!action?.setChatAsLocked || !action?.setChatAsUnlocked) {
+        throw new Error("Chat Lock indisponível nesta versão do WhatsApp Web");
+      }
+
+      if (nextLocked) {
+        await action.setChatAsLocked(id, null);
+      } else {
+        await action.setChatAsUnlocked(id, null);
+      }
+
+      const updated = await collections.Chat.find(id);
+      return {
+        isLocked: Boolean(updated?.isLocked),
+        changed: true,
+      };
+    },
+    normalizedChatId,
+    Boolean(locked),
+  );
+
+  invalidateChatSnapshot();
+  void emitEvent("chat_lock_changed", {
+    chatId: normalizedChatId,
+    isLocked: Boolean(result?.isLocked),
+  });
+
+  return {
+    chatId: normalizedChatId,
+    isLocked: Boolean(result?.isLocked),
+    changed: Boolean(result?.changed),
+  };
+}
+
 function getCachedProfilePic(chatId) {
   const cached = profilePicCache.get(chatId);
   if (!cached) return null;
@@ -3205,6 +3257,15 @@ const server = http.createServer(async (req, res) => {
         chats: rows,
         snapshotAgeMs: Math.max(0, Date.now() - chatSnapshotCacheAt),
       });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat/lock") {
+      const body = await readJson(req, 64 * 1024);
+      const result = await setWhatsApp2ChatLockState(
+        body.chatId,
+        body.locked === true,
+      );
+      json(res, 200, { ok: true, ...result });
       return;
     }
     if (req.method === "GET" && url.pathname === "/chat/profile") {
