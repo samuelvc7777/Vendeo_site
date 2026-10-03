@@ -168,6 +168,7 @@ export interface WhatsApp2GatewayChat {
   unreadCount: number;
   timestamp: number;
   archived: boolean;
+  isLocked: boolean;
   pinned: boolean;
   lastMessage: WhatsApp2GatewayMessage | null;
 }

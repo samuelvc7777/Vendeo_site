@@ -310,6 +310,7 @@ async function getRecentChatSnapshot({ force = false } = {}) {
           unreadCount: Number(chat.unreadCount || 0),
           timestamp,
           archived: Boolean(chat.archived),
+          isLocked: Boolean(chat.isLocked),
           pinned: Boolean(chat.pinned),
           lastMessage: serializeMessage(chat.lastMessage),
         };
