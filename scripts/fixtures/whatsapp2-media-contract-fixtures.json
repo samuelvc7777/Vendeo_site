@@ -1,0 +1,357 @@
+{
+  "providerFixtures": [
+    {
+      "name": "text",
+      "type": "chat",
+      "body": "oi",
+      "hasMedia": false,
+      "expectedCanonicalType": "text"
+    },
+    {
+      "name": "jpeg",
+      "type": "image",
+      "body": "foto",
+      "hasMedia": true,
+      "mimetype": "image/jpeg",
+      "filename": "foto.jpg",
+      "size": 245123,
+      "caption": "foto",
+      "expectedCanonicalType": "image"
+    },
+    {
+      "name": "png",
+      "type": "image",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "image/png",
+      "filename": "imagem.png",
+      "size": 124500,
+      "expectedCanonicalType": "image"
+    },
+    {
+      "name": "video",
+      "type": "video",
+      "body": "video",
+      "hasMedia": true,
+      "mimetype": "video/mp4",
+      "filename": "video.mp4",
+      "size": 4123123,
+      "caption": "video",
+      "expectedCanonicalType": "video"
+    },
+    {
+      "name": "audio",
+      "type": "audio",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "audio/mpeg",
+      "filename": "audio.mp3",
+      "size": 451223,
+      "expectedCanonicalType": "audio"
+    },
+    {
+      "name": "ptt",
+      "type": "ptt",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "audio/ogg; codecs=opus",
+      "filename": null,
+      "size": 118222,
+      "duration": 12,
+      "expectedCanonicalType": "audio"
+    },
+    {
+      "name": "pdf",
+      "type": "document",
+      "body": "comprovante.pdf",
+      "hasMedia": true,
+      "mimetype": "application/pdf",
+      "filename": "comprovante.pdf",
+      "size": 184233,
+      "pageCount": 1,
+      "caption": "",
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "docx",
+      "type": "document",
+      "body": "contrato.docx",
+      "hasMedia": true,
+      "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "filename": "contrato.docx",
+      "size": 384002,
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "xlsx",
+      "type": "document",
+      "body": "planilha.xlsx",
+      "hasMedia": true,
+      "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "filename": "planilha.xlsx",
+      "size": 94213,
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "pptx",
+      "type": "document",
+      "body": "slides.pptx",
+      "hasMedia": true,
+      "mimetype": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "filename": "slides.pptx",
+      "size": 921333,
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "txt",
+      "type": "document",
+      "body": "notas.txt",
+      "hasMedia": true,
+      "mimetype": "text/plain",
+      "filename": "notas.txt",
+      "size": 8122,
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "csv",
+      "type": "document",
+      "body": "dados.csv",
+      "hasMedia": true,
+      "mimetype": "text/csv",
+      "filename": "dados.csv",
+      "size": 18002,
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "zip",
+      "type": "document",
+      "body": "arquivos.zip",
+      "hasMedia": true,
+      "mimetype": "application/zip",
+      "filename": "arquivos.zip",
+      "size": 8400122,
+      "expectedCanonicalType": "document"
+    },
+    {
+      "name": "gif",
+      "type": "video",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "video/mp4",
+      "filename": "animacao.mp4",
+      "size": 720332,
+      "isGif": true,
+      "expectedCanonicalType": "video"
+    },
+    {
+      "name": "sticker",
+      "type": "sticker",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "image/webp",
+      "filename": null,
+      "size": 54213,
+      "isAnimated": false,
+      "expectedCanonicalType": "sticker"
+    },
+    {
+      "name": "animated-sticker",
+      "type": "sticker",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "image/webp",
+      "filename": null,
+      "size": 90213,
+      "isAnimated": true,
+      "expectedCanonicalType": "sticker"
+    },
+    {
+      "name": "vcard",
+      "type": "vcard",
+      "body": "BEGIN:VCARD\\nFN:Contato\\nEND:VCARD",
+      "hasMedia": false,
+      "expectedCanonicalType": "contact"
+    },
+    {
+      "name": "multi-vcard",
+      "type": "multi_vcard",
+      "body": "",
+      "hasMedia": false,
+      "vcardList": [
+        {
+          "displayName": "Contato 1"
+        },
+        {
+          "displayName": "Contato 2"
+        }
+      ],
+      "expectedCanonicalType": "contact"
+    },
+    {
+      "name": "location",
+      "type": "location",
+      "body": "",
+      "hasMedia": false,
+      "lat": -21.13,
+      "lng": -44.25,
+      "isLive": false,
+      "expectedCanonicalType": "location"
+    },
+    {
+      "name": "live-location",
+      "type": "location",
+      "body": "",
+      "hasMedia": false,
+      "lat": -21.13,
+      "lng": -44.25,
+      "isLive": true,
+      "shareDuration": 900,
+      "expectedCanonicalType": "location"
+    },
+    {
+      "name": "link",
+      "type": "chat",
+      "body": "https://example.com",
+      "hasMedia": false,
+      "linkPreview": {
+        "title": "Exemplo",
+        "canonicalUrl": "https://example.com"
+      },
+      "expectedCanonicalType": "text"
+    },
+    {
+      "name": "album",
+      "type": "album",
+      "body": "",
+      "hasMedia": false,
+      "expectedCanonicalType": "album"
+    },
+    {
+      "name": "poll",
+      "type": "poll_creation",
+      "body": "",
+      "hasMedia": false,
+      "pollName": "Escolha",
+      "pollOptions": [
+        "A",
+        "B"
+      ],
+      "expectedCanonicalType": "poll"
+    },
+    {
+      "name": "revoked",
+      "type": "revoked",
+      "body": "",
+      "hasMedia": false,
+      "expectedCanonicalType": "system"
+    },
+    {
+      "name": "unknown-media",
+      "type": "future_media_x",
+      "body": "",
+      "hasMedia": true,
+      "mimetype": "application/x-future",
+      "filename": "arquivo.future",
+      "size": 1234,
+      "expectedCanonicalType": "unsupported"
+    }
+  ],
+  "edgeCases": [
+    {
+      "name": "missing-mime",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "arquivo.pdf",
+      "mimetype": null,
+      "size": 1000
+    },
+    {
+      "name": "wrong-mime",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "arquivo.pdf",
+      "mimetype": "application/octet-stream",
+      "size": 1000
+    },
+    {
+      "name": "no-extension",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "arquivo",
+      "mimetype": "application/pdf",
+      "size": 1000
+    },
+    {
+      "name": "extension-mismatch",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "arquivo.jpg",
+      "mimetype": "application/pdf",
+      "size": 1000
+    },
+    {
+      "name": "special-filename",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "Comprovante João (final) #1.pdf",
+      "mimetype": "application/pdf",
+      "size": 1000
+    },
+    {
+      "name": "very-large",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "gigante.pdf",
+      "mimetype": "application/pdf",
+      "size": 524288000
+    },
+    {
+      "name": "expired-download",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "expirado.pdf",
+      "mimetype": "application/pdf",
+      "downloadState": "expired"
+    },
+    {
+      "name": "unavailable-media",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "indisponivel.pdf",
+      "mimetype": "application/pdf",
+      "downloadState": "unavailable"
+    },
+    {
+      "name": "duplicate-message",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "duplicado.pdf",
+      "mimetype": "application/pdf",
+      "providerId": "msg-duplicate"
+    },
+    {
+      "name": "duplicate-message-again",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "duplicado.pdf",
+      "mimetype": "application/pdf",
+      "providerId": "msg-duplicate"
+    },
+    {
+      "name": "empty-media-data",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "vazio.pdf",
+      "mimetype": "application/pdf",
+      "mediaData": ""
+    },
+    {
+      "name": "document-without-caption",
+      "type": "document",
+      "hasMedia": true,
+      "filename": "sem-caption.pdf",
+      "mimetype": "application/pdf",
+      "caption": ""
+    }
+  ]
+}

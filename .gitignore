@@ -63,3 +63,5 @@ adapter_config.json
 treinar_larissa_colab.ipynb
 .migration-source-schema.sql
 Vendeo Memory/
+tools/
+*.exe

@@ -22,6 +22,7 @@ export function useChatStages(
   const [stages, setStages] = useState<ChatStage[]>([]);
   const [allProgresses, setAllProgresses] = useState<Record<string, ChatProgress>>({});
   const [chatDetail, setChatDetail] = useState<ChatStageDetail | null>(null);
+  const [chatDetailResolvedConversationId, setChatDetailResolvedConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const fetchStages = useCallback(async () => {
@@ -103,12 +104,32 @@ export function useChatStages(
   }, [fetchStages, fetchAllProgresses, loadAllProgresses]);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!activeConversationId) {
       setChatDetail(null);
+      setChatDetailResolvedConversationId(null);
       return;
     }
 
-    fetchChatDetail(activeConversationId);
+    const conversationId = activeConversationId;
+    setChatDetail(null);
+    setChatDetailResolvedConversationId(null);
+
+    void progressUseCase
+      .getChatStageDetail(conversationId)
+      .then((detail) => {
+        if (!cancelled) setChatDetail(detail);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn("Erro ao buscar detalhes da etapa do chat:", error);
+          setChatDetail(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChatDetailResolvedConversationId(conversationId);
+      });
 
     // Subscrição Realtime para atualizar instantaneamente o progresso da etapa na conversa ativa.
     // FILTRO por id: só recebe eventos desta conversa específica, evitando SeqScan global a cada
@@ -136,6 +157,7 @@ export function useChatStages(
       .subscribe();
 
     return () => {
+      cancelled = true;
       client.removeChannel(channel);
     };
   }, [activeConversationId, fetchChatDetail]);
@@ -420,6 +442,7 @@ export function useChatStages(
     stages,
     allProgresses,
     chatDetail,
+    chatDetailResolvedConversationId,
     isLoading,
     refresh,
     createStage,

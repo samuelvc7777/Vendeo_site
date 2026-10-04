@@ -19,9 +19,14 @@ import {
   Link2,
   MessageCircle,
   Sparkles,
+  Flame,
+  LogOut,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { InstagramAccount } from "@/domain/entities/Instagram";
+import { TinderSession } from "@/domain/entities/Tinder";
+import { TinderConnectModal } from "@/presentation/components/tinder/TinderConnectModal";
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { ChatStagesManager } from "./ChatStagesManager";
@@ -96,6 +101,10 @@ export function ConfigView() {
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState<boolean | null>(null);
   const [isWhatsApp2Connected, setIsWhatsApp2Connected] = useState<boolean | null>(null);
+  const [tinderSession, setTinderSession] = useState<TinderSession | null>(null);
+  const [isTinderModalOpen, setIsTinderModalOpen] = useState(false);
+  const [isLoadingTinder, setIsLoadingTinder] = useState(false);
+  const [syncSuccess, setSyncSuccess] = useState(false);
 
   const [groqKeyInput, setGroqKeyInput] = useState("");
   const [isGroqConfigured, setIsGroqConfigured] = useState(false);
@@ -108,6 +117,7 @@ export function ConfigView() {
     if (!IS_WHATSAPP2_REMOTE_BUILD) {
       void checkInstagramStatus();
       void checkWhatsAppStatus();
+      void checkTinderStatus();
     }
     void checkGroqStatus();
   }, []);
@@ -180,10 +190,73 @@ export function ConfigView() {
     }
   };
 
+  const checkTinderStatus = async () => {
+    try {
+      const res = await fetch(getApiUrl("/api/tinder/status"), { cache: "no-store" });
+      if (!res.ok) {
+        setTinderSession(null);
+        return;
+      }
+      const data = await res.json();
+      if (data?.isConnected) {
+        setTinderSession({
+          token: data.token || "",
+          isConnected: true,
+          profile: data.profile,
+        });
+      } else {
+        setTinderSession(null);
+      }
+    } catch {
+      // Mantém o estado atual
+    }
+  };
+
+  const handleConnectTinder = async (token: string) => {
+    const res = await fetch(getApiUrl("/api/tinder/auth"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Falha ao conectar com o Tinder.");
+
+    setTinderSession({
+      token,
+      isConnected: true,
+      profile: data.profile,
+    });
+    toast.success("Tinder conectado com sucesso!");
+  };
+
+  const handleDisconnectTinder = async () => {
+    await fetch(getApiUrl("/api/tinder/disconnect"), { method: "POST" });
+    setTinderSession(null);
+    toast.success("Tinder desconectado.");
+  };
+
+  const handleSyncMatches = async () => {
+    setIsLoadingTinder(true);
+    try {
+      const res = await fetch(getApiUrl("/api/tinder/matches"));
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Falha ao sincronizar matches.");
+      }
+      setSyncSuccess(true);
+      toast.success("Matches do Tinder sincronizados!");
+      window.setTimeout(() => setSyncSuccess(false), 2500);
+    } catch (err: any) {
+      toast.error(err?.message || "Erro ao sincronizar matches do Tinder.");
+    } finally {
+      setIsLoadingTinder(false);
+    }
+  };
+
   const connectedChannels = IS_WHATSAPP2_REMOTE_BUILD
     ? Number(Boolean(isWhatsApp2Connected))
-    : Number(Boolean(isInstagramConnected)) + Number(Boolean(isWhatsAppConnected));
-  const availableChannelCount = IS_WHATSAPP2_REMOTE_BUILD ? 1 : 2;
+    : Number(Boolean(isInstagramConnected)) + Number(Boolean(isWhatsAppConnected)) + Number(Boolean(tinderSession?.isConnected));
+  const availableChannelCount = IS_WHATSAPP2_REMOTE_BUILD ? 1 : 3;
   const activeObjectives = stages.reduce(
     (total, stage) => total + (stage.goals || []).filter((goal) => goal.enabled !== false).length,
     0,
@@ -402,6 +475,83 @@ export function ConfigView() {
                   </div>
                 </div>
               </article>
+
+              <article className="min-w-0 rounded-2xl border border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#111113] p-4 shadow-sm sm:p-5">
+                <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-[#fd297b] to-[#ff5864]">
+                      <Flame className="h-5 w-5 fill-white text-white" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">Tinder</h3>
+                      <p className="mt-0.5 text-[11px] text-zinc-500">
+                        Matches e mensagens da conta conectada
+                      </p>
+                    </div>
+                  </div>
+                  <StatusPill active={Boolean(tinderSession?.isConnected)} />
+                </div>
+
+                <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800/80 pt-4">
+                  {tinderSession?.isConnected ? (
+                    <div className="space-y-3">
+                      <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-rose-200/80 dark:border-[#fe3c72]/20 bg-white/80 dark:bg-[#1a1416] p-3 shadow-sm">
+                        <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full ring-2 ring-[#fe3c72]/80">
+                          <Image
+                            src={tinderSession.profile?.photos?.[0]?.url || "/favicon.ico"}
+                            alt={tinderSession.profile?.name || "Tinder"}
+                            fill
+                            unoptimized
+                            className="object-cover"
+                          />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-bold text-zinc-950 dark:text-white">
+                            {tinderSession.profile?.name || "Conta Tinder"}
+                          </p>
+                          <p className="truncate text-[11px] text-[#ff7597]">
+                            Conta conectada
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <button
+                          onClick={handleSyncMatches}
+                          disabled={isLoadingTinder}
+                          className="flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 text-xs font-bold text-zinc-800 dark:text-zinc-100 shadow-sm transition hover:-translate-y-0.5 hover:bg-zinc-50 dark:hover:bg-white/10 disabled:opacity-50"
+                        >
+                          {isLoadingTinder ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-4 w-4 text-sky-400" />
+                          )}
+                          {syncSuccess ? "Sincronizado" : "Sincronizar"}
+                        </button>
+                        <button
+                          onClick={handleDisconnectTinder}
+                          className="flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-4 text-xs font-bold text-red-600 dark:text-red-400 transition hover:-translate-y-0.5 hover:bg-red-100 dark:hover:bg-red-950/50"
+                        >
+                          <LogOut className="h-4 w-4" />
+                          Desconectar
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400 sm:max-w-sm">
+                        Conecte a conta para receber e responder matches pelo Chat.
+                      </p>
+                      <button
+                        onClick={() => setIsTinderModalOpen(true)}
+                        className="min-h-11 w-full rounded-xl bg-gradient-to-r from-[#fd297b] to-[#ff5864] px-4 text-xs font-bold text-white transition active:scale-[0.98] sm:w-auto"
+                      >
+                        Conectar Tinder
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </article>
                 </>
               )}
 
@@ -551,6 +701,17 @@ export function ConfigView() {
           void checkInstagramStatus();
         }}
         onConnectionChange={checkInstagramStatus}
+      />
+      <TinderConnectModal
+        isOpen={isTinderModalOpen}
+        onClose={() => {
+          setIsTinderModalOpen(false);
+          void checkTinderStatus();
+        }}
+        session={tinderSession}
+        onConnect={handleConnectTinder}
+        onDisconnect={handleDisconnectTinder}
+        onSyncMatches={handleSyncMatches}
       />
     </div>
   );

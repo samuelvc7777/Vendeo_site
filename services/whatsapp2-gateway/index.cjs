@@ -23,6 +23,24 @@ function loadLocalEnv() {
 }
 loadLocalEnv();
 
+const {
+  extractPdfDocument,
+  isPdfAttachment,
+} = require("./pdf-document.cjs");
+const {
+  extractOfficeDocument,
+  detectDocumentKind,
+} = require("./office-document.cjs");
+const {
+  MAX_MEDIA_BYTES,
+  MEDIA_DOWNLOAD_TIMEOUT_MS,
+  normalizeMimeType,
+  assertMediaSizeWithinLimit,
+  sanitizeAttachmentFilename,
+  resolveTrustedMimeType,
+  downloadHttpMediaBounded,
+} = require("./media-security.cjs");
+
 const HOST = process.env.WHATSAPP2_GATEWAY_HOST || "127.0.0.1";
 const PORT = Number(process.env.WHATSAPP2_GATEWAY_PORT || 8788);
 const API_TOKEN = String(process.env.WHATSAPP2_GATEWAY_TOKEN || "");
@@ -39,13 +57,82 @@ const CHROME_PATH = process.env.WHATSAPP2_CHROME_PATH || (fs.existsSync(DEFAULT_
 let client = null;
 let initializing = null;
 let waJsReadyPromise = null;
+let waJsGatewayBundleSource = null;
 let shuttingDown = false;
+let reconnectTimer = null;
+let reconnectAttempt = 0;
+let reconnectInProgress = false;
 let deliveryWorkerTimer = null;
 let deliveryWorkerRunning = false;
+let inboundWorkerTimer = null;
+let inboundWorkerRunning = false;
+let inboundJobsInFlight = 0;
+let transcriptionWorkerTimer = null;
+let transcriptionWorkerRunning = false;
 const sseClients = new Set();
 const profilePicCache = new Map();
 const profilePicPending = new Map();
+let chatSnapshotCache = null;
+let chatSnapshotCacheAt = 0;
+let chatSnapshotPending = null;
+let chatSnapshotGeneration = 0;
+const presenceSubscriptions = new Map();
+const presenceSubscriptionPending = new Map();
+const presenceSubscriptionVersions = new Map();
+const presenceLookupPending = new Map();
+const presenceSnapshotCache = new Map();
+let presenceBridgePage = null;
+let presenceBridgeExposed = false;
+let presenceOperationQueue = Promise.resolve();
+const MAX_ACTIVE_PRESENCE_SUBSCRIPTIONS = 32;
+const MAX_PRESENCE_SNAPSHOT_CACHE = 64;
+const MAX_PROFILE_PIC_CACHE = 600;
+const MAX_PROFILE_PIC_WARM_BATCH = 80;
+const PROFILE_PIC_WARM_CONCURRENCY = 2;
+const CHAT_SNAPSHOT_CACHE_TTL_MS = 15_000;
+const MAX_CHAT_SNAPSHOT_ROWS = 1_000;
+const PRESENCE_EPHEMERAL_TTL_MS = 5_000;
+const PRESENCE_LAST_SEEN_TTL_MS = 60_000;
 const PROFILE_PIC_TTL_MS = 30 * 60 * 1000;
+const WHATSAPP2_RECONNECT_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
+
+const WHATSAPP2_INBOUND_CONCURRENCY = 3;
+const WHATSAPP2_MEDIA_CONCURRENCY = 1;
+const WHATSAPP2_TRANSCRIPTION_CONCURRENCY = 2;
+const WHATSAPP2_DELIVERY_BATCH_LIMIT = 1;
+const WHATSAPP2_SEND_CONCURRENCY = 1;
+const WHATSAPP2_WEBHOOK_CONCURRENCY = 4;
+
+function createConcurrencyGate(limit) {
+  let active = 0;
+  const waiters = [];
+
+  return async function runWithSlot(work) {
+    if (active >= limit) {
+      await new Promise((resolve) => waiters.push(resolve));
+    } else {
+      active += 1;
+    }
+
+    try {
+      return await work();
+    } finally {
+      const next = waiters.shift();
+      if (next) next();
+      else active = Math.max(0, active - 1);
+    }
+  };
+}
+
+const runWithHeavyMediaSlot = createConcurrencyGate(
+  WHATSAPP2_MEDIA_CONCURRENCY,
+);
+const runWithSendSlot = createConcurrencyGate(
+  WHATSAPP2_SEND_CONCURRENCY,
+);
+const runWithWebhookSlot = createConcurrencyGate(
+  WHATSAPP2_WEBHOOK_CONCURRENCY,
+);
 
 const state = {
   status: "idle",
@@ -89,14 +176,17 @@ function setState(patch) {
   broadcast("whatsapp2", event);
   if (!WEBHOOK_URL) return;
   try {
-    const response = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(WEBHOOK_TOKEN ? { authorization: "Bearer " + WEBHOOK_TOKEN } : {}),
-      },
-      body: JSON.stringify(event),
-    });
+    const response = await runWithWebhookSlot(() =>
+      fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(WEBHOOK_TOKEN ? { authorization: "Bearer " + WEBHOOK_TOKEN } : {}),
+        },
+        body: JSON.stringify(event),
+        signal: AbortSignal.timeout(10_000),
+      }),
+    );
     if (!response.ok) console.warn("[whatsapp2] webhook HTTP", response.status);
   } catch (error) {
     console.warn("[whatsapp2] webhook:", error?.message || error);
@@ -104,7 +194,8 @@ function setState(patch) {
 }
 
 function serializeMessage(message) {
-  return message ? {
+  if (!message) return null;
+  return {
     id: message.id?._serialized || message.id?.$1 || null,
     from: message.from || null,
     to: message.to || null,
@@ -115,7 +206,9 @@ function serializeMessage(message) {
     hasMedia: Boolean(message.hasMedia),
     hasQuotedMsg: Boolean(message.hasQuotedMsg),
     ack: message.ack ?? null,
-  } : null;
+    attachment: buildWhatsApp2Attachment(message),
+    messageMetadata: buildWhatsApp2MessageMetadata(message),
+  };
 }
 
 function normalizeChatId(value) {
@@ -168,6 +261,260 @@ async function readJson(req, maxBytes = 25 * 1024 * 1024) {
   return client;
 }
 
+function setProfilePicCacheEntry(chatId, url) {
+  if (!chatId) return;
+  if (profilePicCache.has(chatId)) profilePicCache.delete(chatId);
+  profilePicCache.set(chatId, { url: url || null, updatedAt: Date.now() });
+  while (profilePicCache.size > MAX_PROFILE_PIC_CACHE) {
+    const oldestKey = profilePicCache.keys().next().value;
+    if (!oldestKey) break;
+    profilePicCache.delete(oldestKey);
+  }
+}
+
+function invalidateChatSnapshot() {
+  chatSnapshotGeneration += 1;
+  chatSnapshotCache = null;
+  chatSnapshotCacheAt = 0;
+  chatSnapshotPending = null;
+}
+
+async function getWhatsApp2BlockedChatIds(active = ensureReady()) {
+  if (!active?.pupPage) throw new Error("Página do WhatsApp Web indisponível");
+
+  const ids = await active.pupPage.evaluate(() => {
+    const collections = window.require("WAWebCollections");
+    const blocklist = collections?.Blocklist;
+    if (!blocklist?.getModelsArray) {
+      throw new Error("Blocklist indisponível nesta versão do WhatsApp Web");
+    }
+    return blocklist
+      .getModelsArray()
+      .map((entry) => entry?.id?._serialized || entry?.id?.toString?.() || null)
+      .filter(Boolean);
+  });
+
+  return new Set(ids.map((id) => String(id)));
+}
+
+async function getRecentChatSnapshot({ force = false } = {}) {
+  const now = Date.now();
+  if (
+    !force &&
+    Array.isArray(chatSnapshotCache) &&
+    now - chatSnapshotCacheAt <= CHAT_SNAPSHOT_CACHE_TTL_MS
+  ) {
+    return chatSnapshotCache;
+  }
+  if (chatSnapshotPending) return chatSnapshotPending;
+
+  const generation = chatSnapshotGeneration;
+  const pending = (async () => {
+    const active = ensureReady();
+    const [chats, blockedChatIds] = await Promise.all([
+      active.getChats(),
+      getWhatsApp2BlockedChatIds(active),
+    ]);
+    const oneWeekAgoSeconds =
+      Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
+    const rows = chats
+      .map((chat) => {
+        const id = chat?.id?._serialized || chat?.id?.$1 || null;
+        if (!id) return null;
+        const timestamp = Number(
+          chat.lastMessage?.timestamp || chat.timestamp || 0,
+        );
+        if (timestamp < oneWeekAgoSeconds) return null;
+        return {
+          id,
+          name: String(chat.name || chat.id?.user || id),
+          isGroup: Boolean(chat.isGroup),
+          unreadCount: Number(chat.unreadCount || 0),
+          timestamp,
+          archived: Boolean(chat.archived),
+          isLocked: Boolean(chat.isLocked),
+          isBlocked: !chat.isGroup && blockedChatIds.has(id),
+          pinned: Boolean(chat.pinned),
+          lastMessage: serializeMessage(chat.lastMessage),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+      .slice(0, MAX_CHAT_SNAPSHOT_ROWS);
+
+    if (generation === chatSnapshotGeneration) {
+      chatSnapshotCache = rows;
+      chatSnapshotCacheAt = Date.now();
+    }
+    return rows;
+  })();
+
+  chatSnapshotPending = pending;
+  try {
+    return await pending;
+  } finally {
+    if (chatSnapshotPending === pending) {
+      chatSnapshotPending = null;
+    }
+  }
+}
+
+async function setWhatsApp2ChatLockState(chatId, locked) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!normalizedChatId) throw new Error("chatId obrigatório");
+
+  const active = ensureReady();
+  if (!active?.pupPage) throw new Error("Página do WhatsApp Web indisponível");
+
+  const result = await active.pupPage.evaluate(
+    async (id, nextLocked) => {
+      const collections = window.require("WAWebCollections");
+      const action = window.require("WAWebChatLockAction");
+      if (
+        !collections?.Chat?.find ||
+        typeof action?.setChatAsLocked !== "function" ||
+        typeof action?.setChatAsUnlocked !== "function"
+      ) {
+        throw new Error("Chat Lock indisponível nesta versão do WhatsApp Web");
+      }
+
+      const chat = await collections.Chat.find(id);
+      if (!chat) throw new Error("Conversa não encontrada");
+
+      const currentLocked = Boolean(chat.isLocked);
+      if (currentLocked === nextLocked) {
+        return { isLocked: currentLocked, changed: false };
+      }
+
+      if (nextLocked) {
+        await action.setChatAsLocked(chat.id);
+      } else {
+        await action.setChatAsUnlocked(chat.id);
+      }
+
+      const deadline = Date.now() + 3_000;
+      let updated = await collections.Chat.find(id);
+      while (Boolean(updated?.isLocked) !== nextLocked && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        updated = await collections.Chat.find(id);
+      }
+
+      const confirmedLocked = Boolean(updated?.isLocked);
+      if (confirmedLocked !== nextLocked) {
+        throw new Error(
+          nextLocked
+            ? "O WhatsApp não confirmou a conversa como trancada"
+            : "O WhatsApp não confirmou a conversa como destrancada",
+        );
+      }
+
+      return {
+        isLocked: confirmedLocked,
+        changed: true,
+      };
+    },
+    normalizedChatId,
+    Boolean(locked),
+  );
+
+  invalidateChatSnapshot();
+  void emitEvent("chat_lock_changed", {
+    chatId: normalizedChatId,
+    isLocked: Boolean(result?.isLocked),
+  });
+
+  return {
+    chatId: normalizedChatId,
+    isLocked: Boolean(result?.isLocked),
+    changed: Boolean(result?.changed),
+  };
+}
+
+async function getWhatsApp2ChatControlState(chatId) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!normalizedChatId) throw new Error("chatId obrigatório");
+
+  const active = ensureReady();
+  const chat = await active.getChatById(normalizedChatId);
+  if (!chat) throw new Error("Conversa não encontrada");
+
+  const blockedChatIds = chat.isGroup
+    ? new Set()
+    : await getWhatsApp2BlockedChatIds(active);
+
+  return {
+    chatId: normalizedChatId,
+    archived: Boolean(chat.archived),
+    isLocked: Boolean(chat.isLocked),
+    isBlocked: !chat.isGroup && blockedChatIds.has(normalizedChatId),
+  };
+}
+
+async function setWhatsApp2ChatBlockState(chatId, blocked) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!normalizedChatId) throw new Error("chatId obrigatório");
+
+  const active = ensureReady();
+  const chat = await active.getChatById(normalizedChatId);
+  if (!chat) throw new Error("Conversa não encontrada");
+  if (chat.isGroup) throw new Error("Bloqueio individual não se aplica a grupos");
+
+  const contact = await chat.getContact();
+  if (!contact) throw new Error("Contato não encontrado");
+
+  const nextBlocked = Boolean(blocked);
+  const currentBlockedIds = await getWhatsApp2BlockedChatIds(active);
+  const currentBlocked = currentBlockedIds.has(normalizedChatId);
+  if (currentBlocked === nextBlocked) {
+    return {
+      chatId: normalizedChatId,
+      isBlocked: currentBlocked,
+      changed: false,
+    };
+  }
+
+  const result = nextBlocked
+    ? await contact.block()
+    : await contact.unblock();
+
+  if (result === false) {
+    throw new Error(
+      nextBlocked
+        ? "Não foi possível bloquear o contato"
+        : "Não foi possível desbloquear o contato",
+    );
+  }
+
+  const deadline = Date.now() + 3_000;
+  let confirmedBlocked = currentBlocked;
+  while (Date.now() < deadline) {
+    const blockedIds = await getWhatsApp2BlockedChatIds(active);
+    confirmedBlocked = blockedIds.has(normalizedChatId);
+    if (confirmedBlocked === nextBlocked) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  if (confirmedBlocked !== nextBlocked) {
+    throw new Error(
+      nextBlocked
+        ? "O WhatsApp não confirmou o bloqueio do contato"
+        : "O WhatsApp não confirmou o desbloqueio do contato",
+    );
+  }
+
+  invalidateChatSnapshot();
+  void emitEvent("chat_block_changed", {
+    chatId: normalizedChatId,
+    isBlocked: confirmedBlocked,
+  });
+
+  return {
+    chatId: normalizedChatId,
+    isBlocked: confirmedBlocked,
+    changed: true,
+  };
+}
+
 function getCachedProfilePic(chatId) {
   const cached = profilePicCache.get(chatId);
   if (!cached) return null;
@@ -206,12 +553,12 @@ async function resolveProfilePic(chatId) {
     try {
       const active = ensureReady();
       const url = await active.getProfilePicUrl(chatId);
-      profilePicCache.set(chatId, { url: url || null, updatedAt: Date.now() });
+      setProfilePicCacheEntry(chatId, url || null);
       if (url) void persistProfilePic(chatId, url);
       return url || null;
     } catch (error) {
       console.warn("[whatsapp2] foto de perfil indisponível para", chatId, error?.message || error);
-      profilePicCache.set(chatId, { url: null, updatedAt: Date.now() });
+      setProfilePicCacheEntry(chatId, null);
       return null;
     } finally {
       profilePicPending.delete(chatId);
@@ -223,8 +570,12 @@ async function resolveProfilePic(chatId) {
 }
 
 function warmProfilePics(chatIds) {
-  const queue = chatIds.filter((id) => id && !getCachedProfilePic(id) && !profilePicPending.has(id));
-  const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+  const queue = chatIds
+    .filter((id) => id && !getCachedProfilePic(id) && !profilePicPending.has(id))
+    .slice(0, MAX_PROFILE_PIC_WARM_BATCH);
+  const workers = Array.from(
+    { length: Math.min(PROFILE_PIC_WARM_CONCURRENCY, queue.length) },
+    async () => {
     while (queue.length) {
       const id = queue.shift();
       if (!id) break;
@@ -232,6 +583,27 @@ function warmProfilePics(chatIds) {
     }
   });
   void Promise.allSettled(workers);
+}
+
+function getGatewayWaJsBundleSource() {
+  if (waJsGatewayBundleSource) return waJsGatewayBundleSource;
+
+  const source = fs.readFileSync(WA_JS_BUNDLE, "utf8");
+  const massPresencePattern =
+    /const e=o\.ChatStore\.map\(e=>e\.presence\.subscribe\(\)\);await Promise\.all\(e\),o\.PresenceStore\.on/;
+  const matches = source.match(new RegExp(massPresencePattern.source, "g")) || [];
+
+  if (matches.length !== 1) {
+    throw new Error(
+      `WA-JS presence guard incompatível: esperado 1 auto-subscribe global, encontrado ${matches.length}`,
+    );
+  }
+
+  waJsGatewayBundleSource = source.replace(
+    massPresencePattern,
+    "const e=[];await Promise.all(e),o.PresenceStore.on",
+  );
+  return waJsGatewayBundleSource;
 }
 
 async function ensureWaJsReady() {
@@ -243,7 +615,7 @@ async function ensureWaJsReady() {
     const page = active.pupPage;
     const alreadyReady = await page.evaluate(() => Boolean(globalThis.WPP && globalThis.WPP.isReady));
     if (!alreadyReady) {
-      await page.addScriptTag({ path: WA_JS_BUNDLE });
+      await page.addScriptTag({ content: getGatewayWaJsBundleSource() });
       await page.waitForFunction(() => Boolean(globalThis.WPP && globalThis.WPP.isReady), { timeout: 30000 });
     }
     return true;
@@ -260,7 +632,7 @@ function whatsapp2ConversationId(chatId) {
 }
 
 function mimeExtension(mimeType, fallback = "bin") {
-  const mime = String(mimeType || "").toLowerCase();
+  const mime = String(mimeType || "").toLowerCase().split(";")[0].trim();
   if (mime.includes("webp")) return "webp";
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
   if (mime.includes("png")) return "png";
@@ -269,7 +641,31 @@ function mimeExtension(mimeType, fallback = "bin") {
   if (mime.includes("mp4")) return "mp4";
   if (mime.includes("webm")) return "webm";
   if (mime.includes("wav")) return "wav";
+  if (mime === "application/pdf") return "pdf";
+  if (mime === "text/plain") return "txt";
+  if (mime === "text/csv" || mime.includes("csv")) return "csv";
+  if (mime === "application/zip" || mime.includes("zip")) return "zip";
+  if (mime.includes("wordprocessingml.document")) return "docx";
+  if (mime.includes("spreadsheetml.sheet")) return "xlsx";
+  if (mime.includes("presentationml.presentation")) return "pptx";
   return fallback;
+}
+
+const WHATSAPP2_INTERNAL_MESSAGE_TYPES = new Set([
+  "notification_template",
+  "e2e_notification",
+  "protocol",
+  "ciphertext",
+  "debug",
+  "notification",
+  "group_notification",
+  "broadcast_notification",
+]);
+
+function isInternalWhatsApp2Message(message) {
+  return WHATSAPP2_INTERNAL_MESSAGE_TYPES.has(
+    String(message?.type || "").toLowerCase(),
+  );
 }
 
 function mediaKindForMessage(message) {
@@ -278,15 +674,282 @@ function mediaKindForMessage(message) {
   if (type === "image") return "image";
   if (type === "video") return "video";
   if (type === "sticker") return "sticker";
+  if (type === "document") return "document";
+  if (message?.hasMedia) return "unsupported";
   return null;
 }
 
-function mediaPreview(kind) {
+function finiteMediaNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function buildWhatsApp2Attachment(message, mediaUrl = null) {
+  const kind = mediaKindForMessage(message);
+  if (!kind) return null;
+
+  const raw = message?._data || {};
+  const providerType = String(message?.type || raw?.type || "").trim() || null;
+  const mimeType = String(
+    message?.mimetype || raw?.mimetype || raw?.mediaData?.mimetype || "",
+  ).trim() || null;
+  const body = String(message?.body || "").trim();
+  const rawFileName = String(
+    message?.filename ||
+    raw?.filename ||
+    (providerType === "document" && body ? body : ""),
+  ).trim();
+  const fileName = rawFileName
+    ? sanitizeAttachmentFilename(rawFileName, "document")
+    : null;
+
+  const rawCaption = String(
+    message?.caption || raw?.caption || (providerType !== "document" ? body : ""),
+  ).trim();
+  const caption =
+    rawCaption && rawCaption !== fileName
+      ? rawCaption
+      : null;
+
+  return {
+    kind,
+    providerType,
+    mimeType,
+    fileName,
+    fileSize: finiteMediaNumber(
+      message?.filesize ?? message?.size ?? raw?.size ?? raw?.fileSize ?? raw?.mediaData?.fileSize,
+    ),
+    mediaUrl: mediaUrl || null,
+    caption,
+    duration: finiteMediaNumber(message?.duration ?? raw?.duration),
+    width: finiteMediaNumber(message?.width ?? raw?.width),
+    height: finiteMediaNumber(message?.height ?? raw?.height),
+    pageCount: finiteMediaNumber(message?.pageCount ?? raw?.pageCount),
+    isGif: Boolean(message?.isGif ?? raw?.isGif),
+    isAnimated: Boolean(message?.isAnimated ?? raw?.isAnimated),
+    isViewOnce: Boolean(message?.isViewOnce ?? raw?.isViewOnce),
+    isForwarded: Boolean(message?.isForwarded ?? raw?.isForwarded),
+    forwardingScore: finiteMediaNumber(message?.forwardingScore ?? raw?.forwardingScore),
+    downloadable: Boolean(message?.hasMedia),
+    previewable: ["audio", "image", "video", "sticker"].includes(kind),
+  };
+}
+
+function limitedNativeText(value, max = 500) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, max) : null;
+}
+
+function unescapeVCardValue(value) {
+  return String(value ?? "")
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+
+function parseWhatsAppVCard(rawCard) {
+  const unfolded = String(rawCard || "").replace(/\r?\n[ \t]/g, "");
+  const lines = unfolded.split(/\r?\n/);
+  const result = { name: null, phones: [], emails: [], organization: null };
+  for (const line of lines) {
+    const separator = line.indexOf(":");
+    if (separator < 0) continue;
+    const key = line.slice(0, separator).split(";")[0].toUpperCase();
+    const value = unescapeVCardValue(line.slice(separator + 1));
+    if (!value) continue;
+    if (key === "FN" && !result.name) result.name = limitedNativeText(value, 160);
+    else if (key === "N" && !result.name) {
+      result.name = limitedNativeText(value.split(";").filter(Boolean).reverse().join(" "), 160);
+    } else if (key === "TEL" && result.phones.length < 6) result.phones.push(limitedNativeText(value, 80));
+    else if (key === "EMAIL" && result.emails.length < 6) result.emails.push(limitedNativeText(value, 160));
+    else if (key === "ORG" && !result.organization) result.organization = limitedNativeText(value, 160);
+  }
+  result.phones = result.phones.filter(Boolean);
+  result.emails = result.emails.filter(Boolean);
+  return result;
+}
+
+function buildWhatsApp2MessageMetadata(message) {
+  if (!message) return null;
+  const type = String(message.type || "").toLowerCase();
+  const raw = message._data || {};
+  const metadata = {
+    providerType: type || null,
+    nativeKind: null,
+    isForwarded: Boolean(message.isForwarded ?? raw.isForwarded),
+    forwardingScore: finiteMediaNumber(message.forwardingScore ?? raw.forwardingScore),
+  };
+
+  const links = Array.isArray(message.links)
+    ? message.links.slice(0, 8).map((item) => ({
+        url: limitedNativeText(item?.link || item?.url, 600),
+        suspicious: Boolean(item?.isSuspicious),
+      })).filter((item) => item.url)
+    : [];
+  if (links.length) metadata.links = links;
+
+  const previewTitle = limitedNativeText(raw.title || raw.linkPreview?.title, 220);
+  const previewDescription = limitedNativeText(raw.description || raw.linkPreview?.description, 500);
+  const previewUrl = limitedNativeText(raw.canonicalUrl || raw.linkPreview?.canonicalUrl || raw.matchedText, 700);
+  if (previewTitle || previewDescription || previewUrl) {
+    metadata.linkPreview = {
+      title: previewTitle,
+      description: previewDescription,
+      url: previewUrl,
+    };
+    if (!metadata.nativeKind && type === "chat") metadata.nativeKind = "link";
+  }
+
+  if (type === "vcard" || type === "multi_vcard") {
+    metadata.nativeKind = "contact";
+    const cards = Array.isArray(message.vCards)
+      ? message.vCards
+      : Array.isArray(raw.vcardList)
+      ? raw.vcardList.map((item) => item?.vcard || item).filter(Boolean)
+      : [];
+    metadata.contacts = cards.slice(0, 20).map(parseWhatsAppVCard);
+  } else if (type === "location") {
+    metadata.nativeKind = "location";
+    const location = message.location || {};
+    metadata.location = {
+      latitude: Number.isFinite(Number(location.latitude ?? raw.lat)) ? Number(location.latitude ?? raw.lat) : null,
+      longitude: Number.isFinite(Number(location.longitude ?? raw.lng)) ? Number(location.longitude ?? raw.lng) : null,
+      name: limitedNativeText(location.name || raw.loc?.split?.("\n")?.[0], 220),
+      address: limitedNativeText(location.address || raw.loc?.split?.("\n")?.[1], 320),
+      url: limitedNativeText(location.url || raw.clientUrl, 700),
+      isLive: Boolean(raw.isLive || raw.isLiveLocation),
+      shareDuration: finiteMediaNumber(raw.shareDuration || raw.liveLocationDuration),
+    };
+  } else if (type === "poll_creation") {
+    metadata.nativeKind = "poll";
+    metadata.poll = {
+      question: limitedNativeText(message.pollName || raw.pollName || message.body, 500),
+      options: (Array.isArray(message.pollOptions) ? message.pollOptions : raw.pollOptions || [])
+        .slice(0, 20)
+        .map((option, index) => ({
+          id: Number.isFinite(Number(option?.localId)) ? Number(option.localId) : index,
+          name: limitedNativeText(option?.name ?? option, 220),
+        }))
+        .filter((option) => option.name),
+      allowMultipleAnswers: Boolean(message.allowMultipleAnswers ?? raw.allowMultipleAnswers),
+      invalidated: Boolean(message.pollInvalidated ?? raw.pollInvalidated),
+    };
+  } else if (type === "album") {
+    metadata.nativeKind = "album";
+    metadata.album = {
+      expectedItems: finiteMediaNumber(raw.expectedImageCount || raw.albumExpectedCount || raw.expectedCount),
+    };
+  } else if (type === "call_log") {
+    metadata.nativeKind = "call";
+    metadata.call = { summary: limitedNativeText(message.body || raw.body || raw.callLog?.type, 220) };
+  } else if (type === "groups_v4_invite") {
+    metadata.nativeKind = "group_invite";
+    metadata.groupInvite = {
+      groupName: limitedNativeText(message.inviteV4?.groupName || raw.inviteGrpName, 220),
+      expiresAt: finiteMediaNumber(message.inviteV4?.inviteCodeExp || raw.inviteCodeExp),
+    };
+  } else if (["interactive", "native_flow", "list", "list_response", "buttons_response", "template_button_reply"].includes(type)) {
+    metadata.nativeKind = "interactive";
+    metadata.interactive = {
+      selectedButtonId: limitedNativeText(message.selectedButtonId, 220),
+      selectedRowId: limitedNativeText(message.selectedRowId, 220),
+    };
+  } else if (["order", "product", "payment"].includes(type)) {
+    metadata.nativeKind = type;
+  } else if (type === "revoked") {
+    metadata.nativeKind = "revoked";
+  } else if (
+    type &&
+    type !== "chat" &&
+    !["audio", "ptt", "image", "video", "sticker", "document"].includes(type) &&
+    !WHATSAPP2_INTERNAL_MESSAGE_TYPES.has(type)
+  ) {
+    metadata.nativeKind = "unsupported";
+  }
+
+  const meaningful = metadata.nativeKind || metadata.isForwarded || metadata.forwardingScore || metadata.links?.length;
+  return meaningful ? metadata : null;
+}
+
+function nativeMessagePreview(metadata) {
+  if (!metadata) return null;
+  if (metadata.nativeKind === "contact") {
+    const contacts = metadata.contacts || [];
+    if (contacts.length === 1) return `👤 Contato: ${contacts[0]?.name || "Contato"}`;
+    if (contacts.length > 1) return `👥 ${contacts.length} contatos`;
+    return "👤 Contato";
+  }
+  if (metadata.nativeKind === "location") {
+    return `📍 ${metadata.location?.name || metadata.location?.address || "Localização"}`;
+  }
+  if (metadata.nativeKind === "poll") return `📊 Enquete: ${metadata.poll?.question || "Enquete"}`;
+  if (metadata.nativeKind === "album") return "🖼️ Álbum";
+  if (metadata.nativeKind === "call") return "📞 Chamada";
+  if (metadata.nativeKind === "group_invite") return `👥 Convite: ${metadata.groupInvite?.groupName || "grupo"}`;
+  if (metadata.nativeKind === "interactive") return "Mensagem interativa";
+  if (metadata.nativeKind === "order") return "Pedido";
+  if (metadata.nativeKind === "product") return "Produto";
+  if (metadata.nativeKind === "payment") return "Pagamento";
+  if (metadata.nativeKind === "revoked") return "Mensagem apagada";
+  if (metadata.nativeKind === "unsupported") {
+    return `Mensagem do WhatsApp (${metadata.providerType || "tipo desconhecido"})`;
+  }
+  return null;
+}
+
+function mediaPreview(kind, attachment = null) {
   if (kind === "audio") return "🎙️ Mensagem de voz";
   if (kind === "image") return "📷 Foto";
   if (kind === "video") return "🎥 Vídeo";
   if (kind === "sticker") return "Figurinha";
+  if (kind === "document") return attachment?.fileName || "Documento";
+  if (kind === "unsupported") return attachment?.fileName || "Arquivo";
   return "Mensagem";
+}
+
+async function enrichDocumentAttachment(attachment, persisted) {
+  if (!persisted?.buffer) return attachment;
+  const next = {
+    ...(attachment || {}),
+    mimeType: persisted.contentType || attachment?.mimeType || null,
+    fileSize: Number(persisted.size || persisted.buffer.length || 0) || attachment?.fileSize || null,
+  };
+
+  if (isPdfAttachment(next, persisted.contentType, persisted.buffer)) {
+    const extracted = await runWithHeavyMediaSlot(() =>
+      extractPdfDocument(persisted.buffer),
+    );
+    return {
+      ...next,
+      documentKind: "pdf",
+      pageCount: extracted.pageCount ?? next.pageCount ?? null,
+      documentMetadata: extracted.documentMetadata || null,
+      textExtraction: extracted.textExtraction || null,
+      documentStructure: extracted.pageCount
+        ? { pageCount: extracted.pageCount }
+        : null,
+    };
+  }
+
+  const documentKind = detectDocumentKind(next, persisted.contentType);
+  if (!documentKind) return next;
+
+  const extracted = await runWithHeavyMediaSlot(() =>
+    extractOfficeDocument(
+      persisted.buffer,
+      { ...next, documentKind },
+      persisted.contentType,
+    ),
+  );
+
+  return {
+    ...next,
+    documentKind,
+    textExtraction: extracted?.textExtraction || null,
+    documentStructure: extracted?.documentStructure || null,
+  };
 }
 
 async function downloadMessageMediaPayload(messageId) {
@@ -294,30 +957,116 @@ async function downloadMessageMediaPayload(messageId) {
   await ensureWaJsReady();
 
   let payload = null;
+  let providerFileName = null;
+  let declaredProviderSize = null;
+
   try {
-    payload = await active.pupPage.evaluate(async (id) => {
-      const blob = await globalThis.WPP.chat.downloadMedia(id);
-      if (!blob) return null;
-      const dataUrl = await globalThis.WPP.util.blobToBase64(blob);
-      return {
-        dataUrl,
-        type: blob.type || "application/octet-stream",
-        size: blob.size || 0,
-      };
-    }, messageId);
+    const providerMessage = await getMessage(messageId);
+    const providerAttachment = buildWhatsApp2Attachment(providerMessage);
+    providerFileName = providerAttachment?.fileName || null;
+    declaredProviderSize = providerAttachment?.fileSize || null;
+    assertMediaSizeWithinLimit({
+      declaredBytes: declaredProviderSize,
+      maxBytes: MAX_MEDIA_BYTES,
+    });
   } catch (error) {
-    console.warn("[whatsapp2] WA-JS downloadMedia falhou, tentando fallback:", error?.message || error);
+    if (error?.code === "WHATSAPP2_MEDIA_TOO_LARGE") throw error;
+  }
+
+  try {
+    payload = await active.pupPage.evaluate(
+      async ({ id, maxBytes, timeoutMs }) => {
+        const withTimeout = async (promise, code) => {
+          let timer;
+          try {
+            return await Promise.race([
+              promise,
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(code)), timeoutMs);
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        };
+
+        const blob = await withTimeout(
+          globalThis.WPP.chat.downloadMedia(id),
+          "whatsapp2_media_download_timeout",
+        );
+        if (!blob) return null;
+        if (Number(blob.size || 0) > maxBytes) {
+          return {
+            errorCode: "whatsapp2_media_too_large",
+            size: Number(blob.size || 0),
+            type: blob.type || "application/octet-stream",
+          };
+        }
+
+        const dataUrl = await withTimeout(
+          globalThis.WPP.util.blobToBase64(blob),
+          "whatsapp2_media_base64_timeout",
+        );
+        return {
+          dataUrl,
+          type: blob.type || "application/octet-stream",
+          size: blob.size || 0,
+        };
+      },
+      {
+        id: messageId,
+        maxBytes: MAX_MEDIA_BYTES,
+        timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS,
+      },
+    );
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (/whatsapp2_media_(?:download|base64)_timeout/i.test(message)) {
+      throw error;
+    }
+    console.warn("[whatsapp2] WA-JS downloadMedia falhou, tentando fallback:", message);
+  }
+
+  if (payload?.errorCode === "whatsapp2_media_too_large") {
+    assertMediaSizeWithinLimit({
+      declaredBytes: payload.size,
+      maxBytes: MAX_MEDIA_BYTES,
+    });
   }
 
   if (!payload?.dataUrl) {
     const message = await getMessage(messageId);
     if (!message.hasMedia) throw new Error("Mensagem não possui mídia");
-    const media = await message.downloadMedia();
+    const fallbackAttachment = buildWhatsApp2Attachment(message);
+    providerFileName = providerFileName || fallbackAttachment?.fileName || null;
+    declaredProviderSize = declaredProviderSize || fallbackAttachment?.fileSize || null;
+    assertMediaSizeWithinLimit({
+      declaredBytes: declaredProviderSize,
+      maxBytes: MAX_MEDIA_BYTES,
+    });
+
+    let timeout;
+    const media = await Promise.race([
+      message.downloadMedia(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("whatsapp2_media_download_timeout")),
+          MEDIA_DOWNLOAD_TIMEOUT_MS,
+        );
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+
     if (!media?.data) throw new Error("Mídia indisponível");
+    assertMediaSizeWithinLimit({
+      base64: media.data,
+      maxBytes: MAX_MEDIA_BYTES,
+    });
     payload = {
       dataUrl: `data:${media.mimetype || "application/octet-stream"};base64,${media.data}`,
       type: media.mimetype || "application/octet-stream",
-      size: 0,
+      size: declaredProviderSize || 0,
     };
   }
 
@@ -327,16 +1076,46 @@ async function downloadMessageMediaPayload(messageId) {
   const header = dataUrl.slice(0, comma);
   const base64 = dataUrl.slice(comma + 1);
   const mimeMatch = header.match(/^data:([^;,]+)/i);
-  const contentType = mimeMatch?.[1] || payload.type || "application/octet-stream";
+  const reportedContentType = normalizeMimeType(
+    mimeMatch?.[1] || payload.type || "application/octet-stream",
+  );
+
+  assertMediaSizeWithinLimit({
+    declaredBytes: payload.size || declaredProviderSize,
+    base64,
+    maxBytes: MAX_MEDIA_BYTES,
+  });
+
+  const buffer = Buffer.from(base64, "base64");
+  assertMediaSizeWithinLimit({
+    actualBytes: buffer.length,
+    maxBytes: MAX_MEDIA_BYTES,
+  });
+
+  const contentType = resolveTrustedMimeType(
+    reportedContentType,
+    buffer,
+    providerFileName,
+  );
+
   return {
-    buffer: Buffer.from(base64, "base64"),
+    buffer,
     contentType,
+    reportedContentType,
+    size: buffer.length,
+    fileName: providerFileName,
   };
 }
 
-async function persistWhatsApp2Media(messageId, kind) {
+async function persistWhatsApp2MediaUnlocked(messageId, kind, options = {}) {
   if (!supabase || !messageId || !kind) return null;
-  const { buffer, contentType } = await downloadMessageMediaPayload(messageId);
+  const {
+    buffer,
+    contentType,
+    reportedContentType,
+    size,
+    fileName,
+  } = await downloadMessageMediaPayload(messageId);
   const safeId = String(messageId).replace(/[^a-zA-Z0-9._-]+/g, "_");
   const ext = mimeExtension(contentType, kind === "audio" ? "ogg" : "bin");
   const objectPath = `whatsapp2/${kind}/${safeId}.${ext}`;
@@ -346,7 +1125,25 @@ async function persistWhatsApp2Media(messageId, kind) {
   });
   if (error) throw error;
   const { data } = supabase.storage.from("vendeo_vault").getPublicUrl(objectPath);
-  return data?.publicUrl || null;
+  const mediaUrl = data?.publicUrl || null;
+  const metadata = {
+    mediaUrl,
+    contentType,
+    reportedContentType,
+    size: Number(size || buffer.length || 0),
+    fileName: fileName || null,
+  };
+  if (options?.includePayload) {
+    return { ...metadata, buffer };
+  }
+  if (options?.includeMetadata) return metadata;
+  return mediaUrl;
+}
+
+async function persistWhatsApp2Media(messageId, kind, options = {}) {
+  return runWithHeavyMediaSlot(() =>
+    persistWhatsApp2MediaUnlocked(messageId, kind, options),
+  );
 }
 
 async function resolveQuotedMessageId(message) {
@@ -381,8 +1178,100 @@ async function transcribeStoredAudio(messageId, mediaUrl) {
   }
 }
 
+async function transcribeStoredAudioJob(messageId, mediaUrl) {
+  if (!mediaUrl || !SUPABASE_URL) {
+    throw new Error("whatsapp2_transcription_missing_media");
+  }
+
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/api/ai/transcribe`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(SUPABASE_SERVICE_ROLE_KEY ? {
+        authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+      } : {}),
+    },
+    body: JSON.stringify({ messageId, mediaUrl }),
+    // The downstream path already has 15s download + 30s Groq limits.
+    signal: AbortSignal.timeout(50_000),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = String(data?.error || data?.message || "transcription_failed").slice(0, 500);
+    throw new Error(`whatsapp2_transcription_http_${response.status}:${detail}`);
+  }
+
+  const transcript = typeof data?.text === "string" ? data.text.trim() : "";
+  if (!transcript) {
+    throw new Error("whatsapp2_transcription_empty");
+  }
+  return transcript;
+}
+
+async function enqueueWhatsApp2Inbound(message) {
+  if (!supabase || !message || message.fromMe) return;
+  if (isInternalWhatsApp2Message(message)) return;
+
+  const messageId = message.id?._serialized || message.id?.$1 || null;
+  if (!messageId) return;
+
+  const chatId = String(message.from || "").trim();
+  if (!chatId || chatId === "status@broadcast" || chatId.endsWith("@g.us")) return;
+
+  const kind = mediaKindForMessage(message);
+  const attachment = buildWhatsApp2Attachment(message);
+  const messageMetadata = buildWhatsApp2MessageMetadata(message);
+  const providerType = String(message.type || "").trim() || null;
+  const timestamp = new Date(
+    Number(message.timestamp || Math.floor(Date.now() / 1000)) * 1000,
+  ).toISOString();
+  const rawText = String(message.body || "").trim();
+  const nativePreview = nativeMessagePreview(messageMetadata);
+  const text =
+    ["vcard", "multi_vcard", "location", "poll_creation", "album", "call_log"].includes(
+      String(message.type || "").toLowerCase(),
+    )
+      ? nativePreview || rawText
+      : rawText;
+  const preview = kind
+    ? mediaPreview(kind, attachment)
+    : nativePreview || text || "Mensagem";
+  const contactName = String(
+    message?._data?.notifyName ||
+    message?._data?.sender?.pushname ||
+    chatId,
+  ).trim() || chatId;
+
+  const { data, error } = await supabase.rpc("enqueue_whatsapp2_inbound_attachment_job", {
+    p_message_id: messageId,
+    p_conversation_id: whatsapp2ConversationId(chatId),
+    p_raw_contact_id: chatId,
+    p_sender_id: String(message.from || chatId),
+    p_contact_name: contactName,
+    p_message_text: text,
+    p_preview_text: preview,
+    p_timestamp: timestamp,
+    p_media_type: kind,
+    p_reply_to_message_id: null,
+    p_actionable: kind !== "sticker",
+    p_due_at: new Date().toISOString(),
+    p_provider_type: providerType,
+    p_attachment_metadata: attachment || {},
+    p_message_metadata: messageMetadata || {},
+  });
+
+  if (error || data?.success !== true) {
+    throw error || new Error(data?.reason || "whatsapp2_inbound_enqueue_failed");
+  }
+
+  if (state.status === "ready") void processInboundQueue();
+}
+
 async function syncWhatsApp2Message(message) {
   if (!supabase || !message) return;
+  if (!message.fromMe) return enqueueWhatsApp2Inbound(message);
   const messageId = message.id?._serialized || message.id?.$1 || null;
   if (!messageId) return;
 
@@ -398,10 +1287,19 @@ async function syncWhatsApp2Message(message) {
   const timestamp = new Date(Number(message.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString();
   const replyToMessageId = await resolveQuotedMessageId(message);
   const kind = mediaKindForMessage(message);
+  const providerType = String(message.type || "").trim() || null;
+  const messageMetadata = buildWhatsApp2MessageMetadata(message);
+  let attachment = buildWhatsApp2Attachment(message);
   let mediaUrl = null;
-  let transcript = null;
-  let text = String(message.body || "").trim();
-  let preview = text || "Mensagem";
+  const rawText = String(message.body || "").trim();
+  const nativePreview = nativeMessagePreview(messageMetadata);
+  let text =
+    ["vcard", "multi_vcard", "location", "poll_creation", "album", "call_log"].includes(
+      String(message.type || "").toLowerCase(),
+    )
+      ? nativePreview || rawText
+      : rawText;
+  let preview = nativePreview || text || "Mensagem";
 
   if (kind) {
     try {
@@ -409,60 +1307,48 @@ async function syncWhatsApp2Message(message) {
     } catch (error) {
       console.warn("[whatsapp2] persistência de mídia falhou:", messageId, error?.message || error);
     }
-    preview = mediaPreview(kind);
+    if (mediaUrl) {
+      attachment = {
+        ...(attachment || {}),
+        kind,
+        providerType,
+        mediaUrl,
+        downloadable: true,
+        previewable: ["audio", "image", "video", "sticker"].includes(kind),
+      };
+    }
+    preview = mediaPreview(kind, attachment);
     if (mediaUrl) {
       if (kind === "audio") text = `[audio:${mediaUrl}]`;
       else if (kind === "image") text = `[image:${mediaUrl}]${text ? " " + text : ""}`;
       else if (kind === "video") text = `[video:${mediaUrl}]${text ? " " + text : ""}`;
       else if (kind === "sticker") text = `[sticker:${mediaUrl}]`;
+      else if (!text) text = attachment?.fileName || preview;
     } else if (!text) {
       text = preview;
-    }
-    if (kind === "audio" && mediaUrl) {
-      transcript = await transcribeStoredAudio(messageId, mediaUrl);
     }
   }
 
   const conversationId = whatsapp2ConversationId(chatId);
-  if (!message.fromMe) {
-    const { data, error } = await supabase.rpc("ingest_whatsapp2_inbound_atomic", {
-      p_conversation_id: conversationId,
-      p_raw_contact_id: chatId,
-      p_message_id: messageId,
-      p_sender_id: String(message.from || chatId),
-      p_contact_name: chatName,
-      p_text: text || preview,
-      p_timestamp: timestamp,
-      p_preview_text: preview,
-      p_avatar_url: avatarUrl,
-      p_media_url: mediaUrl,
-      p_media_type: kind,
-      p_reply_to_message_id: replyToMessageId,
-      p_audio_transcript: transcript,
-      p_audio_transcription_error: kind === "audio" && mediaUrl && !transcript ? "transcription_unavailable" : null,
-      p_actionable: kind !== "sticker",
-    });
-    if (error || data?.success !== true) {
-      throw error || new Error(data?.reason || "whatsapp2_inbound_sync_failed");
-    }
-  } else {
-    const { data, error } = await supabase.rpc("record_whatsapp2_outbound_atomic", {
-      p_conversation_id: conversationId,
-      p_raw_contact_id: chatId,
-      p_message_id: messageId,
-      p_contact_name: chatName,
-      p_text: text || preview,
-      p_timestamp: timestamp,
-      p_preview_text: preview,
-      p_avatar_url: avatarUrl,
-      p_media_url: mediaUrl,
-      p_media_type: kind,
-      p_reply_to_message_id: replyToMessageId,
-      p_status: Number(message.ack || 0) >= 3 ? "seen" : Number(message.ack || 0) >= 2 ? "delivered" : "sent",
-    });
-    if (error || data?.success !== true) {
-      throw error || new Error(data?.reason || "whatsapp2_outbound_sync_failed");
-    }
+  const { data, error } = await supabase.rpc("record_whatsapp2_outbound_attachment_atomic", {
+    p_conversation_id: conversationId,
+    p_raw_contact_id: chatId,
+    p_message_id: messageId,
+    p_contact_name: chatName,
+    p_text: text || preview,
+    p_timestamp: timestamp,
+    p_preview_text: preview,
+    p_avatar_url: avatarUrl,
+    p_media_url: mediaUrl,
+    p_media_type: kind,
+    p_reply_to_message_id: replyToMessageId,
+    p_status: Number(message.ack || 0) >= 3 ? "seen" : Number(message.ack || 0) >= 2 ? "delivered" : "sent",
+    p_provider_type: providerType,
+    p_attachment_metadata: attachment || {},
+    p_message_metadata: messageMetadata || {},
+  });
+  if (error || data?.success !== true) {
+    throw error || new Error(data?.reason || "whatsapp2_outbound_sync_failed");
   }
 }
 
@@ -524,6 +1410,41 @@ async function syncWhatsApp2Reaction(reaction) {
   if (error) console.warn("[whatsapp2] reação não persistida:", error.message);
 }
 
+function serializeWhatsApp2PollVote(vote) {
+  if (!vote) return null;
+  const parentMessageId =
+    vote.parentMessage?.id?._serialized ||
+    vote.parentMsgKey?._serialized ||
+    vote.parentMsgKey?.toString?.() ||
+    null;
+  return {
+    parentMessageId,
+    voter: String(vote.voter || ""),
+    selectedOptions: Array.isArray(vote.selectedOptions)
+      ? vote.selectedOptions.slice(0, 20).map((option) => ({
+          id: finiteMediaNumber(option?.localId ?? option?.id),
+          name: limitedNativeText(option?.name, 220),
+        })).filter((option) => option.name || option.id !== null)
+      : [],
+    interactedAt: vote.interractedAtTs
+      ? new Date(Number(vote.interractedAtTs)).toISOString()
+      : new Date().toISOString(),
+  };
+}
+
+async function syncWhatsApp2PollVote(vote) {
+  if (!supabase || !vote) return;
+  const payload = serializeWhatsApp2PollVote(vote);
+  if (!payload?.parentMessageId || !payload.voter) return;
+  const { error } = await supabase.rpc("apply_whatsapp2_poll_vote_atomic", {
+    p_message_id: payload.parentMessageId,
+    p_voter: payload.voter,
+    p_selected_options: payload.selectedOptions,
+    p_interacted_at: payload.interactedAt,
+  });
+  if (error) console.warn("[whatsapp2] voto de enquete não persistido:", error.message);
+}
+
 async function syncWhatsApp2Revoke(after, before) {
   if (!supabase) return;
   const target =
@@ -540,6 +1461,9 @@ async function syncWhatsApp2Revoke(after, before) {
         text: "Mensagem apagada",
         media_url: null,
         media_type: null,
+        provider_type: "revoked",
+        attachment_metadata: {},
+        message_metadata: { nativeKind: "revoked", providerType: "revoked" },
         audio_transcript: null,
       })
       .eq("id", target)
@@ -549,85 +1473,194 @@ async function syncWhatsApp2Revoke(after, before) {
 
 async function syncChatSnapshots() {
   if (!supabase || state.status !== "ready") return;
-  const active = ensureReady();
-  let chats = [];
+
+  let snapshot = [];
   try {
-    chats = await active.getChats();
+    snapshot = await getRecentChatSnapshot();
   } catch (error) {
     console.warn("[whatsapp2] snapshot de chats falhou:", error?.message || error);
     return;
   }
 
-  const now = new Date().toISOString();
-  const oneWeekAgoSeconds = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
-  const recentChats = chats
-    .filter((chat) => {
-      if (!chat || chat.isGroup) return false;
-      const timestamp = Number(chat.lastMessage?.timestamp || chat.timestamp || 0);
-      return timestamp >= oneWeekAgoSeconds;
-    })
-    .sort(
-      (a, b) =>
-        Number(b.lastMessage?.timestamp || b.timestamp || 0) -
-        Number(a.lastMessage?.timestamp || a.timestamp || 0),
-    )
+  const recentChats = snapshot
+    .filter((chat) => chat && !chat.isGroup)
     .slice(0, 500);
+  if (!recentChats.length) return;
 
-  const rows = [];
-  for (const chat of recentChats) {
-    const chatId = chat.id?._serialized || chat.id?.$1 || null;
-    if (!chatId) continue;
-    const avatar = getCachedProfilePic(chatId);
-    const last = serializeMessage(chat.lastMessage);
-    const rawLastTimestamp = Number(last?.timestamp || chat.timestamp || 0);
-    const lastAt = new Date(rawLastTimestamp * 1000).toISOString();
-    rows.push({
-      id: whatsapp2ConversationId(chatId),
-      username: chatId,
-      full_name: String(chat.name || chatId),
-      ...(avatar ? { avatar, avatar_url: avatar } : {}),
-      contact_id: chatId,
-      channel: "whatsapp2",
-      last_message: formatWhatsApp2PreviewForGateway(last),
-      last_message_preview: formatWhatsApp2PreviewForGateway(last),
-      last_message_at: lastAt,
-      last_direction: last?.fromMe ? "out" : "in",
-      last_status: last?.fromMe ? (Number(last.ack || 0) >= 3 ? "seen" : Number(last.ack || 0) >= 2 ? "delivered" : "sent") : null,
-      unread: Number(chat.unreadCount || 0) > 0,
-      unread_count: Number(chat.unreadCount || 0),
-      updated_at: now,
-      status: "active",
-    });
+  const conversationIds = recentChats.map((chat) =>
+    whatsapp2ConversationId(chat.id),
+  );
+  const canonicalRows = [];
+
+  for (let offset = 0; offset < conversationIds.length; offset += 100) {
+    const ids = conversationIds.slice(offset, offset + 100);
+    const { data, error } = await supabase
+      .from("instagram_conversations")
+      .select(
+        "id, username, full_name, avatar, avatar_url, contact_id, channel, last_message, last_message_preview, last_message_at, last_direction, last_status, unread, unread_count, status",
+      )
+      .in("id", ids);
+
+    if (error) {
+      console.warn("[whatsapp2] leitura delta do snapshot falhou:", error.message);
+      return;
+    }
+    canonicalRows.push(...(data || []));
   }
 
-  if (!rows.length) return;
-  const { error } = await supabase.from("instagram_conversations").upsert(rows, {
-    onConflict: "id",
-    ignoreDuplicates: false,
-  });
-  if (error) console.warn("[whatsapp2] snapshot Supabase falhou:", error.message);
+  const canonicalById = new Map(
+    canonicalRows.map((row) => [String(row.id), row]),
+  );
+  const now = new Date().toISOString();
+  const changedRows = [];
+
+  for (const chat of recentChats) {
+    const chatId = String(chat.id || "");
+    if (!chatId) continue;
+
+    const id = whatsapp2ConversationId(chatId);
+    const existing = canonicalById.get(id) || null;
+    const canonicalAvatar = existing?.avatar_url || existing?.avatar || null;
+    if (!getCachedProfilePic(chatId) && canonicalAvatar) {
+      setProfilePicCacheEntry(chatId, canonicalAvatar);
+    }
+    const avatar = getCachedProfilePic(chatId) || canonicalAvatar;
+    const last = chat.lastMessage || null;
+    const gatewayTimestamp = Number(last?.timestamp || chat.timestamp || 0);
+    const gatewayAt = gatewayTimestamp > 0
+      ? new Date(gatewayTimestamp * 1000).toISOString()
+      : null;
+    const existingTimestamp = existing?.last_message_at
+      ? new Date(existing.last_message_at).getTime()
+      : 0;
+    const gatewayTimestampMs = gatewayTimestamp > 0
+      ? gatewayTimestamp * 1000
+      : 0;
+    const gatewayIsNewer = gatewayTimestampMs > existingTimestamp;
+    const sameMessageTime =
+      gatewayTimestampMs > 0 &&
+      Math.abs(gatewayTimestampMs - existingTimestamp) < 1000;
+    const gatewayStatus = last?.fromMe
+      ? (
+          Number(last.ack || 0) >= 3
+            ? "seen"
+            : Number(last.ack || 0) >= 2
+            ? "delivered"
+            : "sent"
+        )
+      : null;
+    const preview = formatWhatsApp2PreviewForGateway(last);
+    const unreadCount = Number(chat.unreadCount || 0);
+    const snapshotAtLeastCurrent = gatewayIsNewer || sameMessageTime || !existing;
+    const nextUnreadCount = snapshotAtLeastCurrent
+      ? unreadCount
+      : Number(existing?.unread_count || 0);
+    const nextUnread = snapshotAtLeastCurrent
+      ? unreadCount > 0
+      : Boolean(existing?.unread);
+    const fullName = String(chat.name || existing?.full_name || chatId);
+    const nextLastMessage = gatewayIsNewer || !existing
+      ? preview
+      : existing.last_message;
+    const nextLastMessagePreview = gatewayIsNewer || !existing
+      ? preview
+      : existing.last_message_preview;
+    const nextLastAt = gatewayIsNewer || !existing
+      ? gatewayAt
+      : existing.last_message_at;
+    const nextLastDirection = gatewayIsNewer || !existing
+      ? (last?.fromMe ? "out" : "in")
+      : existing.last_direction;
+    const nextLastStatus =
+      gatewayIsNewer || sameMessageTime || !existing
+        ? gatewayStatus
+        : existing.last_status;
+
+    const row = {
+      id,
+      username: existing?.username || chatId,
+      full_name: fullName,
+      avatar: avatar || existing?.avatar || existing?.avatar_url || null,
+      avatar_url: avatar || existing?.avatar_url || existing?.avatar || null,
+      contact_id: chatId,
+      channel: "whatsapp2",
+      last_message: nextLastMessage || "",
+      last_message_preview: nextLastMessagePreview || "",
+      last_message_at: nextLastAt,
+      last_direction: nextLastDirection || null,
+      last_status: nextLastStatus || null,
+      unread: nextUnread,
+      unread_count: nextUnreadCount,
+      status: existing?.status || "active",
+      updated_at: now,
+    };
+
+    const changed =
+      !existing ||
+      String(existing.username || "") !== String(row.username || "") ||
+      String(existing.full_name || "") !== String(row.full_name || "") ||
+      String(existing.avatar || existing.avatar_url || "") !==
+        String(row.avatar || row.avatar_url || "") ||
+      String(existing.contact_id || "") !== String(row.contact_id || "") ||
+      String(existing.channel || "") !== "whatsapp2" ||
+      String(existing.last_message || "") !== String(row.last_message || "") ||
+      String(existing.last_message_preview || "") !==
+        String(row.last_message_preview || "") ||
+      String(existing.last_message_at || "") !== String(row.last_message_at || "") ||
+      String(existing.last_direction || "") !== String(row.last_direction || "") ||
+      String(existing.last_status || "") !== String(row.last_status || "") ||
+      Boolean(existing.unread) !== Boolean(row.unread) ||
+      Number(existing.unread_count || 0) !== Number(row.unread_count || 0);
+
+    if (changed) changedRows.push(row);
+  }
+
+  if (!changedRows.length) return;
+
+  const { error } = await supabase
+    .from("instagram_conversations")
+    .upsert(changedRows, {
+      onConflict: "id",
+      ignoreDuplicates: false,
+    });
+  if (error) {
+    console.warn("[whatsapp2] snapshot delta Supabase falhou:", error.message);
+  }
 }
 
 function formatWhatsApp2PreviewForGateway(message) {
   if (!message) return "";
   const body = String(message.body || "").trim();
-  if (body) return body;
   const type = String(message.type || "").toLowerCase();
+  const nativePreview = nativeMessagePreview(buildWhatsApp2MessageMetadata(message));
+  if (nativePreview) return nativePreview;
+  if (type === "document") {
+    const attachment = buildWhatsApp2Attachment(message);
+    return attachment?.fileName || body || "Documento";
+  }
+  if (body) return body;
   if (type === "ptt" || type === "audio") return "🎙️ Mensagem de voz";
   if (type === "image") return "📷 Foto";
   if (type === "video") return "🎥 Vídeo";
   if (type === "sticker") return "Figurinha";
+  if (message.hasMedia) return buildWhatsApp2Attachment(message)?.fileName || "Arquivo";
   return type ? `[${type}]` : "";
 }
 
 async function sendTextInternal({ to, text, replyToMessageId }) {
-  const sent = await ensureReady().sendMessage(normalizeChatId(to), String(text || ""), {
-    ...(replyToMessageId ? { quotedMessageId: String(replyToMessageId) } : {}),
+  return runWithSendSlot(async () => {
+    const sent = await ensureReady().sendMessage(
+      normalizeChatId(to),
+      String(text || ""),
+      {
+        ...(replyToMessageId ? { quotedMessageId: String(replyToMessageId) } : {}),
+      },
+    );
+    return serializeMessage(sent);
   });
-  return serializeMessage(sent);
 }
 
-async function sendMediaInternal({
+async function sendMediaInternalUnlocked({
   to,
   mediaUrl,
   mediaBase64,
@@ -639,16 +1672,55 @@ async function sendMediaInternal({
   replyToMessageId,
 }) {
   let media;
+  let sourceBytes = 0;
+  const requestedFilename = filename
+    ? sanitizeAttachmentFilename(String(filename), "file")
+    : null;
+
   if (mediaUrl) {
-    media = await MessageMedia.fromUrl(String(mediaUrl), {
-      unsafeMime: true,
-      filename: filename ? String(filename) : undefined,
+    let inferredFilename = requestedFilename;
+    if (!inferredFilename) {
+      try {
+        const parsedUrl = new URL(String(mediaUrl));
+        const fromPath = decodeURIComponent(parsedUrl.pathname.split("/").pop() || "");
+        inferredFilename = fromPath
+          ? sanitizeAttachmentFilename(fromPath, "file")
+          : "file";
+      } catch {
+        inferredFilename = "file";
+      }
+    }
+
+    const downloaded = await downloadHttpMediaBounded(String(mediaUrl), {
+      maxBytes: MAX_MEDIA_BYTES,
+      fileName: inferredFilename,
     });
-  } else if (mediaBase64 && mimetype) {
+    sourceBytes = downloaded.size;
     media = new MessageMedia(
-      String(mimetype),
-      String(mediaBase64),
-      filename ? String(filename) : undefined,
+      downloaded.contentType,
+      downloaded.buffer.toString("base64"),
+      inferredFilename,
+    );
+  } else if (mediaBase64 && mimetype) {
+    assertMediaSizeWithinLimit({
+      base64: mediaBase64,
+      maxBytes: MAX_MEDIA_BYTES,
+    });
+    const sourceBuffer = Buffer.from(String(mediaBase64), "base64");
+    assertMediaSizeWithinLimit({
+      actualBytes: sourceBuffer.length,
+      maxBytes: MAX_MEDIA_BYTES,
+    });
+    sourceBytes = sourceBuffer.length;
+    const trustedMime = resolveTrustedMimeType(
+      mimetype,
+      sourceBuffer,
+      requestedFilename,
+    );
+    media = new MessageMedia(
+      trustedMime,
+      sourceBuffer.toString("base64"),
+      requestedFilename || undefined,
     );
   } else {
     throw new Error("Informe mediaUrl ou mediaBase64 + mimetype");
@@ -658,7 +1730,7 @@ async function sendMediaInternal({
   await ensureWaJsReady();
 
   const chatId = normalizeChatId(to);
-  const cleanMime = String(media.mimetype || "application/octet-stream").split(";")[0].trim();
+  const cleanMime = normalizeMimeType(media.mimetype || "application/octet-stream");
   const type = asVoice
     ? "audio"
     : asSticker
@@ -670,12 +1742,15 @@ async function sendMediaInternal({
     : cleanMime.startsWith("audio/")
     ? "audio"
     : "document";
+  assertMediaSizeWithinLimit({
+    base64: media.data,
+    maxBytes: MAX_MEDIA_BYTES,
+  });
   const dataUrl = `data:${cleanMime};base64,${media.data}`;
-  const resolvedFilename = filename
-    ? String(filename)
-    : asVoice
-    ? "voice.ogg"
-    : media.filename || "file";
+  const resolvedFilename = requestedFilename
+    || (asVoice
+      ? "voice.ogg"
+      : sanitizeAttachmentFilename(media.filename || "file", "file"));
 
   const result = await active.pupPage.evaluate(
     async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
@@ -716,29 +1791,420 @@ async function sendMediaInternal({
     ? result.id
     : result?.id?.toString?.() || result?.messageId || null;
 
+  const providerType = asVoice ? "ptt" : type;
+  const kind = type === "document" ? "document" : type;
   return {
     id: messageId,
     fromMe: true,
     to: chatId,
     body: caption ? String(caption) : "",
-    type: asVoice ? "ptt" : type,
+    type: providerType,
     timestamp: Math.floor(Date.now() / 1000),
     hasMedia: true,
     hasQuotedMsg: Boolean(replyToMessageId),
     ack: result?.ack ?? null,
+    attachment: {
+      kind,
+      providerType,
+      mimeType: cleanMime || null,
+      fileName: resolvedFilename || null,
+      fileSize: sourceBytes || null,
+      mediaUrl: null,
+      caption: caption ? String(caption) : null,
+      duration: null,
+      width: null,
+      height: null,
+      pageCount: null,
+      isGif: false,
+      isAnimated: false,
+      isViewOnce: false,
+      isForwarded: false,
+      forwardingScore: 0,
+      downloadable: true,
+      previewable: ["audio", "image", "video", "sticker"].includes(kind),
+    },
   };
+}
+
+async function sendMediaInternal(args) {
+  return runWithSendSlot(() =>
+    runWithHeavyMediaSlot(() => sendMediaInternalUnlocked(args)),
+  );
+}
+
+async function processWhatsApp2InboundJob(job, workerToken) {
+  const messageId = String(job?.message_id || "").trim();
+  const chatId = String(job?.raw_contact_id || "").trim();
+  if (!messageId || !chatId) throw new Error("whatsapp2_inbound_job_invalid");
+
+  let providerMessage = null;
+  try {
+    providerMessage = await getMessage(messageId);
+  } catch {}
+
+  let kind = String(job?.media_type || "").trim() || null;
+  if (!kind && providerMessage) kind = mediaKindForMessage(providerMessage);
+
+  const queuedAttachment =
+    job?.attachment_metadata && typeof job.attachment_metadata === "object"
+      ? job.attachment_metadata
+      : null;
+  const providerAttachment = providerMessage
+    ? buildWhatsApp2Attachment(providerMessage)
+    : null;
+  let attachment = queuedAttachment || providerAttachment;
+  const queuedMessageMetadata =
+    job?.message_metadata && typeof job.message_metadata === "object"
+      ? job.message_metadata
+      : null;
+  const providerMessageMetadata = providerMessage
+    ? buildWhatsApp2MessageMetadata(providerMessage)
+    : null;
+  const messageMetadata = queuedMessageMetadata || providerMessageMetadata;
+  const providerType =
+    String(job?.provider_type || providerMessage?.type || attachment?.providerType || messageMetadata?.providerType || "").trim() ||
+    null;
+
+  let text = String(job?.message_text || providerMessage?.body || "").trim();
+  let preview = String(job?.preview_text || "").trim() ||
+    (kind ? mediaPreview(kind, attachment) : nativeMessagePreview(messageMetadata) || text || "Mensagem");
+  let chatName = String(job?.contact_name || chatId).trim() || chatId;
+  let replyToMessageId = job?.reply_to_message_id || null;
+
+  if (providerMessage) {
+    if (chatName === chatId) {
+      try {
+        const chat = await providerMessage.getChat();
+        chatName = String(chat?.name || chatName);
+      } catch {}
+    }
+    if (!replyToMessageId) {
+      replyToMessageId = await resolveQuotedMessageId(providerMessage);
+    }
+  }
+
+  const avatarUrl = await resolveProfilePic(chatId).catch(() => null);
+  let mediaUrl = null;
+
+  if (kind) {
+    const persisted = kind === "document"
+      ? await persistWhatsApp2Media(messageId, kind, { includePayload: true })
+      : await persistWhatsApp2Media(messageId, kind, { includeMetadata: true });
+    mediaUrl = typeof persisted === "string" ? persisted : persisted?.mediaUrl || null;
+    if (!mediaUrl) throw new Error("whatsapp2_media_persistence_returned_empty");
+
+    attachment = {
+      ...(attachment || buildWhatsApp2Attachment(providerMessage || {
+        type: providerType,
+        hasMedia: true,
+        body: text,
+      }) || {}),
+      kind,
+      providerType,
+      mimeType: persisted && typeof persisted === "object"
+        ? persisted.contentType || attachment?.mimeType || null
+        : attachment?.mimeType || null,
+      fileSize: persisted && typeof persisted === "object"
+        ? Number(persisted.size || 0) || attachment?.fileSize || null
+        : attachment?.fileSize || null,
+      fileName: attachment?.fileName
+        ? sanitizeAttachmentFilename(attachment.fileName, kind === "document" ? "document" : "file")
+        : null,
+      mediaUrl,
+      downloadable: true,
+      previewable: ["audio", "image", "video", "sticker"].includes(kind),
+    };
+
+    if (kind === "document" && persisted && typeof persisted === "object") {
+      attachment = await enrichDocumentAttachment(attachment, persisted);
+    }
+
+    preview = mediaPreview(kind, attachment);
+    if (kind === "audio") text = `[audio:${mediaUrl}]`;
+    else if (kind === "image") text = `[image:${mediaUrl}]${text ? " " + text : ""}`;
+    else if (kind === "video") text = `[video:${mediaUrl}]${text ? " " + text : ""}`;
+    else if (kind === "sticker") text = `[sticker:${mediaUrl}]`;
+    else if (kind === "document") text = attachment?.caption || attachment?.fileName || preview;
+    else if (!text) text = attachment?.fileName || preview;
+  }
+
+  const conversationId = String(job.conversation_id || whatsapp2ConversationId(chatId));
+
+  if (kind === "audio") {
+    const { data: staged, error: stageError } = await supabase.rpc(
+      "stage_whatsapp2_audio_inbound_attachment_atomic",
+      {
+        p_conversation_id: conversationId,
+        p_raw_contact_id: chatId,
+        p_message_id: messageId,
+        p_sender_id: String(job.sender_id || chatId),
+        p_contact_name: chatName,
+        p_text: text || preview,
+        p_timestamp: new Date(job.message_timestamp || Date.now()).toISOString(),
+        p_preview_text: preview,
+        p_avatar_url: avatarUrl,
+        p_media_url: mediaUrl,
+        p_reply_to_message_id: replyToMessageId,
+        p_actionable: job.actionable !== false,
+        p_provider_type: providerType,
+        p_attachment_metadata: attachment || {},
+        p_message_metadata: messageMetadata || {},
+      },
+    );
+
+    if (stageError || staged?.success !== true || staged?.transcription_queued !== true) {
+      throw stageError || new Error(staged?.reason || "whatsapp2_audio_stage_failed");
+    }
+
+    const { data: completed, error: completeError } = await supabase.rpc(
+      "complete_whatsapp2_inbound_job",
+      {
+        p_message_id: messageId,
+        p_worker_token: workerToken,
+      },
+    );
+    if (completeError || completed?.success !== true) {
+      throw completeError || new Error(completed?.reason || "whatsapp2_inbound_complete_failed");
+    }
+
+    if (state.status === "ready") void processTranscriptionQueue();
+    return;
+  }
+
+  const { data, error } = await supabase.rpc("ingest_whatsapp2_inbound_attachment_atomic", {
+    p_conversation_id: conversationId,
+    p_raw_contact_id: chatId,
+    p_message_id: messageId,
+    p_sender_id: String(job.sender_id || chatId),
+    p_contact_name: chatName,
+    p_text: text || preview,
+    p_timestamp: new Date(job.message_timestamp || Date.now()).toISOString(),
+    p_preview_text: preview,
+    p_avatar_url: avatarUrl,
+    p_media_url: mediaUrl,
+    p_media_type: kind,
+    p_reply_to_message_id: replyToMessageId,
+    p_audio_transcript: null,
+    p_audio_transcription_error: null,
+    p_actionable: job.actionable !== false && kind !== "sticker",
+    p_provider_type: providerType,
+    p_attachment_metadata: attachment || {},
+    p_message_metadata: messageMetadata || {},
+  });
+
+  if (error || data?.success !== true) {
+    throw error || new Error(data?.reason || "whatsapp2_inbound_sync_failed");
+  }
+
+  const { data: completed, error: completeError } = await supabase.rpc(
+    "complete_whatsapp2_inbound_job",
+    {
+      p_message_id: messageId,
+      p_worker_token: workerToken,
+    },
+  );
+  if (completeError || completed?.success !== true) {
+    throw completeError || new Error(completed?.reason || "whatsapp2_inbound_complete_failed");
+  }
+}
+
+async function processInboundQueue() {
+  if (!supabase || inboundWorkerRunning || state.status !== "ready") return;
+
+  const availableSlots = Math.max(
+    0,
+    WHATSAPP2_INBOUND_CONCURRENCY - inboundJobsInFlight,
+  );
+  if (availableSlots <= 0) return;
+
+  inboundWorkerRunning = true;
+  const workerToken = `${WORKER_ID}:inbound:${Date.now().toString(36)}`;
+  let claimedCount = 0;
+
+  try {
+    const { data: jobs, error } = await supabase.rpc("claim_whatsapp2_inbound_attachment_jobs", {
+      p_worker_token: workerToken,
+      p_limit: availableSlots,
+      p_lease_seconds: 300,
+      p_global_limit: WHATSAPP2_INBOUND_CONCURRENCY,
+    });
+    if (error) throw error;
+    claimedCount = Array.isArray(jobs) ? jobs.length : 0;
+
+    for (const job of jobs || []) {
+      inboundJobsInFlight += 1;
+      void (async () => {
+        try {
+          await processWhatsApp2InboundJob(job, workerToken);
+        } catch (error) {
+          const attempts = Math.max(1, Number(job?.attempt_count || 1));
+          const backoffSeconds = Math.min(300, 5 * Math.pow(2, Math.min(attempts - 1, 5)));
+          const { data: retry, error: retryError } = await supabase.rpc(
+            "reschedule_whatsapp2_inbound_job",
+            {
+              p_message_id: job.message_id,
+              p_worker_token: workerToken,
+              p_due_at: new Date(Date.now() + backoffSeconds * 1000).toISOString(),
+              p_last_error: String(error?.message || error),
+            },
+          );
+
+          if (retryError || retry?.success !== true) {
+            console.warn(
+              "[whatsapp2] inbound retry não persistido:",
+              job.message_id,
+              retryError?.message || retry?.reason || "unknown",
+            );
+          } else if (retry?.failed === true) {
+            console.warn(
+              "[whatsapp2] inbound esgotou tentativas:",
+              job.message_id,
+              String(error?.message || error),
+            );
+          }
+        } finally {
+          inboundJobsInFlight = Math.max(0, inboundJobsInFlight - 1);
+          if (state.status === "ready") {
+            setImmediate(() => void processInboundQueue());
+          }
+        }
+      })();
+    }
+  } catch (error) {
+    console.warn("[whatsapp2] worker inbound:", error?.message || error);
+  } finally {
+    inboundWorkerRunning = false;
+    if (
+      claimedCount > 0 &&
+      inboundJobsInFlight < WHATSAPP2_INBOUND_CONCURRENCY &&
+      state.status === "ready"
+    ) {
+      setImmediate(() => void processInboundQueue());
+    }
+  }
+}
+
+function startInboundWorker() {
+  if (!supabase || inboundWorkerTimer) return;
+  void processInboundQueue();
+  // Enqueue dispara processamento imediato; este timer é apenas reconciliação/recovery.
+  inboundWorkerTimer = setInterval(() => void processInboundQueue(), 2000);
+}
+
+function stopInboundWorker() {
+  if (!inboundWorkerTimer) return;
+  clearInterval(inboundWorkerTimer);
+  inboundWorkerTimer = null;
+}
+
+async function processWhatsApp2TranscriptionJob(job, workerToken) {
+  const messageId = String(job?.message_id || "").trim();
+  const mediaUrl = String(job?.media_url || "").trim();
+  if (!messageId || !mediaUrl) throw new Error("whatsapp2_transcription_job_invalid");
+
+  const transcript = await transcribeStoredAudioJob(messageId, mediaUrl);
+
+  const { data, error } = await supabase.rpc("complete_whatsapp2_transcription_job", {
+    p_message_id: messageId,
+    p_worker_token: workerToken,
+    p_transcript: transcript,
+  });
+
+  if (error || data?.success !== true) {
+    throw error || new Error(data?.reason || "whatsapp2_transcription_complete_failed");
+  }
+}
+
+async function processTranscriptionQueue() {
+  if (!supabase || transcriptionWorkerRunning || state.status !== "ready") return;
+  transcriptionWorkerRunning = true;
+  const workerToken = `${WORKER_ID}:transcription:${Date.now().toString(36)}`;
+  let claimedCount = 0;
+
+  try {
+    const { data: jobs, error } = await supabase.rpc(
+      "claim_whatsapp2_transcription_jobs",
+      {
+        p_worker_token: workerToken,
+        p_limit: WHATSAPP2_TRANSCRIPTION_CONCURRENCY,
+        p_lease_seconds: 120,
+        p_global_limit: WHATSAPP2_TRANSCRIPTION_CONCURRENCY,
+      },
+    );
+    if (error) throw error;
+
+    claimedCount = Array.isArray(jobs) ? jobs.length : 0;
+
+    await Promise.all((jobs || []).map(async (job) => {
+      try {
+        await processWhatsApp2TranscriptionJob(job, workerToken);
+      } catch (error) {
+        const attempts = Math.max(1, Number(job?.attempt_count || 1));
+        const backoffSeconds = Math.min(
+          300,
+          10 * Math.pow(2, Math.min(attempts - 1, 5)),
+        );
+
+        const { data: retry, error: retryError } = await supabase.rpc(
+          "reschedule_whatsapp2_transcription_job",
+          {
+            p_message_id: job.message_id,
+            p_worker_token: workerToken,
+            p_due_at: new Date(Date.now() + backoffSeconds * 1000).toISOString(),
+            p_last_error: String(error?.message || error),
+          },
+        );
+
+        if (retryError || retry?.success !== true) {
+          console.warn(
+            "[whatsapp2] transcription retry não persistido:",
+            job.message_id,
+            retryError?.message || retry?.reason || "unknown",
+          );
+        } else if (retry?.failed === true) {
+          console.warn(
+            "[whatsapp2] transcrição esgotou tentativas:",
+            job.message_id,
+            String(error?.message || error),
+          );
+        }
+      }
+    }));
+  } catch (error) {
+    console.warn("[whatsapp2] worker de transcrição:", error?.message || error);
+  } finally {
+    transcriptionWorkerRunning = false;
+    if (claimedCount > 0 && state.status === "ready") {
+      setImmediate(() => void processTranscriptionQueue());
+    }
+  }
+}
+
+function startTranscriptionWorker() {
+  if (!supabase || transcriptionWorkerTimer) return;
+  void processTranscriptionQueue();
+  // Enqueue acorda o worker; o timer serve somente de recovery/reconciliação.
+  transcriptionWorkerTimer = setInterval(() => void processTranscriptionQueue(), 2000);
+}
+
+function stopTranscriptionWorker() {
+  if (!transcriptionWorkerTimer) return;
+  clearInterval(transcriptionWorkerTimer);
+  transcriptionWorkerTimer = null;
 }
 
 async function processDeliveryQueue() {
   if (!supabase || deliveryWorkerRunning || state.status !== "ready") return;
   deliveryWorkerRunning = true;
+  let claimedCount = 0;
   try {
     const { data: jobs, error } = await supabase.rpc("claim_whatsapp2_delivery_batch", {
       p_worker_id: WORKER_ID,
-      p_limit: 5,
+      p_limit: WHATSAPP2_DELIVERY_BATCH_LIMIT,
       p_stale_after_seconds: 90,
     });
     if (error) throw error;
+    claimedCount = Array.isArray(jobs) ? jobs.length : 0;
 
     for (const job of jobs || []) {
       try {
@@ -785,6 +2251,9 @@ async function processDeliveryQueue() {
     console.warn("[whatsapp2] worker de entrega:", error?.message || error);
   } finally {
     deliveryWorkerRunning = false;
+    if (claimedCount > 0 && state.status === "ready") {
+      setImmediate(() => void processDeliveryQueue());
+    }
   }
 }
 
@@ -800,8 +2269,76 @@ function stopDeliveryWorker() {
   deliveryWorkerTimer = null;
 }
 
-async function destroyClient() {
+function cancelScheduledReconnect({ resetAttempt = false } = {}) {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (resetAttempt) reconnectAttempt = 0;
+}
+
+function scheduleClientReconnect(reason = "disconnected") {
+  if (shuttingDown || reconnectTimer || reconnectInProgress) return;
+  if (
+    state.status === "auth_failure" ||
+    state.status === "awaiting_pairing" ||
+    state.status === "pairing_code"
+  ) {
+    return;
+  }
+
+  const backoffIndex = Math.min(
+    reconnectAttempt,
+    WHATSAPP2_RECONNECT_BACKOFF_MS.length - 1,
+  );
+  const delayMs = WHATSAPP2_RECONNECT_BACKOFF_MS[backoffIndex];
+  reconnectAttempt = Math.min(
+    reconnectAttempt + 1,
+    WHATSAPP2_RECONNECT_BACKOFF_MS.length - 1,
+  );
+
+  console.warn("[whatsapp2] reconexão agendada", {
+    reason: String(reason || "disconnected"),
+    delayMs,
+    attempt: backoffIndex + 1,
+  });
+
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    if (shuttingDown) return;
+
+    reconnectInProgress = true;
+    try {
+      setState({ status: "reconnecting" });
+      await destroyClient({ cancelReconnect: false });
+      if (shuttingDown) return;
+      await startClient();
+    } catch (error) {
+      console.warn("[whatsapp2] reconexão falhou:", error?.message || error);
+    } finally {
+      reconnectInProgress = false;
+      if (
+        !shuttingDown &&
+        state.status !== "ready" &&
+        state.status !== "auth_failure" &&
+        state.status !== "awaiting_pairing" &&
+        state.status !== "pairing_code"
+      ) {
+        scheduleClientReconnect("retry");
+      }
+    }
+  }, delayMs);
+}
+
+async function destroyClient({ cancelReconnect = true } = {}) {
+  if (cancelReconnect) cancelScheduledReconnect();
+  invalidateChatSnapshot();
+  stopTranscriptionWorker();
+  stopInboundWorker();
   stopDeliveryWorker();
+  await clearPresenceSubscriptions({ unsubscribe: true });
+  presenceBridgePage = null;
+  presenceBridgeExposed = false;
   const current = client;
   client = null;
   initializing = null;
@@ -871,6 +2408,7 @@ async function startClient() {
       await emitEvent("authenticated");
     });
     next.on("ready", async () => {
+      cancelScheduledReconnect({ resetAttempt: true });
       const me = next.info ? {
         wid: next.info.wid?._serialized || null,
         pushname: next.info.pushname || null,
@@ -891,6 +2429,8 @@ async function startClient() {
       void ensureWaJsReady()
         .then(() => console.log("[whatsapp2] WA-JS pronto para mídia"))
         .catch((error) => console.warn("[whatsapp2] WA-JS não carregou:", error?.message || error));
+      startInboundWorker();
+      startTranscriptionWorker();
       startDeliveryWorker();
       void syncChatSnapshots();
       if (supabase) {
@@ -900,32 +2440,50 @@ async function startClient() {
       }
     });
     next.on("auth_failure", async (message) => {
+      cancelScheduledReconnect();
+      stopTranscriptionWorker();
+      stopInboundWorker();
       stopDeliveryWorker();
+      await clearPresenceSubscriptions({ unsubscribe: false });
+      presenceBridgePage = null;
+      presenceBridgeExposed = false;
       setState({ status: "auth_failure", lastError: String(message || "") });
       await emitEvent("auth_failure", { message: String(message || "") });
     });
     next.on("disconnected", async (reason) => {
+      stopTranscriptionWorker();
+      stopInboundWorker();
       stopDeliveryWorker();
+      await clearPresenceSubscriptions({ unsubscribe: false });
+      presenceBridgePage = null;
+      presenceBridgeExposed = false;
       setState({ status: "disconnected", lastError: String(reason || "") });
       await emitEvent("disconnected", { reason: String(reason || "") });
+      if (client === next && !shuttingDown) {
+        scheduleClientReconnect(reason || "disconnected");
+      }
     });
     next.on("message", (message) => {
+      invalidateChatSnapshot();
       void emitEvent("message", serializeMessage(message));
-      void syncWhatsApp2Message(message).catch((error) =>
-        console.warn("[whatsapp2] inbound sync:", error?.message || error));
+      void enqueueWhatsApp2Inbound(message).catch((error) =>
+        console.warn("[whatsapp2] inbound enqueue:", error?.message || error));
     });
     next.on("message_create", (message) => {
       if (!message.fromMe) return;
+      invalidateChatSnapshot();
       void emitEvent("message_create", serializeMessage(message));
       void syncWhatsApp2Message(message).catch((error) =>
         console.warn("[whatsapp2] outbound sync:", error?.message || error));
     });
     next.on("message_ack", (message, ack) => {
+      invalidateChatSnapshot();
       void emitEvent("message_ack", { message: serializeMessage(message), ack });
       void syncWhatsApp2Ack(message, ack).catch((error) =>
         console.warn("[whatsapp2] ack sync:", error?.message || error));
     });
     next.on("message_revoke_everyone", (after, before) => {
+      invalidateChatSnapshot();
       void emitEvent("message_revoke_everyone", {
         after: serializeMessage(after), before: serializeMessage(before)
       });
@@ -937,11 +2495,20 @@ async function startClient() {
       void syncWhatsApp2Reaction(reaction).catch((error) =>
         console.warn("[whatsapp2] reaction sync:", error?.message || error));
     });
+    next.on("vote_update", (vote) => {
+      const payload = serializeWhatsApp2PollVote(vote);
+      void emitEvent("vote_update", payload);
+      void syncWhatsApp2PollVote(vote).catch((error) =>
+        console.warn("[whatsapp2] poll vote sync:", error?.message || error));
+    });
 
     try { await next.initialize(); }
     catch (error) {
       initializing = null;
       setState({ status: "error", lastError: String(error?.message || error) });
+      if (client === next && !shuttingDown) {
+        scheduleClientReconnect("initialize_error");
+      }
       throw error;
     }
   })();
@@ -950,6 +2517,721 @@ async function startClient() {
   const message = await ensureReady().getMessageById(String(messageId || ""));
   if (!message) throw new Error("Mensagem não encontrada");
   return message;
+}
+
+function presenceTimestampToIso(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  const date = new Date(numeric > 1e12 ? numeric : numeric * 1000);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function runPresenceOperationExclusive(operation) {
+  const run = presenceOperationQueue
+    .catch(() => undefined)
+    .then(operation);
+  presenceOperationQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function presencePayloadSignature(payload) {
+  return JSON.stringify([
+    Boolean(payload?.available),
+    Boolean(payload?.isOnline),
+    payload?.lastSeenAt || null,
+    payload?.state || null,
+    Boolean(payload?.isTyping),
+    Boolean(payload?.isRecording),
+    payload?.reason || null,
+  ]);
+}
+
+function prunePresenceSnapshotCache(now = Date.now()) {
+  for (const [key, entry] of presenceSnapshotCache) {
+    const ephemeralExpired = !entry || entry.expiresAt <= now;
+    const lastSeenExpired = !entry?.lastSeenExpiresAt || entry.lastSeenExpiresAt <= now;
+    if (ephemeralExpired && lastSeenExpired) presenceSnapshotCache.delete(key);
+  }
+
+  while (presenceSnapshotCache.size > MAX_PRESENCE_SNAPSHOT_CACHE) {
+    const oldestKey = presenceSnapshotCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    presenceSnapshotCache.delete(oldestKey);
+  }
+}
+
+function getCachedPresenceSnapshot(chatId) {
+  const key = String(chatId || "").trim();
+  if (!key) return null;
+
+  const now = Date.now();
+  const entry = presenceSnapshotCache.get(key);
+  if (!entry || entry.expiresAt <= now) {
+    prunePresenceSnapshotCache(now);
+    return null;
+  }
+
+  presenceSnapshotCache.delete(key);
+  presenceSnapshotCache.set(key, entry);
+  return entry.payload;
+}
+
+function getCachedPresenceLastSeen(chatId) {
+  const key = String(chatId || "").trim();
+  if (!key) return null;
+
+  const now = Date.now();
+  const entry = presenceSnapshotCache.get(key);
+  if (!entry?.lastSeenAt || !entry.lastSeenExpiresAt || entry.lastSeenExpiresAt <= now) {
+    return null;
+  }
+  return entry.lastSeenAt;
+}
+
+function cachePresenceSnapshot(chatId, payload) {
+  const key = String(chatId || "").trim();
+  if (!key || !payload) return { changed: true, payload };
+
+  const now = Date.now();
+  const current = presenceSnapshotCache.get(key);
+  const previous = current?.expiresAt > now ? current.payload : null;
+  const changed = !previous ||
+    presencePayloadSignature(previous) !== presencePayloadSignature(payload);
+
+  const privacyDenied = Boolean(payload.reason);
+  const hasFreshLastSeen = !privacyDenied && Boolean(payload.lastSeenAt);
+  const lastSeenAt = privacyDenied
+    ? null
+    : hasFreshLastSeen
+      ? payload.lastSeenAt
+      : (current?.lastSeenExpiresAt > now ? current.lastSeenAt : null);
+  const lastSeenExpiresAt = privacyDenied
+    ? 0
+    : hasFreshLastSeen
+      ? now + PRESENCE_LAST_SEEN_TTL_MS
+      : (current?.lastSeenExpiresAt > now ? current.lastSeenExpiresAt : 0);
+
+  presenceSnapshotCache.delete(key);
+  presenceSnapshotCache.set(key, {
+    payload,
+    expiresAt: now + PRESENCE_EPHEMERAL_TTL_MS,
+    lastSeenAt,
+    lastSeenExpiresAt,
+  });
+  prunePresenceSnapshotCache(now);
+
+  return { changed, payload };
+}
+
+async function getContactPresence(chatId) {
+  const requestedId = String(chatId || "").trim();
+  if (!requestedId) throw new Error("chatId obrigatório");
+
+  const cached = getCachedPresenceSnapshot(requestedId);
+  if (cached) {
+    return {
+      ok: true,
+      available: Boolean(cached.available),
+      isOnline: Boolean(cached.isOnline),
+      lastSeenAt: cached.lastSeenAt || null,
+      reason: cached.reason || null,
+      cached: true,
+    };
+  }
+
+  const pending = presenceLookupPending.get(requestedId);
+  if (pending) return pending;
+
+  const lookupPromise = (async () => {
+    const active = ensureReady();
+    await ensureWaJsReady();
+
+    const presence = await runPresenceOperationExclusive(() =>
+      active.pupPage.evaluate(async (id) => {
+      const wpp = globalThis.WPP;
+      if (!wpp?.chat?.getLastSeen || !wpp?.contact?.subscribePresence) {
+        return { available: false, reason: "presence_api_unavailable" };
+      }
+
+      const watchers = globalThis.__vendeoWa2PresenceWatchers;
+      const candidateIds = [id];
+      if (wpp.contact.getPnLidEntry && (id.endsWith("@lid") || id.endsWith("@c.us"))) {
+        try {
+          const mapping = await wpp.contact.getPnLidEntry(id);
+          const alternateId = id.endsWith("@lid")
+            ? mapping?.phoneNumber?._serialized
+            : mapping?.lid?._serialized;
+          if (alternateId && !candidateIds.includes(alternateId)) candidateIds.push(alternateId);
+        } catch {}
+      }
+
+      for (const candidateId of candidateIds) {
+        let temporarySubscription = false;
+        try {
+          const chat = wpp.chat.get(candidateId);
+          if (!chat) continue;
+
+          if (!(watchers instanceof Map && watchers.has(candidateId))) {
+            await wpp.contact.subscribePresence(candidateId);
+            temporarySubscription = true;
+          }
+
+          const lastSeen = await wpp.chat.getLastSeen(candidateId);
+          const refreshedChat = wpp.chat.get(candidateId);
+          const model = refreshedChat?.presence;
+          const chatstate = model?.chatstate;
+
+          if (chatstate?.deny === true) {
+            return { available: false, reason: "privacy_or_unavailable" };
+          }
+
+          const lastSeenValue =
+            typeof lastSeen === "number" && Number.isFinite(lastSeen) && lastSeen > 0
+              ? lastSeen
+              : null;
+          const isOnline = Boolean(model?.isOnline);
+
+          if (isOnline || lastSeenValue) {
+            return {
+              available: true,
+              isOnline,
+              lastSeen: lastSeenValue,
+            };
+          }
+        } catch {
+        } finally {
+          if (temporarySubscription && wpp.contact.unsubscribePresence) {
+            try { await wpp.contact.unsubscribePresence(candidateId); } catch {}
+          }
+        }
+      }
+
+      return { available: false, reason: "privacy_or_unavailable" };
+      }, requestedId),
+    );
+
+    const payload = presence?.available
+      ? {
+          available: true,
+          isOnline: Boolean(presence.isOnline),
+          lastSeenAt: presenceTimestampToIso(presence.lastSeen),
+          reason: null,
+        }
+      : {
+          available: false,
+          isOnline: false,
+          lastSeenAt: null,
+          reason: presence?.reason || "privacy_or_unavailable",
+        };
+
+    cachePresenceSnapshot(requestedId, payload);
+
+    return {
+      ok: true,
+      ...payload,
+      cached: false,
+    };
+  })();
+
+  presenceLookupPending.set(requestedId, lookupPromise);
+  try {
+    return await lookupPromise;
+  } finally {
+    if (presenceLookupPending.get(requestedId) === lookupPromise) {
+      presenceLookupPending.delete(requestedId);
+    }
+  }
+}
+
+function normalizePresenceSubscriptionId(value) {
+  const id = String(value || "active-chat").trim();
+  if (!/^[a-zA-Z0-9_.:-]{1,80}$/.test(id)) {
+    throw new Error("subscriptionId inválido");
+  }
+  return id;
+}
+
+function toPresenceEventPayload(scope, raw) {
+  const rawState = typeof raw?.state === "string" ? raw.state : "";
+  const normalizedState = rawState.toLowerCase();
+  const isTyping = normalizedState === "composing" || normalizedState === "typing";
+  const isRecording = normalizedState === "recording";
+  const lastSeenAt = presenceTimestampToIso(raw?.lastSeen);
+  const denied = raw?.deny === true;
+
+  return {
+    subscriptionId: scope.subscriptionId,
+    chatId: scope.chatId,
+    sourceChatId: String(raw?.chatId || ""),
+    available: !denied && (Boolean(raw?.isOnline) || Boolean(lastSeenAt) || isTyping || isRecording),
+    isOnline: !denied && Boolean(raw?.isOnline),
+    lastSeenAt: denied ? null : lastSeenAt,
+    state: denied ? null : (rawState || null),
+    isTyping: !denied && isTyping,
+    isRecording: !denied && isRecording,
+    reason: denied ? "privacy_or_unavailable" : null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function handleContactPresenceEvent(raw) {
+  const sourceChatId = String(raw?.chatId || "");
+  if (!sourceChatId) return;
+
+  for (const scope of presenceSubscriptions.values()) {
+    if (!scope.candidateIds.includes(sourceChatId)) continue;
+
+    let payload = toPresenceEventPayload(scope, raw);
+    if (!payload.lastSeenAt && !payload.isOnline && !payload.reason) {
+      const rememberedLastSeenAt = getCachedPresenceLastSeen(scope.chatId);
+      if (rememberedLastSeenAt) {
+        payload = {
+          ...payload,
+          available: true,
+          lastSeenAt: rememberedLastSeenAt,
+        };
+      }
+    }
+
+    const cached = cachePresenceSnapshot(scope.chatId, payload);
+    if (!cached.changed) continue;
+
+    broadcast("whatsapp2", {
+      type: "presence",
+      payload,
+      at: payload.updatedAt,
+    });
+  }
+}
+
+async function ensurePresenceBridge() {
+  const active = ensureReady();
+  await ensureWaJsReady();
+  const page = active.pupPage;
+  if (!page) throw new Error("Página do WhatsApp Web indisponível");
+
+  if (presenceBridgePage !== page) {
+    presenceBridgePage = page;
+    presenceBridgeExposed = false;
+  }
+
+  if (!presenceBridgeExposed) {
+    try {
+      await page.exposeFunction("__vendeoWa2PresenceEvent", (payload) => {
+        handleContactPresenceEvent(payload);
+      });
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (!message.toLowerCase().includes("already exists")) throw error;
+    }
+    presenceBridgeExposed = true;
+  }
+
+  return page;
+}
+
+async function detachPresenceIds(candidateIds, { unsubscribe = true } = {}) {
+  const page = client?.pupPage;
+  if (!page || !Array.isArray(candidateIds) || !candidateIds.length) return;
+
+  try {
+    await runPresenceOperationExclusive(() =>
+      page.evaluate(async ({ candidateIds, unsubscribe }) => {
+      const watchers = globalThis.__vendeoWa2PresenceWatchers;
+      const wpp = globalThis.WPP;
+      if (!(watchers instanceof Map)) return;
+
+      for (const candidateId of candidateIds) {
+        const watcher = watchers.get(candidateId);
+        if (!watcher) continue;
+
+        watcher.refs = Math.max(0, Number(watcher.refs || 1) - 1);
+        if (watcher.refs > 0) continue;
+
+        for (const binding of watcher.bindings || []) {
+          try {
+            if (typeof binding.target?.off === "function") {
+              binding.target.off(binding.event, binding.listener);
+            } else if (typeof binding.target?.removeListener === "function") {
+              binding.target.removeListener(binding.event, binding.listener);
+            }
+          } catch {}
+        }
+
+        watchers.delete(candidateId);
+        if (unsubscribe && wpp?.contact?.unsubscribePresence) {
+          try { await wpp.contact.unsubscribePresence(candidateId); } catch {}
+        }
+      }
+
+      if (
+        watchers.size === 0 &&
+        globalThis.__vendeoWa2PublicPresenceListener &&
+        typeof wpp?.off === "function"
+      ) {
+        try {
+          wpp.off("chat.presence_change", globalThis.__vendeoWa2PublicPresenceListener);
+        } catch {}
+        globalThis.__vendeoWa2PublicPresenceListener = null;
+      }
+      }, { candidateIds, unsubscribe }),
+    );
+  } catch (error) {
+    console.warn("[whatsapp2] presence cleanup:", error?.message || error);
+  }
+}
+
+function nextPresenceSubscriptionVersion(subscriptionId) {
+  const next = Number(presenceSubscriptionVersions.get(subscriptionId) || 0) + 1;
+  presenceSubscriptionVersions.set(subscriptionId, next);
+  return next;
+}
+
+async function removePresenceSubscription(subscriptionId, options = {}) {
+  const id = normalizePresenceSubscriptionId(subscriptionId);
+  const scope = presenceSubscriptions.get(id);
+  if (!scope) return { ok: true, unsubscribed: false, subscriptionId: id };
+
+  presenceSubscriptions.delete(id);
+  await detachPresenceIds(scope.candidateIds, options);
+  return { ok: true, unsubscribed: true, subscriptionId: id, chatId: scope.chatId };
+}
+
+async function unsubscribePresenceSubscription(subscriptionId, options = {}) {
+  const id = normalizePresenceSubscriptionId(subscriptionId);
+  const expectedChatId = String(options.expectedChatId || "").trim();
+  const scope = presenceSubscriptions.get(id);
+  const pending = presenceSubscriptionPending.get(id);
+
+  if (expectedChatId) {
+    if (scope && scope.chatId !== expectedChatId) {
+      return {
+        ok: true,
+        unsubscribed: false,
+        stale: true,
+        subscriptionId: id,
+        chatId: scope.chatId,
+      };
+    }
+
+    if (!scope && pending?.chatId && pending.chatId !== expectedChatId) {
+      return {
+        ok: true,
+        unsubscribed: false,
+        stale: true,
+        subscriptionId: id,
+        chatId: pending.chatId,
+      };
+    }
+  }
+
+  const newerPendingChat = Boolean(
+    expectedChatId &&
+    pending?.chatId &&
+    pending.chatId !== expectedChatId
+  );
+
+  if (!newerPendingChat) {
+    nextPresenceSubscriptionVersion(id);
+    presenceSubscriptionPending.delete(id);
+  }
+
+  if (!scope) {
+    return { ok: true, unsubscribed: false, subscriptionId: id };
+  }
+
+  return removePresenceSubscription(id, options);
+}
+
+async function clearPresenceSubscriptions(options = {}) {
+  const ids = new Set([
+    ...presenceSubscriptions.keys(),
+    ...presenceSubscriptionPending.keys(),
+  ]);
+  for (const id of ids) nextPresenceSubscriptionVersion(id);
+
+  presenceSubscriptionPending.clear();
+  presenceLookupPending.clear();
+  presenceSnapshotCache.clear();
+
+  const scopes = Array.from(presenceSubscriptions.values());
+  presenceSubscriptions.clear();
+
+  for (const scope of scopes) {
+    await detachPresenceIds(scope.candidateIds, options);
+  }
+}
+
+async function performPresenceSubscription(subscriptionId, chatId, version) {
+  const id = normalizePresenceSubscriptionId(subscriptionId);
+  const requestedId = String(chatId || "").trim();
+  if (!requestedId) throw new Error("chatId obrigatório");
+  if (requestedId.endsWith("@g.us") || requestedId === "status@broadcast") {
+    throw new Error("Presença individual exige contato, não grupo/status");
+  }
+
+  const existing = presenceSubscriptions.get(id);
+  if (existing?.chatId === requestedId) {
+    return {
+      ok: true,
+      subscribed: true,
+      reused: true,
+      subscriptionId: id,
+      chatId: requestedId,
+      candidateIds: existing.candidateIds,
+    };
+  }
+
+  if (existing) {
+    await removePresenceSubscription(id);
+  } else if (presenceSubscriptions.size >= MAX_ACTIVE_PRESENCE_SUBSCRIPTIONS) {
+    throw new Error("Limite de subscriptions de presença atingido");
+  }
+
+  const page = await ensurePresenceBridge();
+  const result = await runPresenceOperationExclusive(() =>
+    page.evaluate(async ({ chatId }) => {
+    const wpp = globalThis.WPP;
+    if (!wpp?.contact?.subscribePresence || !wpp?.chat?.get) {
+      return { candidateIds: [], snapshots: [], reason: "presence_api_unavailable" };
+    }
+
+    const candidateIds = [chatId];
+    if (wpp.contact.getPnLidEntry && (chatId.endsWith("@lid") || chatId.endsWith("@c.us"))) {
+      try {
+        const mapping = await wpp.contact.getPnLidEntry(chatId);
+        const alternateId = chatId.endsWith("@lid")
+          ? mapping?.phoneNumber?._serialized
+          : mapping?.lid?._serialized;
+        if (alternateId && !candidateIds.includes(alternateId)) candidateIds.push(alternateId);
+      } catch {}
+    }
+
+    const watchers = globalThis.__vendeoWa2PresenceWatchers instanceof Map
+      ? globalThis.__vendeoWa2PresenceWatchers
+      : new Map();
+    globalThis.__vendeoWa2PresenceWatchers = watchers;
+
+    if (!globalThis.__vendeoWa2PublicPresenceListener && typeof wpp.on === "function") {
+      const publicListener = (event) => {
+        try {
+          const candidateId =
+            event?.id?._serialized ||
+            event?.id?.toString?.() ||
+            String(event?.id || "");
+          if (!candidateId || !watchers.has(candidateId)) return;
+
+          const model = wpp.chat.get(candidateId)?.presence;
+          void globalThis.__vendeoWa2PresenceEvent({
+            chatId: candidateId,
+            isOnline: event?.isOnline ?? Boolean(model?.isOnline),
+            state: typeof event?.state === "string"
+              ? event.state
+              : (typeof model?.chatstate?.type === "string" ? model.chatstate.type : null),
+            lastSeen: Number(model?.chatstate?.t) > 0 ? Number(model.chatstate.t) : null,
+            deny: model?.chatstate?.deny === true || event?.isContact === false,
+          });
+        } catch {}
+      };
+      wpp.on("chat.presence_change", publicListener);
+      globalThis.__vendeoWa2PublicPresenceListener = publicListener;
+    }
+
+    const snapshots = [];
+    const attachedIds = [];
+
+    const snapshotFor = (candidateId, model) => ({
+      chatId: candidateId,
+      isOnline: Boolean(model?.isOnline),
+      state: typeof model?.chatstate?.type === "string" ? model.chatstate.type : null,
+      lastSeen: Number(model?.chatstate?.t) > 0 ? Number(model.chatstate.t) : null,
+      deny: model?.chatstate?.deny === true,
+    });
+
+    for (const candidateId of candidateIds) {
+      const current = watchers.get(candidateId);
+      if (current) {
+        current.refs = Number(current.refs || 1) + 1;
+        attachedIds.push(candidateId);
+        snapshots.push(snapshotFor(candidateId, current.model));
+        continue;
+      }
+
+      try {
+        const chat = wpp.chat.get(candidateId);
+        if (!chat) continue;
+
+        await wpp.contact.subscribePresence(candidateId);
+        const refreshedChat = wpp.chat.get(candidateId);
+        const model = refreshedChat?.presence;
+        if (!model) continue;
+
+        const bindings = [];
+        const emit = () => {
+          try {
+            void globalThis.__vendeoWa2PresenceEvent(snapshotFor(candidateId, model));
+          } catch {}
+        };
+        const bind = (target, event) => {
+          if (!target || typeof target.on !== "function") return;
+          target.on(event, emit);
+          bindings.push({ target, event, listener: emit });
+        };
+
+        bind(model, "change:isOnline");
+        bind(model, "change:chatstate");
+        bind(model.chatstate, "change:type");
+        bind(model.chatstate, "change:t");
+        bind(model.chatstate, "change:deny");
+
+        watchers.set(candidateId, {
+          refs: 1,
+          model,
+          bindings,
+        });
+        attachedIds.push(candidateId);
+        snapshots.push(snapshotFor(candidateId, model));
+      } catch {}
+    }
+
+    return {
+      candidateIds: attachedIds,
+      snapshots,
+      reason: attachedIds.length ? null : "privacy_or_unavailable",
+    };
+    }, { chatId: requestedId }),
+  );
+
+  if (presenceSubscriptionVersions.get(id) !== version) {
+    await detachPresenceIds(result?.candidateIds || []);
+    return {
+      ok: true,
+      subscribed: false,
+      stale: true,
+      subscriptionId: id,
+      chatId: requestedId,
+    };
+  }
+
+  if (!result?.candidateIds?.length) {
+    return {
+      ok: true,
+      subscribed: false,
+      available: false,
+      subscriptionId: id,
+      chatId: requestedId,
+      reason: result?.reason || "privacy_or_unavailable",
+    };
+  }
+
+  const scope = {
+    subscriptionId: id,
+    chatId: requestedId,
+    candidateIds: result.candidateIds,
+  };
+  presenceSubscriptions.set(id, scope);
+
+  for (const raw of result.snapshots || []) {
+    handleContactPresenceEvent(raw);
+  }
+
+  return {
+    ok: true,
+    subscribed: true,
+    reused: false,
+    subscriptionId: id,
+    chatId: requestedId,
+    candidateIds: result.candidateIds,
+  };
+}
+
+async function refreshPresenceSubscription(subscriptionId, chatId) {
+  const id = normalizePresenceSubscriptionId(subscriptionId);
+  const requestedId = String(chatId || "").trim();
+  if (!requestedId) throw new Error("chatId obrigatório");
+
+  const scope = presenceSubscriptions.get(id);
+  if (!scope || scope.chatId !== requestedId) return null;
+
+  const page = await ensurePresenceBridge();
+  const watchersIntact = await runPresenceOperationExclusive(() =>
+    page.evaluate(async (candidateIds) => {
+      const wpp = globalThis.WPP;
+      const watchers = globalThis.__vendeoWa2PresenceWatchers;
+      if (!wpp?.contact?.subscribePresence || !(watchers instanceof Map)) return false;
+      if (!candidateIds.every((candidateId) => watchers.has(candidateId))) return false;
+
+      try {
+        await wpp.contact.subscribePresence(candidateIds);
+        return true;
+      } catch {
+        return false;
+      }
+    }, scope.candidateIds),
+  );
+
+  if (!watchersIntact) {
+    presenceSubscriptions.delete(id);
+    await detachPresenceIds(scope.candidateIds, { unsubscribe: true });
+    return null;
+  }
+
+  return {
+    ok: true,
+    subscribed: true,
+    reused: true,
+    refreshed: true,
+    subscriptionId: id,
+    chatId: requestedId,
+    candidateIds: scope.candidateIds,
+  };
+}
+
+async function subscribePresenceSubscription(subscriptionId, chatId, { refresh = false } = {}) {
+  const id = normalizePresenceSubscriptionId(subscriptionId);
+  const requestedId = String(chatId || "").trim();
+  if (!requestedId) throw new Error("chatId obrigatório");
+
+  const pending = presenceSubscriptionPending.get(id);
+  if (pending?.chatId === requestedId) {
+    return pending.promise;
+  }
+
+  const promise = (async () => {
+    if (refresh) {
+      const refreshed = await refreshPresenceSubscription(id, requestedId);
+      if (refreshed) return refreshed;
+    }
+
+    const uniqueSubscriptions = new Set([
+      ...presenceSubscriptions.keys(),
+      ...presenceSubscriptionPending.keys(),
+      id,
+    ]);
+    if (uniqueSubscriptions.size > MAX_ACTIVE_PRESENCE_SUBSCRIPTIONS) {
+      throw new Error("Limite de subscriptions de presença atingido");
+    }
+
+    const version = nextPresenceSubscriptionVersion(id);
+    return performPresenceSubscription(id, requestedId, version);
+  })();
+
+  presenceSubscriptionPending.set(id, {
+    chatId: requestedId,
+    promise,
+  });
+
+  try {
+    return await promise;
+  } finally {
+    const current = presenceSubscriptionPending.get(id);
+    if (current?.promise === promise) {
+      presenceSubscriptionPending.delete(id);
+    }
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -974,6 +3256,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       stopDeliveryWorker();
+      await clearPresenceSubscriptions({ unsubscribe: true });
+      presenceBridgePage = null;
+      presenceBridgeExposed = false;
       const current = client;
       client = null;
       initializing = null;
@@ -1079,41 +3364,93 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/chats") {
-      const active = ensureReady();
-      const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 120), 500));
+      ensureReady();
+      const limit = Math.max(
+        1,
+        Math.min(Number(url.searchParams.get("limit") || 120), 500),
+      );
       const includeGroups = url.searchParams.get("includeGroups") === "true";
-      const chats = await active.getChats();
-      const oneWeekAgoSeconds = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
-      const rows = chats
-        .filter((chat) => {
-          if (!includeGroups && chat.isGroup) return false;
-          const timestamp = Number(chat.lastMessage?.timestamp || chat.timestamp || 0);
-          return timestamp >= oneWeekAgoSeconds;
-        })
-        .sort((a, b) => Number(b.lastMessage?.timestamp || b.timestamp || 0) - Number(a.lastMessage?.timestamp || a.timestamp || 0))
+      const snapshot = await getRecentChatSnapshot();
+      const rows = snapshot
+        .filter((chat) => includeGroups || !chat.isGroup)
         .slice(0, limit)
-        .map((chat) => {
-          const id = chat.id?._serialized || null;
-          return {
-            id,
-            name: chat.name || chat.id?.user || "Contato",
-            avatarUrl: id ? getCachedProfilePic(id) : null,
-            isGroup: Boolean(chat.isGroup),
-            unreadCount: Number(chat.unreadCount || 0),
-            timestamp: Number(chat.lastMessage?.timestamp || chat.timestamp || 0),
-            archived: Boolean(chat.archived),
-            pinned: Boolean(chat.pinned),
-            lastMessage: serializeMessage(chat.lastMessage),
-          };
-        });
+        .map((chat) => ({
+          ...chat,
+          avatarUrl: chat.id ? getCachedProfilePic(chat.id) : null,
+        }));
       warmProfilePics(rows.map((chat) => chat.id).filter(Boolean));
-      json(res, 200, { ok: true, chats: rows }); return;
+      json(res, 200, {
+        ok: true,
+        chats: rows,
+        snapshotAgeMs: Math.max(0, Date.now() - chatSnapshotCacheAt),
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/chat/state") {
+      const chatId = String(url.searchParams.get("chatId") || "");
+      json(res, 200, {
+        ok: true,
+        ...(await getWhatsApp2ChatControlState(chatId)),
+      });
+      return;
+    }
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/chat/lock" || url.pathname === "/chat/unlock")
+    ) {
+      const body = await readJson(req, 64 * 1024);
+      const result = await setWhatsApp2ChatLockState(
+        body.chatId,
+        url.pathname === "/chat/lock",
+      );
+      json(res, 200, { ok: true, ...result });
+      return;
+    }
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/chat/block" || url.pathname === "/chat/unblock")
+    ) {
+      const body = await readJson(req, 64 * 1024);
+      const result = await setWhatsApp2ChatBlockState(
+        body.chatId,
+        url.pathname === "/chat/block",
+      );
+      json(res, 200, { ok: true, ...result });
+      return;
     }
     if (req.method === "GET" && url.pathname === "/chat/profile") {
       const chatId = String(url.searchParams.get("chatId") || "");
       if (!chatId) throw new Error("chatId obrigatório");
       const avatarUrl = await resolveProfilePic(chatId);
       json(res, 200, { ok: true, chatId, avatarUrl }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/chat/presence") {
+      const chatId = String(url.searchParams.get("chatId") || "");
+      json(res, 200, await getContactPresence(chatId)); return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat/presence/subscribe") {
+      const body = await readJson(req, 64 * 1024);
+      json(
+        res,
+        200,
+        await subscribePresenceSubscription(
+          body.subscriptionId,
+          body.chatId,
+          { refresh: body.refresh === true },
+        ),
+      );
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat/presence/unsubscribe") {
+      const body = await readJson(req, 64 * 1024);
+      json(
+        res,
+        200,
+        await unsubscribePresenceSubscription(body.subscriptionId, {
+          expectedChatId: body.chatId,
+        }),
+      );
+      return;
     }
     if (req.method === "GET" && url.pathname === "/chat/messages") {
       const active = ensureReady();
@@ -1133,45 +3470,9 @@ const server = http.createServer(async (req, res) => {
       const messageId = String(url.searchParams.get("messageId") || "");
       if (!messageId) throw new Error("messageId obrigatório");
 
-      const active = ensureReady();
-      await ensureWaJsReady();
-
-      let payload = null;
-      try {
-        payload = await active.pupPage.evaluate(async (id) => {
-          const blob = await globalThis.WPP.chat.downloadMedia(id);
-          if (!blob) return null;
-          const dataUrl = await globalThis.WPP.util.blobToBase64(blob);
-          return {
-            dataUrl,
-            type: blob.type || "application/octet-stream",
-            size: blob.size || 0,
-          };
-        }, messageId);
-      } catch (error) {
-        console.warn("[whatsapp2] WA-JS downloadMedia falhou, tentando fallback:", error?.message || error);
-      }
-
-      if (!payload?.dataUrl) {
-        const message = await getMessage(messageId);
-        if (!message.hasMedia) throw new Error("Mensagem não possui mídia");
-        const media = await message.downloadMedia();
-        if (!media?.data) throw new Error("Mídia indisponível");
-        payload = {
-          dataUrl: `data:${media.mimetype || "application/octet-stream"};base64,${media.data}`,
-          type: media.mimetype || "application/octet-stream",
-          size: 0,
-        };
-      }
-
-      const dataUrl = String(payload.dataUrl || "");
-      const comma = dataUrl.indexOf(",");
-      if (comma < 0) throw new Error("Mídia retornou formato inválido");
-      const header = dataUrl.slice(0, comma);
-      const base64 = dataUrl.slice(comma + 1);
-      const mimeMatch = header.match(/^data:([^;,]+)/i);
-      const contentType = mimeMatch?.[1] || payload.type || "application/octet-stream";
-      const buffer = Buffer.from(base64, "base64");
+      const { buffer, contentType } = await runWithHeavyMediaSlot(() =>
+        downloadMessageMediaPayload(messageId),
+      );
 
       res.statusCode = 200;
       res.setHeader("content-type", contentType);
@@ -1219,99 +3520,18 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/messages/send-media") {
       const body = await readJson(req);
-      let media;
-      if (body.mediaUrl) {
-        media = await MessageMedia.fromUrl(String(body.mediaUrl), {
-          unsafeMime: true,
-          filename: body.filename ? String(body.filename) : undefined,
-        });
-      } else if (body.mediaBase64 && body.mimetype) {
-        media = new MessageMedia(
-          String(body.mimetype),
-          String(body.mediaBase64),
-          body.filename ? String(body.filename) : undefined,
-        );
-      } else {
-        throw new Error("Informe mediaUrl ou mediaBase64 + mimetype");
-      }
-
-      const active = ensureReady();
-      await ensureWaJsReady();
-
-      const chatId = normalizeChatId(body.to);
-      const cleanMime = String(media.mimetype || "application/octet-stream").split(";")[0].trim();
-      const type = body.asVoice
-        ? "audio"
-        : body.asSticker
-        ? "sticker"
-        : cleanMime.startsWith("image/")
-        ? "image"
-        : cleanMime.startsWith("video/")
-        ? "video"
-        : cleanMime.startsWith("audio/")
-        ? "audio"
-        : "document";
-      const dataUrl = `data:${cleanMime};base64,${media.data}`;
-      const filename = body.filename
-        ? String(body.filename)
-        : body.asVoice
-        ? "voice.ogg"
-        : media.filename || "file";
-
-      const result = await active.pupPage.evaluate(
-        async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
-          let targetId = chatId;
-          if (String(chatId).endsWith("@lid")) {
-            try {
-              const mapping = await globalThis.WPP.contact.getPnLidEntry(chatId);
-              targetId = mapping?.phoneNumber?._serialized || chatId;
-            } catch {
-              targetId = chatId;
-            }
-          }
-
-          const options = {
-            type,
-            mimetype: cleanMime,
-            filename,
-            ...(caption ? { caption } : {}),
-            ...(asVoice ? { isPtt: true, waveform: true } : {}),
-            ...(quotedMsg ? { quotedMsg } : {}),
-          };
-          const sent = await globalThis.WPP.chat.sendFileMessage(targetId, dataUrl, options);
-          return sent ? JSON.parse(JSON.stringify(sent)) : null;
-        },
-        {
-          chatId,
-          dataUrl,
-          type,
-          cleanMime,
-          filename,
-          caption: body.caption ? String(body.caption) : "",
-          asVoice: Boolean(body.asVoice),
-          quotedMsg: body.replyToMessageId ? String(body.replyToMessageId) : "",
-        },
-      );
-
-      const messageId = typeof result?.id === "string"
-        ? result.id
-        : result?.id?.toString?.() || result?.messageId || null;
-
-      json(res, 200, {
-        ok: true,
-        message: {
-          id: messageId,
-          fromMe: true,
-          to: chatId,
-          body: body.caption ? String(body.caption) : "",
-          type: body.asVoice ? "ptt" : type,
-          timestamp: Math.floor(Date.now() / 1000),
-          hasMedia: true,
-          hasQuotedMsg: Boolean(body.replyToMessageId),
-          ack: result?.ack ?? null,
-        },
-        provider: "wa-js",
+      const sent = await sendMediaInternal({
+        to: body.to,
+        mediaUrl: body.mediaUrl,
+        mediaBase64: body.mediaBase64,
+        mimetype: body.mimetype,
+        filename: body.filename,
+        caption: body.caption,
+        asVoice: Boolean(body.asVoice),
+        asSticker: Boolean(body.asSticker),
+        replyToMessageId: body.replyToMessageId,
       });
+      json(res, 200, { ok: true, message: sent, provider: "wa-js" });
       return;
     }
     if (req.method === "POST" && url.pathname === "/messages/delete") {
@@ -1345,7 +3565,15 @@ const server = http.createServer(async (req, res) => {
     json(res, 404, { ok: false, error: "not_found" });
   } catch (error) {
     console.error("[whatsapp2] request:", error);
-    json(res, 400, { ok: false, error: String(error?.message || error) });
+    const errorMessage = String(error?.message || error);
+    const statusCode =
+      error?.code === "WHATSAPP2_MEDIA_TOO_LARGE" ||
+      /(?:media_too_large|Payload grande demais)/i.test(errorMessage)
+        ? 413
+        : /(?:media_(?:download|base64|url)_timeout)/i.test(errorMessage)
+        ? 504
+        : 400;
+    json(res, statusCode, { ok: false, error: errorMessage });
   }
 });server.listen(PORT, HOST, () => {
   console.log("[whatsapp2] gateway em http://" + HOST + ":" + PORT);

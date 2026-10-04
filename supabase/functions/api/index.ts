@@ -36,9 +36,7 @@ import {
   processInstagramProfileQueue,
 } from "./instagram_profile_queue.ts";
 import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
-import { sendWhatsAppCloudMessage } from "./whatsapp_cloud.ts";
 import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
-import { handleWhatsAppWebhook } from "./whatsapp_webhook.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -72,36 +70,6 @@ function getSupabaseClient() {
   const url = Deno.env.get("SUPABASE_URL") || "";
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
   return createClient(url, key);
-}
-
-async function verifyMetaWebhookSignature(
-  rawBody: string,
-  signature: string | null,
-  appSecret: string,
-): Promise<boolean> {
-  if (!signature?.startsWith("sha256=") || !appSecret) return false;
-  const provided = signature.slice("sha256=".length).toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(provided)) return false;
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(appSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const bytes = new Uint8Array(
-    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody)),
-  );
-  const expected = Array.from(bytes)
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("");
-
-  let mismatch = expected.length ^ provided.length;
-  for (let index = 0; index < Math.min(expected.length, provided.length); index += 1) {
-    mismatch |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
-  }
-  return mismatch === 0;
 }
 
 function isInstagramSharedMediaAttachment(att: any): boolean {
@@ -390,20 +358,6 @@ serve(async (req: Request) => {
       return await handleOperatorChatProgress(req, supabase, brainOperatorAllowedOrigin(req), corsHeaders);
     }
 
-    if (path === "/whatsapp/config" && req.method === "GET") {
-      const hasAccessToken = Boolean((Deno.env.get("WHATSAPP_ACCESS_TOKEN") || "").trim());
-      const hasPhoneNumberId = Boolean((Deno.env.get("WHATSAPP_PHONE_NUMBER_ID") || "").trim());
-      const hasAppSecret = Boolean((Deno.env.get("WHATSAPP_APP_SECRET") || "").trim());
-      return new Response(JSON.stringify({
-        isConnected: hasAccessToken && hasPhoneNumberId,
-        webhookReady: hasAccessToken && hasPhoneNumberId && hasAppSecret,
-        provider: "WhatsApp Cloud API",
-        apiVersion: (Deno.env.get("WHATSAPP_GRAPH_VERSION") || "v26.0").trim(),
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
-      });
-    }
-
     if (path === "/whatsapp/stickers" && req.method === "GET") {
       if (!brainOperatorAllowedOrigin(req)) {
         return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
@@ -507,43 +461,6 @@ serve(async (req: Request) => {
             return {};
           }
         })();
-
-        if (body?.object === "whatsapp_business_account") {
-          const appSecret = String(Deno.env.get("WHATSAPP_APP_SECRET") || "").trim();
-          if (!appSecret) {
-            console.error("[WhatsApp Webhook] WHATSAPP_APP_SECRET não configurado.");
-            return new Response("WhatsApp webhook signature secret not configured", {
-              status: 503,
-              headers: corsHeaders,
-            });
-          }
-
-          const signature = req.headers.get("x-hub-signature-256");
-          if (!(await verifyMetaWebhookSignature(rawBody, signature, appSecret))) {
-            console.warn("[WhatsApp Webhook] Assinatura Meta inválida.");
-            return new Response("Invalid signature", {
-              status: 401,
-              headers: corsHeaders,
-            });
-          }
-
-          try {
-            const result = await handleWhatsAppWebhook(supabase, body);
-            return new Response(JSON.stringify(result), {
-              status: 200,
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          } catch (whatsappError: any) {
-            console.error("[WhatsApp Webhook] Falha no processamento:", whatsappError);
-            return new Response(JSON.stringify({
-              error: "whatsapp_webhook_processing_failed",
-              retryable: true,
-            }), {
-              status: 503,
-              headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
-            });
-          }
-        }
 
         const entries = body.entry || [];
 
@@ -2527,37 +2444,6 @@ serve(async (req: Request) => {
               throw error;
             }
             return delivery.providerMessageId;
-          }
-
-          if (conversationChannel === "whatsapp") {
-            const kind = stickerUrl ? "sticker" : audioUrl ? "audio" : mediaUrl ? "image" : "text";
-            let providerMediaUrl = stickerUrl || audioUrl || mediaUrl || undefined;
-            let voiceNote = false;
-
-            // Áudios do cofre mantêm o arquivo canônico do Instagram, mas podem
-            // possuir uma variante OGG/Opus específica para o WhatsApp.
-            if (kind === "audio" && audioUrl) {
-              const { data: audioVariant } = await supabase
-                .from("persona_audios")
-                .select("whatsapp_audio_url")
-                .eq("audio_url", audioUrl)
-                .maybeSingle();
-              const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
-              if (whatsappAudioUrl) {
-                providerMediaUrl = whatsappAudioUrl;
-                voiceNote = true;
-              }
-            }
-
-            const sent = await sendWhatsAppCloudMessage({
-              recipientId: targetRecipientId,
-              kind,
-              text: kind === "text" ? rawText : undefined,
-              mediaUrl: providerMediaUrl,
-              voiceNote,
-              replyToMessageId,
-            });
-            return sent.messageId;
           }
 
           if (!config?.access_token) {

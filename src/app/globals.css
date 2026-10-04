@@ -217,7 +217,7 @@ body {
 .wa-ios-chat-row::after {
   content: "";
   position: absolute;
-  left: 69px;
+  left: 80px;
   right: 0;
   bottom: 0;
   height: 0.5px;

@@ -16,17 +16,30 @@ export function BottomNav({
   onTabChange,
   unreadChatCount = 0,
 }: BottomNavProps) {
+  const isWhatsApp2RemoteBuild = process.env.NEXT_PUBLIC_WHATSAPP2_GATEWAY_URL === "/wa2";
+  const activeTabClass = isWhatsApp2RemoteBuild
+    ? "text-[#00a884] dark:text-[#25d366]"
+    : "text-zinc-950 dark:text-white";
+  const inactiveTabClass = isWhatsApp2RemoteBuild
+    ? "text-[#8e8e93] hover:text-[#636366] dark:text-[#8e8e93] dark:hover:text-[#aeaeb2]"
+    : "text-zinc-500 dark:text-[#737373] hover:text-zinc-700 dark:hover:text-[#a8a8a8]";
+
   return (
     <nav
       aria-label="Navegação Principal"
-      className="shrink-0 h-13 w-full bg-white/95 dark:bg-black border-t border-zinc-200 dark:border-[#262626] flex items-center justify-around px-6 z-50 select-none backdrop-blur-xl"
+      className={cn(
+        "shrink-0 w-full border-t flex items-center justify-around px-6 z-50 select-none backdrop-blur-xl",
+        isWhatsApp2RemoteBuild
+          ? "h-[58px] bg-[#f9f9f9]/[0.94] border-[#c6c6c8]/70 dark:bg-[#1c1c1e]/[0.94] dark:border-[#38383a]"
+          : "h-13 bg-white/95 dark:bg-black border-zinc-200 dark:border-[#262626]"
+      )}
     >
       {/* Aba Vendas */}
       <button
         onClick={() => onTabChange("vendas")}
         className={cn(
           "flex flex-col items-center justify-center py-1 gap-1 transition-colors cursor-pointer group flex-1",
-          currentTab === "vendas" ? "text-zinc-950 dark:text-white" : "text-zinc-500 dark:text-[#737373] hover:text-zinc-700 dark:hover:text-[#a8a8a8]"
+          currentTab === "vendas" ? activeTabClass : inactiveTabClass
         )}
       >
         <Store
@@ -38,7 +51,7 @@ export function BottomNav({
         <span
           className={cn(
             "text-[10px] tracking-tight leading-none",
-            currentTab === "vendas" ? "font-bold text-zinc-950 dark:text-white" : "font-medium text-zinc-500 dark:text-[#737373]"
+            currentTab === "vendas" ? `font-semibold ${activeTabClass}` : `font-medium ${inactiveTabClass}`
           )}
         >
           Vendas
@@ -50,7 +63,7 @@ export function BottomNav({
         onClick={() => onTabChange("chat")}
         className={cn(
           "flex flex-col items-center justify-center py-1 gap-1 transition-colors cursor-pointer group relative flex-1",
-          currentTab === "chat" ? "text-zinc-950 dark:text-white" : "text-zinc-500 dark:text-[#737373] hover:text-zinc-700 dark:hover:text-[#a8a8a8]"
+          currentTab === "chat" ? activeTabClass : inactiveTabClass
         )}
       >
         <div className="relative">
@@ -61,16 +74,19 @@ export function BottomNav({
             )}
           />
           {unreadChatCount > 0 && (
-            <span className="absolute -top-0.5 -right-1 w-2 h-2 bg-[#0095f6] rounded-full ring-2 ring-white dark:ring-black" />
+            <span className={cn(
+              "absolute -top-0.5 -right-1 w-2 h-2 rounded-full ring-2 ring-white dark:ring-black",
+              isWhatsApp2RemoteBuild ? "bg-[#25d366]" : "bg-[#0095f6]"
+            )} />
           )}
         </div>
         <span
           className={cn(
             "text-[10px] tracking-tight leading-none",
-            currentTab === "chat" ? "font-bold text-zinc-950 dark:text-white" : "font-medium text-zinc-500 dark:text-[#737373]"
+            currentTab === "chat" ? `font-semibold ${activeTabClass}` : `font-medium ${inactiveTabClass}`
           )}
         >
-          Chat
+          {isWhatsApp2RemoteBuild ? "Conversas" : "Chat"}
         </span>
       </button>
 
@@ -79,7 +95,7 @@ export function BottomNav({
         onClick={() => onTabChange("config")}
         className={cn(
           "flex flex-col items-center justify-center py-1 gap-1 transition-colors cursor-pointer group flex-1",
-          currentTab === "config" ? "text-zinc-950 dark:text-white" : "text-zinc-500 dark:text-[#737373] hover:text-zinc-700 dark:hover:text-[#a8a8a8]"
+          currentTab === "config" ? activeTabClass : inactiveTabClass
         )}
       >
         <Settings
@@ -91,7 +107,7 @@ export function BottomNav({
         <span
           className={cn(
             "text-[10px] tracking-tight leading-none",
-            currentTab === "config" ? "font-bold text-zinc-950 dark:text-white" : "font-medium text-zinc-500 dark:text-[#737373]"
+            currentTab === "config" ? `font-semibold ${activeTabClass}` : `font-medium ${inactiveTabClass}`
           )}
         >
           Config

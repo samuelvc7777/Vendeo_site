@@ -33,7 +33,7 @@ export interface RealtimeMessagePayload {
 
 export interface RealtimeConversationUpdatePayload {
   id: string;
-  channel?: "instagram" | "whatsapp";
+  channel?: "instagram" | "whatsapp2" | "tinder";
   lastMessage?: string;
   lastMessageAt?: string;
   lastDirection?: "in" | "out" | "inbound" | "outbound";
@@ -68,6 +68,11 @@ interface UseChatRealtimeProps {
   onInstagramMessage?: (msg: RealtimeMessagePayload) => void;
   onInstagramConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
   onInstagramConversationInsert?: (conv: RealtimeConversationUpdatePayload) => void;
+  onWhatsApp2ConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
+  onWhatsApp2ConversationInsert?: (conv: RealtimeConversationUpdatePayload) => void;
+  onTinderMessage?: (msg: RealtimeMessagePayload) => void;
+  onTinderConversationUpdate?: (conv: RealtimeConversationUpdatePayload) => void;
+  tinderUserId?: string;
   onInstagramSeen?: (payload: RealtimeSeenPayload) => void;
   onInstagramReaction?: (payload: RealtimeInstagramReactionPayload) => void;
   onAutoPilotStateUpdate?: (
@@ -80,7 +85,9 @@ export function notifyLocalTabs(
     | "instagram_message"
     | "instagram_conversation_update"
     | "instagram_seen"
-    | "instagram_reaction",
+    | "instagram_reaction"
+    | "tinder_message"
+    | "tinder_conversation_update",
   payload: any
 ) {
   if (typeof window !== "undefined" && "BroadcastChannel" in window) {
@@ -98,15 +105,31 @@ export function useChatRealtime({
   onInstagramMessage,
   onInstagramConversationUpdate,
   onInstagramConversationInsert,
+  onWhatsApp2ConversationUpdate,
+  onWhatsApp2ConversationInsert,
+  onTinderMessage,
+  onTinderConversationUpdate,
+  tinderUserId,
   onInstagramSeen,
   onInstagramReaction,
   onAutoPilotStateUpdate,
 }: UseChatRealtimeProps) {
   const [isConnected, setIsConnected] = useState(false);
+  const tinderUserIdRef = useRef<string | null>(tinderUserId || null);
+  useEffect(() => {
+    if (tinderUserId) {
+      tinderUserIdRef.current = tinderUserId;
+    }
+  }, [tinderUserId]);
+
   const callbacksRef = useRef({
     onInstagramMessage,
     onInstagramConversationUpdate,
     onInstagramConversationInsert,
+    onWhatsApp2ConversationUpdate,
+    onWhatsApp2ConversationInsert,
+    onTinderMessage,
+    onTinderConversationUpdate,
     onInstagramSeen,
     onInstagramReaction,
     onAutoPilotStateUpdate,
@@ -118,6 +141,10 @@ export function useChatRealtime({
       onInstagramMessage,
       onInstagramConversationUpdate,
       onInstagramConversationInsert,
+      onWhatsApp2ConversationUpdate,
+      onWhatsApp2ConversationInsert,
+      onTinderMessage,
+      onTinderConversationUpdate,
       onInstagramSeen,
       onInstagramReaction,
       onAutoPilotStateUpdate,
@@ -126,6 +153,10 @@ export function useChatRealtime({
     onInstagramMessage,
     onInstagramConversationUpdate,
     onInstagramConversationInsert,
+    onWhatsApp2ConversationUpdate,
+    onWhatsApp2ConversationInsert,
+    onTinderMessage,
+    onTinderConversationUpdate,
     onInstagramSeen,
     onInstagramReaction,
     onAutoPilotStateUpdate,
@@ -152,11 +183,27 @@ export function useChatRealtime({
           if (!payload) return;
 
           if (type === "instagram_message" && payload.id) {
+            if (
+              String(payload.conversationId || "").startsWith("wa2:") ||
+              String(payload.conversationId || "").startsWith("wa:")
+            ) return;
             if (processedMessageIdsRef.current.has(payload.id)) return;
             markMessageProcessed(payload.id);
             callbacksRef.current.onInstagramMessage?.(payload);
+          } else if (type === "tinder_message" && payload.id) {
+            if (processedMessageIdsRef.current.has(payload.id)) return;
+            markMessageProcessed(payload.id);
+            callbacksRef.current.onTinderMessage?.(payload);
+          } else if (type === "tinder_conversation_update" && payload.id) {
+            callbacksRef.current.onTinderConversationUpdate?.(payload);
           } else if (type === "instagram_conversation_update" && payload.id) {
-            callbacksRef.current.onInstagramConversationUpdate?.(payload);
+            if (payload.channel === "whatsapp2" || String(payload.id).startsWith("wa2:")) {
+              callbacksRef.current.onWhatsApp2ConversationUpdate?.(payload);
+            } else if (payload.channel === "tinder" || String(payload.id).startsWith("tinder:")) {
+              callbacksRef.current.onTinderConversationUpdate?.(payload);
+            } else if ((payload as any).channel !== "whatsapp" && !String(payload.id).startsWith("wa:")) {
+              callbacksRef.current.onInstagramConversationUpdate?.(payload);
+            }
           } else if (type === "instagram_seen" && payload.conversationId) {
             callbacksRef.current.onInstagramSeen?.(payload);
           } else if (
@@ -183,6 +230,10 @@ export function useChatRealtime({
         { event: "instagram_message" },
         ({ payload }: { payload: RealtimeMessagePayload }) => {
           if (!payload || !payload.id || !payload.conversationId) return;
+          if (
+            String(payload.conversationId).startsWith("wa2:") ||
+            String(payload.conversationId).startsWith("wa:")
+          ) return;
           if (processedMessageIdsRef.current.has(payload.id)) return;
           markMessageProcessed(payload.id);
           callbacksRef.current.onInstagramMessage?.(payload);
@@ -190,10 +241,34 @@ export function useChatRealtime({
       )
       .on(
         "broadcast",
+        { event: "tinder_message" },
+        ({ payload }: { payload: RealtimeMessagePayload }) => {
+          if (!payload || !payload.id || !payload.conversationId) return;
+          if (processedMessageIdsRef.current.has(payload.id)) return;
+          markMessageProcessed(payload.id);
+          callbacksRef.current.onTinderMessage?.(payload);
+        }
+      )
+      .on(
+        "broadcast",
+        { event: "tinder_conversation_update" },
+        ({ payload }: { payload: RealtimeConversationUpdatePayload }) => {
+          if (!payload || !payload.id) return;
+          callbacksRef.current.onTinderConversationUpdate?.(payload);
+        }
+      )
+      .on(
+        "broadcast",
         { event: "instagram_conversation_update" },
         ({ payload }: { payload: RealtimeConversationUpdatePayload }) => {
           if (!payload || !payload.id) return;
-          callbacksRef.current.onInstagramConversationUpdate?.(payload);
+          if (payload.channel === "whatsapp2" || String(payload.id).startsWith("wa2:")) {
+            callbacksRef.current.onWhatsApp2ConversationUpdate?.(payload);
+          } else if (payload.channel === "tinder" || String(payload.id).startsWith("tinder:")) {
+            callbacksRef.current.onTinderConversationUpdate?.(payload);
+          } else if ((payload as any).channel !== "whatsapp" && !String(payload.id).startsWith("wa:")) {
+            callbacksRef.current.onInstagramConversationUpdate?.(payload);
+          }
         }
       )
       .on(
@@ -246,8 +321,32 @@ export function useChatRealtime({
         (payload: any) => {
           const row = payload?.new;
           if (!row || !row.id || !row.conversation_id) return;
+          if (
+            row.channel === "whatsapp2" ||
+            row.channel === "whatsapp" ||
+            String(row.conversation_id).startsWith("wa2:") ||
+            String(row.conversation_id).startsWith("wa:")
+          ) {
+            return;
+          }
           if (processedMessageIdsRef.current.has(String(row.id))) return;
           markMessageProcessed(String(row.id));
+
+          if (row.channel === "tinder" || String(row.conversation_id).startsWith("tinder:")) {
+            callbacksRef.current.onTinderMessage?.({
+              id: String(row.id),
+              conversationId: String(row.conversation_id),
+              senderId: String(row.sender_id || ""),
+              text: String(row.text || ""),
+              timestamp: row.timestamp || new Date().toISOString(),
+              isMine: Boolean(row.is_mine),
+              status: "sent",
+              mediaUrl: row.media_url || undefined,
+              mediaType: row.media_type || undefined,
+              replyToMessageId: row.reply_to_message_id || null,
+            });
+            return;
+          }
 
           callbacksRef.current.onInstagramMessage?.({
             id: String(row.id),
@@ -260,6 +359,55 @@ export function useChatRealtime({
             mediaUrl: row.media_url || undefined,
             mediaType: row.media_type || undefined,
             replyToMessageId: row.reply_to_message_id || null,
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "tinder_messages",
+        },
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row || !row.id || !row.match_id) return;
+          if (processedMessageIdsRef.current.has(String(row.id))) return;
+          markMessageProcessed(String(row.id));
+
+          const isMine =
+            row.sender_id === "me" ||
+            Boolean(tinderUserIdRef.current && row.sender_id === tinderUserIdRef.current);
+
+          callbacksRef.current.onTinderMessage?.({
+            id: String(row.id),
+            conversationId: String(row.match_id),
+            senderId: isMine ? "me" : String(row.sender_id || ""),
+            text: String(row.message || ""),
+            timestamp: row.sent_date || row.created_at || new Date().toISOString(),
+            isMine,
+            status: "sent",
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "tinder_conversations",
+        },
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row || !row.match_id) return;
+
+          callbacksRef.current.onTinderConversationUpdate?.({
+            id: String(row.match_id),
+            channel: "tinder",
+            lastMessage: row.last_message_preview || undefined,
+            lastMessageAt: row.last_message_at || undefined,
+            lastDirection: row.last_direction || undefined,
+            fullName: row.name || undefined,
           });
         }
       )
@@ -282,21 +430,38 @@ export function useChatRealtime({
             return;
           }
 
-          callbacksRef.current.onInstagramConversationUpdate?.({
+          if (row.channel === "whatsapp" || String(row.id).startsWith("wa:")) return;
+          const normalizedChannel: "instagram" | "whatsapp2" | "tinder" =
+            row.channel === "whatsapp2"
+              ? "whatsapp2"
+              : row.channel === "tinder"
+              ? "tinder"
+              : "instagram";
+          const conversationPayload: RealtimeConversationUpdatePayload = {
             id: String(row.id),
-            channel: row.channel === "whatsapp" ? "whatsapp" : "instagram",
+            channel: normalizedChannel,
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,
             lastDirection: row.last_direction || undefined,
+            lastStatus: row.last_status || undefined,
+            seenAt: row.seen_at || undefined,
             unread: Boolean(row.unread),
             fullName: row.full_name || undefined,
             username: row.username || undefined,
-            avatar: row.avatar || undefined,
+            avatar: row.avatar_url || row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
             raffleStatus: normalizeRaffleCommercialStatus(row.raffle_status),
             aiAutoRespond: Boolean(row.ai_auto_respond),
-          });
+          };
+
+          if (normalizedChannel === "whatsapp2" || String(row.id).startsWith("wa2:")) {
+            callbacksRef.current.onWhatsApp2ConversationUpdate?.(conversationPayload);
+          } else if (normalizedChannel === "tinder" || String(row.id).startsWith("tinder:")) {
+            callbacksRef.current.onTinderConversationUpdate?.(conversationPayload);
+          } else {
+            callbacksRef.current.onInstagramConversationUpdate?.(conversationPayload);
+          }
         }
       )
       .on(
@@ -318,21 +483,38 @@ export function useChatRealtime({
             return;
           }
 
-          callbacksRef.current.onInstagramConversationInsert?.({
+          if (row.channel === "whatsapp" || String(row.id).startsWith("wa:")) return;
+          const normalizedChannel: "instagram" | "whatsapp2" | "tinder" =
+            row.channel === "whatsapp2"
+              ? "whatsapp2"
+              : row.channel === "tinder"
+              ? "tinder"
+              : "instagram";
+          const conversationPayload: RealtimeConversationUpdatePayload = {
             id: String(row.id),
-            channel: row.channel === "whatsapp" ? "whatsapp" : "instagram",
+            channel: normalizedChannel,
             lastMessage: row.last_message || undefined,
             lastMessageAt: row.last_message_at || undefined,
             lastDirection: row.last_direction || undefined,
+            lastStatus: row.last_status || undefined,
+            seenAt: row.seen_at || undefined,
             unread: Boolean(row.unread),
             fullName: row.full_name || undefined,
             username: row.username || undefined,
-            avatar: row.avatar || undefined,
+            avatar: row.avatar_url || row.avatar || undefined,
             currentStageId: row.current_stage_id || null,
             isConverted: Boolean(row.is_converted),
             raffleStatus: normalizeRaffleCommercialStatus(row.raffle_status),
             aiAutoRespond: Boolean(row.ai_auto_respond),
-          });
+          };
+
+          if (normalizedChannel === "whatsapp2" || String(row.id).startsWith("wa2:")) {
+            callbacksRef.current.onWhatsApp2ConversationInsert?.(conversationPayload);
+          } else if (normalizedChannel === "tinder" || String(row.id).startsWith("tinder:")) {
+            callbacksRef.current.onTinderConversationUpdate?.(conversationPayload);
+          } else {
+            callbacksRef.current.onInstagramConversationInsert?.(conversationPayload);
+          }
         }
       )
       .subscribe((status: string) => {
