@@ -135,11 +135,12 @@ export function getApiUrl(path: string): string {
     ? path
     : `/${path}`;
 
-  const isLocal =
+  const isLocalNextDev =
     typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") &&
+    window.location.port === "3000";
 
-  if (isLocal) {
+  if (isLocalNextDev) {
     return `/api${cleanPath}`;
   }
   return `https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api${cleanPath}`;

@@ -37,6 +37,7 @@ import {
 } from "./instagram_profile_queue.ts";
 import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
 import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
+import { handleTinderRoutes } from "./tinder_routes.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -336,6 +337,19 @@ serve(async (req: Request) => {
 
   try {
     const supabase = getSupabaseClient();
+
+    // ==========================================
+    // 0. TINDER ROUTES (Rotas do Tinder)
+    // ==========================================
+    const tinderResponse = await handleTinderRoutes({
+      request: req,
+      path,
+      supabase,
+      corsHeaders,
+    });
+    if (tinderResponse) {
+      return tinderResponse;
+    }
 
     if (path === "/operator/session" && ["GET", "POST", "DELETE"].includes(req.method)) {
       if (!brainOperatorAllowedOrigin(req)) {
