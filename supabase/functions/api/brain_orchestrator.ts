@@ -4,7 +4,6 @@
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
-import { sendWhatsAppCloudMessage } from "./whatsapp_cloud.ts";
 import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
 import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
 import {
@@ -4145,54 +4144,6 @@ export async function dispatchOutboxEntry(
       outboxEntry.providerMessageId = delivery.providerMessageId;
       outboxEntry.isUncertain = false;
       return { success: true, providerMessageId: delivery.providerMessageId };
-    }
-
-    if (channelRow?.channel === "whatsapp") {
-      let mediaUrl: string | undefined;
-      let voiceNote = false;
-      let kind: "text" | "audio" | "image" = "text";
-      if (outboxEntry.messageType === "audio") {
-        kind = "audio";
-        mediaUrl = outboxEntry.mediaUrl || outboxEntry.content;
-        if (mediaUrl?.startsWith("[audio:") && mediaUrl.endsWith("]")) {
-          mediaUrl = mediaUrl.slice(7, -1).trim();
-        }
-
-        // O mesmo áudio do cofre pode ter uma variante própria do WhatsApp.
-        // Mantemos o arquivo canônico do Instagram intacto e, no WhatsApp,
-        // preferimos OGG/Opus marcado explicitamente como voice message.
-        if (outboxEntry.vaultAudioId) {
-          const { data: audioVariant } = await supabase
-            .from("persona_audios")
-            .select("whatsapp_audio_url")
-            .eq("id", outboxEntry.vaultAudioId)
-            .maybeSingle();
-          const whatsappAudioUrl = String(audioVariant?.whatsapp_audio_url || "").trim();
-          if (whatsappAudioUrl) {
-            mediaUrl = whatsappAudioUrl;
-            voiceNote = true;
-          }
-        }
-      }
-
-      const replyToMessageId = outboxEntry.replyToMessageId
-        || (typeof outboxEntry.payload?.replyToMessageId === "string"
-          ? outboxEntry.payload.replyToMessageId
-          : null);
-      const sent = await sendWhatsAppCloudMessage({
-        recipientId: channelRow.contact_id || recipientId || conversationId,
-        kind,
-        text: kind === "text" ? outboxEntry.content : undefined,
-        mediaUrl,
-        voiceNote,
-        replyToMessageId,
-      });
-
-      outboxEntry.status = "sent";
-      outboxEntry.sentAt = new Date().toISOString();
-      outboxEntry.providerMessageId = sent.messageId;
-      outboxEntry.isUncertain = false;
-      return { success: true, providerMessageId: sent.messageId };
     }
 
     // Despacho oficial Meta Graph API (Instagram)
