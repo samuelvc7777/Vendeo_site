@@ -256,14 +256,19 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
             placeholder={`Conversar com ${match.person.name}...`}
             disabled={sending}
             spellCheck={false}
-            className="flex-1 min-h-11 rounded-full border border-zinc-200 bg-zinc-50 px-4 text-[16px] text-zinc-950 outline-none transition focus:border-[#fd5068] focus:bg-white dark:border-white/10 dark:bg-[#161618] dark:text-white dark:focus:border-[#fd5068]"
+            className="flex-1 min-h-11 rounded-full border border-zinc-200 bg-zinc-100 px-4 text-[16px] text-zinc-950 placeholder-zinc-400 outline-none transition focus:border-[#fd5068] focus:bg-white dark:border-zinc-800 dark:bg-[#18181b] dark:text-white dark:placeholder-zinc-500 dark:focus:border-[#fd5068] dark:focus:bg-[#1c1c20]"
           />
 
           <button
             type="submit"
             disabled={sending || !inputMessage.trim()}
             aria-label="Enviar mensagem"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white shadow-sm transition active:scale-95 disabled:opacity-40"
+            className={cn(
+              "flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition active:scale-95 disabled:cursor-not-allowed",
+              inputMessage.trim()
+                ? "bg-gradient-to-r from-[#fd297b] to-[#ff5864] text-white shadow-md shadow-rose-500/25"
+                : "bg-zinc-200 text-zinc-400 dark:bg-[#202024] dark:text-zinc-600"
+            )}
           >
             {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4 ml-0.5" />}
           </button>
