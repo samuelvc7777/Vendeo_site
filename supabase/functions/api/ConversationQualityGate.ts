@@ -151,8 +151,13 @@ export function isActionableInboundMessage(msg: {
     return true;
   }
 
-  // 2. Fotos / imagens entram na fila para descrição visual com Luna antes do Brain.
-  if (mediaType === "image" || text.startsWith("[image:")) {
+  // 2. Fotos / imagens e figurinhas entram na fila para descrição visual com Luna antes do Brain.
+  if (
+    mediaType === "image" ||
+    text.startsWith("[image:") ||
+    mediaType === "sticker" ||
+    text.startsWith("[sticker:")
+  ) {
     return true;
   }
 
@@ -162,13 +167,8 @@ export function isActionableInboundMessage(msg: {
     return true;
   }
 
-  // 4. Figurinhas e arquivos isolados entram no histórico, mas não acordam o Brain.
-  if (
-    mediaType === "sticker" ||
-    text.startsWith("[sticker:") ||
-    mediaType === "file" ||
-    text.startsWith("[file:")
-  ) {
+  // 4. Arquivos isolados entram no histórico, mas não acordam o Brain.
+  if (mediaType === "file" || text.startsWith("[file:")) {
     return false;
   }
 

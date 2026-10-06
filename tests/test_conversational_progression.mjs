@@ -41,6 +41,25 @@ test("CONTRATO 0B: engajamento antecipado com a rifa exige handoff manual sem re
   assert.match(brain, /RIFA ANTECIPADA É HANDOFF, NÃO CONTEÚDO PARA RESPONDER/);
 });
 
+test("CONTRATO 0C: pedidos de Instagram retornam os arrobas canônicos sem mandar para a bio", () => {
+  const canonical = fs.readFileSync(
+    new URL("../supabase/functions/api/larissa_canonical_prompt.md", import.meta.url),
+    "utf8",
+  );
+
+  const api = fs.readFileSync(
+    new URL("../supabase/functions/api/index.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(canonical, /@lariresende_0611/);
+  assert.match(canonical, /@lari_modasr/);
+  assert.match(canonical, /NUNCA diga que \"o link está na bio\", \"os links estão na bio\"/);
+  assert.match(api, /Instagram pessoal: @lariresende_0611/);
+  assert.match(api, /Instagram da loja: @lari_modasr/);
+  assert.match(api, /Nunca diga que faltam ao operador/);
+});
+
 test("CONTRATO 1: Saudação + objetivo cidade pendente -> pode pursue de forma fluida", async () => {
   const subagents = [{ id: "conexao_inicial", name: "Conexão Inicial", mission: "Conectar e quebrar o gelo" }];
   const mockPlan = {

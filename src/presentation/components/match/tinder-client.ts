@@ -35,6 +35,7 @@ export interface TinderMatchMessage {
   sentAt?: string | null;
   from?: string | null;
   to?: string | null;
+  isMine?: boolean;
 }
 
 export interface TinderMatchItem {
@@ -86,21 +87,29 @@ async function request<T>(
   options: { requireSession?: boolean } = {},
 ): Promise<T> {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && init.body) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  // Anexa chave anon do Supabase para garantir autorização no Gateway e Edge Function
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  if (anonKey) {
+    if (!headers.has("apikey")) headers.set("apikey", anonKey);
+    if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${anonKey}`);
+  }
 
   const session = readSession();
   if (session) headers.set("X-Match-Session", session);
-  if (options.requireSession && !session) throw new Error("Reconecte o Tinder para liberar esta área.");
 
-  const response = await fetch(getApiUrl(path), { ...init, headers, cache: "no-store" });
+  const response = await fetch(getApiUrl(path), {
+    ...init,
+    headers,
+    cache: "no-store",
+  });
+
   const payload = await response.json().catch(() => ({}));
-
   if (!response.ok || payload?.success === false) {
-    if (
-      payload?.code === "MATCH_SESSION_INVALID" ||
-      payload?.code === "MATCH_SESSION_MISSING" ||
-      payload?.code === "MATCH_SESSION_REQUIRED"
-    ) {
+    if (payload?.code === "MATCH_SESSION_INVALID" || payload?.code === "MATCH_SESSION_REQUIRED") {
       clearTinderSession();
     }
     const error = new Error(
@@ -123,6 +132,7 @@ export async function connectTinder(token: string): Promise<TinderPublicProfile>
     method: "POST",
     body: JSON.stringify({ token }),
   });
+
   saveSession(payload.sessionSecret);
   return payload.profile;
 }
@@ -130,57 +140,100 @@ export async function connectTinder(token: string): Promise<TinderPublicProfile>
 export async function getTinderStatus(): Promise<{
   connected: boolean;
   requiresSession?: boolean;
+  serverHasConnection?: boolean;
+  tokenExpired?: boolean;
+  error?: string;
+  sessionSecret?: string;
   profile?: TinderPublicProfile | null;
   stale?: boolean;
 }> {
-  return request("/api/match/tinder/status");
+  const result = await request<{
+    connected: boolean;
+    requiresSession?: boolean;
+    serverHasConnection?: boolean;
+    tokenExpired?: boolean;
+    error?: string;
+    sessionSecret?: string;
+    profile?: TinderPublicProfile | null;
+    stale?: boolean;
+  }>("/api/match/tinder/status");
+
+  if (result.sessionSecret) {
+    saveSession(result.sessionSecret);
+  }
+  if (!result.connected && result.tokenExpired) {
+    clearTinderSession();
+  }
+
+  return result;
 }
 
 export async function disconnectTinder(): Promise<void> {
-  await request("/api/match/tinder/disconnect", { method: "POST" }, { requireSession: true });
+  await request(
+    "/api/match/tinder/disconnect",
+    { method: "POST" },
+    { requireSession: true },
+  );
   clearTinderSession();
 }
 
 export async function getTinderRecommendations(): Promise<TinderPublicProfile[]> {
   const payload = await request<{ profiles: TinderPublicProfile[] }>(
-    "/api/match/tinder/recommendations", {}, { requireSession: true },
+    "/api/match/tinder/recommendations",
+    {},
+    { requireSession: true },
   );
   return payload.profiles || [];
 }
 
 export async function getTinderLikesYou(): Promise<TinderLikesYouResult> {
-  return request<TinderLikesYouResult>("/api/match/tinder/likes-you", {}, { requireSession: true });
+  return request<TinderLikesYouResult>(
+    "/api/match/tinder/likes",
+    {},
+    { requireSession: true },
+  );
 }
 
 export async function getTinderAccountState(): Promise<TinderAccountState> {
-  const payload = await request<{ state: TinderAccountState }>(
-    "/api/match/tinder/account", {}, { requireSession: true },
+  const payload = await request<{ account: TinderAccountState }>(
+    "/api/match/tinder/account",
+    {},
+    { requireSession: true },
   );
-  return payload.state;
+  return payload.account;
 }
 
 export async function getTinderMatches(): Promise<TinderMatchItem[]> {
   const payload = await request<{ matches: TinderMatchItem[] }>(
-    "/api/match/tinder/matches", {}, { requireSession: true },
+    "/api/match/tinder/matches",
+    {},
+    { requireSession: true },
   );
   return payload.matches || [];
 }
 
 export async function getTinderMessages(matchId: string): Promise<TinderMatchMessage[]> {
   const payload = await request<{ messages: TinderMatchMessage[] }>(
-    "/api/match/tinder/matches/" + encodeURIComponent(matchId) + "/messages",
+    "/api/match/tinder/messages/" + encodeURIComponent(matchId),
     {},
     { requireSession: true },
   );
   return payload.messages || [];
 }
 
-export async function sendTinderMessage(matchId: string, message: string): Promise<{ messageId: string }> {
-  return request(
-    "/api/match/tinder/matches/" + encodeURIComponent(matchId) + "/messages",
-    { method: "POST", body: JSON.stringify({ message }) },
+export async function sendTinderMessage(
+  matchId: string,
+  message: string,
+): Promise<TinderMatchMessage> {
+  const payload = await request<{ message: TinderMatchMessage }>(
+    "/api/match/tinder/messages/" + encodeURIComponent(matchId),
+    {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    },
     { requireSession: true },
   );
+  return payload.message;
 }
 
 export async function swipeTinder(
@@ -195,8 +248,9 @@ export async function swipeTinder(
       body: JSON.stringify({
         userId: profile.id,
         action,
-        profile,
-        swipe: profile.swipe || {},
+        sNumber: profile.swipe?.sNumber ?? null,
+        contentHash: profile.swipe?.contentHash ?? null,
+        photoId: profile.swipe?.photoId ?? profile.photos?.[0]?.id ?? null,
         undo,
       }),
     },
@@ -209,12 +263,17 @@ export async function rewindTinder(): Promise<{
   action?: TinderSwipeAction | null;
   pendingServerUndo?: boolean;
 }> {
-  return request("/api/match/tinder/rewind", { method: "POST" }, { requireSession: true });
+  return request(
+    "/api/match/tinder/rewind",
+    { method: "POST" },
+    { requireSession: true },
+  );
 }
 
 export async function activateTinderBoost(): Promise<any> {
-  const payload = await request<{ result: any }>(
-    "/api/match/tinder/boost", { method: "POST" }, { requireSession: true },
+  return request(
+    "/api/match/tinder/boost",
+    { method: "POST" },
+    { requireSession: true },
   );
-  return payload.result;
 }

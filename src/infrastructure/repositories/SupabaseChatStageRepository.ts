@@ -49,6 +49,8 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       id: row.id,
       name: row.name,
       order: Number(row.stage_order ?? 0),
+      scheduleId: String(row.schedule_id || "schedule_sales"),
+      isRequired: row.is_required !== false,
       color: row.color || undefined,
       icon: row.icon || undefined,
       description: row.description || undefined,
@@ -147,6 +149,8 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         id: newId,
         name: data.name,
         stage_order: order,
+        schedule_id: data.scheduleId || "schedule_sales",
+        is_required: data.isRequired !== false,
         color: data.color || null,
         icon: data.icon || null,
         description: data.description || null,
@@ -181,6 +185,8 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
     if (data.name !== undefined) updatePayload.name = data.name;
     if (data.order !== undefined) updatePayload.stage_order = data.order;
+    if (data.scheduleId !== undefined) updatePayload.schedule_id = data.scheduleId;
+    if (data.isRequired !== undefined) updatePayload.is_required = data.isRequired;
     if (data.color !== undefined) updatePayload.color = data.color || null;
     if (data.icon !== undefined) updatePayload.icon = data.icon || null;
     if (data.description !== undefined) updatePayload.description = data.description || null;
@@ -254,7 +260,7 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
       stageId,
       order: goalData.order ?? currentGoals.length,
       enabled: goalData.enabled ?? true,
-      required: true,
+      required: goalData.required ?? true,
       kind: goalData.kind ?? "fact",
     };
 
@@ -355,7 +361,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
         result[row.id] = {
           conversationId: row.id,
           currentStageId: resolveCurrentStageId(row.current_stage_id, configuredInitialStageId),
-          completedItemIds: [],
           completedGoalIds: [],
           objectiveProgress: {},
           isConverted: Boolean(row.is_converted),
@@ -394,12 +399,10 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
           ? rules.completed_goals
           : (Array.isArray(chatProgress.completedGoalIds) ? chatProgress.completedGoalIds : []));
       const objectiveProgress = orch.objectiveProgress || rules.objective_progress || chatProgress.objectiveProgress || {};
-      const completedItemIds = Array.isArray(chatProgress.completedItemIds) ? chatProgress.completedItemIds : [];
 
       return {
         conversationId,
         currentStageId,
-        completedItemIds,
         completedGoalIds,
         objectiveProgress,
         isConverted: Boolean(chatProgress.isConverted || orch.isConverted),
@@ -421,7 +424,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
 
       const patchPayload = {
         currentStageId: progress.currentStageId,
-        completedItemIds: progress.completedItemIds || [],
         completedGoalIds: progress.completedGoalIds || [],
         objectiveProgress: progress.objectiveProgress || {},
         isConverted: Boolean(progress.isConverted),
@@ -456,37 +458,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     }
   }
 
-  async toggleItemCompletion(
-    conversationId: string,
-    itemId: string,
-    isCompleted: boolean
-  ): Promise<ChatProgress> {
-    const existing = (await this.getChatProgress(conversationId)) || {
-      conversationId,
-      currentStageId: (await this.getStages())[0]?.id || "",
-      completedItemIds: [],
-      completedGoalIds: [],
-      isConverted: false,
-      updatedAt: new Date().toISOString(),
-    };
-
-    const completed = new Set(existing.completedItemIds || []);
-    if (isCompleted) {
-      completed.add(itemId);
-    } else {
-      completed.delete(itemId);
-    }
-
-    const updated: ChatProgress = {
-      ...existing,
-      completedItemIds: Array.from(completed),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await this.saveChatProgress(updated);
-    return updated;
-  }
-
   async toggleGoalCompletion(
     conversationId: string,
     goalId: string,
@@ -495,7 +466,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
       currentStageId: (await this.getStages())[0]?.id || "",
-      completedItemIds: [],
       completedGoalIds: [],
       isConverted: false,
       updatedAt: new Date().toISOString(),
@@ -522,7 +492,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
       currentStageId: nextStageId,
-      completedItemIds: [],
       completedGoalIds: [],
       isConverted: false,
       updatedAt: new Date().toISOString(),
@@ -542,7 +511,6 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
     const existing = (await this.getChatProgress(conversationId)) || {
       conversationId,
       currentStageId: (await this.getStages())[0]?.id || "",
-      completedItemIds: [],
       completedGoalIds: [],
       isConverted,
       updatedAt: new Date().toISOString(),

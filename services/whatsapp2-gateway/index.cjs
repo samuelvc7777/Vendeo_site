@@ -40,6 +40,15 @@ const {
   resolveTrustedMimeType,
   downloadHttpMediaBounded,
 } = require("./media-security.cjs");
+const {
+  publishTextStatus,
+  publishImageStatus,
+  publishVideoStatus,
+  getStatusPrivacy,
+  setStatusPrivacy,
+  getStatusContacts,
+  WhatsAppStatusError,
+} = require("./status/status-service.cjs");
 
 const HOST = process.env.WHATSAPP2_GATEWAY_HOST || "127.0.0.1";
 const PORT = Number(process.env.WHATSAPP2_GATEWAY_PORT || 8788);
@@ -51,6 +60,67 @@ const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY |
 const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
+
+function normalizeEvergreenRecipientKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withoutPrefix = raw.replace(/^wa2:/i, "");
+  const base = withoutPrefix.replace(/@.*$/, "");
+  const digits = base.replace(/\D+/g, "");
+  return digits || base.toLowerCase();
+}
+
+async function loadEvergreenStatusRecipients(storyKey) {
+  if (!supabase) throw new Error("Supabase indisponível para histórico Evergreen");
+  const key = String(storyKey || "").trim();
+  if (!key) throw new Error("storyKey obrigatório");
+
+  const { data, error } = await supabase
+    .from("whatsapp_status_story_recipients")
+    .select("contact_key, contact_id, contact_number, status_post_id, sent_at")
+    .eq("story_key", key)
+    .order("sent_at", { ascending: true });
+
+  if (error) throw error;
+  return (data || []).map((row) => ({
+    contactKey: row.contact_key,
+    contactId: row.contact_id || null,
+    contactNumber: row.contact_number || null,
+    statusPostId: row.status_post_id || null,
+    sentAt: row.sent_at,
+  }));
+}
+
+async function recordEvergreenStatusRecipients({ storyKey, statusPostId, recipients }) {
+  if (!supabase) throw new Error("Supabase indisponível para histórico Evergreen");
+  const key = String(storyKey || "").trim();
+  if (!key) throw new Error("storyKey obrigatório");
+  const rows = [];
+
+  for (const recipient of Array.isArray(recipients) ? recipients : []) {
+    const contactId = String(recipient?.id || recipient?.contactId || "").trim() || null;
+    const contactNumber = String(recipient?.number || recipient?.contactNumber || "").trim() || null;
+    const contactKey = normalizeEvergreenRecipientKey(contactNumber || contactId);
+    if (!contactKey) continue;
+    rows.push({
+      story_key: key,
+      contact_key: contactKey,
+      contact_id: contactId,
+      contact_number: contactNumber,
+      status_post_id: String(statusPostId || "").trim() || null,
+      sent_at: new Date().toISOString(),
+    });
+  }
+
+  if (rows.length === 0) return { inserted: 0 };
+
+  const { error } = await supabase
+    .from("whatsapp_status_story_recipients")
+    .upsert(rows, { onConflict: "story_key,contact_key", ignoreDuplicates: true });
+  if (error) throw error;
+  return { inserted: rows.length };
+}
+
 const WORKER_ID = `wa2-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const DEFAULT_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const CHROME_PATH = process.env.WHATSAPP2_CHROME_PATH || (fs.existsSync(DEFAULT_CHROME) ? DEFAULT_CHROME : undefined);
@@ -81,6 +151,8 @@ const presenceSubscriptionPending = new Map();
 const presenceSubscriptionVersions = new Map();
 const presenceLookupPending = new Map();
 const presenceSnapshotCache = new Map();
+const contactPhoneCache = new Map();
+const savedContactNamesByPhoneCache = new Map();
 let presenceBridgePage = null;
 let presenceBridgeExposed = false;
 let presenceOperationQueue = Promise.resolve();
@@ -94,13 +166,21 @@ const MAX_CHAT_SNAPSHOT_ROWS = 1_000;
 const PRESENCE_EPHEMERAL_TTL_MS = 5_000;
 const PRESENCE_LAST_SEEN_TTL_MS = 60_000;
 const PROFILE_PIC_TTL_MS = 30 * 60 * 1000;
+const CONTACT_PHONE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_CONTACT_PHONE_CACHE = 2_000;
+const SAVED_CONTACT_NAMES_CACHE_TTL_MS = 60_000;
 const WHATSAPP2_RECONNECT_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
 
 const WHATSAPP2_INBOUND_CONCURRENCY = 3;
 const WHATSAPP2_MEDIA_CONCURRENCY = 1;
 const WHATSAPP2_TRANSCRIPTION_CONCURRENCY = 2;
 const WHATSAPP2_DELIVERY_BATCH_LIMIT = 1;
+const WHATSAPP2_DELIVERY_MAX_ATTEMPTS = 3;
 const WHATSAPP2_SEND_CONCURRENCY = 1;
+const WHATSAPP2_SEND_TIMEOUT_MS = Math.max(
+  10_000,
+  Number.parseInt(process.env.WHATSAPP2_SEND_TIMEOUT_MS || "45000", 10) || 45_000,
+);
 const WHATSAPP2_WEBHOOK_CONCURRENCY = 4;
 
 function createConcurrencyGate(limit) {
@@ -122,6 +202,20 @@ function createConcurrencyGate(limit) {
       else active = Math.max(0, active - 1);
     }
   };
+}
+
+async function withOperationTimeout(promise, timeoutMs, errorCode) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(errorCode)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const runWithHeavyMediaSlot = createConcurrencyGate(
@@ -194,7 +288,7 @@ function setState(patch) {
 }
 
 function serializeMessage(message) {
-  if (!message) return null;
+  if (!message || isInternalWhatsApp2Message(message)) return null;
   return {
     id: message.id?._serialized || message.id?.$1 || null,
     from: message.from || null,
@@ -229,7 +323,10 @@ function applyCors(req, res) {
   const allowed = !origin ||
     origin === "https://vendeo-e755e.web.app" ||
     origin.startsWith("http://localhost:") ||
-    origin.startsWith("http://127.0.0.1:");
+    origin.startsWith("http://127.0.0.1:") ||
+    origin.startsWith("http://100.") ||
+    origin.startsWith("http://192.168.") ||
+    origin.startsWith("http://10.");
   if (origin && allowed) res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
@@ -297,6 +394,23 @@ async function getWhatsApp2BlockedChatIds(active = ensureReady()) {
   return new Set(ids.map((id) => String(id)));
 }
 
+async function resolveVisibleLastMessage(chat) {
+  const last = chat?.lastMessage || null;
+  if (!last || !isInternalWhatsApp2Message(last)) return last;
+
+  try {
+    const recent = await chat.fetchMessages({ limit: 12 });
+    for (let index = recent.length - 1; index >= 0; index -= 1) {
+      const candidate = recent[index];
+      if (candidate && !isInternalWhatsApp2Message(candidate)) return candidate;
+    }
+  } catch (error) {
+    console.warn("[whatsapp2] falha ao resolver última mensagem visível:", error?.message || error);
+  }
+
+  return null;
+}
+
 async function getRecentChatSnapshot({ force = false } = {}) {
   const now = Date.now();
   if (
@@ -317,12 +431,18 @@ async function getRecentChatSnapshot({ force = false } = {}) {
     ]);
     const oneWeekAgoSeconds =
       Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
-    const rows = chats
-      .map((chat) => {
+    const rows = (await Promise.all(
+      chats.map(async (chat) => {
         const id = chat?.id?._serialized || chat?.id?.$1 || null;
         if (!id) return null;
+
+        const visibleLastMessage = await resolveVisibleLastMessage(chat);
+        if (chat.lastMessage && isInternalWhatsApp2Message(chat.lastMessage) && !visibleLastMessage) {
+          return null;
+        }
+
         const timestamp = Number(
-          chat.lastMessage?.timestamp || chat.timestamp || 0,
+          visibleLastMessage?.timestamp || chat.timestamp || 0,
         );
         if (timestamp < oneWeekAgoSeconds) return null;
         return {
@@ -335,9 +455,10 @@ async function getRecentChatSnapshot({ force = false } = {}) {
           isLocked: Boolean(chat.isLocked),
           isBlocked: !chat.isGroup && blockedChatIds.has(id),
           pinned: Boolean(chat.pinned),
-          lastMessage: serializeMessage(chat.lastMessage),
+          lastMessage: serializeMessage(visibleLastMessage),
         };
-      })
+      }),
+    ))
       .filter(Boolean)
       .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
       .slice(0, MAX_CHAT_SNAPSHOT_ROWS);
@@ -447,6 +568,281 @@ async function getWhatsApp2ChatControlState(chatId) {
     archived: Boolean(chat.archived),
     isLocked: Boolean(chat.isLocked),
     isBlocked: !chat.isGroup && blockedChatIds.has(normalizedChatId),
+  };
+}
+
+function normalizeResolvedPhoneNumber(value) {
+  const digits = String(value || "")
+    .replace(/@.*$/, "")
+    .replace(/\D+/g, "");
+  return /^\d{8,15}$/.test(digits) ? digits : null;
+}
+
+function getCachedContactPhone(chatId) {
+  const key = String(chatId || "").trim();
+  if (!key) return null;
+  const cached = contactPhoneCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.updatedAt > CONTACT_PHONE_CACHE_TTL_MS) {
+    contactPhoneCache.delete(key);
+    return null;
+  }
+  contactPhoneCache.delete(key);
+  contactPhoneCache.set(key, cached);
+  return cached.phoneNumber || null;
+}
+
+function cacheContactPhone(chatId, phoneNumber) {
+  const key = String(chatId || "").trim();
+  const normalized = normalizeResolvedPhoneNumber(phoneNumber);
+  if (!key || !normalized) return;
+  if (contactPhoneCache.has(key)) contactPhoneCache.delete(key);
+  contactPhoneCache.set(key, {
+    phoneNumber: normalized,
+    updatedAt: Date.now(),
+  });
+  while (contactPhoneCache.size > MAX_CONTACT_PHONE_CACHE) {
+    const oldestKey = contactPhoneCache.keys().next().value;
+    if (!oldestKey) break;
+    contactPhoneCache.delete(oldestKey);
+  }
+}
+
+async function getSavedContactNamesByPhone(active, phoneNumbers) {
+  const now = Date.now();
+  const requested = Array.from(
+    new Set(
+      (Array.isArray(phoneNumbers) ? phoneNumbers : [])
+        .map(normalizeResolvedPhoneNumber)
+        .filter(Boolean),
+    ),
+  );
+  const names = new Map();
+  const missing = [];
+
+  for (const phone of requested) {
+    const cached = savedContactNamesByPhoneCache.get(phone);
+    if (
+      cached &&
+      now - cached.updatedAt <= SAVED_CONTACT_NAMES_CACHE_TTL_MS
+    ) {
+      if (cached.savedName) names.set(phone, cached.savedName);
+      continue;
+    }
+    missing.push(phone);
+  }
+
+  if (missing.length > 0) {
+    await ensureWaJsReady();
+    let batch = {};
+    try {
+      batch = await active.pupPage.evaluate(async (phones) => {
+        const wanted = new Set(phones);
+        const output = {};
+        const wpp = globalThis.WPP;
+        const collections = window.require
+          ? window.require("WAWebCollections")
+          : null;
+        const store = wpp?.whatsapp?.ContactStore || collections?.Contact;
+        const models =
+          store && typeof store.getModelsArray === "function"
+            ? store.getModelsArray()
+            : [];
+
+        for (const contact of models) {
+          if (!contact || !contact.id || contact.isGroup || contact.isMe) continue;
+          const phone = String(
+            contact.id?.user ||
+            contact.number ||
+            contact.id?._serialized ||
+            contact.id?.$1 ||
+            "",
+          )
+            .replace(/@.*$/, "")
+            .replace(/\D+/g, "");
+          if (!wanted.has(phone)) continue;
+
+          const savedName = String(
+            contact.name ||
+            contact.pushname ||
+            contact.shortName ||
+            contact.formattedTitle ||
+            contact.notifyName ||
+            "",
+          ).trim();
+          if (savedName) output[phone] = savedName;
+        }
+        return output;
+      }, missing);
+    } catch (error) {
+      console.warn(
+        "[whatsapp2] nomes salvos dos contatos não puderam ser resolvidos:",
+        error?.message || error,
+      );
+      batch = {};
+    }
+
+    const unresolved = missing.filter((phone) => !batch?.[phone]);
+    for (let offset = 0; offset < unresolved.length; offset += 10) {
+      const chunk = unresolved.slice(offset, offset + 10);
+      const contactRows = await Promise.all(
+        chunk.map(async (phone) => {
+          try {
+            const contact = await active.getContactById(`${phone}@c.us`);
+            const savedName = String(
+              contact?.name ||
+              contact?.pushname ||
+              contact?.shortName ||
+              "",
+            ).trim();
+            return [phone, savedName || null];
+          } catch {
+            return [phone, null];
+          }
+        }),
+      );
+      for (const [phone, savedName] of contactRows) {
+        if (savedName) batch[phone] = savedName;
+      }
+    }
+
+    for (const phone of missing) {
+      const savedName = String(batch?.[phone] || "").trim() || null;
+      savedContactNamesByPhoneCache.set(phone, {
+        savedName,
+        updatedAt: now,
+      });
+      if (savedName) names.set(phone, savedName);
+    }
+  }
+
+  return names;
+}
+
+async function resolveWhatsApp2PhoneNumbers(chatIds) {
+  const requested = Array.from(
+    new Set(
+      (Array.isArray(chatIds) ? chatIds : [])
+        .map((value) => String(value || "").trim().replace(/^wa2:/i, ""))
+        .filter(Boolean),
+    ),
+  ).slice(0, 500);
+
+  const resolved = new Map();
+  const lidsToResolve = [];
+
+  for (const chatId of requested) {
+    if (chatId.endsWith("@g.us") || chatId === "status@broadcast") {
+      resolved.set(chatId, null);
+      continue;
+    }
+
+    const directNumber = !chatId.endsWith("@lid")
+      ? normalizeResolvedPhoneNumber(chatId)
+      : null;
+    if (directNumber) {
+      resolved.set(chatId, directNumber);
+      cacheContactPhone(chatId, directNumber);
+      continue;
+    }
+
+    const cached = getCachedContactPhone(chatId);
+    if (cached) {
+      resolved.set(chatId, cached);
+      continue;
+    }
+
+    if (chatId.endsWith("@lid")) lidsToResolve.push(chatId);
+    else resolved.set(chatId, null);
+  }
+
+  if (lidsToResolve.length > 0) {
+    const active = ensureReady();
+    await ensureWaJsReady();
+
+    let batch = {};
+    try {
+      batch = await active.pupPage.evaluate(async (ids) => {
+        const output = {};
+        for (const id of ids) {
+          try {
+            const mapping = await globalThis.WPP?.contact?.getPnLidEntry?.(id);
+            output[id] = String(mapping?.phoneNumber?._serialized || "");
+          } catch {
+            output[id] = "";
+          }
+        }
+        return output;
+      }, lidsToResolve);
+    } catch {
+      batch = {};
+    }
+
+    for (const chatId of lidsToResolve) {
+      const phoneNumber = normalizeResolvedPhoneNumber(batch?.[chatId]);
+      resolved.set(chatId, phoneNumber);
+      if (phoneNumber) cacheContactPhone(chatId, phoneNumber);
+    }
+  }
+
+  let savedNamesByPhone = new Map();
+  try {
+    savedNamesByPhone = await getSavedContactNamesByPhone(
+      ensureReady(),
+      Array.from(resolved.values()).filter(Boolean),
+    );
+  } catch {}
+
+  return requested.map((chatId) => {
+    const phoneNumber = resolved.get(chatId) || null;
+    return {
+      chatId,
+      phoneNumber,
+      savedName: phoneNumber ? savedNamesByPhone.get(phoneNumber) || null : null,
+      available: Boolean(phoneNumber),
+    };
+  });
+}
+
+async function getWhatsApp2ExternalChatLink(chatId) {
+  const normalizedChatId = String(chatId || "").trim().replace(/^wa2:/i, "");
+  if (!normalizedChatId) throw new Error("chatId obrigatório");
+
+  const active = ensureReady();
+  const chat = await active.getChatById(normalizedChatId);
+  if (!chat) {
+    return {
+      chatId: normalizedChatId,
+      available: false,
+      reason: "chat_not_found",
+    };
+  }
+  if (chat.isGroup) {
+    return {
+      chatId: normalizedChatId,
+      available: false,
+      reason: "group_not_supported",
+    };
+  }
+
+  const [resolved] = await resolveWhatsApp2PhoneNumbers([normalizedChatId]);
+  const phoneNumber = resolved?.phoneNumber || null;
+
+  if (!phoneNumber) {
+    return {
+      chatId: normalizedChatId,
+      available: false,
+      reason: normalizedChatId.endsWith("@lid")
+        ? "lid_phone_unavailable"
+        : "phone_unavailable",
+    };
+  }
+
+  return {
+    chatId: normalizedChatId,
+    available: true,
+    phoneNumber,
+    url: `https://wa.me/${phoneNumber}`,
   };
 }
 
@@ -1270,7 +1666,7 @@ async function enqueueWhatsApp2Inbound(message) {
 }
 
 async function syncWhatsApp2Message(message) {
-  if (!supabase || !message) return;
+  if (!supabase || !message || isInternalWhatsApp2Message(message)) return;
   if (!message.fromMe) return enqueueWhatsApp2Inbound(message);
   const messageId = message.id?._serialized || message.id?.$1 || null;
   if (!messageId) return;
@@ -1487,6 +1883,21 @@ async function syncChatSnapshots() {
     .slice(0, 500);
   if (!recentChats.length) return;
 
+  let identityByChatId = new Map();
+  try {
+    const identities = await resolveWhatsApp2PhoneNumbers(
+      recentChats.map((chat) => chat.id),
+    );
+    identityByChatId = new Map(
+      identities.map((identity) => [String(identity.chatId), identity]),
+    );
+  } catch (error) {
+    console.warn(
+      "[whatsapp2] identidade dos contatos não pôde ser resolvida no snapshot:",
+      error?.message || error,
+    );
+  }
+
   const conversationIds = recentChats.map((chat) =>
     whatsapp2ConversationId(chat.id),
   );
@@ -1558,7 +1969,13 @@ async function syncChatSnapshots() {
     const nextUnread = snapshotAtLeastCurrent
       ? unreadCount > 0
       : Boolean(existing?.unread);
-    const fullName = String(chat.name || existing?.full_name || chatId);
+    const identity = identityByChatId.get(chatId) || null;
+    const fullName = String(
+      identity?.savedName ||
+      chat.name ||
+      existing?.full_name ||
+      chatId,
+    ).trim() || chatId;
     const nextLastMessage = gatewayIsNewer || !existing
       ? preview
       : existing.last_message;
@@ -1576,6 +1993,14 @@ async function syncChatSnapshots() {
         ? gatewayStatus
         : existing.last_status;
 
+    const nextStatus = chat.isLocked
+      ? "locked"
+      : chat.archived
+      ? "archived"
+      : (existing?.status === "archived" || existing?.status === "locked"
+          ? "active"
+          : (existing?.status || "active"));
+
     const row = {
       id,
       username: existing?.username || chatId,
@@ -1591,12 +2016,13 @@ async function syncChatSnapshots() {
       last_status: nextLastStatus || null,
       unread: nextUnread,
       unread_count: nextUnreadCount,
-      status: existing?.status || "active",
+      status: nextStatus,
       updated_at: now,
     };
 
     const changed =
       !existing ||
+      String(existing.status || "") !== String(row.status || "") ||
       String(existing.username || "") !== String(row.username || "") ||
       String(existing.full_name || "") !== String(row.full_name || "") ||
       String(existing.avatar || existing.avatar_url || "") !==
@@ -1649,12 +2075,16 @@ function formatWhatsApp2PreviewForGateway(message) {
 
 async function sendTextInternal({ to, text, replyToMessageId }) {
   return runWithSendSlot(async () => {
-    const sent = await ensureReady().sendMessage(
-      normalizeChatId(to),
-      String(text || ""),
-      {
-        ...(replyToMessageId ? { quotedMessageId: String(replyToMessageId) } : {}),
-      },
+    const sent = await withOperationTimeout(
+      ensureReady().sendMessage(
+        normalizeChatId(to),
+        String(text || ""),
+        {
+          ...(replyToMessageId ? { quotedMessageId: String(replyToMessageId) } : {}),
+        },
+      ),
+      WHATSAPP2_SEND_TIMEOUT_MS,
+      "whatsapp2_send_timeout",
     );
     return serializeMessage(sent);
   });
@@ -1752,39 +2182,43 @@ async function sendMediaInternalUnlocked({
       ? "voice.ogg"
       : sanitizeAttachmentFilename(media.filename || "file", "file"));
 
-  const result = await active.pupPage.evaluate(
-    async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
-      let targetId = chatId;
-      if (String(chatId).endsWith("@lid")) {
-        try {
-          const mapping = await globalThis.WPP.contact.getPnLidEntry(chatId);
-          targetId = mapping?.phoneNumber?._serialized || chatId;
-        } catch {
-          targetId = chatId;
+  const result = await withOperationTimeout(
+    active.pupPage.evaluate(
+      async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
+        let targetId = chatId;
+        if (String(chatId).endsWith("@lid")) {
+          try {
+            const mapping = await globalThis.WPP.contact.getPnLidEntry(chatId);
+            targetId = mapping?.phoneNumber?._serialized || chatId;
+          } catch {
+            targetId = chatId;
+          }
         }
-      }
 
-      const options = {
+        const options = {
+          type,
+          mimetype: cleanMime,
+          filename,
+          ...(caption ? { caption } : {}),
+          ...(asVoice ? { isPtt: true, waveform: true } : {}),
+          ...(quotedMsg ? { quotedMsg } : {}),
+        };
+        const sent = await globalThis.WPP.chat.sendFileMessage(targetId, dataUrl, options);
+        return sent ? JSON.parse(JSON.stringify(sent)) : null;
+      },
+      {
+        chatId,
+        dataUrl,
         type,
-        mimetype: cleanMime,
-        filename,
-        ...(caption ? { caption } : {}),
-        ...(asVoice ? { isPtt: true, waveform: true } : {}),
-        ...(quotedMsg ? { quotedMsg } : {}),
-      };
-      const sent = await globalThis.WPP.chat.sendFileMessage(targetId, dataUrl, options);
-      return sent ? JSON.parse(JSON.stringify(sent)) : null;
-    },
-    {
-      chatId,
-      dataUrl,
-      type,
-      cleanMime,
-      filename: resolvedFilename,
-      caption: caption ? String(caption) : "",
-      asVoice: Boolean(asVoice),
-      quotedMsg: replyToMessageId ? String(replyToMessageId) : "",
-    },
+        cleanMime,
+        filename: resolvedFilename,
+        caption: caption ? String(caption) : "",
+        asVoice: Boolean(asVoice),
+        quotedMsg: replyToMessageId ? String(replyToMessageId) : "",
+      },
+    ),
+    WHATSAPP2_SEND_TIMEOUT_MS,
+    "whatsapp2_send_timeout",
   );
 
   const messageId = typeof result?.id === "string"
@@ -2193,6 +2627,63 @@ function stopTranscriptionWorker() {
   transcriptionWorkerTimer = null;
 }
 
+async function finalizeDeliveryJob({
+  job,
+  success,
+  providerMessageId = null,
+  errorMessage = null,
+  uncertain = false,
+}) {
+  const completionPayload = {
+    p_id: job.id,
+    p_worker_id: WORKER_ID,
+    p_success: Boolean(success),
+    p_provider_message_id: providerMessageId,
+    p_error: errorMessage,
+    p_uncertain: Boolean(uncertain),
+  };
+
+  const { data, error } = await supabase.rpc(
+    "complete_whatsapp2_delivery",
+    completionPayload,
+  );
+
+  if (!error && data?.success !== false) {
+    return data;
+  }
+
+  const status = success ? "sent" : uncertain ? "uncertain" : "failed";
+  const nowIso = new Date().toISOString();
+  const patch = {
+    status,
+    last_error: success ? null : String(errorMessage || error?.message || "delivery_failed"),
+    updated_at: nowIso,
+    ...(providerMessageId ? { provider_message_id: providerMessageId } : {}),
+    ...((success || !uncertain) ? { completed_at: nowIso } : {}),
+  };
+
+  const { data: fallbackRow, error: fallbackError } = await supabase
+    .from("whatsapp2_delivery_queue")
+    .update(patch)
+    .eq("id", job.id)
+    .eq("claimed_by", WORKER_ID)
+    .select("id")
+    .maybeSingle();
+
+  if (fallbackError || !fallbackRow?.id) {
+    throw new Error(
+      `whatsapp2_delivery_finalize_failed:${error?.message || data?.reason || "rpc_failed"}:${fallbackError?.message || "row_not_updated"}`,
+    );
+  }
+
+  console.warn(
+    "[whatsapp2] finalize de entrega usou fallback direto:",
+    job.id,
+    error?.message || data?.reason || "rpc_not_confirmed",
+  );
+  return { success: true, status, fallback: true };
+}
+
 async function processDeliveryQueue() {
   if (!supabase || deliveryWorkerRunning || state.status !== "ready") return;
   deliveryWorkerRunning = true;
@@ -2208,6 +2699,16 @@ async function processDeliveryQueue() {
 
     for (const job of jobs || []) {
       try {
+        if (Number(job.attempts || 0) > WHATSAPP2_DELIVERY_MAX_ATTEMPTS) {
+          await finalizeDeliveryJob({
+            job,
+            success: false,
+            errorMessage: `whatsapp2_delivery_retry_limit:${job.attempts}`,
+            uncertain: true,
+          });
+          continue;
+        }
+
         let sent;
         if (job.kind === "text") {
           sent = await sendTextInternal({
@@ -2227,24 +2728,28 @@ async function processDeliveryQueue() {
         }
 
         const providerMessageId = sent?.id || null;
-        await supabase.rpc("complete_whatsapp2_delivery", {
-          p_id: job.id,
-          p_worker_id: WORKER_ID,
-          p_success: true,
-          p_provider_message_id: providerMessageId,
-          p_error: null,
-          p_uncertain: false,
+        await finalizeDeliveryJob({
+          job,
+          success: true,
+          providerMessageId,
         });
       } catch (error) {
-        const uncertain = /timeout|timed out|connection|socket/i.test(String(error?.message || error));
-        await supabase.rpc("complete_whatsapp2_delivery", {
-          p_id: job.id,
-          p_worker_id: WORKER_ID,
-          p_success: false,
-          p_provider_message_id: null,
-          p_error: String(error?.message || error),
-          p_uncertain: uncertain,
-        }).catch(() => {});
+        const errorMessage = String(error?.message || error);
+        const uncertain = /timeout|timed out|connection|socket/i.test(errorMessage);
+        try {
+          await finalizeDeliveryJob({
+            job,
+            success: false,
+            errorMessage,
+            uncertain,
+          });
+        } catch (finalizeError) {
+          console.warn(
+            "[whatsapp2] falha ao finalizar entrega:",
+            job.id,
+            finalizeError?.message || finalizeError,
+          );
+        }
       }
     }
   } catch (error) {
@@ -2464,19 +2969,21 @@ async function startClient() {
       }
     });
     next.on("message", (message) => {
+      if (isInternalWhatsApp2Message(message)) return;
       invalidateChatSnapshot();
       void emitEvent("message", serializeMessage(message));
       void enqueueWhatsApp2Inbound(message).catch((error) =>
         console.warn("[whatsapp2] inbound enqueue:", error?.message || error));
     });
     next.on("message_create", (message) => {
-      if (!message.fromMe) return;
+      if (!message.fromMe || isInternalWhatsApp2Message(message)) return;
       invalidateChatSnapshot();
       void emitEvent("message_create", serializeMessage(message));
       void syncWhatsApp2Message(message).catch((error) =>
         console.warn("[whatsapp2] outbound sync:", error?.message || error));
     });
     next.on("message_ack", (message, ack) => {
+      if (isInternalWhatsApp2Message(message)) return;
       invalidateChatSnapshot();
       void emitEvent("message_ack", { message: serializeMessage(message), ack });
       void syncWhatsApp2Ack(message, ack).catch((error) =>
@@ -3394,6 +3901,23 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    if (req.method === "GET" && url.pathname === "/chat/external-link") {
+      const chatId = String(url.searchParams.get("chatId") || "");
+      json(res, 200, {
+        ok: true,
+        ...(await getWhatsApp2ExternalChatLink(chatId)),
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat/resolve-phones") {
+      const body = await readJson(req, 128 * 1024);
+      const chatIds = Array.isArray(body?.chatIds) ? body.chatIds : [];
+      json(res, 200, {
+        ok: true,
+        contacts: await resolveWhatsApp2PhoneNumbers(chatIds),
+      });
+      return;
+    }
     if (
       req.method === "POST" &&
       (url.pathname === "/chat/lock" || url.pathname === "/chat/unlock")
@@ -3461,6 +3985,7 @@ const server = http.createServer(async (req, res) => {
       if (!chat) throw new Error("Conversa não encontrada");
       const messages = await chat.fetchMessages({ limit });
       const rows = messages
+        .filter((message) => !isInternalWhatsApp2Message(message))
         .map(serializeMessage)
         .filter(Boolean)
         .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
@@ -3509,6 +4034,333 @@ const server = http.createServer(async (req, res) => {
       setState({ status: "idle", qrDataUrl: null, readyAt: null, me: null, lastError: null });
       json(res, 200, { ok: true }); return;
     }
+    if (req.method === "POST" && url.pathname === "/status/text") {
+      ensureReady();
+      const body = await readJson(req, 64 * 1024);
+      const sent = await runWithSendSlot(async () => {
+        await ensureWaJsReady();
+        return await publishTextStatus({
+          client: ensureReady(),
+          body,
+        });
+      });
+      json(res, 200, sent); return;
+    }
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/status/image" || url.pathname === "/status/media")
+    ) {
+      ensureReady();
+      const body = await readJson(req, 25 * 1024 * 1024);
+      const sent = await runWithSendSlot(async () => {
+        await ensureWaJsReady();
+        return await publishImageStatus({
+          client: ensureReady(),
+          body,
+        });
+      });
+      json(res, 200, sent); return;
+    }
+    if (req.method === "POST" && url.pathname === "/status/video") {
+      ensureReady();
+      const body = await readJson(req, 64 * 1024 * 1024);
+      const sent = await runWithSendSlot(async () => {
+        await ensureWaJsReady();
+        return await publishVideoStatus({
+          client: ensureReady(),
+          body,
+        });
+      });
+      json(res, 200, sent); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/evergreen-recipients") {
+      const storyKey = String(url.searchParams.get("storyKey") || "").trim();
+      if (!storyKey) {
+        json(res, 400, { ok: false, error: "storyKey obrigatório" }); return;
+      }
+      const recipients = await loadEvergreenStatusRecipients(storyKey);
+      json(res, 200, { ok: true, storyKey, recipients, count: recipients.length }); return;
+    }
+    if (req.method === "POST" && url.pathname === "/status/evergreen-recipients") {
+      const body = await readJson(req, 256 * 1024);
+      const storyKey = String(body?.storyKey || "").trim();
+      if (!storyKey) {
+        json(res, 400, { ok: false, error: "storyKey obrigatório" }); return;
+      }
+      const result = await recordEvergreenStatusRecipients({
+        storyKey,
+        statusPostId: body?.statusPostId || null,
+        recipients: Array.isArray(body?.recipients) ? body.recipients.slice(0, 1000) : [],
+      });
+      const recipients = await loadEvergreenStatusRecipients(storyKey);
+      json(res, 200, {
+        ok: true,
+        storyKey,
+        inserted: result.inserted,
+        recipients,
+        count: recipients.length,
+      }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/privacy") {
+      ensureReady();
+      await ensureWaJsReady();
+      const result = await getStatusPrivacy({
+        client: ensureReady(),
+      });
+      json(res, 200, result); return;
+    }
+    if (req.method === "POST" && url.pathname === "/status/privacy") {
+      ensureReady();
+      const body = await readJson(req, 64 * 1024);
+      await ensureWaJsReady();
+      const result = await setStatusPrivacy({
+        client: ensureReady(),
+        body,
+      });
+      json(res, 200, result); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/contacts") {
+      ensureReady();
+      await ensureWaJsReady();
+      const search = url.searchParams.get("search") || "";
+      const limit = Math.min(Number(url.searchParams.get("limit") || 300), 1000);
+      const result = await getStatusContacts({
+        client: ensureReady(),
+        search,
+        limit,
+      });
+      json(res, 200, result); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/my-status") {
+      const active = ensureReady();
+      await ensureWaJsReady();
+      const page = active.pupPage;
+      if (!page) {
+        json(res, 503, { ok: false, error: "Página indisponível" }); return;
+      }
+      const myStatus = await page.evaluate(async () => {
+        const wpp = globalThis.WPP;
+        if (!wpp || !wpp.isReady || !wpp.status) return null;
+        try {
+          const res = typeof wpp.status.getMyStatus === "function" ? await wpp.status.getMyStatus() : null;
+          return res ? JSON.parse(JSON.stringify(res)) : null;
+        } catch (e) {
+          return { error: String(e?.message || e) };
+        }
+      });
+      json(res, 200, { ok: true, myStatus }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/debug-failure") {
+      const active = ensureReady();
+      await ensureWaJsReady();
+      const page = active.pupPage;
+      const data = await page.evaluate(async () => {
+        const wpp = globalThis.WPP;
+        const collections = window.require ? window.require("WAWebCollections") : null;
+        const msgStore = wpp?.whatsapp?.MsgStore || collections?.Msg;
+        const chatStore = wpp?.whatsapp?.ChatStore || collections?.Chat;
+        const statusChat = chatStore?.get("status@broadcast");
+        
+        let msgs = [];
+        if (msgStore && typeof msgStore.getModelsArray === "function") {
+          msgs = msgStore.getModelsArray()
+            .filter((m) => m.to === "status@broadcast" || m.id?.remote === "status@broadcast")
+            .slice(-10)
+            .map((m) => ({
+              id: m.id?._serialized,
+              body: m.body,
+              ack: m.ack,
+              isSendFailure: m.isSendFailure,
+              t: m.t,
+              sendFailureReason: m.sendFailureReason || m.error || m.failedReason || null,
+              pendingAck: m.pendingAck,
+              type: m.type,
+              broadcastParticipants: m.broadcastParticipants || m.participants || null,
+            }));
+        }
+
+        let participants = [];
+        if (statusChat && statusChat.groupMetadata) {
+          participants = statusChat.groupMetadata.participants?.map((p) => p.id?._serialized || String(p.id)) || [];
+        }
+
+        let sendTextStatusSource = "";
+        let sendRawStatusSource = "";
+        let updateParticipantsSource = "";
+        try {
+          sendTextStatusSource = wpp?.status?.sendTextStatus?.toString() || "";
+          sendRawStatusSource = wpp?.status?.sendRawStatus?.toString() || "";
+          updateParticipantsSource = wpp?.status?.updateParticipants?.toString() || "";
+        } catch (e) {
+          sendTextStatusSource = String(e);
+        }
+
+        let pendingDetails = [];
+        try {
+          const collections = window.require ? window.require("WAWebCollections") : null;
+          const chatStore = wpp?.whatsapp?.ChatStore || collections?.Chat;
+          const statusChat = chatStore?.get("status@broadcast");
+          if (statusChat && statusChat.msgs) {
+            pendingDetails = statusChat.msgs.map(m => ({
+              id: m.id?._serialized,
+              body: m.body?.slice?.(0, 30),
+              ack: m.ack,
+              isSendFailure: m.isSendFailure,
+              t: m.t,
+              sendMsgResult: m.sendMsgResult,
+              pendingAck: m.pendingAck,
+              type: m.type,
+              error: m.error || m.sendFailureReason || null,
+            }));
+          }
+        } catch (e) {
+          pendingDetails = [{ error: String(e) }];
+        }
+
+
+        const userIds = {
+          getMaybeMeUser: wpp?.whatsapp?.UserPrefs?.getMaybeMeUser?.()?.toString?.() || null,
+          getMaybeMeLidUser: wpp?.whatsapp?.UserPrefs?.getMaybeMeLidUser?.()?.toString?.() || null,
+          connWid: wpp?.whatsapp?.Conn?.wid?.toString?.() || null,
+          connMeLid: wpp?.whatsapp?.Conn?.meLid?.toString?.() || null,
+        };
+
+        let statusModules = [];
+        try {
+          if (typeof window.require === "function" && window.require.modules) {
+            statusModules = Object.keys(window.require.modules).filter(k => k.toLowerCase().includes("status")).slice(0, 30);
+          }
+        } catch {}
+
+        return {
+          statusChatFound: Boolean(statusChat),
+          participantsCount: participants.length,
+          userIds,
+          statusModules,
+          pendingDetails,
+          sendTextStatusSource: sendTextStatusSource.slice(0, 500),
+          sendRawStatusSource: sendRawStatusSource.slice(0, 1000),
+          updateParticipantsSource: updateParticipantsSource.slice(0, 1000),
+        };
+
+
+
+
+
+      });
+      json(res, 200, { ok: true, data }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/screenshot") {
+      const active = ensureReady();
+      const page = active.pupPage;
+
+      // 1. Tenta fechar modais com Escape ou clique no X
+      try {
+        await page.keyboard.press("Escape");
+        await new Promise((r) => setTimeout(r, 500));
+        await page.evaluate(() => {
+          const closeBtn = document.querySelector('div[role="button"][aria-label="Fechar"], button[aria-label="Fechar"], span[data-icon="x"]');
+          if (closeBtn) (closeBtn.closest('button, div[role="button"]') || closeBtn).click();
+        });
+        await new Promise((r) => setTimeout(r, 500));
+      } catch {}
+
+      // 2. Tenta clicar no ícone de Status na barra lateral
+      const statusClicked = await page.evaluate(() => {
+        const statusIcon = document.querySelector('span[data-icon="status-outline"], span[data-icon="status-refreshed"], button[aria-label="Status"], div[aria-label="Status"]');
+        if (statusIcon) {
+          const btn = statusIcon.closest('button, div[role="button"]') || statusIcon;
+          btn.click();
+          return true;
+        }
+        return false;
+      });
+
+      // 3. Tenta clicar em "Meu status" para abrir os detalhes
+      const clickStatusRes = await page.evaluate(() => {
+        const divs = Array.from(document.querySelectorAll('div[role="button"], span, p, h1, h2, h3'));
+        const el = divs.find(d => d.innerText && d.innerText.includes("Meu status"));
+        if (el) {
+          const clickable = el.closest('div[role="button"]') || el;
+          clickable.click();
+          return { found: true, text: el.innerText };
+        }
+        return { found: false };
+      });
+
+      await new Promise((r) => setTimeout(r, 1200));
+
+      // Extrai os textos visíveis na tela
+      const pageTexts = await page.evaluate(() => {
+        const elements = Array.from(document.querySelectorAll('h1, h2, h3, span, p, div[role="button"]'));
+        return elements
+          .map(e => e.innerText?.trim())
+          .filter(t => t && t.length > 2 && t.length < 100)
+          .slice(0, 40);
+      });
+
+      const screenPath = path.join(ROOT, "wa_screenshot.png");
+      await page.screenshot({ path: screenPath });
+      json(res, 200, { ok: true, statusClicked, clickStatusRes, pageTexts, screenPath }); return;
+    }
+
+
+
+    if (req.method === "POST" && url.pathname === "/status/test-send") {
+
+      const body = await readJson(req, 64 * 1024);
+      const active = ensureReady();
+      await ensureWaJsReady();
+      const page = active.pupPage;
+      const result = await page.evaluate(async (payload) => {
+        const wpp = globalThis.WPP;
+        const targetNumber = payload.targetNumber || "553196101780@c.us";
+        const text = payload.text || "Teste status via test-send";
+
+        const privacyInfo = {};
+        try {
+          privacyInfo.wppPrivacy = await wpp.privacy.get();
+        } catch (e) {
+          privacyInfo.wppPrivacyError = String(e?.message || e);
+        }
+
+        try {
+          privacyInfo.statusPrivacySettingConfig = await wpp.whatsapp?.getStatusPrivacySettingConfig?.();
+        } catch (e) {
+          privacyInfo.statusPrivacySettingConfigError = String(e?.message || e);
+        }
+
+        try {
+          privacyInfo.statusList = await wpp.whatsapp?.getStatusList?.();
+        } catch (e) {
+          privacyInfo.statusListError = String(e?.message || e);
+        }
+
+        return {
+          ok: true,
+          privacyInfo,
+        };
+      }, body);
+
+      json(res, 200, { ok: true, result }); return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/status/eval") {
+      const body = await readJson(req, 128 * 1024);
+      const active = ensureReady();
+      await ensureWaJsReady();
+      const page = active.pupPage;
+      try {
+        const evalRes = await page.evaluate(new Function("return (async () => {" + body.code + "})()"));
+        json(res, 200, { ok: true, evalRes });
+      } catch (err) {
+        json(res, 500, { ok: false, error: String(err?.message || err) });
+      }
+      return;
+    }
+
+
+
     if (req.method === "POST" && url.pathname === "/messages/send") {
       const body = await readJson(req);
       const sent = await sendTextInternal({
@@ -3567,13 +4419,19 @@ const server = http.createServer(async (req, res) => {
     console.error("[whatsapp2] request:", error);
     const errorMessage = String(error?.message || error);
     const statusCode =
-      error?.code === "WHATSAPP2_MEDIA_TOO_LARGE" ||
+      typeof error?.statusCode === "number"
+        ? error.statusCode
+        : error?.code === "WHATSAPP2_MEDIA_TOO_LARGE" ||
       /(?:media_too_large|Payload grande demais)/i.test(errorMessage)
         ? 413
-        : /(?:media_(?:download|base64|url)_timeout)/i.test(errorMessage)
+        : /(?:media_(?:download|base64|url)_timeout|WHATSAPP2_STATUS_TIMEOUT)/i.test(errorMessage)
         ? 504
         : 400;
-    json(res, statusCode, { ok: false, error: errorMessage });
+    json(res, statusCode, {
+      ok: false,
+      error: errorMessage,
+      code: error?.code || null,
+    });
   }
 });server.listen(PORT, HOST, () => {
   console.log("[whatsapp2] gateway em http://" + HOST + ":" + PORT);

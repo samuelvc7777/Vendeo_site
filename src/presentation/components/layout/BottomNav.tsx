@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Store, MessageSquare, Settings } from "lucide-react";
+import { Flame, Store, MessageSquare, Settings } from "lucide-react";
 import { TabType } from "@/presentation/types";
 import { cn } from "@/lib/utils";
 
@@ -28,10 +28,10 @@ export function BottomNav({
     <nav
       aria-label="Navegação Principal"
       className={cn(
-        "shrink-0 w-full border-t flex items-center justify-around px-6 z-50 select-none backdrop-blur-xl",
+        "shrink-0 w-full border-t flex items-center justify-around px-6 z-50 select-none backdrop-blur-xl pb-[env(safe-area-inset-bottom,0px)]",
         isWhatsApp2RemoteBuild
-          ? "h-[58px] bg-[#f9f9f9]/[0.94] border-[#c6c6c8]/70 dark:bg-[#1c1c1e]/[0.94] dark:border-[#38383a]"
-          : "h-13 bg-white/95 dark:bg-black border-zinc-200 dark:border-[#262626]"
+          ? "h-[calc(58px+env(safe-area-inset-bottom,0px))] bg-[#f9f9f9]/[0.94] border-[#c6c6c8]/70 dark:bg-[#1c1c1e]/[0.94] dark:border-[#38383a]"
+          : "h-[calc(52px+env(safe-area-inset-bottom,0px))] bg-white/95 dark:bg-black border-zinc-200 dark:border-[#262626]"
       )}
     >
       {/* Aba Vendas */}
@@ -87,6 +87,30 @@ export function BottomNav({
           )}
         >
           {isWhatsApp2RemoteBuild ? "Conversas" : "Chat"}
+        </span>
+      </button>
+
+      {/* Aba Match */}
+      <button
+        onClick={() => onTabChange("match")}
+        className={cn(
+          "flex flex-col items-center justify-center py-1 gap-1 transition-colors cursor-pointer group flex-1",
+          currentTab === "match" ? activeTabClass : inactiveTabClass
+        )}
+      >
+        <Flame
+          className={cn(
+            "w-5 h-5 transition-transform group-active:scale-90",
+            currentTab === "match" ? "stroke-[2.5] fill-current" : "stroke-[1.8]"
+          )}
+        />
+        <span
+          className={cn(
+            "text-[10px] tracking-tight leading-none",
+            currentTab === "match" ? `font-semibold ${activeTabClass}` : `font-medium ${inactiveTabClass}`
+          )}
+        >
+          Match
         </span>
       </button>
 

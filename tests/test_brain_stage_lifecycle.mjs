@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildConversationBrainPrompt,
-  resolveStageChecklistGoals,
+  resolveStageObjectives,
   validateAndApplyBrainStageDecision,
   selectConfirmedBrainActions,
 } from "../supabase/functions/api/brain_orchestrator.ts";
@@ -28,7 +28,7 @@ function stageCatalogClient(catalog = stages) {
 }
 
 test("o Brain recebe objetivos pendentes e concluídos com valor e evidência", async () => {
-  const resolved = await resolveStageChecklistGoals({
+  const resolved = await resolveStageObjectives({
     supabase: stageCatalogClient(), conversationId: "conv-1", stageNameOrId: "stage_1_conexao",
     memoryProvider: {}, completedGoalIds: ["goal_city"],
     objectiveProgress: { goal_city: { status: "completed", value: "Barbacena", evidenceMessageId: "msg-city" } },
@@ -145,7 +145,7 @@ test("endpoint de progresso exige sessão e chama a RPC privilegiada após valid
   const request = () => new Request("https://edge.test/operator/chat-progress", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ conversationId: "conv-1", progressPatch: {
-      currentStageId: "stage_1_conexao", completedGoalIds: ["goal_city", "goal_city"], completedItemIds: [], objectiveProgress: {},
+      currentStageId: "stage_1_conexao", completedGoalIds: ["goal_city", "goal_city"], objectiveProgress: {},
     } }),
   });
   const unauthorized = await handleOperatorChatProgress(request(), supabase, false, {});

@@ -169,14 +169,15 @@ export function InstagramConnectModal({
           </div>
           <button
             onClick={onClose}
-            className="text-[#a8a8a8] hover:text-white p-1.5 rounded-full hover:bg-[#262626] transition-colors cursor-pointer"
+            className="text-[#a8a8a8] hover:text-white p-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-[#262626] transition-colors cursor-pointer"
+            aria-label="Fechar"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Conteúdo com scroll */}
-        <div className="p-5 overflow-y-auto space-y-4 text-xs">
+        <div className="p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))] overflow-y-auto space-y-4 text-xs">
           {loadingInitial ? (
             <div className="py-12 flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-6 h-6 text-[#bc1888] animate-spin" />
@@ -323,7 +324,7 @@ export function InstagramConnectModal({
                     value={accessToken}
                     onChange={(e) => setAccessToken(e.target.value)}
                     placeholder="EAABw..."
-                    className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#bc1888] font-mono pr-9"
+                    className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3.5 py-2.5 text-[16px] md:text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#bc1888] font-mono pr-9"
                     required
                   />
                   <KeyRound className="w-4 h-4 text-[#737373] absolute right-3 top-3 pointer-events-none" />
@@ -341,7 +342,7 @@ export function InstagramConnectModal({
                   value={instagramAccountId}
                   onChange={(e) => setInstagramAccountId(e.target.value)}
                   placeholder="Deixe em branco (autodetecta sozinho) ou ID numérico"
-                  className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#bc1888] font-mono"
+                  className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3.5 py-2.5 text-[16px] md:text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#bc1888] font-mono"
                 />
               </div>
 
@@ -356,7 +357,7 @@ export function InstagramConnectModal({
                   value={appSecret}
                   onChange={(e) => setAppSecret(e.target.value)}
                   placeholder="Ex: 8f7e2a9..."
-                  className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#bc1888] font-mono"
+                  className="w-full bg-[#1c1c1e] border border-[#262626] rounded-xl px-3.5 py-2.5 text-[16px] md:text-xs text-white placeholder-[#737373] focus:outline-none focus:border-[#bc1888] font-mono"
                 />
               </div>
 
@@ -364,7 +365,7 @@ export function InstagramConnectModal({
               <button
                 type="submit"
                 disabled={isSubmitting || !accessToken.trim()}
-                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#f09433] via-[#e6683c] to-[#bc1888] text-white text-xs font-bold hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 cursor-pointer"
+                className="w-full py-2.5 px-4 min-h-[44px] rounded-xl bg-gradient-to-r from-[#f09433] via-[#e6683c] to-[#bc1888] text-white text-xs font-bold hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 cursor-pointer"
               >
                 {isSubmitting ? (
                   <>

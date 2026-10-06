@@ -1,17 +1,23 @@
 const TINDER_API_BASE = "https://api.gotinder.com";
-const REQUEST_TIMEOUT_MS = 12000;
-const APP_VERSION = "1073604";
-const TINDER_VERSION = "7.36.4";
-const WEB_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36";
+const REQUEST_TIMEOUT_MS = 15000;
+const TINDER_WEB_APP_VERSION = "1073604";
+const TINDER_WEB_VERSION = "7.36.4";
+
+const BASE_HEADERS: Record<string, string> = {
+  Accept: "application/json",
+  "Content-Type": "application/json",
+  "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
+  platform: "web",
+  "app-version": TINDER_WEB_APP_VERSION,
+  "tinder-version": TINDER_WEB_VERSION,
+  "x-supported-image-formats": "webp,jpeg",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+  Origin: "https://tinder.com",
+  Referer: "https://tinder.com/",
+};
 
 type TinderAction = "like" | "pass" | "superlike";
-
-interface TinderIdentity {
-  deviceId: string;
-  appSessionId: string;
-  sessionStartedAt: number;
-}
 
 interface TinderRouteParams {
   request: Request;
@@ -21,9 +27,11 @@ interface TinderRouteParams {
   originAllowed: boolean;
 }
 
-const channelCache = new Map<string, any>();
-
-function json(value: unknown, status: number, corsHeaders: Record<string, string>): Response {
+function json(
+  value: unknown,
+  status: number,
+  corsHeaders: Record<string, string>,
+): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: {
@@ -51,59 +59,27 @@ function randomSessionSecret(): string {
   return `mt_${crypto.randomUUID().replaceAll("-", "")}_${payload}`;
 }
 
-function ensureIdentity(config?: any): TinderIdentity {
-  const startedAtRaw =
-    config?.app_session_started_at ||
-    config?.connected_at ||
-    new Date().toISOString();
-  const startedAt = new Date(startedAtRaw).getTime();
-  return {
-    deviceId: String(
-      config?.device_id ||
-      config?.persistent_device_id ||
-      crypto.randomUUID()
-    ),
-    appSessionId: String(config?.app_session_id || crypto.randomUUID()),
-    sessionStartedAt: Number.isFinite(startedAt) ? startedAt : Date.now(),
-  };
-}
-
-function tinderHeaders(token: string, identity: TinderIdentity): Record<string, string> {
-  const elapsed = Math.max(0, Date.now() - identity.sessionStartedAt).toString();
-  return {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    platform: "web",
-    "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "app-version": APP_VERSION,
-    "tinder-version": TINDER_VERSION,
-    "persistent-device-id": identity.deviceId,
-    "app-session-id": identity.appSessionId,
-    "app-session-time-elapsed": elapsed,
-    "user-session-id": identity.appSessionId,
-    "user-session-time-elapsed": elapsed,
-    "x-supported-image-formats": "webp,jpeg",
-    "User-Agent": WEB_UA,
-    Origin: "https://tinder.com",
-    Referer: "https://tinder.com/",
-    "X-Auth-Token": token,
-  };
-}
-
 async function tinderFetch(
   token: string,
-  identity: TinderIdentity,
   path: string,
   init: RequestInit = {},
 ): Promise<any> {
+  const tokenHash = await sha256Hex(token);
+  const stableUuid = (offset: number) => {
+    const hex = (tokenHash + tokenHash).slice(offset, offset + 32);
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(`${TINDER_API_BASE}${path}`, {
       ...init,
       headers: {
-        ...tinderHeaders(token, identity),
+        ...BASE_HEADERS,
+        "persistent-device-id": stableUuid(0),
+        "app-session-id": stableUuid(16),
         ...(init.headers || {}),
+        "X-Auth-Token": token,
       },
       signal: controller.signal,
     });
@@ -119,15 +95,9 @@ async function tinderFetch(
     }
 
     if (!response.ok) {
-      console.warn("[Match/Tinder] upstream", {
-        path,
-        status: response.status,
-        appVersion: APP_VERSION,
-        tinderVersion: TINDER_VERSION,
-      });
       const err: any = new Error(
         response.status === 401
-          ? "A sessão do Tinder expirou. Gere um novo token e reconecte a conta."
+          ? "Token do Tinder expirado ou inválido."
           : response.status === 429
             ? "O Tinder limitou temporariamente as requisições. Tente novamente em alguns instantes."
             : `Tinder respondeu com HTTP ${response.status}.`,
@@ -150,23 +120,6 @@ async function tinderFetch(
   }
 }
 
-async function tinderFetchWithMethodFallback(
-  token: string,
-  identity: TinderIdentity,
-  path: string,
-  postBody: any = {},
-): Promise<any> {
-  try {
-    return await tinderFetch(token, identity, path);
-  } catch (error: any) {
-    if (![404, 405].includes(Number(error?.status))) throw error;
-    return tinderFetch(token, identity, path, {
-      method: "POST",
-      body: JSON.stringify(postBody),
-    });
-  }
-}
-
 function pickPhotoUrl(photo: any): string {
   if (!photo) return "";
   if (photo.url) return String(photo.url);
@@ -182,7 +135,9 @@ function calculateAge(birthDate?: string | null): number | null {
   const now = new Date();
   let age = now.getUTCFullYear() - date.getUTCFullYear();
   const monthDiff = now.getUTCMonth() - date.getUTCMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && now.getUTCDate() < date.getUTCDate())) age -= 1;
+  if (monthDiff < 0 || (monthDiff === 0 && now.getUTCDate() < date.getUTCDate())) {
+    age -= 1;
+  }
   return age >= 18 && age < 120 ? age : null;
 }
 
@@ -228,7 +183,7 @@ function readFirstText(value: any): string | null {
   return null;
 }
 
-function normalizeProfile(user: any) {
+function normalizeProfile(user: any, recMeta: any = {}) {
   if (!user) return null;
   const id = String(user._id || user.id || "").trim();
   if (!id) return null;
@@ -249,8 +204,10 @@ function normalizeProfile(user: any) {
       ),
   );
 
-  const distanceMiles = Number.isFinite(Number(user.distance_mi)) ? Number(user.distance_mi) : null;
-  const distanceKm = distanceMiles === null ? null : Math.max(0, Math.round(distanceMiles * 1.60934));
+  const distanceMiles =
+    Number.isFinite(Number(user.distance_mi)) ? Number(user.distance_mi) : null;
+  const distanceKm =
+    distanceMiles === null ? null : Math.max(0, Math.round(distanceMiles * 1.60934));
 
   return {
     id,
@@ -268,39 +225,31 @@ function normalizeProfile(user: any) {
       readFirstText(user.location),
     distanceKm,
     interests: readInterestNames(user),
-  };
-}
-
-function normalizeRecommendation(result: any) {
-  const user = result?.user || result;
-  const profile = normalizeProfile(user);
-  if (!profile) return null;
-  const firstPhotoId =
-    result?.teaser?.string ||
-    result?.photo?.id ||
-    user?.photos?.[0]?.id ||
-    profile.photos?.[0]?.id ||
-    null;
-  return {
-    ...profile,
     swipe: {
-      sNumber: result?.s_number ?? user?.s_number ?? null,
-      contentHash: result?.content_hash ?? user?.content_hash ?? null,
-      photoId: firstPhotoId,
+      sNumber: Number.isFinite(Number(recMeta?.s_number ?? user?.s_number))
+        ? Number(recMeta?.s_number ?? user?.s_number)
+        : null,
+      contentHash: recMeta?.content_hash || recMeta?.contentHash || user?.content_hash || null,
+      photoId: recMeta?.photoId || recMeta?.photo_id || photos?.[0]?.id || null,
     },
   };
 }
 
 function extractProfilePayload(payload: any): any {
-  return payload?.data?.user || payload?.user || payload?.data?.data?.user || payload?.data?.profile || null;
+  return (
+    payload?.data?.user ||
+    payload?.user ||
+    payload?.data?.data?.user ||
+    payload?.data?.profile ||
+    null
+  );
 }
 
-async function fetchOwnProfile(token: string, identity: TinderIdentity) {
+async function fetchOwnProfile(token: string) {
   const include =
     "account,boost,feature_access,likes,notifications,plus_control,products,purchase,super_likes,tinder_u,user";
   const payload = await tinderFetch(
     token,
-    identity,
     `/v2/profile?locale=pt&include=${encodeURIComponent(include)}`,
   );
   const profile = normalizeProfile(extractProfilePayload(payload));
@@ -312,112 +261,59 @@ async function fetchOwnProfile(token: string, identity: TinderIdentity) {
   return profile;
 }
 
-async function fetchAccountState(token: string, identity: TinderIdentity) {
-  const payload = await tinderFetch(
-    token,
-    identity,
-    "/v2/profile?locale=pt&include=user,likes,super_likes,boost,purchase,feature_access,profile_meter,travel",
-  );
-  const data = payload?.data || {};
-  return {
-    likes: data.likes || null,
-    superLikes: data.super_likes || null,
-    boost: data.boost || null,
-    purchase: data.purchase || null,
-    featureAccess: data.feature_access || null,
-    profileMeter: data.profile_meter || null,
-    travel: data.travel || null,
-  };
-}
-
-async function fetchRecommendations(token: string, identity: TinderIdentity) {
+async function fetchRecommendations(token: string) {
   let payload: any;
   try {
-    payload = await tinderFetch(token, identity, "/v2/recs/core?locale=pt");
-  } catch (error: any) {
-    if (![404, 405].includes(Number(error?.status))) throw error;
-    payload = await tinderFetch(token, identity, "/user/recs");
+    payload = await tinderFetch(token, "/user/recs");
+  } catch {
+    try {
+      payload = await tinderFetch(token, "/recs/core");
+    } catch {
+      try {
+        payload = await tinderFetch(token, "/v2/recs/core?locale=pt");
+      } catch {
+        payload = { results: [] };
+      }
+    }
   }
+
   const rawResults =
     payload?.data?.results ||
     payload?.results ||
     payload?.data?.data?.results ||
     payload?.data?.data ||
     [];
-  return (Array.isArray(rawResults) ? rawResults : [])
-    .map((result: any) => normalizeRecommendation(result))
+
+  const profiles = (Array.isArray(rawResults) ? rawResults : [])
+    .map((result: any) => normalizeProfile(result?.user || result, result))
     .filter(Boolean);
+
+  return profiles;
 }
 
-async function fetchLikesYou(token: string, identity: TinderIdentity) {
-  let count: number | null = null;
-  let isRange = false;
-  try {
-    const countPayload = await tinderFetchWithMethodFallback(
-      token,
-      identity,
-      "/v2/fast-match/count",
-      {},
-    );
-    count = countPayload?.data?.count ?? countPayload?.count ?? null;
-    isRange = Boolean(countPayload?.data?.is_range ?? countPayload?.is_range);
-  } catch (error: any) {
-    if (Number(error?.status) === 401) throw error;
-  }
+async function fetchMatches(token: string) {
+  const payload = await tinderFetch(
+    token,
+    "/v2/matches?locale=pt&count=60&message=1&is_tinder_u=false",
+  );
+  const rawMatches =
+    payload?.data?.matches ||
+    payload?.matches ||
+    payload?.data?.data?.matches ||
+    [];
 
-  try {
-    const payload = await tinderFetchWithMethodFallback(
-      token,
-      identity,
-      "/v2/fast-match?locale=pt&count=50",
-      { filter: "likes" },
-    );
-    const rawResults =
-      payload?.data?.results ||
-      payload?.results ||
-      payload?.data?.data?.results ||
-      [];
-    const profiles = (Array.isArray(rawResults) ? rawResults : [])
-      .map((item: any) => normalizeRecommendation(item?.user ? item : { user: item }))
-      .filter(Boolean);
-    return { count, isRange, locked: false, profiles };
-  } catch (error: any) {
-    if (Number(error?.status) === 401) throw error;
-    if ([400, 402, 403, 404, 405].includes(Number(error?.status))) {
-      return { count, isRange, locked: true, profiles: [] };
-    }
-    throw error;
-  }
-}
-
-async function fetchMatches(token: string, identity: TinderIdentity) {
-  const all: any[] = [];
-  let pageToken: string | null = null;
-  for (let page = 0; page < 8; page += 1) {
-    const suffix = pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : "";
-    const payload = await tinderFetch(
-      token,
-      identity,
-      `/v2/matches?locale=pt&count=100&message=1&is_tinder_u=false${suffix}`,
-    );
-    const rawMatches = payload?.data?.matches || payload?.matches || payload?.data?.data?.matches || [];
-    if (Array.isArray(rawMatches)) all.push(...rawMatches);
-    pageToken = payload?.data?.next_page_token || payload?.next_page_token || null;
-    if (!pageToken || !rawMatches?.length) break;
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  }
-
-  return all
+  return (Array.isArray(rawMatches) ? rawMatches : [])
     .map((match: any) => {
       const person = normalizeProfile(match?.person || match?.user);
       const messages = (Array.isArray(match?.messages) ? match.messages : [])
-        .slice(-5)
+        .slice(-15)
         .map((message: any) => ({
           id: String(message?._id || message?.id || ""),
           text: String(message?.message || message?.text || ""),
           sentAt: message?.sent_date || message?.created_date || null,
           from: message?.from || null,
           to: message?.to || null,
+          isMine: String(message?.from) === String(token ? "" : ""),
         }));
       return {
         id: String(match?.id || match?._id || ""),
@@ -431,30 +327,121 @@ async function fetchMatches(token: string, identity: TinderIdentity) {
     .filter((match: any) => Boolean(match.id && match.person));
 }
 
-async function loadChannels(
-  token: string,
-  identity: TinderIdentity,
-  options: { allPages?: boolean; maxPages?: number } = {},
-) {
-  const allPages = options.allPages ?? false;
-  const maxPages = options.maxPages ?? 12;
-  const out: any[] = [];
+async function fetchLikesYou(token: string) {
+  let count: number | null = null;
+  let isRange = false;
+
+  try {
+    const countPayload = await tinderFetch(token, "/v2/fast-match/count?locale=pt");
+    const rawCount = countPayload?.data?.count ?? countPayload?.count;
+    count = Number.isFinite(Number(rawCount)) ? Number(rawCount) : null;
+    isRange = Boolean(countPayload?.data?.is_range ?? countPayload?.is_range ?? false);
+  } catch {
+    // best-effort
+  }
+
+  try {
+    const payload = await tinderFetch(token, "/v2/fast-match?locale=pt&count=50");
+    const rawResults =
+      payload?.data?.results ||
+      payload?.results ||
+      payload?.data?.data?.results ||
+      [];
+    const profiles = (Array.isArray(rawResults) ? rawResults : [])
+      .map((entry: any) => normalizeProfile(entry?.user || entry, entry))
+      .filter(Boolean);
+
+    return {
+      count: count ?? profiles.length,
+      isRange,
+      locked: false,
+      profiles,
+    };
+  } catch (error: any) {
+    if ([401, 402, 403, 404].includes(Number(error?.status))) {
+      return { count: count ?? 0, isRange, locked: true, profiles: [] };
+    }
+    return { count: count ?? 0, isRange, locked: true, profiles: [] };
+  }
+}
+
+async function fetchAccountState(token: string) {
+  const include =
+    "user,likes,super_likes,boost,purchase,feature_access,profile_meter,travel";
+  const payload = await tinderFetch(
+    token,
+    "/v2/profile?locale=pt&include=" + encodeURIComponent(include),
+  );
+  const data = payload?.data || {};
+  const boost = data?.boost || {};
+  const superLikes = data?.super_likes || data?.superLikes || {};
+  const likes = data?.likes || {};
+  const purchase = data?.purchase || {};
+  const featureAccess = data?.feature_access || {};
+
+  return {
+    boost: {
+      remaining:
+        boost?.remaining ??
+        boost?.boost_remaining ??
+        boost?.boosts_remaining ??
+        null,
+      duration: boost?.duration ?? null,
+      resetsAt: boost?.resets_at ?? boost?.reset_at ?? null,
+      expiresAt: boost?.expires_at ?? null,
+      isBoosting: Boolean(boost?.is_boosting || false),
+    },
+    superLikes: {
+      remaining:
+        superLikes?.remaining ??
+        superLikes?.super_likes_remaining ??
+        null,
+      resetsAt: superLikes?.resets_at ?? superLikes?.reset_at ?? null,
+    },
+    likes: {
+      remaining: likes?.remaining ?? likes?.likes_remaining ?? null,
+      rateLimitedUntil: likes?.rate_limited_until ?? likes?.resets_at ?? null,
+    },
+    purchase: {
+      hasPlus: Boolean(purchase?.plus || purchase?.is_plus || false),
+      hasGold: Boolean(purchase?.gold || purchase?.is_gold || false),
+      hasPlatinum: Boolean(purchase?.platinum || purchase?.is_platinum || false),
+    },
+    featureAccess: {
+      rewind: Boolean(featureAccess?.rewind?.enabled ?? featureAccess?.rewind ?? false),
+      likesYou: Boolean(featureAccess?.likes_you?.enabled ?? featureAccess?.likes_you ?? false),
+      passport: Boolean(featureAccess?.passport?.enabled ?? featureAccess?.passport ?? false),
+    },
+  };
+}
+
+async function queryChannels(token: string) {
+  const output: any[] = [];
   const seen = new Set<string>();
 
   for (const filter of [2, 1]) {
     let backwardPageToken: string | null = null;
-    for (let page = 0; page < (allPages ? maxPages : 1); page += 1) {
-      const paginationParams: any = { limit: 50 };
-      if (backwardPageToken) paginationParams.backward_page_token = backwardPageToken;
+    for (let page = 0; page < 12; page += 1) {
+      const paginationParams: Record<string, unknown> = { limit: 50 };
+      if (backwardPageToken) {
+        paginationParams.backward_page_token = backwardPageToken;
+      }
 
-      const payload = await tinderFetch(token, identity, "/v1/chat/channels/query?locale=pt", {
-        method: "POST",
-        body: JSON.stringify({
-          filters: [filter],
-          included_reference_types: ["REFERENCE_TYPE_MATCH", "REFERENCE_TYPE_DUO"],
-          pagination_params: paginationParams,
-        }),
-      });
+      const payload = await tinderFetch(
+        token,
+        "/v1/chat/channels/query?locale=pt",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            filters: [filter],
+            included_reference_types: [
+              "REFERENCE_TYPE_MATCH",
+              "REFERENCE_TYPE_DUO",
+            ],
+            pagination_params: paginationParams,
+          }),
+        },
+      );
 
       const channels = Array.isArray(payload?.channels)
         ? payload.channels
@@ -463,110 +450,215 @@ async function loadChannels(
           : [];
 
       for (const channel of channels) {
-        const cid = channel?.channel_id;
-        const referenceId = String(cid?.reference_id || "");
-        if (!referenceId) continue;
-        channelCache.set(referenceId, cid);
-        if (seen.has(referenceId)) continue;
+        const referenceId = String(channel?.channel_id?.reference_id || "");
+        if (!referenceId || seen.has(referenceId)) continue;
         seen.add(referenceId);
-        out.push({ ...channel, match_filter: filter });
+        output.push(channel);
       }
 
       const info = payload?.pagination_info || payload?.data?.pagination_info || {};
       const next = info?.next_backward_page_token || null;
-      if (!allPages || !info?.has_next_page || !next || next === backwardPageToken || channels.length === 0) {
+      if (!info?.has_next_page || !next || next === backwardPageToken || channels.length === 0) {
         break;
       }
-      backwardPageToken = next;
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      backwardPageToken = String(next);
     }
   }
 
-  return out;
+  return output;
 }
 
-async function channelIdFor(token: string, identity: TinderIdentity, matchId: string) {
-  if (channelCache.has(matchId)) return channelCache.get(matchId);
-  await loadChannels(token, identity);
-  if (channelCache.has(matchId)) return channelCache.get(matchId);
-  await loadChannels(token, identity, { allPages: true });
-  return channelCache.get(matchId) || null;
+async function findChannelForMatch(token: string, matchId: string) {
+  const channels = await queryChannels(token);
+  return channels.find(
+    (channel: any) =>
+      String(channel?.channel_id?.reference_id || "") === String(matchId),
+  ) || null;
 }
 
-async function fetchMessages(token: string, identity: TinderIdentity, matchId: string) {
-  const channelId = await channelIdFor(token, identity, matchId);
-  if (!channelId) return { channelId: null, messages: [] };
+async function fetchMessagesFromMatchesList(token: string, matchId: string, myUserId: string) {
+  try {
+    const payload = await tinderFetch(
+      token,
+      "/v2/matches?locale=pt&count=60&message=1&is_tinder_u=false",
+    );
+    const rawMatches = payload?.data?.matches || payload?.matches || [];
+    const target = rawMatches.find((m: any) => String(m?.id || m?._id || "") === String(matchId));
+    if (!target || !Array.isArray(target.messages)) return [];
 
-  const payload = await tinderFetch(
+    return target.messages.map((m: any) => {
+      const sender = String(m?.from || m?.sender_id || "");
+      return {
+        id: String(m?._id || m?.id || ""),
+        text: String(m?.message || m?.text || ""),
+        sentAt: m?.sent_date || m?.created_date || null,
+        from: sender || null,
+        isMine: sender ? sender === myUserId : false,
+      };
+    }).sort((a: any, b: any) => {
+      const at = a.sentAt ? new Date(a.sentAt).getTime() : 0;
+      const bt = b.sentAt ? new Date(b.sentAt).getTime() : 0;
+      return at - bt;
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function fetchChannelMessages(
+  token: string,
+  matchId: string,
+  myUserId: string,
+) {
+  try {
+    const channel = await findChannelForMatch(token, matchId);
+    if (channel?.channel_id) {
+      const payload = await tinderFetch(
+        token,
+        "/v1/chat/channels/messages/query?locale=pt",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            channel_id: channel.channel_id,
+            pagination_params: { limit: 100 },
+          }),
+        },
+      );
+
+      const rawMessages = Array.isArray(payload?.messages)
+        ? payload.messages
+        : Array.isArray(payload?.data?.messages)
+          ? payload.data.messages
+          : [];
+
+      if (rawMessages.length > 0) {
+        return rawMessages
+          .map((message: any) => {
+            const sender =
+              message?.sender_id?.id ||
+              message?.sender_id ||
+              message?.from ||
+              "";
+            return {
+              id: String(
+                message?.message_id?.id ||
+                message?.message_id ||
+                message?.id ||
+                "",
+              ),
+              text: String(
+                message?.content?.text?.message ??
+                message?.message ??
+                message?.text ??
+                "",
+              ),
+              sentAt: message?.created_at || message?.sent_date || null,
+              from: sender || null,
+              isMine: String(sender) === String(myUserId || ""),
+            };
+          })
+          .sort((a: any, b: any) => {
+            const at = a.sentAt ? new Date(a.sentAt).getTime() : 0;
+            const bt = b.sentAt ? new Date(b.sentAt).getTime() : 0;
+            return at - bt;
+          });
+      }
+    }
+  } catch {
+    // Fallback para lista de matches
+  }
+
+  return fetchMessagesFromMatchesList(token, matchId, myUserId);
+}
+
+async function sendChannelMessage(
+  token: string,
+  matchId: string,
+  messageText: string,
+) {
+  // Tentativa 1: Canal v1
+  try {
+    const channel = await findChannelForMatch(token, matchId);
+    if (channel?.channel_id?.id) {
+      const payload = await tinderFetch(
+        token,
+        "/v1/chat/channels/messages?locale=pt",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            channel_id: channel.channel_id,
+            message: {
+              content: {
+                text: {
+                  message: messageText,
+                },
+              },
+            },
+          }),
+        },
+      );
+
+      const messageId =
+        payload?.message_id?.id ||
+        payload?.message?.message_id?.id ||
+        null;
+
+      if (messageId) {
+        return {
+          id: String(messageId),
+          text: messageText,
+          sentAt: payload?.created_at || new Date().toISOString(),
+          isMine: true,
+        };
+      }
+    }
+  } catch {
+    // Fallback para endpoint universal /user/matches/{matchId}
+  }
+
+  // Tentativa 2: Endpoint universal do Tinder /user/matches/{matchId}
+  const fallbackPayload = await tinderFetch(
     token,
-    identity,
-    "/v1/chat/channels/messages/query?locale=pt",
+    `/user/matches/${encodeURIComponent(matchId)}`,
     {
       method: "POST",
-      body: JSON.stringify({
-        channel_id: channelId,
-        pagination_params: { limit: 100 },
-      }),
+      body: JSON.stringify({ message: messageText }),
     },
   );
 
-  const rawMessages = payload?.messages || payload?.data?.messages || [];
-  const messages = (Array.isArray(rawMessages) ? rawMessages : [])
-    .map((message: any) => ({
-      id: String(message?.message_id?.id || message?.id || ""),
-      text: String(message?.content?.text?.message || message?.message || ""),
-      sentAt: message?.created_at || message?.sent_date || null,
-      from: message?.sender_id || message?.from || null,
-      to: message?.recipient_id || message?.to || null,
-    }))
-    .sort((a: any, b: any) => new Date(a.sentAt || 0).getTime() - new Date(b.sentAt || 0).getTime());
+  const fallbackId =
+    fallbackPayload?._id ||
+    fallbackPayload?.id ||
+    fallbackPayload?.data?._id ||
+    crypto.randomUUID();
 
-  try {
-    await tinderFetch(token, identity, "/v1/chat/channels/seen?locale=pt", {
-      method: "POST",
-      body: JSON.stringify({ channel_id: channelId }),
-    });
-  } catch {
-    // Reading messages must not fail only because the optional seen receipt changed upstream.
-  }
-
-  return { channelId, messages };
+  return {
+    id: String(fallbackId),
+    text: messageText,
+    sentAt: new Date().toISOString(),
+    isMine: true,
+  };
 }
 
-async function sendMessage(
-  token: string,
-  identity: TinderIdentity,
-  matchId: string,
-  text: string,
-) {
-  const channelId = await channelIdFor(token, identity, matchId);
-  if (!channelId?.id) {
-    const err: any = new Error("Não encontrei o canal real desse match no Tinder. Nada foi enviado.");
-    err.status = 404;
-    throw err;
-  }
-
-  const payload = await tinderFetch(token, identity, "/v1/chat/channels/messages?locale=pt", {
+async function startBoost(token: string) {
+  const payload = await tinderFetch(token, "/boost", {
     method: "POST",
-    body: JSON.stringify({
-      channel_id: channelId,
-      message: { content: { text: { message: text } } },
-    }),
+    body: JSON.stringify({ amount: 1 }),
   });
 
-  const messageId = payload?.message_id?.id || payload?.message?.message_id?.id || null;
-  if (!messageId) {
-    const err: any = new Error("O Tinder respondeu sem confirmar um ID de mensagem. Nada foi marcado como enviado.");
-    err.status = 502;
-    throw err;
-  }
-  return { messageId: String(messageId), payload };
+  return {
+    boostId: payload?.boost_id || payload?.data?.boost_id || null,
+    multiplier: payload?.multiplier ?? payload?.data?.multiplier ?? null,
+    duration: payload?.duration ?? payload?.data?.duration ?? null,
+    expiresAt: payload?.expires_at ?? payload?.data?.expires_at ?? null,
+    remaining: payload?.remaining ?? payload?.data?.remaining ?? null,
+  };
 }
 
 async function fetchConfig(supabase: any) {
   const { data, error } = await supabase
     .from("match_tinder_config")
-    .select("id, auth_token, session_hash, user_id, user_name, avatar_url, profile, connected_at, last_validated_at, updated_at, persistent_device_id, device_id, app_session_id, app_session_started_at, last_swipe")
+    .select("id, auth_token, session_hash, user_id, user_name, avatar_url, profile, connected_at, last_validated_at, updated_at")
     .eq("id", "default")
     .maybeSingle();
   if (error) throw error;
@@ -574,108 +666,89 @@ async function fetchConfig(supabase: any) {
 }
 
 async function requireSession(
-  request: Request,
+  _request: Request,
   supabase: any,
-): Promise<{ config: any; token: string; identity: TinderIdentity }> {
-  const session = String(request.headers.get("x-match-session") || "").trim();
-  if (!session) {
-    const err: any = new Error("Sessão do Match ausente. Reconecte o Tinder.");
-    err.status = 401;
-    err.code = "MATCH_SESSION_MISSING";
-    throw err;
-  }
-
+): Promise<{ config: any; token: string }> {
   const config = await fetchConfig(supabase);
-  if (!config?.auth_token || !config?.session_hash) {
+  if (!config?.auth_token) {
     const err: any = new Error("Tinder não está conectado.");
     err.status = 401;
-    err.code = "MATCH_NOT_CONNECTED";
+    err.code = "MATCH_TINDER_NOT_CONNECTED";
     throw err;
   }
 
-  const candidateHash = await sha256Hex(session);
-  if (candidateHash !== config.session_hash) {
-    const err: any = new Error("Sessão do Match inválida ou revogada.");
-    err.status = 401;
-    err.code = "MATCH_SESSION_INVALID";
-    throw err;
-  }
+  return { config, token: String(config.auth_token) };
+}
 
-  const identity = ensureIdentity(config);
-  if (!config.device_id || !config.app_session_id) {
-    await supabase
-      .from("match_tinder_config")
-      .update({
-        persistent_device_id: identity.deviceId,
-        device_id: identity.deviceId,
-        app_session_id: identity.appSessionId,
-        app_session_started_at: new Date(identity.sessionStartedAt).toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", "default");
-  }
-
-  return { config, token: String(config.auth_token), identity };
+function compactBody(values: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(values).filter(
+      ([, value]) => value !== undefined && value !== null && value !== "",
+    ),
+  );
 }
 
 async function performSwipe(
   token: string,
-  identity: TinderIdentity,
   userId: string,
   action: TinderAction,
-  swipe: any,
-  undo = false,
+  meta: {
+    sNumber?: number | null;
+    contentHash?: string | null;
+    photoId?: string | null;
+    undo?: boolean;
+    fastMatch?: boolean;
+  } = {},
 ) {
-  const sNumber = swipe?.sNumber ?? swipe?.s_number ?? null;
-  const photoId = swipe?.photoId ?? swipe?.photo_id ?? null;
-  const contentHash = swipe?.contentHash ?? swipe?.content_hash ?? null;
-  const body: any = {
-    ...(sNumber !== null ? { s_number: Number(sNumber) } : {}),
-    ...(photoId ? { photoId, liked_content_id: photoId, liked_content_type: "photo" } : {}),
-    ...(contentHash ? { content_hash: contentHash } : {}),
-    ...(undo ? { undo: true } : {}),
-  };
+  const baseMeta = compactBody({
+    s_number: meta.sNumber,
+    content_hash: meta.contentHash,
+    undo: meta.undo || undefined,
+    fast_match: meta.fastMatch || undefined,
+  });
 
   if (action === "like") {
-    const payload = await tinderFetch(token, identity, `/like/${encodeURIComponent(userId)}`, {
+    const payload = await tinderFetch(token, `/like/${encodeURIComponent(userId)}`, {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        compactBody({
+          ...baseMeta,
+          liked_content_id: meta.photoId || undefined,
+          liked_content_type: meta.photoId ? "photo" : undefined,
+        }),
+      ),
     });
     return {
       matched: Boolean(payload?.match || payload?.data?.match),
       likesRemaining: payload?.likes_remaining ?? payload?.data?.likes_remaining ?? null,
     };
   }
-
   if (action === "pass") {
-    await tinderFetch(token, identity, `/pass/${encodeURIComponent(userId)}`, {
+    await tinderFetch(token, `/pass/${encodeURIComponent(userId)}`, {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        compactBody({
+          ...baseMeta,
+          photoId: meta.photoId || undefined,
+        }),
+      ),
     });
     return { matched: false, likesRemaining: null };
   }
-
-  const payload = await tinderFetch(
-    token,
-    identity,
-    `/like/${encodeURIComponent(userId)}/super`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+  const payload = await tinderFetch(token, `/like/${encodeURIComponent(userId)}/super`, {
+    method: "POST",
+    body: JSON.stringify(
+      compactBody({
+        ...baseMeta,
+        liked_content_id: meta.photoId || undefined,
+        liked_content_type: meta.photoId ? "photo" : undefined,
+      }),
+    ),
+  });
   return {
     matched: Boolean(payload?.match || payload?.data?.match),
     likesRemaining: payload?.likes_remaining ?? payload?.data?.likes_remaining ?? null,
   };
-}
-
-async function activateBoost(token: string, identity: TinderIdentity) {
-  const payload = await tinderFetch(token, identity, "/boost", {
-    method: "POST",
-    body: JSON.stringify({ amount: 1 }),
-  });
-  return payload;
 }
 
 export async function handleTinderMatchRoutes({
@@ -687,19 +760,23 @@ export async function handleTinderMatchRoutes({
 }: TinderRouteParams): Promise<Response | null> {
   if (!path.startsWith("/match/tinder")) return null;
 
-  if (!originAllowed) return json({ success: false, error: "origin_not_allowed" }, 403, corsHeaders);
+  if (!originAllowed) {
+    return json({ success: false, error: "origin_not_allowed" }, 403, corsHeaders);
+  }
 
   try {
     if (path === "/match/tinder/connect" && request.method === "POST") {
       const body = await request.json().catch(() => ({}));
       const token = String(body?.token || "").trim();
       if (token.length < 16) {
-        return json({ success: false, error: "Informe um token válido do Tinder." }, 400, corsHeaders);
+        return json(
+          { success: false, error: "Informe um token válido do Tinder." },
+          400,
+          corsHeaders,
+        );
       }
 
-      const existing = await fetchConfig(supabase);
-      const identity = ensureIdentity(existing);
-      const profile = await fetchOwnProfile(token, identity);
+      const profile = await fetchOwnProfile(token);
       const sessionSecret = randomSessionSecret();
       const sessionHash = await sha256Hex(sessionSecret);
       const now = new Date().toISOString();
@@ -712,38 +789,65 @@ export async function handleTinderMatchRoutes({
         user_name: profile.name,
         avatar_url: profile.photos?.[0]?.url || null,
         profile,
-        persistent_device_id: identity.deviceId,
-        device_id: identity.deviceId,
-        app_session_id: identity.appSessionId,
-        app_session_started_at: new Date(identity.sessionStartedAt).toISOString(),
-        last_swipe: {},
         connected_at: now,
         last_validated_at: now,
         updated_at: now,
       });
+
       if (error) throw error;
 
-      return json({ success: true, connected: true, sessionSecret, profile }, 200, corsHeaders);
+      return json(
+        {
+          success: true,
+          connected: true,
+          sessionSecret,
+          profile,
+        },
+        200,
+        corsHeaders,
+      );
     }
 
     if (path === "/match/tinder/status" && request.method === "GET") {
-      const session = String(request.headers.get("x-match-session") || "").trim();
-      if (!session) {
-        return json({ success: true, connected: false, requiresSession: true }, 200, corsHeaders);
+      const config = await fetchConfig(supabase);
+      if (!config?.auth_token) {
+        return json(
+          {
+            success: true,
+            connected: false,
+            serverHasConnection: false,
+          },
+          200,
+          corsHeaders,
+        );
       }
 
-      const { config, token, identity } = await requireSession(request, supabase);
+      const session = String(request.headers.get("x-match-session") || "").trim();
+      let sessionValid = false;
+
+      if (session) {
+        const candidateHash = await sha256Hex(session);
+        if (candidateHash === config.session_hash) {
+          sessionValid = true;
+        }
+      }
+
+      let emittedSessionSecret: string | null = null;
+      const token = String(config.auth_token);
       let profile = config.profile || null;
       let stale = false;
-      const lastValidated = config.last_validated_at ? new Date(config.last_validated_at).getTime() : 0;
 
-      if (!profile || Date.now() - lastValidated > 15 * 60 * 1000) {
+      if (!sessionValid) {
         try {
-          profile = await fetchOwnProfile(token, identity);
+          profile = await fetchOwnProfile(token);
+          const newSessionSecret = randomSessionSecret();
+          const newSessionHash = await sha256Hex(newSessionSecret);
           const now = new Date().toISOString();
+
           await supabase
             .from("match_tinder_config")
             .update({
+              session_hash: newSessionHash,
               user_id: profile.id,
               user_name: profile.name,
               avatar_url: profile.photos?.[0]?.url || null,
@@ -752,145 +856,221 @@ export async function handleTinderMatchRoutes({
               updated_at: now,
             })
             .eq("id", "default");
-        } catch (error: any) {
-          if (Number(error?.status) === 401) throw error;
+
+          emittedSessionSecret = newSessionSecret;
+          sessionValid = true;
+        } catch (authError: any) {
+          if (Number(authError?.status) === 401) {
+            return json(
+              {
+                success: true,
+                connected: false,
+                serverHasConnection: true,
+                tokenExpired: true,
+                error: "Token do Tinder expirado ou revogado. Cole um novo token em Configurações para restabelecer a conexão.",
+              },
+              200,
+              corsHeaders,
+            );
+          }
           stale = true;
+        }
+      } else {
+        const lastValidated = config.last_validated_at
+          ? new Date(config.last_validated_at).getTime()
+          : 0;
+
+        if (!profile || Date.now() - lastValidated > 15 * 60 * 1000) {
+          try {
+            profile = await fetchOwnProfile(token);
+            const now = new Date().toISOString();
+            await supabase
+              .from("match_tinder_config")
+              .update({
+                user_id: profile.id,
+                user_name: profile.name,
+                avatar_url: profile.photos?.[0]?.url || null,
+                profile,
+                last_validated_at: now,
+                updated_at: now,
+              })
+              .eq("id", "default");
+          } catch (error: any) {
+            if (Number(error?.status) === 401) {
+              return json(
+                {
+                  success: true,
+                  connected: false,
+                  serverHasConnection: true,
+                  tokenExpired: true,
+                  error: "Token do Tinder expirado ou revogado. Cole um novo token em Configurações para restabelecer a conexão.",
+                },
+                200,
+                corsHeaders,
+              );
+            }
+            stale = true;
+          }
         }
       }
 
-      return json({ success: true, connected: true, profile, stale }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/disconnect" && request.method === "POST") {
-      await requireSession(request, supabase);
-      const { error } = await supabase.from("match_tinder_config").delete().eq("id", "default");
-      if (error) throw error;
-      channelCache.clear();
-      return json({ success: true, connected: false }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/account" && request.method === "GET") {
-      const { token, identity } = await requireSession(request, supabase);
-      const state = await fetchAccountState(token, identity);
-      return json({ success: true, state }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/recommendations" && request.method === "GET") {
-      const { token, identity } = await requireSession(request, supabase);
-      const profiles = await fetchRecommendations(token, identity);
-      return json({ success: true, profiles, count: profiles.length }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/likes-you" && request.method === "GET") {
-      const { token, identity } = await requireSession(request, supabase);
-      const result = await fetchLikesYou(token, identity);
-      return json({ success: true, ...result }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/matches" && request.method === "GET") {
-      const { token, identity } = await requireSession(request, supabase);
-      const matches = await fetchMatches(token, identity);
-      return json({ success: true, matches, count: matches.length }, 200, corsHeaders);
-    }
-
-    const messagesMatch = path.match(/^\/match\/tinder\/matches\/([^/]+)\/messages$/);
-    if (messagesMatch && request.method === "GET") {
-      const { token, identity } = await requireSession(request, supabase);
-      const matchId = decodeURIComponent(messagesMatch[1]);
-      const result = await fetchMessages(token, identity, matchId);
-      return json({ success: true, ...result }, 200, corsHeaders);
-    }
-
-    if (messagesMatch && request.method === "POST") {
-      const { token, identity } = await requireSession(request, supabase);
-      const matchId = decodeURIComponent(messagesMatch[1]);
-      const body = await request.json().catch(() => ({}));
-      const message = String(body?.message || "").trim();
-      if (!message || message.length > 4000) {
-        return json({ success: false, error: "Mensagem vazia ou grande demais." }, 400, corsHeaders);
-      }
-      const result = await sendMessage(token, identity, matchId, message);
-      return json({ success: true, ...result }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/swipe" && request.method === "POST") {
-      const { config, token, identity } = await requireSession(request, supabase);
-      const body = await request.json().catch(() => ({}));
-      const userId = String(body?.userId || "").trim();
-      const action = String(body?.action || "").trim() as TinderAction;
-      if (!userId || !["like", "pass", "superlike"].includes(action)) {
-        return json({ success: false, error: "userId e action válidos são obrigatórios." }, 400, corsHeaders);
-      }
-
-      const wasRewound =
-        Boolean(config?.last_swipe?.rewound) &&
-        String(config?.last_swipe?.profile?.id || "") === userId;
-
-      const result = await performSwipe(
-        token,
-        identity,
-        userId,
-        action,
-        body?.swipe || {},
-        Boolean(body?.undo || wasRewound),
-      );
-
-      await supabase
-        .from("match_tinder_config")
-        .update({
-          last_swipe: {
-            profile: body?.profile || { id: userId },
-            action,
-            swipe: body?.swipe || {},
-            rewound: false,
-            at: new Date().toISOString(),
-          },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", "default");
-
-      return json({ success: true, action, userId, ...result }, 200, corsHeaders);
-    }
-
-    if (path === "/match/tinder/rewind" && request.method === "POST") {
-      const { config } = await requireSession(request, supabase);
-      const previous = config?.last_swipe || {};
-      if (!previous?.profile?.id) {
-        return json({ success: false, error: "Não há swipe anterior para desfazer." }, 409, corsHeaders);
-      }
-      await supabase
-        .from("match_tinder_config")
-        .update({
-          last_swipe: { ...previous, rewound: true, rewound_at: new Date().toISOString() },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", "default");
       return json(
         {
           success: true,
-          profile: previous.profile,
-          action: previous.action || null,
-          swipe: previous.swipe || {},
-          pendingServerUndo: true,
+          connected: sessionValid,
+          serverHasConnection: true,
+          profile,
+          stale,
+          ...(emittedSessionSecret ? { sessionSecret: emittedSessionSecret } : {}),
         },
         200,
         corsHeaders,
       );
     }
 
+    if (path === "/match/tinder/disconnect" && request.method === "POST") {
+      await requireSession(request, supabase);
+      const { error } = await supabase
+        .from("match_tinder_config")
+        .delete()
+        .eq("id", "default");
+      if (error) throw error;
+      return json({ success: true, connected: false }, 200, corsHeaders);
+    }
+
+    if (path === "/match/tinder/recommendations" && request.method === "GET") {
+      const { token } = await requireSession(request, supabase);
+      const profiles = await fetchRecommendations(token);
+      return json(
+        {
+          success: true,
+          profiles,
+          count: profiles.length,
+        },
+        200,
+        corsHeaders,
+      );
+    }
+
+    if (path === "/match/tinder/account" && request.method === "GET") {
+      const { token } = await requireSession(request, supabase);
+      const account = await fetchAccountState(token);
+      return json({ success: true, account }, 200, corsHeaders);
+    }
+
+    if (path === "/match/tinder/likes" && request.method === "GET") {
+      const { token } = await requireSession(request, supabase);
+      const likes = await fetchLikesYou(token);
+      return json({ success: true, ...likes }, 200, corsHeaders);
+    }
+
+    if (path === "/match/tinder/matches" && request.method === "GET") {
+      const { token } = await requireSession(request, supabase);
+      const matches = await fetchMatches(token);
+      return json(
+        {
+          success: true,
+          matches,
+          count: matches.length,
+        },
+        200,
+        corsHeaders,
+      );
+    }
+
+    const messagesMatch = path.match(/^\/match\/tinder\/messages\/([^/]+)$/);
+    if (messagesMatch && request.method === "GET") {
+      const { config, token } = await requireSession(request, supabase);
+      const matchId = decodeURIComponent(messagesMatch[1]);
+      const messages = await fetchChannelMessages(
+        token,
+        matchId,
+        String(config?.user_id || ""),
+      );
+      return json(
+        { success: true, messages, count: messages.length },
+        200,
+        corsHeaders,
+      );
+    }
+
+    if (messagesMatch && request.method === "POST") {
+      const { token } = await requireSession(request, supabase);
+      const matchId = decodeURIComponent(messagesMatch[1]);
+      const body = await request.json().catch(() => ({}));
+      const message = String(body?.message || "").trim();
+      if (!message) {
+        return json(
+          { success: false, error: "Mensagem vazia.", code: "TINDER_MESSAGE_EMPTY" },
+          400,
+          corsHeaders,
+        );
+      }
+      if (message.length > 1000) {
+        return json(
+          {
+            success: false,
+            error: "Mensagem longa demais para o Tinder.",
+            code: "TINDER_MESSAGE_TOO_LONG",
+          },
+          400,
+          corsHeaders,
+        );
+      }
+      const sent = await sendChannelMessage(token, matchId, message);
+      return json({ success: true, message: sent }, 200, corsHeaders);
+    }
+
     if (path === "/match/tinder/boost" && request.method === "POST") {
-      const { token, identity } = await requireSession(request, supabase);
-      const result = await activateBoost(token, identity);
-      return json({ success: true, result }, 200, corsHeaders);
+      const { token } = await requireSession(request, supabase);
+      const boost = await startBoost(token);
+      return json({ success: true, ...boost }, 200, corsHeaders);
+    }
+
+    if (path === "/match/tinder/swipe" && request.method === "POST") {
+      const { token } = await requireSession(request, supabase);
+      const body = await request.json().catch(() => ({}));
+      const userId = String(body?.userId || "").trim();
+      const action = String(body?.action || "").trim() as TinderAction;
+
+      if (!userId || !["like", "pass", "superlike"].includes(action)) {
+        return json(
+          { success: false, error: "userId e action válidos são obrigatórios." },
+          400,
+          corsHeaders,
+        );
+      }
+
+      const result = await performSwipe(token, userId, action, {
+        sNumber: Number.isFinite(Number(body?.sNumber)) ? Number(body.sNumber) : null,
+        contentHash: body?.contentHash ? String(body.contentHash) : null,
+        photoId: body?.photoId ? String(body.photoId) : null,
+        undo: Boolean(body?.undo),
+        fastMatch: Boolean(body?.fastMatch),
+      });
+      return json(
+        {
+          success: true,
+          action,
+          userId,
+          ...result,
+        },
+        200,
+        corsHeaders,
+      );
     }
 
     return json({ success: false, error: "match_tinder_route_not_found" }, 404, corsHeaders);
   } catch (error: any) {
     const status = Number(error?.status) || 500;
-    const safeStatus = [400, 401, 402, 403, 404, 405, 409, 429, 502, 503, 504].includes(status)
+    const safeStatus = [400, 401, 402, 403, 404, 409, 429, 502, 503, 504].includes(status)
       ? status
       : 500;
-    if (safeStatus >= 500) console.error("[Match/Tinder] route failure:", error?.message || error);
+
+    if (safeStatus >= 500) {
+      console.error("[Match/Tinder] route failure:", error?.message || error);
+    }
+
     return json(
       {
         success: false,

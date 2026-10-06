@@ -1,5 +1,3 @@
-import { VaultItemType } from "./Vault";
-
 /**
  * Objetivo Semântico da Etapa (Canônico).
  * Define um resultado desejado que a persona deve alcançar/descobrir de forma natural.
@@ -24,7 +22,7 @@ export interface StageObjective {
   label?: string; // Compatibilidade com v231 (alias para title)
   description?: string;
   kind?: StageObjectiveKind; // "action": missão obrigatória executada pelo Brain
-  /** @deprecated No Vendeo todo objetivo ativo (enabled !== false) é obrigatório por definição */
+  /** Regra de produto: o Brain recebe este valor e não pode redefinir a obrigatoriedade. */
   required?: boolean;
   enabled: boolean;
   order: number;
@@ -84,13 +82,14 @@ export interface AudioDeliveryHistory {
 
 /**
  * Etapa da Conversa (Canônica).
- * Representa o momento macro da conversa, totalmente independente de pastas do Cofre.
+ * Representa o momento macro da conversa, independente de pastas do Cofre.
  */
 export interface ChatStage {
   id: string;
   name: string;
   order: number;
-  folderId?: string; // @deprecated: mantido opcional para compatibilidade transitória
+  scheduleId: string;
+  isRequired: boolean;
   color?: string; // Cor de identificação da etapa (ex: #3b82f6, #10b981, #f59e0b)
   icon?: string;
   description?: string;
@@ -100,28 +99,11 @@ export interface ChatStage {
   updatedAt: string;
 }
 
-/**
- * @deprecated: Estrutura antiga de checklist baseada em arquivos do Cofre.
- */
-export interface StageChecklistItem {
-  id: string; // ID do VaultItem
-  folderId: string;
-  type: VaultItemType;
-  title: string;
-  content?: string;
-  mediaUrl?: string;
-  duration?: number;
-  linkedItemId?: string;
-  isCompleted: boolean;
-}
-
 export interface ChatProgress {
   conversationId: string;
   currentStageId: string;
-  completedItemIds?: string[]; // @deprecated: lista de VaultItems legados
   completedGoalIds?: string[]; // Lista de IDs de objetivos concluídos
   objectiveProgress?: Record<string, ConversationObjectiveProgress>; // Progresso detalhado
   isConverted: boolean; // Se atingiu o Objetivo Final
   updatedAt: string;
 }
-

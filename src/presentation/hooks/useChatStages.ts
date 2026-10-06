@@ -2,17 +2,59 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { SupabaseChatStageRepository } from "@/infrastructure/repositories/SupabaseChatStageRepository";
-import { SupabaseVaultRepository } from "@/infrastructure/repositories/SupabaseVaultRepository";
 import { ManageChatStagesUseCase } from "@/application/use-cases/ManageChatStagesUseCase";
 import { ManageChatProgressUseCase, ChatStageDetail } from "@/application/use-cases/ManageChatProgressUseCase";
 import { ChatStage, ChatProgress } from "@/domain/entities/ChatStage";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { toast } from "sonner";
+import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 
 const stageRepository = new SupabaseChatStageRepository();
-const vaultRepository = new SupabaseVaultRepository();
 const stagesUseCase = new ManageChatStagesUseCase(stageRepository);
-const progressUseCase = new ManageChatProgressUseCase(stageRepository, vaultRepository);
+const progressUseCase = new ManageChatProgressUseCase(stageRepository);
+
+export interface ChatScheduleRuntime {
+  runId: string;
+  scheduleId: string;
+  scheduleName: string;
+  scheduleDescription?: string | null;
+  scheduleCategory: string;
+  executionMode?: "goal_driven" | "connection_window";
+  connectionIntent?: string | null;
+  elapsedPercent?: number;
+  remainingMinutes?: number | null;
+  temporalPhase?: {
+    id: string;
+    label: string;
+    fromPercent: number;
+    toPercent: number;
+    guidance: string;
+  } | null;
+  finalAction?: {
+    type: "send_audio";
+    assetId: string;
+    title?: string | null;
+    effectiveStatus: "pending" | "available" | "delivered" | "manual_required" | "failed";
+    availableNow: boolean;
+    activationThresholdPercent: number;
+  } | null;
+  manualActionNote?: string | null;
+  scheduleOrder: number;
+  durationMinutes?: number | null;
+  startedAt: string;
+  expiresAt?: string | null;
+  responseDelayMode: "fixed" | "range";
+  responseDelayFixedSeconds?: number | null;
+  responseDelayMinSeconds?: number | null;
+  responseDelayMaxSeconds?: number | null;
+  brainModel?: string | null;
+  currentStageId: string;
+  currentStageRequired: boolean;
+  nextScheduleId?: string | null;
+  nextScheduleName?: string | null;
+  initialized?: boolean;
+  runStatus?: string | null;
+}
 
 export function useChatStages(
   activeConversationId?: string,
@@ -22,6 +64,7 @@ export function useChatStages(
   const [stages, setStages] = useState<ChatStage[]>([]);
   const [allProgresses, setAllProgresses] = useState<Record<string, ChatProgress>>({});
   const [chatDetail, setChatDetail] = useState<ChatStageDetail | null>(null);
+  const [scheduleRuntime, setScheduleRuntime] = useState<ChatScheduleRuntime | null>(null);
   const [chatDetailResolvedConversationId, setChatDetailResolvedConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -76,6 +119,26 @@ export function useChatStages(
     }
   }, []);
 
+  const fetchScheduleRuntime = useCallback(async (convId: string) => {
+    try {
+      const response = await brainOperatorFetch(
+        `/operator/chat-runtime?conversationId=${encodeURIComponent(convId)}`,
+        { method: "GET", cache: "no-store" }
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.success !== true || !payload?.runtime) {
+        setScheduleRuntime(null);
+        return null;
+      }
+      setScheduleRuntime(payload.runtime as ChatScheduleRuntime);
+      return payload.runtime as ChatScheduleRuntime;
+    } catch (e) {
+      console.warn("Erro ao buscar cronograma autoritativo do chat:", e);
+      setScheduleRuntime(null);
+      return null;
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -84,12 +147,15 @@ export function useChatStages(
         await fetchAllProgresses();
       }
       if (activeConversationId) {
-        await fetchChatDetail(activeConversationId);
+        await Promise.all([
+          fetchChatDetail(activeConversationId),
+          fetchScheduleRuntime(activeConversationId),
+        ]);
       }
     } finally {
       setIsLoading(false);
     }
-  }, [fetchStages, fetchAllProgresses, fetchChatDetail, activeConversationId, loadAllProgresses]);
+  }, [fetchStages, fetchAllProgresses, fetchChatDetail, fetchScheduleRuntime, activeConversationId, loadAllProgresses]);
 
   useEffect(() => {
     let cancelled = false;
@@ -108,22 +174,26 @@ export function useChatStages(
 
     if (!activeConversationId) {
       setChatDetail(null);
+      setScheduleRuntime(null);
       setChatDetailResolvedConversationId(null);
       return;
     }
 
     const conversationId = activeConversationId;
     setChatDetail(null);
+    setScheduleRuntime(null);
     setChatDetailResolvedConversationId(null);
 
-    void progressUseCase
-      .getChatStageDetail(conversationId)
-      .then((detail) => {
+    void Promise.all([
+      progressUseCase.getChatStageDetail(conversationId),
+      fetchScheduleRuntime(conversationId),
+    ])
+      .then(([detail]) => {
         if (!cancelled) setChatDetail(detail);
       })
       .catch((error) => {
         if (!cancelled) {
-          console.warn("Erro ao buscar detalhes da etapa do chat:", error);
+          console.warn("Erro ao buscar estado operacional do chat:", error);
           setChatDetail(null);
         }
       })
@@ -150,8 +220,11 @@ export function useChatStages(
           filter: `id=eq.${activeConversationId}`,
         },
         () => {
-          // Só atualiza o detalhe da conversa ativa — sem fetchAllProgresses() global
-          fetchChatDetail(activeConversationId);
+          // O mesmo UPDATE que muda etapa/cronograma atualiza os dois retratos autoritativos.
+          void Promise.all([
+            fetchChatDetail(activeConversationId),
+            fetchScheduleRuntime(activeConversationId),
+          ]);
         }
       )
       .subscribe();
@@ -160,13 +233,14 @@ export function useChatStages(
       cancelled = true;
       client.removeChannel(channel);
     };
-  }, [activeConversationId, fetchChatDetail]);
+  }, [activeConversationId, fetchChatDetail, fetchScheduleRuntime]);
 
 
   // Ações de Gestão de Etapas
   const createStage = async (data: {
     name: string;
-    folderId?: string;
+    scheduleId?: string;
+    isRequired?: boolean;
     color?: string;
     icon?: string;
     description?: string;
@@ -174,7 +248,7 @@ export function useChatStages(
     try {
       const created = await stagesUseCase.createStage({
         ...data,
-        folderId: data.folderId || "",
+        scheduleId: data.scheduleId || "schedule_sales",
       });
       toast.success(`Etapa "${created.name}" criada com sucesso!`);
       await refresh();
@@ -189,10 +263,12 @@ export function useChatStages(
     id: string,
     data: {
       name?: string;
-      folderId?: string;
+      scheduleId?: string;
+      isRequired?: boolean;
       color?: string;
       icon?: string;
       description?: string;
+      goals?: import("@/domain/entities/ChatStage").ConversationGoal[];
     }
   ) => {
     try {
@@ -310,35 +386,6 @@ export function useChatStages(
   };
 
   // Ações na Conversa Ativa
-  const toggleItem = async (itemId: string, isCompleted: boolean) => {
-    if (!activeConversationId) return;
-    try {
-      // Otimista na UI
-      if (chatDetail) {
-        setChatDetail((prev) => {
-          if (!prev) return prev;
-          const newChecklist = prev.checklist.map((item) =>
-            item.id === itemId ? { ...item, isCompleted } : item
-          );
-          const totalItems = newChecklist.length;
-          const completedCount = newChecklist.filter((i) => i.isCompleted).length;
-          return {
-            ...prev,
-            checklist: newChecklist,
-            completedItemsCount: completedCount,
-            is100Percent: totalItems > 0 && completedCount === totalItems,
-          };
-        });
-      }
-
-      await progressUseCase.toggleItem(activeConversationId, itemId, isCompleted);
-      await refreshActiveProgress();
-      await fetchChatDetail(activeConversationId);
-    } catch (err: any) {
-      toast.error("Erro ao atualizar item do checklist.");
-      if (activeConversationId) await fetchChatDetail(activeConversationId);
-    }
-  };
 
   const toggleObjective = async (objectiveId: string, isCompleted: boolean) => {
     if (!activeConversationId) return;
@@ -353,14 +400,15 @@ export function useChatStages(
           );
           const totalObjs = newObjs.length;
           const compCount = newObjs.filter((o) => o.status === "completed").length;
-          const reqPending = newObjs.filter((o) => o.status !== "completed").length;
+          const reqPending = newObjs.filter((o) => o.required !== false && o.status !== "completed").length;
+          const optionalPending = newObjs.filter((o) => o.required === false && o.status !== "completed").length;
           return {
             ...prev,
             objectives: newObjs,
             completedObjectivesCount: compCount,
             requiredPendingCount: reqPending,
-            optionalPendingCount: 0,
-            is100Percent: totalObjs > 0 ? compCount === totalObjs : prev.is100Percent,
+            optionalPendingCount: optionalPending,
+            is100Percent: totalObjs > 0 ? reqPending === 0 : prev.is100Percent,
           };
         });
       }
@@ -391,9 +439,58 @@ export function useChatStages(
       await progressUseCase.setStage(activeConversationId, stageId);
       toast.success("Etapa da conversa alterada.");
       await refreshActiveProgress();
-      await fetchChatDetail(activeConversationId);
+      await Promise.all([
+        fetchChatDetail(activeConversationId),
+        fetchScheduleRuntime(activeConversationId),
+      ]);
     } catch (err: any) {
       toast.error(err.message || "Erro ao alterar etapa.");
+    }
+  };
+
+  const setSchedule = async (scheduleId: string) => {
+    if (!activeConversationId) return;
+    try {
+      const response = await brainOperatorFetch("/operator/chat-schedule", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: activeConversationId,
+          scheduleId,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.success !== true) {
+        const reason = String(payload?.error || payload?.result?.reason || "");
+        const message =
+          reason === "schedule_has_no_stage"
+            ? "Esse cronograma ainda não tem etapas. Adicione pelo menos uma etapa antes de selecioná-lo."
+            : reason === "schedule_not_found_or_inactive"
+            ? "Esse cronograma não existe ou está desativado."
+            : reason === "conversation_not_found"
+            ? "Conversa não encontrada."
+            : reason || "Falha ao alterar cronograma.";
+        throw new Error(message);
+      }
+
+      const scheduleName = payload?.result?.schedule_name;
+      toast.success(
+        payload?.result?.changed === false
+          ? "Este cronograma já está ativo."
+          : scheduleName
+          ? `Cronograma alterado para "${scheduleName}".`
+          : "Cronograma da conversa alterado."
+      );
+
+      await refreshActiveProgress();
+      await Promise.all([
+        fetchChatDetail(activeConversationId),
+        fetchScheduleRuntime(activeConversationId),
+      ]);
+      return payload?.result;
+    } catch (err: any) {
+      toast.error(err?.message || "Erro ao alterar cronograma.");
+      throw err;
     }
   };
 
@@ -411,37 +508,11 @@ export function useChatStages(
     }
   };
 
-  const markItemCompletedByVaultItem = async (vaultItemId: string) => {
-    if (!activeConversationId) return;
-    try {
-      const res = await progressUseCase.markItemCompletedByVaultItem(activeConversationId, vaultItemId);
-      if (res) {
-        await refreshActiveProgress();
-        await fetchChatDetail(activeConversationId);
-      }
-    } catch (e) {
-      console.warn("Erro ao marcar item por envio de ativo:", e);
-    }
-  };
-
-  const markItemCompletedByExactText = async (sentText: string) => {
-    if (!activeConversationId) return;
-    try {
-      const res = await progressUseCase.markItemCompletedByExactText(activeConversationId, sentText);
-      if (res) {
-        await refreshActiveProgress();
-        await fetchChatDetail(activeConversationId);
-      }
-    } catch (e) {
-      console.warn("Erro ao marcar item por texto exato:", e);
-    }
-  };
-
-
   return {
     stages,
     allProgresses,
     chatDetail,
+    scheduleRuntime,
     chatDetailResolvedConversationId,
     isLoading,
     refresh,
@@ -455,12 +526,10 @@ export function useChatStages(
     deleteGoal,
     moveGoalUp,
     moveGoalDown,
-    toggleItem,
     toggleObjective,
     advanceStage,
     setStage,
+    setSchedule,
     toggleConverted,
-    markItemCompletedByVaultItem,
-    markItemCompletedByExactText,
   };
 }

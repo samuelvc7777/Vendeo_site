@@ -124,6 +124,10 @@ import { runOpenAiSdkBrainTurn } from "./openai_sdk_brain.ts";
 import { persistConfirmedOutboundToOpenAiConversation } from "./openai_conversation_runtime.ts";
 import { computeBoundedDebounce } from "./debounce_policy.ts";
 import {
+  ensureConversationScheduleRuntime,
+  type ConversationScheduleRuntime,
+} from "./conversation_schedule_runtime.ts";
+import {
   loadAndRevalidateRecoverableAudioToolState,
   persistRecoverableAudioToolState,
   type RecoveredAudioToolState,
@@ -171,14 +175,13 @@ export const ALLOWED_OPENAI_BRAIN_MODELS = [
   "gpt-6.1-sol",
 ] as const;
 
-export async function resolveConfiguredOpenAiModel(supabase: any, requestedModel?: string): Promise<string> {
-  if (requestedModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(requestedModel)) return requestedModel;
-  try {
-    const { data } = await supabase.from("instagram_config").select("app_secret").eq("id", "openai_brain_model").maybeSingle();
-    if (data?.app_secret && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(data.app_secret.trim())) return data.app_secret.trim();
-  } catch {}
-  const envModel = typeof Deno !== "undefined" ? Deno.env.get("OPENAI_BRAIN_MODEL") : process.env.OPENAI_BRAIN_MODEL;
-  if (envModel && (ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(envModel)) return envModel;
+export async function resolveConfiguredOpenAiModel(_supabase: any, requestedModel?: string): Promise<string> {
+  if (requestedModel) {
+    if ((ALLOWED_OPENAI_BRAIN_MODELS as readonly string[]).includes(requestedModel)) return requestedModel;
+    throw new Error(`BRAIN_MODEL_INVALID: modelo não permitido: ${requestedModel}`);
+  }
+  // Fora de um cronograma (ex.: ferramentas privadas do operador), usa apenas
+  // o default técnico. Conversas automáticas sempre enviam o modelo do cronograma.
   return OPENAI_BRAIN_DEFAULT_MODEL;
 }
 
@@ -866,13 +869,19 @@ export function createBrainOutboxBatch(params: {
   cycleId: string;
   idempotencyKey: string;
   resolvedAudio?: PersonaAudioAsset;
+  arsenalCandidates?: ConversationScheduleRuntime["arsenalCandidates"];
   nowMs?: number;
 }): OutboxEntry[] {
-  const { actions, conversationId, cycleId, idempotencyKey, resolvedAudio } = params;
+  const { actions, conversationId, cycleId, idempotencyKey, resolvedAudio, arsenalCandidates = [] } = params;
   const nowMs = params.nowMs ?? Date.now();
   let accumulatedDelaySeconds = 0;
   return actions.map((action, index) => {
     const isAudio = action.type === "audio";
+    const isImage = action.type === "image";
+    const arsenalItemId = "arsenalItemId" in action ? String(action.arsenalItemId || "") : "";
+    const arsenalCandidate = arsenalItemId
+      ? arsenalCandidates.find((candidate) => candidate.itemId === arsenalItemId)
+      : undefined;
     const requestedDelay = Number(action.delayBeforeSendSeconds);
     const humanDelay = Number.isFinite(requestedDelay) && requestedDelay >= 0
       ? requestedDelay
@@ -882,8 +891,11 @@ export function createBrainOutboxBatch(params: {
       : 0;
     const stepDelay = previousAudioDuration + humanDelay;
     accumulatedDelaySeconds += stepDelay;
+    const imageUrl = isImage ? String(arsenalCandidate?.mediaUrl || "") : "";
     const content = isAudio
       ? resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${action.audioId}]`
+      : isImage
+      ? `[image:${imageUrl}]`
       : action.text;
 
     return {
@@ -892,19 +904,20 @@ export function createBrainOutboxBatch(params: {
       conversationId,
       idempotencyKey: actions.length === 1 ? idempotencyKey : `${idempotencyKey}_a${index}`,
       content,
-      messageType: isAudio ? "audio" : "text",
+      messageType: isAudio ? "audio" : isImage ? "image" : "text",
       status: "pending",
       attempts: 0,
       maxAttempts: 3,
       createdAt: new Date(nowMs).toISOString(),
       actionIndex: index,
       notBefore: new Date(nowMs + accumulatedDelaySeconds * 1000).toISOString(),
-      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : null,
+      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : isImage ? (imageUrl || null) : null,
       audioDurationSeconds: isAudio && Number.isFinite(Number(resolvedAudio?.duration)) ? Number(resolvedAudio?.duration) : null,
       vaultAudioId: isAudio ? (resolvedAudio?.id || action.audioId || null) : null,
       replyToMessageId: action.replyToMessageId || null,
       payload: {
         brainActionId: `brain_action_${cycleId}_${index}`,
+        arsenalItemId: arsenalItemId || null,
         replyToMessageId: action.replyToMessageId || null,
       },
     };
@@ -1546,9 +1559,13 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
       ? `[VÍDEO OBSERVADO PELO OPERADOR]\n${operatorObservation}`
       : "[vídeo recebido — observação humana pendente]";
   } else if (attachmentKind === "sticker") {
-    text = normalizedAttachment?.isAnimated
-      ? "[figurinha animada recebida]"
-      : "[figurinha recebida]";
+    text = operatorObservation
+      ? `[FIGURINHA OBSERVADA PELO OPERADOR]\n${operatorObservation}`
+      : imageDescription
+      ? `[FIGURINHA RECEBIDA — descrição visual automática]\n${imageDescription}`
+      : normalizedAttachment?.isAnimated
+      ? "[figurinha animada recebida — descrição visual indisponível]"
+      : "[figurinha recebida — descrição visual indisponível]";
   } else if (msgType === "file") {
     const fileName = String(normalizedAttachment?.fileName || "arquivo").trim() || "arquivo";
     const mimeType = String(normalizedAttachment?.mimeType || "").toLowerCase();
@@ -1763,6 +1780,27 @@ export interface BuildContextParams {
   skipHistoricalTurnLookup?: boolean;
 }
 
+function isWhatsAppStatusReferenceId(value?: string | null): boolean {
+  return String(value || "").includes("status@broadcast");
+}
+
+export function formatWhatsAppStatusReferenceForBrain(row: any): string {
+  const type = String(row?.type || "").trim().toLowerCase();
+  const label =
+    type === "image" ? "imagem" :
+    type === "video" ? "vídeo" :
+    type === "text" ? "texto" :
+    "status";
+  const content = String(row?.caption || row?.text_content || "").trim();
+  const lines = [`[STATUS DO WHATSAPP DA LARISSA — ${label}]`];
+  if (content) {
+    lines.push(`Conteúdo/legenda: ${content}`);
+  } else {
+    lines.push("Sem texto ou legenda disponível.");
+  }
+  return lines.join("\n");
+}
+
 export async function buildConversationContextForCycle(
   params: BuildContextParams
 ): Promise<{
@@ -1904,25 +1942,63 @@ export async function buildConversationContextForCycle(
   if (replyIdsNeeded.size > 0) {
     trace.push(`fetch_replies_count=${replyIdsNeeded.size}`);
     try {
-      const { data: refRows } = await supabase
-        .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
-        .in("id", Array.from(replyIdsNeeded));
+      const regularReplyIds = Array.from(replyIdsNeeded).filter(
+        (id) => !isWhatsAppStatusReferenceId(id),
+      );
+      if (regularReplyIds.length > 0) {
+        const { data: refRows } = await supabase
+          .from("instagram_messages")
+          .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
+          .in("id", regularReplyIds);
 
-      for (const r of refRows || []) {
-        const isMine = Boolean(r.is_mine || r.sender_id === "me");
-        referencedMap[r.id] = {
-          id: String(r.id),
-          sender: isMine ? "larissa" : "pretendente",
-          text: (r.text || "").trim(),
-          replyToId: r.reply_to_message_id || null,
-          timestamp: r.timestamp || r.created_at,
-        };
-        replyIdsNeeded.delete(r.id);
+        for (const r of refRows || []) {
+          const isMine = Boolean(r.is_mine || r.sender_id === "me");
+          referencedMap[r.id] = {
+            id: String(r.id),
+            sender: isMine ? "larissa" : "pretendente",
+            text: (r.text || "").trim(),
+            replyToId: r.reply_to_message_id || null,
+            timestamp: r.timestamp || r.created_at,
+          };
+          replyIdsNeeded.delete(r.id);
+        }
       }
     } catch (err: any) {
       trace.push(`reply_fetch_error=${err.message || String(err)}`);
     }
+  }
+
+  // 2.1 Replies a Status do WhatsApp vivem fora de instagram_messages.
+  // Resolve pelo whatsapp_status_id para que o Brain saiba exatamente a que o contato reagiu/respondeu.
+  const statusReplyIds = Array.from(replyIdsNeeded).filter(isWhatsAppStatusReferenceId);
+  if (statusReplyIds.length > 0) {
+    trace.push(`fetch_status_replies_count=${statusReplyIds.length}`);
+    try {
+      const { data: statusRows } = await supabase
+        .from("whatsapp_status_posts")
+        .select("whatsapp_status_id, type, text_content, caption, media_url, created_at")
+        .in("whatsapp_status_id", statusReplyIds);
+
+      for (const row of statusRows || []) {
+        const statusId = String(row.whatsapp_status_id || "").trim();
+        if (!statusId) continue;
+        referencedMap[statusId] = {
+          id: statusId,
+          sender: "larissa",
+          text: formatWhatsAppStatusReferenceForBrain(row),
+          replyToId: null,
+          timestamp: row.created_at || undefined,
+        };
+        replyIdsNeeded.delete(statusId);
+        trace.push(`status_reply_resolved=${statusId}`);
+      }
+    } catch (err: any) {
+      trace.push(`status_reply_fetch_error=${err.message || String(err)}`);
+    }
+  }
+
+  if (replyIdsNeeded.size > 0) {
+    trace.push(`unresolved_reply_refs=${replyIdsNeeded.size}`);
   }
 
   // 3. Projeta mensagens claimed em formato de entrada estruturada
@@ -2793,6 +2869,102 @@ async function completeDeliveryObjectiveFromConfirmedAction(params: {
   return true;
 }
 
+async function reserveConnectionWindowArsenalBatch(params: {
+  supabase: any;
+  conversationId: string;
+  scheduleRunId: string;
+  cycleId: string;
+  outboxEntries: OutboxEntry[];
+}): Promise<{ success: boolean; reason?: string; reservedActionIds: string[] }> {
+  const reservedActionIds: string[] = [];
+  if (!params.scheduleRunId) {
+    const hasArsenalAction = params.outboxEntries.some((entry) =>
+      typeof entry.payload?.arsenalItemId === "string" && entry.payload.arsenalItemId
+    );
+    return hasArsenalAction
+      ? { success: false, reason: "connection_window_run_missing", reservedActionIds }
+      : { success: true, reservedActionIds };
+  }
+
+  for (const entry of params.outboxEntries) {
+    const arsenalItemId = typeof entry.payload?.arsenalItemId === "string"
+      ? entry.payload.arsenalItemId.trim()
+      : "";
+    if (!arsenalItemId) continue;
+
+    const actionId = typeof entry.payload?.brainActionId === "string"
+      ? entry.payload.brainActionId
+      : "";
+    const { data, error } = await params.supabase.rpc("record_conversation_arsenal_usage_atomic", {
+      p_conversation_id: params.conversationId,
+      p_schedule_run_id: params.scheduleRunId,
+      p_arsenal_item_id: arsenalItemId,
+      p_cycle_id: params.cycleId,
+      p_action_id: actionId,
+      p_provider_message_id: null,
+      p_status: "reserved",
+      p_last_error: null,
+    });
+    if (error || data?.success !== true) {
+      for (const reservedActionId of reservedActionIds) {
+        const reservedEntry = params.outboxEntries.find(
+          (candidate) => candidate.payload?.brainActionId === reservedActionId,
+        );
+        const reservedItemId = typeof reservedEntry?.payload?.arsenalItemId === "string"
+          ? reservedEntry.payload.arsenalItemId
+          : "";
+        if (!reservedItemId) continue;
+        await params.supabase.rpc("record_conversation_arsenal_usage_atomic", {
+          p_conversation_id: params.conversationId,
+          p_schedule_run_id: params.scheduleRunId,
+          p_arsenal_item_id: reservedItemId,
+          p_cycle_id: params.cycleId,
+          p_action_id: reservedActionId,
+          p_provider_message_id: null,
+          p_status: "cancelled",
+          p_last_error: "arsenal_batch_reservation_rolled_back",
+        }).catch(() => undefined);
+      }
+      return {
+        success: false,
+        reason: error?.message || data?.reason || "arsenal_reservation_failed",
+        reservedActionIds: [],
+      };
+    }
+    reservedActionIds.push(actionId);
+  }
+
+  return { success: true, reservedActionIds };
+}
+
+async function releaseConnectionWindowArsenalReservations(params: {
+  supabase: any;
+  conversationId: string;
+  scheduleRunId: string;
+  cycleId: string;
+  outboxEntries: OutboxEntry[];
+  reservedActionIds: string[];
+  reason: string;
+}): Promise<void> {
+  for (const actionId of params.reservedActionIds) {
+    const entry = params.outboxEntries.find((candidate) => candidate.payload?.brainActionId === actionId);
+    const arsenalItemId = typeof entry?.payload?.arsenalItemId === "string"
+      ? entry.payload.arsenalItemId
+      : "";
+    if (!arsenalItemId) continue;
+    await params.supabase.rpc("record_conversation_arsenal_usage_atomic", {
+      p_conversation_id: params.conversationId,
+      p_schedule_run_id: params.scheduleRunId,
+      p_arsenal_item_id: arsenalItemId,
+      p_cycle_id: params.cycleId,
+      p_action_id: actionId,
+      p_provider_message_id: null,
+      p_status: "cancelled",
+      p_last_error: params.reason,
+    }).catch(() => undefined);
+  }
+}
+
 async function projectConfirmedBrainAction(params: {
   supabase: any;
   conversationId: string;
@@ -2820,6 +2992,63 @@ async function projectConfirmedBrainAction(params: {
     console.log(
       `[Brain] Objetivo de ação concluído por entrega confirmada. conv=${params.conversationId} objective=${String(action.payload.objectiveId)} action=${action.id}`,
     );
+  }
+
+  const arsenalItemId = String(action.payload?.arsenalItemId || "").trim();
+  if (arsenalItemId) {
+    try {
+      let scheduleRunId = String(action.payload?.scheduleRunId || "").trim();
+      if (!scheduleRunId) {
+        const { data: activeRun } = await params.supabase
+          .from("conversation_schedule_runs")
+          .select("id")
+          .eq("conversation_id", params.conversationId)
+          .eq("status", "active")
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        scheduleRunId = activeRun?.id ? String(activeRun.id) : "";
+      }
+      if (scheduleRunId) {
+        const { data: usageResult, error: usageError } = await params.supabase.rpc(
+          "record_conversation_arsenal_usage_atomic",
+          {
+            p_conversation_id: params.conversationId,
+            p_schedule_run_id: scheduleRunId,
+            p_arsenal_item_id: arsenalItemId,
+            p_cycle_id: String(action.payload?.cycleId || decision.id || ""),
+            p_action_id: action.id,
+            p_provider_message_id: action.provider_message_id || null,
+            p_status: "sent",
+            p_last_error: null,
+          },
+        );
+        if (usageError || usageResult?.success !== true) {
+          console.warn("[ConnectionWindow] Falha ao registrar uso confirmado do arsenal:", usageError?.message || usageResult?.reason);
+        }
+      }
+    } catch (arsenalProjectionError) {
+      console.warn("[ConnectionWindow] Falha fail-safe ao projetar uso do arsenal:", arsenalProjectionError);
+    }
+  }
+
+  if (action.action_type === "audio" && action.payload?.audioId) {
+    try {
+      const { data: finalResult, error: finalError } = await params.supabase.rpc(
+        "mark_connection_final_action_delivered_atomic",
+        {
+          p_conversation_id: params.conversationId,
+          p_asset_id: String(action.payload.audioId),
+          p_provider_message_id: action.provider_message_id || null,
+        },
+      );
+      if (!finalError && finalResult?.success === true && finalResult?.matched === true) {
+        await params.supabase.rpc("process_conversation_schedule_expirations_atomic", { p_limit: 10 });
+        console.log(`[ConnectionWindow] Ação final entregue e cronograma encerrado/avançado. conv=${params.conversationId}`);
+      }
+    } catch (finalActionProjectionError) {
+      console.warn("[ConnectionWindow] Falha fail-safe ao concluir ação final:", finalActionProjectionError);
+    }
   }
 
   if (decision.payload?.runtime === "agents_sdk_conversation") {
@@ -2963,6 +3192,30 @@ async function syncBrainDecisionActionStatus(params: {
       .select("id, decision_id, conversation_id, action_index, action_type, payload, status, provider_message_id, attempts")
       .maybeSingle();
     if (error || !data?.decision_id) return;
+
+    const arsenalItemId = String(data.payload?.arsenalItemId || "").trim();
+    const scheduleRunId = String(data.payload?.scheduleRunId || "").trim();
+    const usageStatus =
+      params.status === "sending"
+        ? "sending"
+        : params.status === "cancelled"
+        ? "cancelled"
+        : params.status === "failed_confirmed"
+        ? "failed"
+        : null;
+    if (arsenalItemId && scheduleRunId && usageStatus) {
+      await params.supabase.rpc("record_conversation_arsenal_usage_atomic", {
+        p_conversation_id: data.conversation_id,
+        p_schedule_run_id: scheduleRunId,
+        p_arsenal_item_id: arsenalItemId,
+        p_cycle_id: String(data.payload?.cycleId || data.decision_id || ""),
+        p_action_id: data.id,
+        p_provider_message_id: params.providerMessageId || null,
+        p_status: usageStatus,
+        p_last_error: params.providerError || null,
+      }).catch(() => undefined);
+    }
+
     const eventMessage: Record<string, string> = {
       sending: "Ação iniciada pelo dispatcher.",
       sent: "Envio confirmado pelo provedor.",
@@ -4144,50 +4397,6 @@ export async function dispatchOutboxEntry(
       outboxEntry.providerMessageId = delivery.providerMessageId;
       outboxEntry.isUncertain = false;
       return { success: true, providerMessageId: delivery.providerMessageId };
-    } else if (channelRow?.channel === "tinder") {
-      const { data: tinderConfig } = await supabase
-        .from("tinder_config")
-        .select("token")
-        .eq("id", "default")
-        .maybeSingle();
-
-      const tinderToken = tinderConfig?.token;
-      if (!tinderToken) {
-        outboxEntry.status = "failed";
-        outboxEntry.lastError = "Token do Tinder não configurado em tinder_config.";
-        return { success: false, error: outboxEntry.lastError };
-      }
-
-      const matchId = conversationId;
-      const text = outboxEntry.content;
-
-      const tinderResponse = await fetch(`https://api.gotinder.com/v2/matches/${encodeURIComponent(matchId)}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Auth-Token": tinderToken,
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          "platform": "web",
-          "tinder-version": "6.11.0",
-        },
-        body: JSON.stringify({ message: text }),
-      });
-
-      if (!tinderResponse.ok) {
-        const errText = await tinderResponse.text().catch(() => "");
-        outboxEntry.status = "failed";
-        outboxEntry.lastError = `tinder_delivery_failed: ${tinderResponse.status} ${errText}`;
-        return { success: false, error: outboxEntry.lastError };
-      }
-
-      const result = await tinderResponse.json().catch(() => ({}));
-      const providerId = result?.data?._id || result?._id || `tinder-${Date.now()}`;
-
-      outboxEntry.status = "sent";
-      outboxEntry.sentAt = new Date().toISOString();
-      outboxEntry.providerMessageId = providerId;
-      outboxEntry.isUncertain = false;
-      return { success: true, providerMessageId: providerId };
     }
 
     // Despacho oficial Meta Graph API (Instagram)
@@ -4215,6 +4424,25 @@ export async function dispatchOutboxEntry(
             type: "audio",
             payload: {
               url: audioUrl,
+            },
+          },
+        },
+      };
+    } else if (outboxEntry.messageType === "image") {
+      const imageUrl = String(
+        outboxEntry.mediaUrl ||
+        (typeof outboxEntry.payload?.mediaUrl === "string" ? outboxEntry.payload.mediaUrl : "")
+      ).trim();
+      if (!imageUrl) {
+        throw new Error("Imagem autorizada sem URL pública para envio.");
+      }
+      bodyPayload = {
+        recipient: { id: recipientId },
+        message: {
+          attachment: {
+            type: "image",
+            payload: {
+              url: imageUrl,
             },
           },
         },
@@ -5257,19 +5485,23 @@ export interface ResolvedStageGoal {
   source?: string;
 }
 
-export async function resolveStageChecklistGoals(params: {
+export async function resolveStageObjectives(params: {
   supabase: any;
   conversationId: string;
   stageNameOrId?: string;
+  scheduleId?: string;
   memoryProvider: MemoryProvider;
   completedGoalIds?: string[];
   objectiveProgress?: Record<string, any>;
 }): Promise<StageResolutionResult> {
   const completedIds = new Set(params.completedGoalIds || []);
-  const { data, error } = await params.supabase
+  let stageQuery = params.supabase
     .from("chat_stages")
-    .select("id, name, stage_order, goals")
-    .order("stage_order", { ascending: true });
+    .select("id, name, stage_order, goals, schedule_id, is_required");
+  if (params.scheduleId) {
+    stageQuery = stageQuery.eq("schedule_id", params.scheduleId);
+  }
+  const { data, error } = await stageQuery.order("stage_order", { ascending: true });
   if (error) throw new Error(`Não foi possível carregar o catálogo oficial de etapas: ${error.message}`);
   const stages = Array.isArray(data) ? data : [];
 
@@ -5310,17 +5542,19 @@ export async function resolveStageChecklistGoals(params: {
   });
   const completedObjectives = goals.filter((goal) => goal.status === "completed");
   const remainingObjectives = goals.filter((goal) => goal.status === "pending");
+  const requiredRemainingObjectives = remainingObjectives.filter((goal) => goal.required !== false);
   const currentStageIndex = stages.findIndex((item: any) => item.id === stageId);
   const nextConfiguredStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] || null : null;
   return {
     stage: stage?.name || stageId,
     stageId,
+    stageRequired: stage?.is_required !== false,
     goals,
     objectives: goals.map((goal) => ({ ...goal, title: goal.label })),
-    currentObjective: remainingObjectives[0] || null,
+    currentObjective: requiredRemainingObjectives[0] || remainingObjectives[0] || null,
     completedObjectives,
     remainingObjectives,
-    stageComplete: goals.length > 0 && remainingObjectives.length === 0,
+    stageComplete: requiredRemainingObjectives.length === 0,
     nextStageId: nextConfiguredStage?.id || null,
     nextStageName: nextConfiguredStage?.name || null,
     isFinalStage: !nextConfiguredStage,
@@ -5330,6 +5564,7 @@ export async function resolveStageChecklistGoals(params: {
 export interface StageResolutionResult {
   stage: string;
   stageId: string;
+  stageRequired: boolean;
   goals: ResolvedStageGoal[];
   objectives: Array<ResolvedStageGoal & { title: string }>;
   currentObjective: ResolvedStageGoal | null;
@@ -5340,7 +5575,6 @@ export interface StageResolutionResult {
   nextStageName: string | null;
   isFinalStage: boolean;
 }
-export const resolveStageObjectives = resolveStageChecklistGoals;
 
 /**
  * Valida e persiste as decisões explícitas de objetivo e etapa emitidas pelo Brain.
@@ -5352,6 +5586,7 @@ export async function validateAndApplyBrainStageDecision(params: {
   conversationId: string;
   currentPhase: OrchestrationPhase;
   currentStageId?: string;
+  currentScheduleId?: string;
   decision: OrchestratorDecision;
   stageRules?: any;
   orchState?: any;
@@ -5370,7 +5605,13 @@ export async function validateAndApplyBrainStageDecision(params: {
   finalStageId: string;
   requiredTransitionMissing: boolean;
 }> {
-  const stagesResult = await params.supabase.from("chat_stages").select("id, name, stage_order, goals").order("stage_order", { ascending: true });
+  let stagesQuery = params.supabase
+    .from("chat_stages")
+    .select("id, name, stage_order, goals, schedule_id, is_required");
+  if (params.currentScheduleId) {
+    stagesQuery = stagesQuery.eq("schedule_id", params.currentScheduleId);
+  }
+  const stagesResult = await stagesQuery.order("stage_order", { ascending: true });
   if (stagesResult?.error) throw new Error(`Não foi possível validar a decisão contra chat_stages: ${stagesResult.error.message}`);
   const stages = Array.isArray(stagesResult?.data) ? stagesResult.data : [];
   if (stages.length === 0) throw new Error("O catálogo oficial chat_stages está vazio.");
@@ -5435,11 +5676,10 @@ export async function validateAndApplyBrainStageDecision(params: {
   const currentRequiredGoalIds = currentRequiredGoals
     .map((goal: any) => String(goal.id || ""))
     .filter(Boolean);
-  const allCurrentRequiredCompleted =
-    currentRequiredGoalIds.length > 0 &&
-    currentRequiredGoalIds.every((goalId: string) =>
-      completed.includes(goalId) || progress[goalId]?.status === "completed"
-    );
+  const allCurrentRequiredCompleted = currentRequiredGoalIds.every((goalId: string) =>
+    completed.includes(goalId) || progress[goalId]?.status === "completed"
+  );
+  const currentStageRequired = configuredCurrent?.is_required !== false;
 
   const requestedStage = stages.find((stage: any) => stage.id === params.decision.nextPhase);
   const sameStage = params.decision.nextPhase === currentStageId;
@@ -5448,12 +5688,16 @@ export async function validateAndApplyBrainStageDecision(params: {
     nextConfiguredStage &&
     requestedStage.id === nextConfiguredStage.id
   );
-  const validForwardTransition = requestsConfiguredNext && allCurrentRequiredCompleted;
+  const validForwardTransition =
+    requestsConfiguredNext &&
+    (!currentStageRequired || allCurrentRequiredCompleted);
   const transitionAccepted = !invalidCompletion && (sameStage || validForwardTransition);
   const nextStageId = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const nextPhase = transitionAccepted && requestedStage ? requestedStage.id : currentStageId;
   const stageAdvanced = nextStageId !== currentStageId;
   const requiredTransitionMissing =
+    currentStageRequired &&
+    currentRequiredGoalIds.length > 0 &&
     sameStage &&
     allCurrentRequiredCompleted &&
     Boolean(nextConfiguredStage);
@@ -7183,58 +7427,44 @@ export async function runBrainOrchestration(
 
   let stageRules = convRow?.stage_completed_rules || {};
 
-  // Debounce Real (Quiet Period): a configuração global é a autoridade canônica.
-  // Overrides explícitos existem apenas para fluxos operacionais/manuais controlados.
+  let scheduleRuntime: ConversationScheduleRuntime;
+  try {
+    scheduleRuntime = await ensureConversationScheduleRuntime(supabase, conversationId);
+  } catch (scheduleError: any) {
+    console.error("[Brain] Cronograma conversacional indisponível:", scheduleError);
+    return {
+      handled: false,
+      sentToMeta: false,
+      error: scheduleError?.message || "conversation_schedule_runtime_unavailable",
+    };
+  }
+
+  // O cronograma é a única fonte de verdade para o tempo de resposta.
+  // Overrides existem somente para retomadas/manobras operacionais explícitas.
   const bypassConfiguredResponseDelay =
     params.isManualRetry === true ||
     Boolean(params.preClaimedCycleToken) ||
     Boolean(params.manualResolution);
 
-  let globalAutoPilotConfig: any = null;
-  if (
-    typeof params.responseDelayMinutes !== "number" ||
-    typeof params.maxDebounceWindowMinutes !== "number"
-  ) {
-    const { data: configRow, error: configError } = await supabase
-      .from("autopilot_settings")
-      .select("config")
-      .eq("id", "global")
-      .maybeSingle();
+  const scheduleDelayMinMinutes = scheduleRuntime.responseDelayMode === "range"
+    ? Math.max(0, Number(scheduleRuntime.responseDelayMinSeconds || 0) / 60)
+    : Math.max(0, Number(scheduleRuntime.responseDelayFixedSeconds || 0) / 60);
+  const scheduleDelayMaxMinutes = scheduleRuntime.responseDelayMode === "range"
+    ? Math.max(scheduleDelayMinMinutes, Number(scheduleRuntime.responseDelayMaxSeconds || 0) / 60)
+    : scheduleDelayMinMinutes;
 
-    if ((configError || !configRow?.config) && !bypassConfiguredResponseDelay) {
-      console.error("[Brain] Não foi possível ler a configuração canônica de tempo do AutoPilot:", configError || "config_missing");
-      return { handled: false, sentToMeta: false, error: "autopilot_timing_config_unavailable" };
-    }
-    globalAutoPilotConfig = configRow?.config || null;
+  if (!Number.isFinite(scheduleDelayMinMinutes) || !Number.isFinite(scheduleDelayMaxMinutes)) {
+    return { handled: false, sentToMeta: false, error: "schedule_response_delay_invalid" };
   }
 
-  const configuredResponseDelay = globalAutoPilotConfig?.responseDelayMinutes;
-  if (
-    !bypassConfiguredResponseDelay &&
-    typeof params.responseDelayMinutes !== "number" &&
-    (typeof configuredResponseDelay !== "number" || !Number.isFinite(configuredResponseDelay) || configuredResponseDelay < 0)
-  ) {
-    return { handled: false, sentToMeta: false, error: "autopilot_response_delay_invalid" };
-  }
-  const responseDelayMinutes = typeof params.responseDelayMinutes === "number"
-    ? Math.max(0, Number(params.responseDelayMinutes))
-    : typeof configuredResponseDelay === "number"
-    ? configuredResponseDelay
-    : Math.max(0, Number(stageRules?.orchestration?.responseDelayMinutes ?? stageRules?.responseDelayMinutes ?? 1));
-
-  const configuredMaxDebounce = globalAutoPilotConfig?.maxDebounceWindowMinutes;
-  if (
-    !bypassConfiguredResponseDelay &&
-    typeof params.maxDebounceWindowMinutes !== "number" &&
-    (typeof configuredMaxDebounce !== "number" || !Number.isFinite(configuredMaxDebounce) || configuredMaxDebounce < 0)
-  ) {
-    return { handled: false, sentToMeta: false, error: "autopilot_max_debounce_invalid" };
-  }
-  const maxDebounceWindowMinutes = typeof params.maxDebounceWindowMinutes === "number"
-    ? Math.max(Number(params.maxDebounceWindowMinutes), responseDelayMinutes)
-    : typeof configuredMaxDebounce === "number"
-    ? Math.max(configuredMaxDebounce, responseDelayMinutes)
-    : Math.max(Number(stageRules?.orchestration?.maxDebounceWindowMinutes ?? 3), responseDelayMinutes);
+  const responseDelayMinutes =
+    bypassConfiguredResponseDelay && typeof params.responseDelayMinutes === "number"
+      ? Math.max(0, Number(params.responseDelayMinutes))
+      : scheduleDelayMinMinutes;
+  const maxDebounceWindowMinutes =
+    bypassConfiguredResponseDelay && typeof params.maxDebounceWindowMinutes === "number"
+      ? Math.max(Number(params.maxDebounceWindowMinutes), responseDelayMinutes)
+      : scheduleDelayMaxMinutes;
   const boundedDebounce = computeBoundedDebounce({
     responseDelayMinutes,
     maxDebounceWindowMinutes,
@@ -7694,10 +7924,15 @@ export async function runBrainOrchestration(
     );
 
   // Fonte canônica da etapa: coluna normalizada. JSON mantém apenas projeções legadas/read models.
-  let currentPhase: OrchestrationPhase = resolveCurrentStageId(claimedConversation.current_stage_id || convRow?.current_stage_id);
+  let currentPhase: OrchestrationPhase = resolveCurrentStageId(
+    claimedConversation.current_stage_id || scheduleRuntime.currentStageId || convRow?.current_stage_id
+  );
     if (!currentPhase) {
       const { data: configuredStages, error: stageCatalogError } = await supabase.from("chat_stages")
-        .select("id").order("stage_order", { ascending: true }).limit(1);
+        .select("id")
+        .eq("schedule_id", scheduleRuntime.scheduleId)
+        .order("stage_order", { ascending: true })
+        .limit(1);
       if (stageCatalogError) throw new Error(`Não foi possível inicializar a etapa da conversa: ${stageCatalogError.message}`);
       if (!configuredStages?.[0]?.id) throw new Error("Não há etapa inicial configurada em chat_stages.");
       currentPhase = configuredStages[0].id;
@@ -8108,24 +8343,28 @@ export async function runBrainOrchestration(
     // ------------------------------------------------------------------------
     // RESOLUÇÃO DE OBJETIVOS DA ETAPA (Many-to-Many & Subagent Missions)
     // ------------------------------------------------------------------------
-    const currentStageId = resolveCurrentStageId(claimedConversation.current_stage_id, currentPhase);
+    const currentStageId = resolveCurrentStageId(
+      scheduleRuntime.currentStageId || claimedConversation.current_stage_id,
+      currentPhase,
+    );
 
     let completedGoalIds: string[] = [...officialCompletedGoalIdsAtCycleStart];
-    let stageChecklistForRouter = await resolveStageObjectives({
+    let stageObjectivesForRouter = await resolveStageObjectives({
       supabase,
       conversationId,
       stageNameOrId: currentStageId,
+      scheduleId: scheduleRuntime.scheduleId,
       memoryProvider: cycleMemoryProvider,
       completedGoalIds,
       objectiveProgress: officialObjectiveProgressAtCycleStart,
     });
     let workingCompletedGoalIds: string[] = [
       ...completedGoalIds,
-      ...(stageChecklistForRouter.completedObjectives || []).map((o: any) => o.id),
+      ...(stageObjectivesForRouter.completedObjectives || []).map((o: any) => o.id),
     ];
     const candidateObjectiveEvidence: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }> = [];
 
-    const openGoalsForRouter = stageChecklistForRouter.goals.filter((g) => g.status === "pending");
+    const openGoalsForRouter = stageObjectivesForRouter.goals.filter((g) => g.status === "pending");
     const openGoalsSummary = openGoalsForRouter.length > 0
       ? openGoalsForRouter.map((g) => `• ${g.label}${g.description ? `: ${g.description}` : ""}`).join("\n")
       : undefined;
@@ -8254,7 +8493,7 @@ export async function runBrainOrchestration(
       candidateCount: allRecentCandidates.length,
     });
     const finalRecentMessages = budgetedRecentContext.messages;
-    const evidenceObjectiveId = stageChecklistForRouter.currentObjective?.id;
+    const evidenceObjectiveId = stageObjectivesForRouter.currentObjective?.id;
     if (evidenceObjectiveId) {
       const evidenceMessages = [
         ...finalRecentMessages,
@@ -8437,7 +8676,10 @@ export async function runBrainOrchestration(
     let brainIterations = 0;
 
     if (isOpenAiAgentBrain) {
-      configuredAgentModel = await resolveConfiguredOpenAiModel(supabase);
+      configuredAgentModel = await resolveConfiguredOpenAiModel(
+        supabase,
+        scheduleRuntime.brainModel || undefined,
+      );
       const { data: agentSettingRows } = await supabase
         .from("instagram_config")
         .select("id, app_secret")
@@ -8531,7 +8773,7 @@ export async function runBrainOrchestration(
         currentCycle.trace.push("persistent_agent_session_active=true");
       }
 
-      const currentObjective = stageChecklistForRouter.currentObjective;
+      const currentObjective = stageObjectivesForRouter.currentObjective;
       const startedOutboxCycleIds = new Set(
         Object.values(outboxMap)
           .filter((entry: any) => entry?.status === "sent" && entry?.cycleId)
@@ -8606,8 +8848,8 @@ export async function runBrainOrchestration(
         const persistentManualQuery = [
           ...claimedMessages.map((message: any) => String(message?.text || "").trim()),
           ...finalRecentMessages.slice(-8).map((message: any) => String(message?.text || "").trim()),
-          String(stageChecklistForRouter.currentObjective?.label || "").trim(),
-          String(stageChecklistForRouter.currentObjective?.description || "").trim(),
+          String(stageObjectivesForRouter.currentObjective?.label || "").trim(),
+          String(stageObjectivesForRouter.currentObjective?.description || "").trim(),
         ].filter(Boolean).join(" ");
 
         const sessionFactFingerprints = new Set(
@@ -8631,7 +8873,7 @@ export async function runBrainOrchestration(
         }
 
         let recoveredAudioToolState: RecoveredAudioToolState | undefined;
-        const activeObjectiveId = stageChecklistForRouter.currentObjective?.id;
+        const activeObjectiveId = stageObjectivesForRouter.currentObjective?.id;
         if (activeObjectiveId) {
           try {
             recoveredAudioToolState = await loadAndRevalidateRecoverableAudioToolState({
@@ -8710,7 +8952,7 @@ export async function runBrainOrchestration(
           }
 
           const stageObjectiveIds = Array.from(new Set([
-            ...(stageChecklistForRouter.goals || [])
+            ...(stageObjectivesForRouter.goals || [])
               .map((goal) => String(goal.id || "").trim())
               .filter(Boolean),
             ...manualResolutionOriginObjectiveIds,
@@ -8815,17 +9057,34 @@ export async function runBrainOrchestration(
             ? agentSettings.get("openai_brain_verbosity")
             : undefined) as "low" | "medium" | "high" | undefined,
           replyTargets,
+          currentScheduleId: scheduleRuntime.scheduleId,
+          currentScheduleName: scheduleRuntime.scheduleName,
+          currentScheduleCategory: scheduleRuntime.scheduleCategory,
+          currentScheduleDescription: scheduleRuntime.scheduleDescription || undefined,
+          currentScheduleExecutionMode: scheduleRuntime.executionMode,
+          currentScheduleStartedAt: scheduleRuntime.startedAt,
+          currentScheduleExpiresAt: scheduleRuntime.expiresAt || undefined,
+          connectionIntent: scheduleRuntime.connectionIntent || undefined,
+          scheduleElapsedPercent: scheduleRuntime.elapsedPercent,
+          scheduleRemainingMinutes: scheduleRuntime.remainingMinutes,
+          scheduleTemporalPhase: scheduleRuntime.temporalPhase || undefined,
+          arsenalCandidates: scheduleRuntime.arsenalCandidates || [],
+          scheduleFinalAction: scheduleRuntime.finalAction || undefined,
+          scheduleManualActionNote: scheduleRuntime.manualActionNote || undefined,
           currentStageId,
-          nextStageId: stageChecklistForRouter.nextStageId,
-          nextStageName: stageChecklistForRouter.nextStageName,
-          isFinalStage: stageChecklistForRouter.isFinalStage,
-          currentObjectiveId: stageChecklistForRouter.currentObjective?.id,
-          currentObjectiveLabel: stageChecklistForRouter.currentObjective?.label,
-          currentObjectiveDescription: stageChecklistForRouter.currentObjective?.description,
-          currentObjectiveRequired: stageChecklistForRouter.currentObjective?.required !== false,
-          currentObjectiveKind: stageChecklistForRouter.currentObjective?.kind,
-          currentObjectiveActionType: stageChecklistForRouter.currentObjective?.actionType,
-          currentObjectiveCompletionPolicy: stageChecklistForRouter.currentObjective?.completionPolicy,
+          currentStageRequired: scheduleRuntime.executionMode === "connection_window" ? false : stageObjectivesForRouter.stageRequired,
+          nextStageId: stageObjectivesForRouter.nextStageId,
+          nextStageName: stageObjectivesForRouter.nextStageName,
+          isFinalStage: stageObjectivesForRouter.isFinalStage,
+          currentObjectiveId: stageObjectivesForRouter.currentObjective?.id,
+          currentObjectiveLabel: stageObjectivesForRouter.currentObjective?.label,
+          currentObjectiveDescription: stageObjectivesForRouter.currentObjective?.description,
+          currentObjectiveRequired:
+            stageObjectivesForRouter.stageRequired &&
+            stageObjectivesForRouter.currentObjective?.required !== false,
+          currentObjectiveKind: stageObjectivesForRouter.currentObjective?.kind,
+          currentObjectiveActionType: stageObjectivesForRouter.currentObjective?.actionType,
+          currentObjectiveCompletionPolicy: stageObjectivesForRouter.currentObjective?.completionPolicy,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
           currentInboundMessages: claimedMessages
             .map((m: any) => ({
@@ -8871,8 +9130,8 @@ export async function runBrainOrchestration(
             query: p.query,
             objective_id: p.objective_id,
           }),
-          nextObjectives: (stageChecklistForRouter.goals || [])
-            .filter((g) => g.status === "pending" && g.id !== stageChecklistForRouter.currentObjective?.id)
+          nextObjectives: (stageObjectivesForRouter.goals || [])
+            .filter((g) => g.status === "pending" && g.id !== stageObjectivesForRouter.currentObjective?.id)
             .map((g) => ({
               id: g.id,
               label: g.label,
@@ -8881,7 +9140,7 @@ export async function runBrainOrchestration(
               actionType: g.actionType,
               completionPolicy: g.completionPolicy,
             })),
-          stageObjectives: stageChecklistForRouter.goals.map((goal) => ({
+          stageObjectives: stageObjectivesForRouter.goals.map((goal) => ({
             id: goal.id,
             label: goal.label,
             status: goal.status,
@@ -9004,7 +9263,7 @@ export async function runBrainOrchestration(
           }));
           const toolsUsed = safeOperationalStringList(openAiBrainTurn.telemetry.toolsRequested, 12);
           const relevantPersonaFacts = brainPlan.missionPackage?.relevantPersonaFacts || brainPlan.relevantPersonaFacts || [];
-          const currentObjective = stageChecklistForRouter.currentObjective;
+          const currentObjective = stageObjectivesForRouter.currentObjective;
           const objectiveLabel = currentObjective?.label || currentObjective?.title || null;
           const planResponses = safeOperationalStringList(brainPlan.responses, 4);
           const coveredHooks = safeOperationalStringList(brainPlan.coveredHooks, 4);
@@ -9410,7 +9669,7 @@ export async function runBrainOrchestration(
               }
             }
           }
-          const currentObjectiveId = stageChecklistForRouter.currentObjective?.id;
+          const currentObjectiveId = stageObjectivesForRouter.currentObjective?.id;
           const recoverableAudioCandidates = openAiBrainTurn.telemetry.authorizedCandidateAudiosByObjective
             ?.find((group) => group.objectiveId === currentObjectiveId)?.candidates || [];
           const recoverableToolLoopFailure = openAiBrainTurn.error?.includes("agent_app_tool_max_rounds_exceeded")
@@ -9472,18 +9731,18 @@ export async function runBrainOrchestration(
 
       const brainPrompt = buildConversationBrainPrompt({
         conversationId,
-        currentStage: `${stageChecklistForRouter.stage} [${stageChecklistForRouter.stageId}]`,
+        currentStage: `${stageObjectivesForRouter.stage} [${stageObjectivesForRouter.stageId}]`,
         liveState: currentLiveState,
         recentMessages: finalRecentMessages,
         contactMemorySummary,
         landmarksSummary,
         speechActsSummary,
         personaMemorySummary,
-        stageObjectives: stageChecklistForRouter.goals as any,
-        currentObjective: stageChecklistForRouter.currentObjective as any,
+        stageObjectives: stageObjectivesForRouter.goals as any,
+        currentObjective: stageObjectivesForRouter.currentObjective as any,
         toolResultsHistory,
       });
-      const configuredBrainModel = await resolveConfiguredOpenAiModel(supabase, params.model);
+      const configuredBrainModel = await resolveConfiguredOpenAiModel(supabase, scheduleRuntime.brainModel || undefined);
       currentCycle.trace.push(`configured_brain_model=${configuredBrainModel}`);
       const brainRes = await callModelOrOpenAi(brainPrompt, {
         runtime,
@@ -9647,7 +9906,10 @@ export async function runBrainOrchestration(
     if (brainPlan.objectiveDecision === "already_satisfied") {
       const objectiveId = String(brainPlan.satisfiedObjectiveId || "");
       const evidence = normalizeObjectiveEvidence(brainPlan.objectiveEvidence, brainPlan.evidenceMessageId);
-      const { data: configuredStages } = await supabase.from("chat_stages").select("id, goals");
+      const { data: configuredStages } = await supabase
+        .from("chat_stages")
+        .select("id, goals")
+        .eq("schedule_id", scheduleRuntime.scheduleId);
       const objectiveExists = (configuredStages || []).some((stage: any) =>
         (Array.isArray(stage.goals) ? stage.goals : Array.isArray(stage.objectives) ? stage.objectives : [])
           .some((objective: any) => objective?.id === objectiveId && objective.enabled !== false),
@@ -9736,7 +9998,7 @@ export async function runBrainOrchestration(
           );
 
           if (lateTurnForResume && !alreadyAuthorized) {
-            const lateObjectiveId = stageChecklistForRouter.currentObjective?.id;
+            const lateObjectiveId = stageObjectivesForRouter.currentObjective?.id;
             if (lateObjectiveId) {
               currentCycle.trace.push(`late_turn_audio_revalidation_started=${agentSelectedAudioId}`);
               try {
@@ -9801,8 +10063,8 @@ export async function runBrainOrchestration(
       const missionPkg: MissionPackage = {
         ...(brainPlan.missionPackage || {} as MissionPackage),
         objectiveDirective: normalizedDirective,
-        targetObjective: stageChecklistForRouter.currentObjective
-          ? { id: stageChecklistForRouter.currentObjective.id, label: stageChecklistForRouter.currentObjective.label }
+        targetObjective: stageObjectivesForRouter.currentObjective
+          ? { id: stageObjectivesForRouter.currentObjective.id, label: stageObjectivesForRouter.currentObjective.label }
           : null,
         relevantMemoryContext: resolveMissionMemoryContext(brainPlan.missionPackage?.relevantMemoryContext, [
           contactMemorySummary ? `FATOS DO PRETENDENTE:\n${contactMemorySummary}` : "",
@@ -9883,7 +10145,7 @@ export async function runBrainOrchestration(
         });
 
         // Resolução do modelo configurado
-        const brainLegacyModel = await resolveConfiguredOpenAiModel(supabase, params.model);
+        const brainLegacyModel = await resolveConfiguredOpenAiModel(supabase, scheduleRuntime.brainModel || undefined);
 
         const execRes = await callModelOrOpenAi(executorPrompt, {
           runtime,
@@ -10203,10 +10465,50 @@ export async function runBrainOrchestration(
         "",
       ).trim();
 
-      if (!authorizedCandidate || !authorizedAudioObjectiveId) {
+      const actionArsenalItemId = String((audioAction as any).arsenalItemId || "").trim();
+      const arsenalAudioCandidate = (scheduleRuntime.arsenalCandidates || []).find((candidate) =>
+        candidate.type === "audio" &&
+        String(candidate.assetId || "") === String(audioAction.audioId) &&
+        (!actionArsenalItemId || candidate.itemId === actionArsenalItemId)
+      );
+      const finalActionAudioAuthorized = Boolean(
+        scheduleRuntime.finalAction?.availableNow &&
+        scheduleRuntime.finalAction.assetId === audioAction.audioId &&
+        !actionArsenalItemId
+      );
+      const connectionAudioAuthorized = Boolean(arsenalAudioCandidate || finalActionAudioAuthorized);
+
+      if (connectionAudioAuthorized) {
+        const { data: audioRow } = await supabase
+          .from("persona_audios")
+          .select("*")
+          .eq("id", audioAction.audioId)
+          .eq("enabled", true)
+          .maybeSingle();
+        if (audioRow) {
+          resolvedAudio = {
+            id: String(audioRow.id),
+            objectiveId: audioRow.objective_id || undefined,
+            title: String(audioRow.title || ""),
+            audioUrl: String(audioRow.audio_url || ""),
+            whatsappAudioUrl: audioRow.whatsapp_audio_url || undefined,
+            duration: audioRow.duration == null ? undefined : Number(audioRow.duration),
+            transcript: String(audioRow.transcript || ""),
+            usageInstruction: String(audioRow.usage_instruction || ""),
+            enabled: audioRow.enabled !== false,
+            createdAt: String(audioRow.created_at || ""),
+            updatedAt: String(audioRow.updated_at || ""),
+          };
+        }
+        currentCycle.trace.push(arsenalAudioCandidate
+          ? `audio_authorized_by_arsenal=${arsenalAudioCandidate.itemId}`
+          : "audio_authorized_by_connection_final_action=true");
+      }
+
+      if ((!authorizedCandidate || !authorizedAudioObjectiveId) && !connectionAudioAuthorized) {
         currentCycle.trace.push("audio_rejected_not_authorized_for_turn");
         canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
-      } else {
+      } else if (!connectionAudioAuthorized) {
         currentCycle.trace.push(`audio_authorized_objective_id=${authorizedAudioObjectiveId}`);
         const allAudios = await listEligiblePersonaAudios({
           supabase,
@@ -10225,7 +10527,8 @@ export async function runBrainOrchestration(
         !resolvedAudio.audioUrl.startsWith("data:")
       );
 
-      if (authorizedCandidate && authorizedAudioObjectiveId && (!resolvedAudio || resolvedAudio.enabled === false || !hasValidPublicUrl)) {
+      const audioAuthorizedForTurn = Boolean((authorizedCandidate && authorizedAudioObjectiveId) || connectionAudioAuthorized);
+      if (audioAuthorizedForTurn && (!resolvedAudio || resolvedAudio.enabled === false || !hasValidPublicUrl)) {
         currentCycle.trace.push(
           !resolvedAudio
             ? "audio_rejected_not_authorized"
@@ -10235,7 +10538,7 @@ export async function runBrainOrchestration(
         );
         canonicalOutboundActions = canonicalOutboundActions.filter((a) => a !== audioAction);
         resolvedAudio = undefined;
-      } else if (authorizedCandidate && authorizedAudioObjectiveId && resolvedAudio) {
+      } else if (audioAuthorizedForTurn && resolvedAudio) {
         // Poda determinística no Outbox: remove qualquer texto redundante com a transcrição do áudio
         if (resolvedAudio && (resolvedAudio.transcript || resolvedAudio.title)) {
           const trans = resolvedAudio.transcript || resolvedAudio.title || "";
@@ -10291,6 +10594,10 @@ export async function runBrainOrchestration(
       if (act.type === "audio") {
         return resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${act.audioId}]`;
       }
+      if (act.type === "image") {
+        const candidate = (scheduleRuntime.arsenalCandidates || []).find((item) => item.itemId === act.arsenalItemId);
+        return `[image:${candidate?.mediaUrl || ""}]`;
+      }
       return act.text;
     });
 
@@ -10305,6 +10612,7 @@ export async function runBrainOrchestration(
       conversationId,
       currentPhase,
       currentStageId,
+      currentScheduleId: scheduleRuntime.scheduleId,
       decision,
       stageRules,
       orchState,
@@ -10335,6 +10643,7 @@ export async function runBrainOrchestration(
         cycleId: correlationId,
         idempotencyKey,
         resolvedAudio,
+        arsenalCandidates: scheduleRuntime.arsenalCandidates || [],
       });
       for (const entry of outboxBatch) {
         const actionKey = entry.idempotencyKey;
@@ -10343,6 +10652,43 @@ export async function runBrainOrchestration(
 
       currentCycle.outboxEntryId = outboxBatch[0]?.id;
       currentCycle.trace.push(`outbox_created: ${outboxBatch[0]?.id}`);
+
+      const arsenalReservation = await reserveConnectionWindowArsenalBatch({
+        supabase,
+        conversationId,
+        scheduleRunId: scheduleRuntime.runId || "",
+        cycleId: correlationId,
+        outboxEntries: outboxBatch,
+      });
+      if (!arsenalReservation.success) {
+        currentCycle.trace.push(`arsenal_reservation_rejected=${arsenalReservation.reason || "unknown"}`);
+        if (reservedAudioId) {
+          await releaseAudioDeliveryReservation({
+            supabase,
+            conversationId,
+            audioId: reservedAudioId,
+            reservationToken: correlationId,
+            reason: "arsenal_reservation_rejected",
+          }).catch(() => undefined);
+          reservedAudioId = undefined;
+        }
+        currentCycle.status = "failed";
+        await releaseExperimentalCycleAtomic({
+          supabase,
+          conversationId,
+          cycleToken: correlationId,
+          processingStatus: "failed",
+          revertMessageIds: claimedMessageIds,
+        });
+        return {
+          handled: false,
+          sentToMeta: false,
+          error: `Recurso do arsenal não pôde ser reservado (${arsenalReservation.reason || "indisponível"}).`,
+        };
+      }
+      if (arsenalReservation.reservedActionIds.length) {
+        currentCycle.trace.push(`arsenal_reserved_count=${arsenalReservation.reservedActionIds.length}`);
+      }
 
       const providerSessionId = resolveCanonicalDecisionSessionId();
       const providerTurnId = useSdkConversationRuntime ? null : currentProviderTurnId;
@@ -10410,6 +10756,9 @@ export async function runBrainOrchestration(
                 ? (brainAudioObjectiveById.get(entry.vaultAudioId) || null)
                 : null,
               mediaUrl: entry.mediaUrl || null,
+              arsenalItemId: typeof entry.payload?.arsenalItemId === "string" ? entry.payload.arsenalItemId : null,
+              scheduleRunId: scheduleRuntime.runId || null,
+              cycleId: correlationId,
               replyToMessageId: entry.replyToMessageId
                 || (typeof entry.payload?.replyToMessageId === "string" ? entry.payload.replyToMessageId : null),
               outboxId: entry.id,
@@ -10435,6 +10784,15 @@ export async function runBrainOrchestration(
             }).catch(() => undefined);
             reservedAudioId = undefined;
           }
+          await releaseConnectionWindowArsenalReservations({
+            supabase,
+            conversationId,
+            scheduleRunId: scheduleRuntime.runId || "",
+            cycleId: correlationId,
+            outboxEntries: outboxBatch,
+            reservedActionIds: arsenalReservation.reservedActionIds,
+            reason: "brain_decision_outbox_atomic_persist_failed",
+          });
           currentCycle.status = "failed";
           await releaseExperimentalCycleAtomic({
             supabase,
@@ -10458,6 +10816,15 @@ export async function runBrainOrchestration(
         currentCycle.trace.push(`brain_decision_persisted: ${decisionId}`);
       } else {
         currentCycle.trace.push("brain_decision_persist_failed_no_provider_session_id");
+        await releaseConnectionWindowArsenalReservations({
+          supabase,
+          conversationId,
+          scheduleRunId: scheduleRuntime.runId || "",
+          cycleId: correlationId,
+          outboxEntries: outboxBatch,
+          reservedActionIds: arsenalReservation.reservedActionIds,
+          reason: "brain_decision_missing_provider_session",
+        });
         currentCycle.status = "failed";
         return {
           handled: false,
@@ -10928,12 +11295,12 @@ export async function runBrainOrchestration(
         updatedState.inboundRevision = freshRules?.orchestration?.inboundRevision ?? initialInboundRevision;
         updatedState.preemptRequested = false;
 
-        const currentRequiredGoalsForFinalization = (stageChecklistForRouter.goals || [])
+        const currentRequiredGoalsForFinalization = (stageObjectivesForRouter.goals || [])
           .filter((goal) => goal.required !== false);
         const deliveryAwareWorkflowComplete =
           stageProgression.workflowComplete ||
           (
-            stageChecklistForRouter.isFinalStage &&
+            stageObjectivesForRouter.isFinalStage &&
             currentRequiredGoalsForFinalization.length > 0 &&
             currentRequiredGoalsForFinalization.every((goal) =>
               effectiveCompletedGoalIds.includes(goal.id) ||
@@ -10943,14 +11310,26 @@ export async function runBrainOrchestration(
               goal.actionConfig?.finalizeWorkflowOnCompletion !== false
             )
           );
-        const workflowCompletedAt = deliveryAwareWorkflowComplete
+        const scheduleCompletedAt = deliveryAwareWorkflowComplete
           ? new Date().toISOString()
           : null;
+        const hasNextSchedule = deliveryAwareWorkflowComplete && Boolean(scheduleRuntime.nextScheduleId);
+        const finalWorkflowComplete = deliveryAwareWorkflowComplete && !hasNextSchedule;
+        const salesScheduleCompleted =
+          deliveryAwareWorkflowComplete && scheduleRuntime.scheduleCategory === "sales";
+        const conversionReached =
+          Boolean(freshRules?.chat_progress?.isConverted || freshRules?.orchestration?.isConverted) ||
+          salesScheduleCompleted;
+
         if (deliveryAwareWorkflowComplete) {
-          (updatedState as any).isConverted = true;
-          (updatedState as any).workflowFinalized = true;
-          (updatedState as any).workflowCompletedAt = workflowCompletedAt;
-          currentCycle.trace.push("workflow_finalization_requested=true");
+          (updatedState as any).isConverted = conversionReached;
+          (updatedState as any).workflowFinalized = finalWorkflowComplete;
+          (updatedState as any).workflowCompletedAt = finalWorkflowComplete ? scheduleCompletedAt : null;
+          currentCycle.trace.push(
+            hasNextSchedule
+              ? `schedule_completion_requested: ${scheduleRuntime.scheduleId}->${scheduleRuntime.nextScheduleId}`
+              : "workflow_finalization_requested=true"
+          );
         }
 
         const finalStageCompletedRules = {
@@ -10962,17 +11341,22 @@ export async function runBrainOrchestration(
           preempt_requested: false,
           ...(deliveryAwareWorkflowComplete
             ? {
-                status: "completed",
-                workflow_finalized: true,
-                finalized_at: workflowCompletedAt,
-                finalized_reason: "all_required_objectives_completed",
+                status: finalWorkflowComplete ? "completed" : "active",
+                workflow_finalized: finalWorkflowComplete,
+                finalized_at: finalWorkflowComplete ? scheduleCompletedAt : null,
+                finalized_reason: finalWorkflowComplete
+                  ? "all_required_objectives_completed"
+                  : "schedule_transition_pending",
+                current_schedule_id: scheduleRuntime.scheduleId,
+                schedule_status: hasNextSchedule ? "ready_for_transition" : "completed",
+                schedule_completed_at: scheduleCompletedAt,
                 chat_progress: {
                   ...(freshRules?.chat_progress || {}),
                   currentStageId: stageProgression.nextStageId,
                   completedGoalIds: effectiveCompletedGoalIds,
                   objectiveProgress: effectiveObjectiveProgress,
-                  isConverted: true,
-                  updatedAt: workflowCompletedAt,
+                  isConverted: conversionReached,
+                  updatedAt: scheduleCompletedAt,
                 },
               }
             : {}),
@@ -11022,6 +11406,34 @@ export async function runBrainOrchestration(
           };
         }
 
+        if (hasNextSchedule) {
+          let scheduleAdvanced = false;
+          let lastScheduleTransitionError: unknown = null;
+          for (let attempt = 1; attempt <= 2 && !scheduleAdvanced; attempt += 1) {
+            const { data: transitionResult, error: transitionError } = await supabase.rpc(
+              "advance_conversation_schedule_atomic",
+              {
+                p_conversation_id: conversationId,
+                p_expected_schedule_id: scheduleRuntime.scheduleId,
+              },
+            );
+            scheduleAdvanced = !transitionError && transitionResult?.success === true && transitionResult?.advanced === true;
+            lastScheduleTransitionError = transitionError || transitionResult;
+            if (scheduleAdvanced) {
+              currentCycle.trace.push(
+                `schedule_transition_committed: ${scheduleRuntime.scheduleId}->${transitionResult.next_schedule_id}`
+              );
+              break;
+            }
+          }
+          if (!scheduleAdvanced) {
+            currentCycle.trace.push("schedule_transition_pending_retry=true");
+            console.error(
+              `[Brain] Cronograma ${scheduleRuntime.scheduleId} concluído, mas a transição ainda não foi confirmada.`,
+              lastScheduleTransitionError,
+            );
+          }
+        }
 
         const completedUsage = cycleUsageMetadata();
         const needsHumanReview = decision.action === "manual_resolution" && claimedMessageIds.length > 0;

@@ -18,7 +18,6 @@ export interface IChatStageRepository {
   getChatProgress(conversationId: string): Promise<ChatProgress | null>;
   getAllChatProgresses(): Promise<Record<string, ChatProgress>>;
   saveChatProgress(progress: ChatProgress): Promise<void>;
-  toggleItemCompletion(conversationId: string, itemId: string, isCompleted: boolean): Promise<ChatProgress>;
   toggleGoalCompletion?(conversationId: string, goalId: string, isCompleted: boolean): Promise<ChatProgress>;
   advanceStage(conversationId: string, nextStageId: string): Promise<ChatProgress>;
   markAsConverted(conversationId: string, isConverted: boolean): Promise<ChatProgress>;

@@ -80,7 +80,7 @@ export function InstagramAudioMessage({
 
       if (isLocalWhatsApp2Media) {
         const localAudio = await fetch(audioUrl);
-        if (!localAudio.ok) throw new Error("Não foi possível carregar o áudio do WhatsApp 2.");
+        if (!localAudio.ok) throw new Error("Não foi possível carregar o áudio do WhatsApp.");
         const blob = await localAudio.blob();
         const arrayBuffer = await blob.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);

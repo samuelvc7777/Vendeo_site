@@ -60,40 +60,53 @@ export async function describeImageWithLunaFlex(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000);
-  try {
+  const requestBody = {
+    model: IMAGE_MODEL,
+    store: false,
+    reasoning: { effort: "none" },
+    max_output_tokens: 180,
+    input: [{
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: [
+            "Descreva objetivamente esta imagem ou figurinha recebida em uma conversa do WhatsApp/Instagram.",
+            "Se for figurinha, descreva o gesto, expressão, objeto e texto visível para que outra IA consiga responder naturalmente ao contexto.",
+            "Use no máximo 3 frases curtas em português do Brasil.",
+            "Inclua pessoas, cenário, objetos, ação e texto legível quando forem relevantes.",
+            "Não invente identidade, relação, intenção, diagnóstico ou emoção incerta.",
+            "Não converse com o usuário e não mencione que você é uma IA.",
+          ].join(" "),
+        },
+        { type: "input_image", image_url: url, detail: "low" },
+      ],
+    }],
+  };
+
+  const callImageModel = async (useFlex: boolean) => {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: IMAGE_MODEL,
-        service_tier: IMAGE_SERVICE_TIER,
-        store: false,
-        reasoning: { effort: "none" },
-        max_output_tokens: 180,
-        input: [{
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: [
-                "Descreva objetivamente esta imagem recebida em uma conversa do Instagram.",
-                "Use no máximo 3 frases curtas em português do Brasil.",
-                "Inclua pessoas, cenário, objetos, ação e texto legível quando forem relevantes.",
-                "Não invente identidade, relação, intenção, diagnóstico ou emoção incerta.",
-                "Não converse com o usuário e não mencione que você é uma IA.",
-              ].join(" "),
-            },
-            { type: "input_image", image_url: url, detail: "low" },
-          ],
-        }],
-      }),
+      body: JSON.stringify(useFlex ? { ...requestBody, service_tier: IMAGE_SERVICE_TIER } : requestBody),
       signal: controller.signal,
     });
-
     const payload = await response.json().catch(() => ({}));
+    return { response, payload };
+  };
+
+  try {
+    let { response, payload } = await callImageModel(true);
+    const providerMessage = String(payload?.error?.message || "");
+    if (
+      response.status === 429 &&
+      /flex processing is temporarily unavailable/i.test(providerMessage)
+    ) {
+      ({ response, payload } = await callImageModel(false));
+    }
     if (!response.ok) {
       throw new Error(`image_analysis_http_${response.status}:${String(payload?.error?.message || "").slice(0, 400)}`);
     }
@@ -124,7 +137,8 @@ export async function resolveInboundImageMessage(
 ): Promise<ResolvedImageResult> {
   const rawText = String(msg.text || "").trim();
   const mediaType = String(msg.media_type || msg.mediaType || "").toLowerCase();
-  const isImage = mediaType === "image" || rawText.startsWith("[image:");
+  const isSticker = mediaType === "sticker" || rawText.startsWith("[sticker:");
+  const isImage = mediaType === "image" || rawText.startsWith("[image:") || isSticker;
   if (!isImage) {
     return { text: rawText, isImage: false, hasValidDescription: false, description: null, analysisError: null };
   }
@@ -134,7 +148,9 @@ export async function resolveInboundImageMessage(
   ).trim();
   if (operatorObservation) {
     return {
-      text: `[IMAGEM OBSERVADA PELO OPERADOR]\n${operatorObservation}`,
+      text: isSticker
+        ? `[FIGURINHA OBSERVADA PELO OPERADOR]\n${operatorObservation}`
+        : `[IMAGEM OBSERVADA PELO OPERADOR]\n${operatorObservation}`,
       isImage: true,
       hasValidDescription: true,
       description: operatorObservation,
@@ -145,7 +161,9 @@ export async function resolveInboundImageMessage(
   const existing = String(msg.image_description || msg.imageDescription || "").trim();
   if (existing) {
     return {
-      text: `[IMAGEM RECEBIDA — descrição visual automática]\n${existing}`,
+      text: isSticker
+        ? `[FIGURINHA RECEBIDA — descrição visual automática]\n${existing}`
+        : `[IMAGEM RECEBIDA — descrição visual automática]\n${existing}`,
       isImage: true,
       hasValidDescription: true,
       description: existing,
@@ -154,7 +172,7 @@ export async function resolveInboundImageMessage(
   }
 
   const imageUrl = String(msg.media_url || msg.mediaUrl || "").trim()
-    || rawText.match(/\[image:(https?:\/\/[^\]]+)\]/)?.[1]
+    || rawText.match(/\[(?:image|sticker):(https?:\/\/[^\]]+)\]/)?.[1]
     || "";
   if (!imageUrl) {
     return {
@@ -190,7 +208,9 @@ export async function resolveInboundImageMessage(
     }
 
     return {
-      text: `[IMAGEM RECEBIDA — descrição visual automática]\n${description}`,
+      text: isSticker
+        ? `[FIGURINHA RECEBIDA — descrição visual automática]\n${description}`
+        : `[IMAGEM RECEBIDA — descrição visual automática]\n${description}`,
       isImage: true,
       hasValidDescription: true,
       description,

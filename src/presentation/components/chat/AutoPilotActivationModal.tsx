@@ -39,12 +39,12 @@ export function AutoPilotActivationModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-200"
       onClick={(e) => {
         if (e.target === e.currentTarget && !isLoading) onClose();
       }}
     >
-      <div className="w-full max-w-md bg-white dark:bg-[#121212] border border-zinc-200 dark:border-[#262626] rounded-2xl overflow-hidden shadow-2xl flex flex-col animate-in zoom-in-95 duration-150">
+      <div className="w-full sm:max-w-md bg-white dark:bg-[#121212] border border-zinc-200 dark:border-[#262626] rounded-t-2xl sm:rounded-2xl overflow-hidden shadow-2xl flex flex-col animate-in zoom-in-95 duration-150">
         {/* Header do Modal */}
         <div className="px-5 py-4 border-b border-zinc-200 dark:border-[#262626] flex items-center justify-between bg-white dark:bg-[#161616]">
           <div className="flex items-center gap-3">
@@ -67,7 +67,7 @@ export function AutoPilotActivationModal({
             type="button"
             onClick={onClose}
             disabled={isLoading}
-            className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
+            className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
           >
             <X className="w-4 h-4" />
           </button>
@@ -150,12 +150,12 @@ export function AutoPilotActivationModal({
         </div>
 
         {/* Rodapé com botão Cancelar */}
-        <div className="px-5 py-3 border-t border-zinc-200 dark:border-[#262626] bg-zinc-100 dark:bg-[#141414] flex items-center justify-end">
+        <div className="px-5 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] sm:pb-3 border-t border-zinc-200 dark:border-[#262626] bg-zinc-100 dark:bg-[#141414] flex items-center justify-end">
           <button
             type="button"
             disabled={isLoading}
             onClick={onClose}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-50"
+            className="px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-50"
           >
             Cancelar
           </button>

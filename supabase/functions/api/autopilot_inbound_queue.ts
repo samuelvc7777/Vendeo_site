@@ -4,6 +4,7 @@ import { resolveInboundAudioMessage } from "./audio_transcription.ts";
 import { resolveInboundImageMessage } from "./image_analysis.ts";
 import { isActionableInboundMessage } from "./ConversationQualityGate.ts";
 import { enqueueOpenAiConversationMessageSync } from "./openai_conversation_runtime.ts";
+import { ensureConversationScheduleRuntime } from "./conversation_schedule_runtime.ts";
 
 interface ClaimedInboundJob {
   conversation_id: string;
@@ -49,7 +50,7 @@ async function pauseForMediaObservation(
   workerToken: string,
   job: ClaimedInboundJob,
   message: any,
-  mediaKind: "video" | "image",
+  mediaKind: "video" | "image" | "sticker",
   detail: string,
 ) {
   const messageId = String(message?.id || job.latest_message_id);
@@ -88,7 +89,7 @@ async function pauseForMediaObservation(
 async function persistInboundMediaToVault(
   supabase: any,
   message: any,
-  mediaKind: "image" | "video",
+  mediaKind: "image" | "video" | "sticker",
 ): Promise<any> {
   // Reel/publicação compartilhada usa URL de compartilhamento da Meta. Não trate
   // essa URL como arquivo de vídeo bruto; a observação humana é quem descreve o conteúdo.
@@ -107,12 +108,12 @@ async function persistInboundMediaToVault(
     const mediaBytes = await mediaRes.arrayBuffer();
     if (!mediaBytes.byteLength || mediaBytes.byteLength > 50 * 1024 * 1024) return message;
 
+    const isVisualImage = mediaKind === "image" || mediaKind === "sticker";
     const contentType = mediaRes.headers.get("content-type")
-      || (mediaKind === "image" ? "image/jpeg" : "video/mp4");
-    const extension =
-      mediaKind === "image"
-        ? contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg"
-        : "mp4";
+      || (isVisualImage ? (mediaKind === "sticker" ? "image/webp" : "image/jpeg") : "video/mp4");
+    const extension = isVisualImage
+      ? contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg"
+      : "mp4";
     const safeId = String(message.id || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_");
     const fileName = `inbound_${mediaKind}_${safeId}.${extension}`;
 
@@ -154,7 +155,7 @@ async function loadCurrentInboundMediaBatch(
 ): Promise<any[]> {
   const latestCreatedAt = String(latestMessage?.created_at || "").trim();
   const latestMediaType = String(latestMessage?.media_type || "").toLowerCase();
-  const latestIsMedia = latestMediaType === "image" || latestMediaType === "video";
+  const latestIsMedia = latestMediaType === "image" || latestMediaType === "video" || latestMediaType === "sticker";
 
   // ai_debounce_started_at é a fronteira canônica do lote atual. Sem ela,
   // nunca varremos mídia histórica: processamos apenas a mensagem mais recente.
@@ -169,7 +170,7 @@ async function loadCurrentInboundMediaBatch(
     )
     .eq("conversation_id", conversationId)
     .eq("is_mine", false)
-    .in("media_type", ["image", "video"])
+    .in("media_type", ["image", "video", "sticker"])
     .gte("created_at", String(batchStartedAt))
     .lte("created_at", latestCreatedAt)
     .order("created_at", { ascending: true });
@@ -325,16 +326,16 @@ async function processClaimedInboundJob(
       let sawDeferredMedia = false;
       for (const pendingMedia of waitingMediaBatch) {
         const mediaType = String(pendingMedia?.media_type || "").toLowerCase();
-        if (mediaType !== "image" && mediaType !== "video") continue;
+        if (mediaType !== "image" && mediaType !== "video" && mediaType !== "sticker") continue;
         sawDeferredMedia = true;
 
         const preparedMedia = await persistInboundMediaToVault(
           supabase,
           pendingMedia,
-          mediaType as "image" | "video",
+          mediaType as "image" | "video" | "sticker",
         );
 
-        if (mediaType === "image") {
+        if (mediaType === "image" || mediaType === "sticker") {
           const existingDescription = String(preparedMedia?.image_description || "").trim();
           const previousError = String(preparedMedia?.image_description_error || "").trim();
           if (existingDescription) {
@@ -393,12 +394,12 @@ async function processClaimedInboundJob(
 
     for (const pendingMedia of mediaBatch) {
       const mediaType = String(pendingMedia?.media_type || "").toLowerCase();
-      if (mediaType !== "image" && mediaType !== "video") continue;
+      if (mediaType !== "image" && mediaType !== "video" && mediaType !== "sticker") continue;
 
       let preparedMedia = await persistInboundMediaToVault(
         supabase,
         pendingMedia,
-        mediaType as "image" | "video",
+        mediaType as "image" | "video" | "sticker",
       );
 
       if (mediaType === "video") {
@@ -444,8 +445,10 @@ async function processClaimedInboundJob(
           workerToken,
           job,
           preparedMedia,
-          "image",
-          "Não consegui interpretar a foto automaticamente. Descreva o que aparece nela para o Brain continuar.",
+          mediaType === "sticker" ? "sticker" : "image",
+          mediaType === "sticker"
+            ? "Não consegui interpretar a figurinha automaticamente. Descreva o que aparece nela para o Brain continuar."
+            : "Não consegui interpretar a foto automaticamente. Descreva o que aparece nela para o Brain continuar.",
         );
         return;
       }
@@ -501,79 +504,85 @@ async function processClaimedInboundJob(
       return;
     }
 
-    const responseDelayMinutes = Number(config?.responseDelayMinutes);
-    const maxDebounceWindowMinutes = Number(config?.maxDebounceWindowMinutes);
-    if (
-      !Number.isFinite(responseDelayMinutes) ||
-      responseDelayMinutes < 0 ||
-      !Number.isFinite(maxDebounceWindowMinutes) ||
-      maxDebounceWindowMinutes < responseDelayMinutes
-    ) {
+    let scheduleRuntime;
+    try {
+      scheduleRuntime = await ensureConversationScheduleRuntime(supabase, job.conversation_id);
+    } catch (scheduleError) {
       await rescheduleJob(
         supabase,
         workerToken,
         job,
         retryAt(30),
-        "autopilot_timing_config_invalid",
+        scheduleError || "conversation_schedule_runtime_unavailable",
       );
       return;
     }
 
-    if (responseDelayMinutes > 0) {
-      const { data: timingGate, error: timingError } = await supabase.rpc(
-        "enforce_autopilot_response_delay_atomic",
-        {
-          p_conversation_id: job.conversation_id,
-          p_quiet_seconds: Math.round(responseDelayMinutes * 60),
-          p_max_window_seconds: Math.round(maxDebounceWindowMinutes * 60),
-          p_now: new Date().toISOString(),
-        },
+    const scheduleQuietSeconds = scheduleRuntime.responseDelayMode === "range"
+      ? Math.max(0, Number(scheduleRuntime.responseDelayMinSeconds || 0))
+      : Math.max(0, Number(scheduleRuntime.responseDelayFixedSeconds || 0));
+    const scheduleMaxSeconds = scheduleRuntime.responseDelayMode === "range"
+      ? Math.max(scheduleQuietSeconds, Number(scheduleRuntime.responseDelayMaxSeconds || scheduleQuietSeconds))
+      : scheduleQuietSeconds;
+
+    const { data: timingGate, error: timingError } = await supabase.rpc(
+      "enforce_autopilot_response_delay_atomic",
+      {
+        p_conversation_id: job.conversation_id,
+        p_quiet_seconds: scheduleQuietSeconds,
+        p_max_window_seconds: scheduleMaxSeconds,
+        p_now: new Date().toISOString(),
+      },
+    );
+
+    if (timingError || timingGate?.success !== true) {
+      await rescheduleJob(
+        supabase,
+        workerToken,
+        job,
+        retryAt(15),
+        timingError || "response_delay_gate_failed",
       );
+      return;
+    }
 
-      if (timingError || timingGate?.success !== true) {
-        await rescheduleJob(
-          supabase,
-          workerToken,
-          job,
-          retryAt(15),
-          timingError || "response_delay_gate_failed",
-        );
+    if (timingGate?.due_now !== true) {
+      const scheduledAt = String(timingGate?.scheduled_at || "");
+      if (!scheduledAt) {
+        await rescheduleJob(supabase, workerToken, job, retryAt(15), "delay_schedule_missing");
         return;
       }
 
-      if (timingGate?.due_now !== true) {
-        const scheduledAt = String(timingGate?.scheduled_at || "");
-        if (!scheduledAt) {
-          await rescheduleJob(supabase, workerToken, job, retryAt(15), "delay_schedule_missing");
-          return;
-        }
+      const timingMode = String(timingGate?.response_delay_mode || scheduleRuntime.responseDelayMode);
+      const delayLabel = timingMode === "range"
+        ? `Aguardando janela do cronograma (${Math.round(scheduleQuietSeconds / 60)}–${Math.round(scheduleMaxSeconds / 60)} min)...`
+        : `Aguardando tempo do cronograma (${Math.round(scheduleQuietSeconds / 60)} min)...`;
 
-        await publishAutoPilotState(supabase, job.conversation_id, {
-          status: "scheduled",
-          activity: activity(
-            "scheduled",
-            `Aguardando tempo de resposta (${responseDelayMinutes}m)...`,
-            "Aguardando o quiet period configurado antes de iniciar o Brain.",
-            {
-              scheduledAt,
-              quietPeriodMinutes: responseDelayMinutes,
-              maxDebounceWindowMinutes,
-              event: "queued_authoritative_response_delay",
-            },
-          ),
-          scheduledResponseAt: scheduledAt,
-        });
+      await publishAutoPilotState(supabase, job.conversation_id, {
+        status: "scheduled",
+        activity: activity(
+          "scheduled",
+          delayLabel,
+          "Aguardando o tempo configurado no cronograma ativo antes de iniciar o Brain.",
+          {
+            scheduledAt,
+            scheduleId: scheduleRuntime.scheduleId,
+            responseDelayMode: timingMode,
+            minSeconds: timingGate?.min_seconds ?? scheduleQuietSeconds,
+            maxSeconds: timingGate?.max_seconds ?? scheduleMaxSeconds,
+            event: "queued_schedule_response_delay",
+          },
+        ),
+        scheduledResponseAt: scheduledAt,
+      });
 
-        await rescheduleJob(supabase, workerToken, job, scheduledAt);
-        return;
-      }
+      await rescheduleJob(supabase, workerToken, job, scheduledAt);
+      return;
     }
 
     const result = await runBrainOrchestration({
       supabase,
       conversationId: job.conversation_id,
-      responseDelayMinutes,
-      maxDebounceWindowMinutes,
       newMessage: {
         id: message.id,
         text: inputText,
@@ -655,6 +664,40 @@ export async function processAutopilotInboundQueue(params: {
   limit?: number;
 }): Promise<{ claimed: number }> {
   const limit = Math.max(1, Math.min(6, Number(params.limit || 3)));
+
+  try {
+    const { data: transitionResult, error: transitionError } = await params.supabase.rpc(
+      "process_conversation_schedule_ready_transitions_atomic",
+      { p_limit: 50 },
+    );
+    if (transitionError) {
+      console.warn("[Schedules] Falha ao reconciliar transições:", transitionError.message || transitionError);
+    } else if (Number(transitionResult?.advanced || 0) > 0) {
+      console.log("[Schedules] transições de cronograma reconciliadas:", transitionResult);
+    }
+  } catch (transitionError) {
+    console.warn("[Schedules] Worker de transição ainda indisponível:", transitionError);
+  }
+
+  // O mesmo cron durável que acorda a fila também fecha cronogramas temporizados.
+  // A RPC usa locks + SKIP LOCKED, portanto ticks sobrepostos não duplicam transições.
+  try {
+    const { data: expiryResult, error: expiryError } = await params.supabase.rpc(
+      "process_conversation_schedule_expirations_atomic",
+      { p_limit: 50 },
+    );
+    if (expiryError) {
+      console.warn("[Schedules] Falha ao processar expirações:", expiryError.message || expiryError);
+    } else if (Number(expiryResult?.processed || 0) > 0) {
+      console.log(
+        `[Schedules] expirations processed=${expiryResult.processed} advanced=${expiryResult.advanced || 0} incomplete=${expiryResult.expired_incomplete || 0} finalized=${expiryResult.finalized || 0}`,
+      );
+    }
+  } catch (expiryError) {
+    // Compatibilidade durante rollout: antes da migration existir, a fila continua operando.
+    console.warn("[Schedules] Worker de expiração ainda indisponível:", expiryError);
+  }
+
   const workerToken = `inbound_${crypto.randomUUID()}`;
 
   const { data: claimed, error: claimError } = await params.supabase.rpc(

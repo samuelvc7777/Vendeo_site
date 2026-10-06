@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { toast } from "sonner";
 import {
   ChevronDown,
   ChevronUp,
@@ -14,7 +15,9 @@ import {
   Check,
 } from "lucide-react";
 import { ChatStageDetail, StageObjectiveItem } from "@/application/use-cases/ManageChatProgressUseCase";
-import { StageChecklistItem } from "@/domain/entities/ChatStage";
+import { ChatStage } from "@/domain/entities/ChatStage";
+import type { ChatScheduleRuntime } from "@/presentation/hooks/useChatStages";
+import type { ConversationSchedule } from "@/domain/entities/ConversationSchedule";
 import {
   RAFFLE_COMMERCIAL_STATUS_OPTIONS,
   RaffleCommercialStatus,
@@ -23,24 +26,29 @@ import {
 
 interface ChatStageBarProps {
   detail: ChatStageDetail | null;
-  onToggleItem?: (itemId: string, isCompleted: boolean) => void;
+  scheduleRuntime?: ChatScheduleRuntime | null;
+  availableSchedules?: ConversationSchedule[];
+  configuredStages?: ChatStage[];
   onToggleObjective?: (objectiveId: string, isCompleted: boolean) => void;
   onAdvanceStage: () => void;
   onSetStage: (stageId: string) => void;
+  onSetSchedule?: (scheduleId: string) => Promise<any> | void;
   onToggleConverted: (isConverted: boolean) => void;
   raffleStatus?: RaffleCommercialStatus;
   onSetRaffleStatus?: (status: RaffleCommercialStatus) => void;
   isUpdatingRaffleStatus?: boolean;
-  onQuickSendItem?: (item: StageChecklistItem) => void;
   variant?: "default" | "whatsapp-ios";
 }
 
 export function ChatStageBar({
   detail,
-  onToggleItem,
+  scheduleRuntime,
+  availableSchedules = [],
+  configuredStages = [],
   onToggleObjective,
   onAdvanceStage,
   onSetStage,
+  onSetSchedule,
   onToggleConverted,
   raffleStatus = null,
   onSetRaffleStatus,
@@ -50,6 +58,8 @@ export function ChatStageBar({
   const prefersReducedMotion = useReducedMotion();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSelectingStage, setIsSelectingStage] = useState(false);
+  const [isSelectingSchedule, setIsSelectingSchedule] = useState(false);
+  const [isChangingSchedule, setIsChangingSchedule] = useState(false);
 
   if (!detail || !detail.stage) {
     return null;
@@ -74,6 +84,42 @@ export function ChatStageBar({
       ? Math.round((completedObjectivesCount / totalObjectives) * 100)
       : 0;
   const stageColor = stage.color || "#3b82f6";
+  const scheduleName = scheduleRuntime?.scheduleName || "Cronograma";
+  const stageRequired = scheduleRuntime?.currentStageRequired ?? stage.isRequired !== false;
+  const brainModelLabel =
+    scheduleRuntime?.brainModel === "gpt-6.1-sol"
+      ? "GPT-6.1 Sol"
+      : scheduleRuntime?.brainModel === "gpt-6-sol"
+      ? "GPT-6 Sol"
+      : scheduleRuntime?.brainModel === "gpt-6-luna"
+      ? "GPT-6 Luna"
+      : scheduleRuntime?.brainModel || "Modelo não informado";
+  const responseTimingLabel = scheduleRuntime
+    ? scheduleRuntime.responseDelayMode === "range"
+      ? `${Math.round(Number(scheduleRuntime.responseDelayMinSeconds || 0) / 60)}–${Math.round(Number(scheduleRuntime.responseDelayMaxSeconds || 0) / 60)} min`
+      : `${Math.round(Number(scheduleRuntime.responseDelayFixedSeconds || 0) / 60)} min`
+    : null;
+  const expiresAt = scheduleRuntime?.expiresAt ? new Date(scheduleRuntime.expiresAt) : null;
+  const durationLabel = scheduleRuntime?.durationMinutes
+    ? scheduleRuntime.durationMinutes % 1440 === 0
+      ? `${Math.round(scheduleRuntime.durationMinutes / 1440)} dia${scheduleRuntime.durationMinutes / 1440 === 1 ? "" : "s"}`
+      : scheduleRuntime.durationMinutes % 60 === 0
+      ? `${Math.round(scheduleRuntime.durationMinutes / 60)}h`
+      : `${scheduleRuntime.durationMinutes} min`
+    : null;
+  const expiresLabel =
+    scheduleRuntime?.initialized === false
+      ? durationLabel
+        ? `Não iniciado · ${durationLabel}`
+        : "Sem limite"
+      : expiresAt && !Number.isNaN(expiresAt.getTime())
+      ? expiresAt.toLocaleString("pt-BR", {
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "Sem limite";
   const raffleBadgeClass =
     raffleStatus === "bought"
       ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35"
@@ -85,13 +131,193 @@ export function ChatStageBar({
 
   const handleToggle = (obj: StageObjectiveItem) => {
     const isComp = obj.status === "completed";
-    if (onToggleObjective) {
-      onToggleObjective(obj.id, !isComp);
-    } else if (onToggleItem) {
-      // Fallback compatível
-      onToggleItem(obj.id, !isComp);
-    }
+    onToggleObjective?.(obj.id, !isComp);
   };
+
+  const isConnectionWindow = scheduleRuntime?.executionMode === "connection_window";
+  if (isConnectionWindow && scheduleRuntime) {
+    const connectionPercentage = Math.max(0, Math.min(100, Math.round(Number(scheduleRuntime.elapsedPercent || 0))));
+    const phaseLabel = scheduleRuntime.temporalPhase?.label || "Janela de conexão";
+    const remainingMinutes = scheduleRuntime.remainingMinutes;
+    const remainingLabel = remainingMinutes == null
+      ? "Sem limite"
+      : remainingMinutes >= 1440
+      ? `${Math.ceil(remainingMinutes / 1440)} dia(s)`
+      : remainingMinutes >= 60
+      ? `${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}min`
+      : `${remainingMinutes} min`;
+    const finalStatusLabel =
+      scheduleRuntime.finalAction?.effectiveStatus === "available"
+        ? "Disponível"
+        : scheduleRuntime.finalAction?.effectiveStatus === "delivered"
+        ? "Entregue"
+        : scheduleRuntime.finalAction?.effectiveStatus === "manual_required"
+        ? "Ação manual pendente"
+        : scheduleRuntime.finalAction?.effectiveStatus === "failed"
+        ? "Falhou"
+        : scheduleRuntime.finalAction
+        ? "Aguardando janela"
+        : "Não configurada";
+
+    return (
+      <div className={variant === "whatsapp-ios" ? "whatsapp-ios relative z-20 shrink-0 px-2 pt-2" : "w-full shrink-0 border-b border-zinc-200 bg-zinc-50 dark:border-[#262626] dark:bg-[#121214]"}>
+        <div className={variant === "whatsapp-ios" ? "wa-ios-glass overflow-hidden rounded-[18px]" : "bg-white/95 dark:bg-[#0d0d0f]/95"}>
+          <button
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+            className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors active:bg-black/[0.035] dark:active:bg-white/[0.04]"
+            aria-expanded={isExpanded}
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-500/12 text-violet-600 dark:text-violet-300">
+              <Sparkles className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-[11px] font-bold text-violet-700 dark:text-violet-300">{scheduleName}</span>
+                <span className="text-[10px] text-zinc-400">›</span>
+                <span className="truncate text-[12px] font-semibold text-zinc-900 dark:text-white">{phaseLabel}</span>
+                <span className="shrink-0 rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:text-violet-300">
+                  Janela
+                </span>
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <div className="h-1.5 min-w-16 flex-1 overflow-hidden rounded-full bg-black/[0.07] dark:bg-white/[0.10]">
+                  <div
+                    className="h-full rounded-full bg-violet-500 transition-[width] duration-300"
+                    style={{ width: `${connectionPercentage}%` }}
+                  />
+                </div>
+                <span className="shrink-0 text-[10px] font-semibold text-zinc-500 dark:text-zinc-400">
+                  {connectionPercentage}% · {remainingLabel}
+                </span>
+              </div>
+            </div>
+            <motion.span
+              animate={{ rotate: isExpanded ? 180 : 0 }}
+              transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
+              className="shrink-0 text-violet-600 dark:text-violet-300"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </motion.span>
+          </button>
+
+          <AnimatePresence initial={false}>
+            {isExpanded && (
+              <motion.div
+                initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <div className="space-y-2.5 border-t border-black/[0.07] px-3 pb-3 pt-2.5 dark:border-white/[0.07]">
+                  {scheduleRuntime.connectionIntent && (
+                    <p className="rounded-xl bg-violet-500/[0.06] px-3 py-2 text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+                      {scheduleRuntime.connectionIntent}
+                    </p>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                    <div className="rounded-xl bg-zinc-100/80 px-2.5 py-2 dark:bg-white/[0.05]">
+                      <span className="block text-zinc-500">Fase temporal</span>
+                      <span className="font-semibold text-zinc-900 dark:text-white">{phaseLabel}</span>
+                    </div>
+                    <div className="rounded-xl bg-zinc-100/80 px-2.5 py-2 dark:bg-white/[0.05]">
+                      <span className="block text-zinc-500">Tempo restante</span>
+                      <span className="font-semibold text-zinc-900 dark:text-white">{remainingLabel}</span>
+                    </div>
+                  </div>
+
+                  {scheduleRuntime.temporalPhase?.guidance && (
+                    <div className="rounded-xl border border-violet-200/70 px-3 py-2 dark:border-violet-500/20">
+                      <p className="text-[9px] font-bold uppercase tracking-wide text-violet-600 dark:text-violet-300">Orientação da fase</p>
+                      <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+                        {scheduleRuntime.temporalPhase.guidance}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/[0.06]">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-bold text-zinc-900 dark:text-white">Ação final</p>
+                      <span className="text-[9px] font-semibold text-amber-700 dark:text-amber-300">{finalStatusLabel}</span>
+                    </div>
+                    {scheduleRuntime.finalAction?.title && (
+                      <p className="mt-0.5 text-[10px] text-zinc-600 dark:text-zinc-300">{scheduleRuntime.finalAction.title}</p>
+                    )}
+                  </div>
+
+                  {scheduleRuntime.manualActionNote && (
+                    <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 dark:border-rose-500/25 dark:bg-rose-500/[0.08]">
+                      <p className="text-[10px] font-black text-rose-700 dark:text-rose-300">Ação manual pendente</p>
+                      <p className="mt-0.5 text-[10px] leading-relaxed text-rose-700/90 dark:text-rose-200">{scheduleRuntime.manualActionNote}</p>
+                    </div>
+                  )}
+
+                  {availableSchedules.length > 0 && onSetSchedule && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setIsSelectingSchedule((current) => !current)}
+                        className="text-[11px] font-semibold text-violet-600 dark:text-violet-300"
+                      >
+                        {isSelectingSchedule ? "Fechar cronogramas" : "Mudar cronograma"}
+                      </button>
+                      {isSelectingSchedule && (
+                        <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto rounded-xl bg-violet-500/[0.05] p-1">
+                          {availableSchedules.map((candidate) => {
+                            const selected = candidate.id === scheduleRuntime.scheduleId;
+                            const stageCount = configuredStages.filter((candidateStage) => candidateStage.scheduleId === candidate.id).length;
+                            const ready = candidate.executionMode === "connection_window" || stageCount > 0;
+                            return (
+                              <button
+                                key={candidate.id}
+                                type="button"
+                                disabled={selected || isChangingSchedule}
+                                onClick={async () => {
+                                  if (selected || !onSetSchedule) return;
+                                  if (!ready) {
+                                    toast.warning("Esse cronograma ainda não está configurado para execução.");
+                                    return;
+                                  }
+                                  setIsChangingSchedule(true);
+                                  try {
+                                    await onSetSchedule(candidate.id);
+                                    setIsSelectingSchedule(false);
+                                  } finally {
+                                    setIsChangingSchedule(false);
+                                  }
+                                }}
+                                className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[10px] ${selected ? "bg-white font-bold text-violet-700 shadow-sm dark:bg-white/[0.10] dark:text-violet-300" : "text-zinc-700 hover:bg-white/70 dark:text-zinc-300 dark:hover:bg-white/[0.06]"}`}
+                              >
+                                <span className="truncate">{candidate.name}</span>
+                                <span className="ml-2 shrink-0 text-[9px] text-zinc-400">
+                                  {candidate.executionMode === "connection_window" ? "Janela" : "Objetivos"}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {isConverted && (
+                    <div className="flex items-center justify-between gap-2 rounded-xl bg-zinc-100/70 px-3 py-2 dark:bg-white/[0.05]">
+                      <span className="text-[10px] font-semibold text-zinc-700 dark:text-zinc-300">Status da rifa</span>
+                      <span className={`rounded-full border px-2 py-1 text-[9px] font-semibold ${raffleBadgeClass}`}>
+                        {raffleCommercialStatusLabel(raffleStatus)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    );
+  }
 
   if (variant === "whatsapp-ios") {
     return (
@@ -113,26 +339,37 @@ export function ChatStageBar({
             />
 
             <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7c3aed] dark:text-[#c4b5fd]">
+                  {scheduleName}
+                </span>
+                <span className="text-[10px] text-[#c7c7cc] dark:text-[#636366]">›</span>
                 <span className="truncate text-[13px] font-semibold text-[#111b21] dark:text-white">
                   {stage.name}
                 </span>
+                <span
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                    stageRequired
+                      ? "bg-[#ff9500]/14 text-[#b36b00] dark:text-[#ffb340]"
+                      : "bg-[#af52de]/14 text-[#7d2aa8] dark:text-[#d9a7f0]"
+                  }`}
+                >
+                  {stageRequired ? "Obrigatória" : "Opcional"}
+                </span>
                 {isConverted && (
                   <span className="shrink-0 rounded-full bg-[#ffcc00]/18 px-1.5 py-0.5 text-[9px] font-semibold text-[#9a6d00] dark:text-[#ffd60a]">
-                    Finalizado
+                    Venda concluída
                   </span>
                 )}
               </div>
-              <div className="mt-0.5 flex items-center gap-2 text-[10px] text-[#8e8e93]">
-                <span>Etapa {stageIndex + 1} de {totalStages}</span>
+              <div className="mt-0.5 flex min-w-0 items-center gap-2 overflow-hidden text-[10px] text-[#8e8e93]">
+                <span className="shrink-0">Etapa {stageIndex + 1} de {totalStages}</span>
                 <span>•</span>
-                <span>{completedObjectivesCount}/{totalObjectives} objetivos</span>
-                {requiredPendingCount > 0 && (
+                <span className="shrink-0">{completedObjectivesCount}/{totalObjectives} objetivos</span>
+                {scheduleRuntime?.brainModel && (
                   <>
                     <span>•</span>
-                    <span className="text-[#ff9500]">
-                      {requiredPendingCount} pendente{requiredPendingCount > 1 ? "s" : ""}
-                    </span>
+                    <span className="truncate">{brainModelLabel}</span>
                   </>
                 )}
               </div>
@@ -170,6 +407,45 @@ export function ChatStageBar({
                 className="overflow-hidden"
               >
                 <div className="border-t border-black/[0.07] px-3 pb-3 pt-2.5 dark:border-white/[0.07]">
+                  {scheduleRuntime && (
+                    <div className="mb-2.5 rounded-[14px] bg-[#7c3aed]/[0.07] px-3 py-2.5 ring-1 ring-inset ring-[#7c3aed]/15 dark:bg-[#7c3aed]/[0.12] dark:ring-[#c4b5fd]/15">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-semibold text-[#5b21b6] dark:text-[#ddd6fe]">
+                            Cronograma · {scheduleName}
+                          </p>
+                          {scheduleRuntime.scheduleDescription ? (
+                            <p className="mt-0.5 line-clamp-2 text-[9px] leading-relaxed text-[#6b7280] dark:text-[#a1a1aa]">
+                              {scheduleRuntime.scheduleDescription}
+                            </p>
+                          ) : null}
+                        </div>
+                        <span className="shrink-0 rounded-full bg-white/70 px-2 py-1 text-[9px] font-semibold text-[#5b21b6] shadow-sm dark:bg-white/[0.06] dark:text-[#ddd6fe]">
+                          {brainModelLabel}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[9px]">
+                        <div className="rounded-[9px] bg-white/55 px-2 py-1.5 dark:bg-white/[0.05]">
+                          <span className="block text-[#8e8e93]">Resposta</span>
+                          <span className="font-semibold text-[#3c3c43] dark:text-[#d1d1d6]">
+                            {responseTimingLabel || "Não informado"}
+                          </span>
+                        </div>
+                        <div className="rounded-[9px] bg-white/55 px-2 py-1.5 dark:bg-white/[0.05]">
+                          <span className="block text-[#8e8e93]">Expiração</span>
+                          <span className="font-semibold text-[#3c3c43] dark:text-[#d1d1d6]">
+                            {expiresLabel}
+                          </span>
+                        </div>
+                      </div>
+                      {scheduleRuntime.nextScheduleName && (
+                        <p className="mt-2 text-[9px] text-[#8e8e93]">
+                          Próximo cronograma: <span className="font-semibold text-[#5b21b6] dark:text-[#c4b5fd]">{scheduleRuntime.nextScheduleName}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
                       <Target className="h-3.5 w-3.5 shrink-0 text-[#007aff]" />
@@ -177,17 +453,114 @@ export function ChatStageBar({
                         Objetivos da etapa
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setIsSelectingStage((current) => !current);
-                      }}
-                      className="shrink-0 text-[11px] font-medium text-[#007aff] active:opacity-60"
-                    >
-                      {isSelectingStage ? "Fechar" : "Mudar etapa"}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {availableSchedules.length > 0 && onSetSchedule ? (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setIsSelectingSchedule((current) => !current);
+                            setIsSelectingStage(false);
+                          }}
+                          className="text-[11px] font-medium text-[#7c3aed] active:opacity-60"
+                        >
+                          {isSelectingSchedule ? "Fechar" : "Mudar cronograma"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setIsSelectingStage((current) => !current);
+                          setIsSelectingSchedule(false);
+                        }}
+                        className="text-[11px] font-medium text-[#007aff] active:opacity-60"
+                      >
+                        {isSelectingStage ? "Fechar" : "Mudar etapa"}
+                      </button>
+                    </div>
                   </div>
+
+                  <AnimatePresence initial={false}>
+                    {isSelectingSchedule && (
+                      <motion.div
+                        initial={prefersReducedMotion ? false : { opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: prefersReducedMotion ? 0 : 0.16 }}
+                        className="mb-2 overflow-hidden rounded-[13px] bg-[#7c3aed]/[0.06] p-1 ring-1 ring-inset ring-[#7c3aed]/10 dark:bg-[#7c3aed]/[0.10]"
+                      >
+                        <div className="max-h-44 overflow-y-auto">
+                          {availableSchedules.map((candidate) => {
+                            const selected = candidate.id === scheduleRuntime?.scheduleId;
+                            const stageCount = configuredStages.filter((stage) => stage.scheduleId === candidate.id).length;
+                            const ready = stageCount > 0;
+                            return (
+                              <button
+                                key={candidate.id}
+                                type="button"
+                                disabled={selected || isChangingSchedule}
+                                onClick={async () => {
+                                  if (selected || !onSetSchedule) return;
+                                  if (!ready) {
+                                    toast.warning("Esse cronograma ainda não tem etapas. Adicione pelo menos uma etapa antes de ativá-lo.");
+                                    return;
+                                  }
+                                  setIsChangingSchedule(true);
+                                  try {
+                                    await onSetSchedule(candidate.id);
+                                    setIsSelectingSchedule(false);
+                                    setIsSelectingStage(false);
+                                  } finally {
+                                    setIsChangingSchedule(false);
+                                  }
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors disabled:cursor-default ${
+                                  selected
+                                    ? "bg-white/85 shadow-sm dark:bg-white/[0.10]"
+                                    : "active:bg-[#7c3aed]/[0.08] dark:active:bg-[#7c3aed]/[0.15]"
+                                }`}
+                              >
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#7c3aed]/10 text-[10px] font-bold text-[#7c3aed] dark:text-[#c4b5fd]">
+                                  {candidate.order + 1}
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[11px] font-semibold text-[#111b21] dark:text-white">
+                                    {candidate.name}
+                                  </span>
+                                  <span className="block truncate text-[9px] text-[#8e8e93]">
+                                    {candidate.category === "sales"
+                                      ? "Venda"
+                                      : candidate.category === "post_sale"
+                                      ? "Pós-venda"
+                                      : candidate.category === "relationship"
+                                      ? "Relacionamento"
+                                      : candidate.category === "reactivation"
+                                      ? "Reativação"
+                                      : "Personalizado"}
+                                    {ready ? ` · ${stageCount} etapa${stageCount === 1 ? "" : "s"}` : " · Sem etapas"}
+                                  </span>
+                                </span>
+                                {selected ? (
+                                  <span className="flex items-center gap-1 text-[9px] font-semibold text-[#7c3aed] dark:text-[#c4b5fd]">
+                                    <Check className="h-3.5 w-3.5" />
+                                    Atual
+                                  </span>
+                                ) : !ready ? (
+                                  <span className="shrink-0 rounded-full bg-[#ff9500]/12 px-1.5 py-0.5 text-[8px] font-semibold text-[#b36b00] dark:text-[#ffb340]">
+                                    Configure
+                                  </span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="px-2.5 pb-1.5 pt-1 text-[9px] leading-relaxed text-[#8e8e93]">
+                          A troca inicia o cronograma escolhido na primeira etapa e aplica imediatamente o modelo e o tempo configurados nele. Cronogramas sem etapa ficam bloqueados até serem configurados.
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
 
                   <AnimatePresence initial={false}>
                     {isSelectingStage && (
@@ -259,14 +632,25 @@ export function ChatStageBar({
                             </span>
 
                             <span className="min-w-0 flex-1">
-                              <span
-                                className={`block truncate text-[12px] font-medium ${
-                                  isCompleted
-                                    ? "text-[#8e8e93] line-through"
-                                    : "text-[#111b21] dark:text-white"
-                                }`}
-                              >
-                                {obj.title}
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                <span
+                                  className={`min-w-0 flex-1 truncate text-[12px] font-medium ${
+                                    isCompleted
+                                      ? "text-[#8e8e93] line-through"
+                                      : "text-[#111b21] dark:text-white"
+                                  }`}
+                                >
+                                  {obj.title}
+                                </span>
+                                <span
+                                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${
+                                    obj.required !== false
+                                      ? "bg-[#ff9500]/12 text-[#b36b00] dark:text-[#ffb340]"
+                                      : "bg-[#af52de]/12 text-[#7d2aa8] dark:text-[#d9a7f0]"
+                                  }`}
+                                >
+                                  {obj.required !== false ? "Obrigatório" : "Opcional"}
+                                </span>
                               </span>
 
                               {obj.value !== null && obj.value !== undefined ? (

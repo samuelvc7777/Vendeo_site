@@ -106,6 +106,11 @@ function bootstrapMessageText(row: any): string {
     const label = operatorObservation ? "[IMAGEM OBSERVADA PELO OPERADOR]" : "[IMAGEM — DESCRIÇÃO VISUAL]";
     return `[DATA/HORA ORIGINAL: ${originalAt}]\n${label}\n${body}`;
   }
+  if (mediaType === "sticker") {
+    const body = operatorObservation || imageDescription || "[descrição visual indisponível]";
+    const label = operatorObservation ? "[FIGURINHA OBSERVADA PELO OPERADOR]" : "[FIGURINHA — DESCRIÇÃO VISUAL]";
+    return `[DATA/HORA ORIGINAL: ${originalAt}]\n${label}\n${body}`;
+  }
   if (mediaType === "video") {
     const body = operatorObservation
       || (!rawText.startsWith("[video:") ? rawText : "")
@@ -380,11 +385,33 @@ export async function processOpenAiConversationSyncQueue(params: {
   const { data: candidates, error: candidateError } = await query;
   if (candidateError) throw new Error(`openai_sync_queue_read_failed: ${candidateError.message}`);
 
+  // A mesma OpenAI Conversation não aceita mutações concorrentes enquanto o Agent
+  // está operando nela. A sync é de baixa prioridade: se o Brain possui um ciclo
+  // ativo, deixa o receipt pendente para o próximo tick em vez de disputar o provider.
+  const candidateConversationIds = [...new Set(
+    (candidates || []).map((candidate: any) => String(candidate.conversation_id || "")).filter(Boolean),
+  )];
+  const conversationsWithActiveBrain = new Set<string>();
+  if (candidateConversationIds.length > 0) {
+    const { data: conversationStates, error: conversationStateError } = await supabase
+      .from("instagram_conversations")
+      .select("id, stage_completed_rules")
+      .in("id", candidateConversationIds);
+    if (conversationStateError) {
+      throw new Error(`openai_sync_active_cycle_read_failed: ${conversationStateError.message}`);
+    }
+    for (const row of conversationStates || []) {
+      const activeCycleToken = String(row?.stage_completed_rules?.active_cycle_token || "").trim();
+      if (activeCycleToken) conversationsWithActiveBrain.add(String(row.id));
+    }
+  }
+
   let processed = 0;
   let synced = 0;
   let failed = 0;
 
   for (const candidate of candidates || []) {
+    if (conversationsWithActiveBrain.has(String(candidate.conversation_id))) continue;
     const providerMessageId = String(candidate.provider_message_id);
     const attempt = Number(candidate.sync_attempts || 0) + 1;
     const startedAt = new Date().toISOString();

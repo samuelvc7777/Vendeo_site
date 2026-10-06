@@ -6,8 +6,6 @@ import { getSupabaseServerClient } from "../supabase/server";
 const DEFAULT_CONFIG: AutoPilotConfig = {
   isEnabledGlobally: true,
   mode: "automatic", // 100% Automático direto (semiautomático removido)
-  responseDelayMinutes: 1, // Quiet period da última mensagem
-  maxDebounceWindowMinutes: 3, // Impede que novas mensagens adiem o Brain indefinidamente
   activationWaitMinutes: 1,
   pauseOnPhotoReceived: true,
   pauseOnSensitiveContent: true,
@@ -256,15 +254,11 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
     conversationId: string,
     lastMessageTimestamp?: string
   ): Promise<AutoPilotChatState> {
-    const config = await this.getConfig();
     const current = await this.getChatState(conversationId);
 
     if (!current || !current.isEnabled || current.status === "paused_handoff" || current.status === "paused_guardrail") {
       return current || { conversationId, isEnabled: false, status: "idle" };
     }
-
-    const clientTime = lastMessageTimestamp ? new Date(lastMessageTimestamp).getTime() : Date.now();
-    const scheduledMs = clientTime + config.responseDelayMinutes * 60 * 1000;
 
     const updated: AutoPilotChatState = {
       ...current,
@@ -273,7 +267,7 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
       sendingStartedAt: null,
       sendingCycleToken: null,
       lastClientMessageAt: lastMessageTimestamp || new Date().toISOString(),
-      scheduledResponseAt: new Date(scheduledMs).toISOString(),
+      scheduledResponseAt: undefined,
       status: "waiting_delay",
       stateUpdatedAt: new Date().toISOString(),
     };

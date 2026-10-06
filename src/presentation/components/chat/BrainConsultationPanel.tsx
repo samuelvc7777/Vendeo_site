@@ -181,7 +181,7 @@ export function BrainConsultationPanel({
       </div>
 
       <div className="space-y-3 p-3.5">
-        <div className="flex gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
           {QUICK_PROMPTS.map((item) => {
             const Icon = item.icon;
             return (
@@ -190,9 +190,9 @@ export function BrainConsultationPanel({
                 type="button"
                 onClick={() => void sendConsultation(item.prompt)}
                 disabled={isConsulting}
-                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-2.5 text-[9.5px] font-bold text-zinc-600 shadow-sm transition hover:-translate-y-0.5 hover:border-violet-300 hover:text-violet-700 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:border-violet-500/30 dark:hover:text-violet-300"
+                className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 text-[10px] font-bold text-zinc-700 shadow-sm transition active:scale-95 hover:border-violet-300 hover:text-violet-700 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:border-violet-500/30 dark:hover:text-violet-300 cursor-pointer"
               >
-                <Icon className="h-3 w-3" />
+                <Icon className="h-3.5 w-3.5" />
                 {item.label}
               </button>
             );
@@ -269,14 +269,14 @@ export function BrainConsultationPanel({
             rows={1}
             maxLength={3000}
             placeholder="Pergunte algo ao Brain antes de responder…"
-            className="max-h-28 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[11px] leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-600"
+            className="max-h-28 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[16px] md:text-[11px] leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-600"
             disabled={isConsulting}
           />
           <button
             type="button"
             onClick={() => void sendConsultation()}
             disabled={!draft.trim() || isConsulting}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-md shadow-violet-500/20 transition active:scale-95 disabled:opacity-35"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-md shadow-violet-500/20 transition active:scale-95 disabled:opacity-35 cursor-pointer"
             aria-label="Enviar pergunta ao Brain"
           >
             {isConsulting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -303,7 +303,7 @@ export function BrainConsultationPanel({
             rows={2}
             maxLength={1000}
             placeholder="Digite ou traga uma conclusão da consulta"
-            className="mt-2.5 min-h-20 w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs leading-5 text-zinc-900 outline-none transition focus:border-violet-300 dark:border-white/10 dark:bg-black/20 dark:text-zinc-100 dark:focus:border-violet-500/40"
+            className="mt-2.5 min-h-20 w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[16px] md:text-xs leading-5 text-zinc-900 outline-none transition focus:border-violet-300 dark:border-white/10 dark:bg-black/20 dark:text-zinc-100 dark:focus:border-violet-500/40"
             disabled={submitting}
           />
 
@@ -312,7 +312,7 @@ export function BrainConsultationPanel({
               type="button"
               onClick={() => onSubmit(false)}
               disabled={submitting || !answer.trim()}
-              className="min-h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[10.5px] font-bold text-zinc-700 shadow-sm transition hover:bg-zinc-50 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-zinc-200 dark:hover:bg-white/10"
+              className="min-h-[44px] flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-xs font-bold text-zinc-700 shadow-sm transition hover:bg-zinc-50 active:scale-95 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-zinc-200 dark:hover:bg-white/10 cursor-pointer"
             >
               {submitting ? "Retomando…" : "Usar só neste turno"}
             </button>
@@ -320,7 +320,7 @@ export function BrainConsultationPanel({
               type="button"
               onClick={() => onSubmit(true)}
               disabled={submitting || !answer.trim()}
-              className="min-h-10 flex-1 rounded-xl bg-gradient-to-r from-amber-300 to-amber-400 px-3 text-[10.5px] font-black text-zinc-950 shadow-md shadow-amber-400/15 transition hover:-translate-y-0.5 disabled:opacity-40"
+              className="min-h-[44px] flex-1 rounded-xl bg-gradient-to-r from-amber-300 to-amber-400 px-3 text-xs font-black text-zinc-950 shadow-md shadow-amber-400/15 transition hover:-translate-y-0.5 active:scale-95 disabled:opacity-40 cursor-pointer"
             >
               {submitting ? "Retomando…" : "Salvar e retomar"}
             </button>

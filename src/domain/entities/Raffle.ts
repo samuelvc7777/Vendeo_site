@@ -8,10 +8,10 @@ export type TicketStatus = "available" | "reserved" | "paid";
 
 export interface RaffleBuyer {
   name: string;
-  username?: string; // @ do Instagram
+  username?: string; // Legado: @ do Instagram em compras antigas
   avatar?: string;
-  phone?: string;
-  conversationId?: string; // ID da conversa no Instagram Direct
+  phone?: string; // WhatsApp em formato internacional, somente dígitos
+  conversationId?: string; // ID da conversa vinculada (WhatsApp ou legado)
 }
 
 export interface RaffleTicket {

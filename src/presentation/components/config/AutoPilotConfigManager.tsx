@@ -3,7 +3,6 @@
 import React, { useCallback, useState, useEffect } from "react";
 import {
   Bot,
-  Clock,
   Sparkles,
   Trophy,
   BellRing,
@@ -18,31 +17,12 @@ import { useMobileNotifications } from "@/presentation/hooks/useMobileNotificati
 const autoPilotRepo = new SupabaseAutoPilotRepository();
 const OPENAI_CONFIG_ENDPOINT = `${process.env.NEXT_PUBLIC_SUPABASE_URL || ""}/functions/v1/api/ai/openai-config`;
 
-const PRESET_DELAYS = [
-  { label: "1 min (Testes)", value: 1 },
-  { label: "3 min", value: 3 },
-  { label: "5 min", value: 5 },
-  { label: "10 min (Recomendado)", value: 10 },
-  { label: "15 min", value: 15 },
-];
-
-const MAX_BATCH_PRESETS = [
-  { label: "3 min", value: 3 },
-  { label: "5 min", value: 5 },
-  { label: "10 min", value: 10 },
-  { label: "15 min", value: 15 },
-  { label: "30 min", value: 30 },
-];
-
 export function AutoPilotConfigManager() {
   const [config, setConfig] = useState<AutoPilotConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [openAiKey, setOpenAiKey] = useState("");
   const [openAiMaskedKey, setOpenAiMaskedKey] = useState<string | null>(null);
-  const [openAiModel, setOpenAiModel] = useState("");
-  const [openAiCurrentModel, setOpenAiCurrentModel] = useState<string | null>(null);
-  const [openAiCurrentModelLabel, setOpenAiCurrentModelLabel] = useState<string | null>(null);
   const [openAiReasoningEffort, setOpenAiReasoningEffort] = useState("low");
   const [openAiVerbosity, setOpenAiVerbosity] = useState("low");
   const [isOpenAiReasoningDirty, setIsOpenAiReasoningDirty] = useState(false);
@@ -56,10 +36,6 @@ export function AutoPilotConfigManager() {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "Falha ao carregar configuração OpenAI");
       setOpenAiMaskedKey(data.maskedKey || null);
-      setOpenAiCurrentModel(data.model || null);
-      setOpenAiCurrentModelLabel(data.modelLabel || null);
-      if (data.model === "gpt-6-luna" || data.model === "gpt-6-sol" || data.model === "gpt-6.1-sol") setOpenAiModel(data.model);
-      else setOpenAiModel("");
       if (data.reasoningEffort) setOpenAiReasoningEffort(data.reasoningEffort);
       if (data.verbosity) setOpenAiVerbosity(data.verbosity);
       setIsOpenAiReasoningDirty(false);
@@ -70,12 +46,11 @@ export function AutoPilotConfigManager() {
   }, []);
 
   const handleSaveOpenAiConfig = async () => {
-    if (!openAiKey.trim() && !openAiModel && !isOpenAiReasoningDirty && !isOpenAiVerbosityDirty) return;
+    if (!openAiKey.trim() && !isOpenAiReasoningDirty && !isOpenAiVerbosityDirty) return;
     setIsSavingKey(true);
     try {
       const payload: Record<string, string | undefined> = {
         apiKey: openAiKey.trim() || undefined,
-        model: openAiModel || undefined,
       };
       if (isOpenAiReasoningDirty) payload.reasoningEffort = openAiReasoningEffort;
       if (isOpenAiVerbosityDirty) payload.verbosity = openAiVerbosity;
@@ -88,9 +63,6 @@ export function AutoPilotConfigManager() {
       if (!response.ok) throw new Error(data?.error || "Falha ao salvar configuração OpenAI");
       setOpenAiKey("");
       setOpenAiMaskedKey(data.maskedKey || openAiMaskedKey);
-      setOpenAiCurrentModel(data.model || openAiCurrentModel);
-      setOpenAiCurrentModelLabel(data.modelLabel || openAiCurrentModelLabel);
-      setOpenAiModel(data.model === "gpt-6-luna" || data.model === "gpt-6-sol" || data.model === "gpt-6.1-sol" ? data.model : "");
       setOpenAiReasoningEffort(data.reasoningEffort || openAiReasoningEffort);
       setOpenAiVerbosity(data.verbosity || openAiVerbosity);
       setIsOpenAiReasoningDirty(false);
@@ -130,7 +102,7 @@ export function AutoPilotConfigManager() {
     try {
       await autoPilotRepo.saveConfig({ isEnabledGlobally: checked });
       if (checked) {
-        toast.success("Piloto Automático ATIVADO! As conversas serão respondidas no tempo programado.");
+        toast.success("Piloto Automático ATIVADO! Cada conversa seguirá o tempo definido no cronograma ativo.");
       } else {
         toast.info("Piloto Automático DESLIGADO. Chats parados desligam na hora; os que já estão com o Brain trabalhando terminam o ciclo e desligam em seguida.");
       }
@@ -143,24 +115,11 @@ export function AutoPilotConfigManager() {
 
   const handleUpdate = async (partial: Partial<AutoPilotConfig>) => {
     if (!config) return;
-    const normalizedPartial = { ...partial };
-    if (
-      typeof normalizedPartial.responseDelayMinutes === "number" &&
-      normalizedPartial.responseDelayMinutes > config.maxDebounceWindowMinutes
-    ) {
-      normalizedPartial.maxDebounceWindowMinutes = normalizedPartial.responseDelayMinutes;
-    }
-    if (
-      typeof normalizedPartial.maxDebounceWindowMinutes === "number" &&
-      normalizedPartial.maxDebounceWindowMinutes < (normalizedPartial.responseDelayMinutes ?? config.responseDelayMinutes)
-    ) {
-      normalizedPartial.maxDebounceWindowMinutes = normalizedPartial.responseDelayMinutes ?? config.responseDelayMinutes;
-    }
-    const next = { ...config, ...normalizedPartial };
+    const next = { ...config, ...partial };
     setConfig(next);
     setIsSaving(true);
     try {
-      await autoPilotRepo.saveConfig(normalizedPartial);
+      await autoPilotRepo.saveConfig(partial);
       toast.success("Configuração do Piloto salva com sucesso!");
     } catch {
       toast.error("Erro ao salvar configuração.");
@@ -200,7 +159,7 @@ export function AutoPilotConfigManager() {
                 Piloto Automático
               </h3>
               <p className="mt-0.5 text-[10.5px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-                Controle central de respostas, filas, tempo e hand-off.
+                Controle central de ativação, filas, notificações e hand-off.
               </p>
             </div>
           </div>
@@ -256,7 +215,7 @@ export function AutoPilotConfigManager() {
         </div>
 
         <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-          O Brain oficial da Larissa usa o mesmo Agent OpenAI remoto. Escolha aqui o modelo aplicado ao Agent.
+          Configurações gerais da conexão OpenAI. O modelo usado pelo Brain é definido individualmente em cada cronograma.
         </p>
 
         <div className="space-y-1.5 pt-1">
@@ -287,33 +246,9 @@ export function AutoPilotConfigManager() {
         </div>
 
         <div className="space-y-1.5 pt-1">
-          <label className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium block">Modelo do Brain</label>
-          <select
-            value={openAiModel}
-            onChange={(e) => {
-              const nextModel = e.target.value;
-              setOpenAiModel(nextModel);
-              if (nextModel === "gpt-6.1-sol" && openAiReasoningEffort === "none") {
-                setOpenAiReasoningEffort("medium");
-                setIsOpenAiReasoningDirty(true);
-              }
-            }}
-            className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-purple-500"
-          >
-            <option value="" disabled>Selecione um modelo GPT-6</option>
-            <option value="gpt-6-luna">GPT-6 Luna — Mais econômico</option>
-            <option value="gpt-6-sol">GPT-6 Sol — Mais capacidade</option>
-            <option value="gpt-6.1-sol">GPT-6.1 Sol — Novo Sol, cache mais barato</option>
-          </select>
-          <span className="text-[10px] text-zinc-500">
-            Modelo atual: {openAiCurrentModelLabel || openAiCurrentModel || "não identificado"}
-          </span>
-        </div>
-
-        <div className="space-y-1.5 pt-1">
           <label className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium block">Esforço de raciocínio</label>
           <select value={openAiReasoningEffort} onChange={(e) => { setOpenAiReasoningEffort(e.target.value); setIsOpenAiReasoningDirty(true); }} className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-purple-500">
-            <option value="none" disabled={openAiModel === "gpt-6.1-sol"}>None — mínimo tempo de raciocínio</option>
+            <option value="none">None — mínimo tempo de raciocínio</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
@@ -382,74 +317,6 @@ export function AutoPilotConfigManager() {
           >
             {mobileNotifications.remoteRegistered ? "Push remoto ativo" : mobileNotifications.permission === "granted" ? "Vincular push remoto" : "Ativar no Celular"}
           </button>
-        </div>
-      </div>
-
-      {/* Card 1: Tempo de Espera (Debounce da Última Mensagem) */}
-      <div className="rounded-[20px] border border-zinc-200/80 dark:border-white/10 bg-white dark:bg-[#17171b] p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5 text-purple-400" />
-            Tempo de Espera antes de Responder:
-          </span>
-          <span className="text-xs font-bold text-purple-700 dark:text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-lg">
-            {config.responseDelayMinutes} min
-          </span>
-        </div>
-
-        <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-          A IA aguarda este intervalo contado a partir da <strong>última mensagem</strong>. Novas mensagens podem reiniciar o quiet period, mas nunca passam do teto absoluto do lote configurado abaixo.
-        </p>
-
-        {/* Botões Rápidos de Delay */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 pt-1">
-          {PRESET_DELAYS.map((preset, index) => {
-            const isSelected = config.responseDelayMinutes === preset.value;
-            return (
-              <button
-                key={preset.value}
-                type="button"
-                onClick={() => handleUpdate({ responseDelayMinutes: preset.value })}
-                className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center ${
-                  index === PRESET_DELAYS.length - 1 ? "col-span-2 sm:col-span-1" : ""
-                } ${
-                  isSelected
-                    ? "bg-purple-600 text-white shadow-sm border border-purple-400"
-                    : "bg-zinc-50 dark:bg-[#121214] hover:bg-zinc-100 dark:hover:bg-[#262629] text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-white/5"
-                }`}
-              >
-                {preset.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="pt-2 border-t border-zinc-200 dark:border-white/5 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-zinc-950 dark:text-white">Teto máximo do lote</span>
-            <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300">{config.maxDebounceWindowMinutes} min</span>
-          </div>
-          <p className="text-[10px] text-zinc-500 leading-relaxed">
-            Contado da primeira mensagem do lote. Ao atingir esse limite o Brain responde mesmo que continuem chegando novos balões.
-          </p>
-          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
-            {MAX_BATCH_PRESETS.map((preset) => {
-              const effectiveValue = Math.max(preset.value, config.responseDelayMinutes);
-              const isSelected = config.maxDebounceWindowMinutes === effectiveValue;
-              return (
-                <button
-                  key={preset.value}
-                  type="button"
-                  onClick={() => handleUpdate({ maxDebounceWindowMinutes: effectiveValue })}
-                  className={`px-2 py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
-                    isSelected ? "bg-amber-500/20 text-amber-800 dark:text-amber-200 border border-amber-500/40" : "bg-zinc-50 dark:bg-[#121214] text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-white/5"
-                  }`}
-                >
-                  {preset.label}
-                </button>
-              );
-            })}
-          </div>
         </div>
       </div>
 

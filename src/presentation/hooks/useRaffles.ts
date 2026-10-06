@@ -11,10 +11,9 @@ import {
 } from "@/domain/entities/Raffle";
 import { CreateRaffleInput } from "@/domain/repositories/IRaffleRepository";
 import { manageRaffleUseCase } from "@/infrastructure/di/container";
-import { InstagramConversation } from "@/domain/entities/Instagram";
-import { getApiUrl } from "@/infrastructure/http/network";
 import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
+import { resolveWhatsApp2PhoneNumbers } from "@/presentation/components/chat/whatsapp2-client";
 import { toast } from "sonner";
 
 export function useRaffles() {
@@ -26,12 +25,10 @@ export function useRaffles() {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Lista de conversas do Instagram para busca rápida
-  const [instagramConversations, setInstagramConversations] = useState<
-    InstagramConversation[]
-  >([]);
-  const [isLoadingConversations, setIsLoadingConversations] =
-    useState<boolean>(false);
+  // Contatos reais do WhatsApp para vincular compradores pelo nome + telefone.
+  // O seletor legado de Instagram continua no código, mas não é mais alimentado/renderizado.
+  const [whatsappContacts, setWhatsAppContacts] = useState<RaffleBuyer[]>([]);
+  const [isLoadingContacts, setIsLoadingContacts] = useState<boolean>(false);
 
   // Rifa ativa selecionada
   const activeRaffle = useMemo(() => {
@@ -112,85 +109,114 @@ export function useRaffles() {
     }
   }, []);
 
-  // Busca conversas do Instagram para autocompletar na vinculação de clientes
-  const loadInstagramConversations = useCallback(async () => {
+  // Carrega conversas do WhatsApp do Supabase e resolve @lid -> telefone real
+  // em uma única chamada ao gateway. IDs internos nunca são exibidos como telefone.
+  const loadWhatsAppContacts = useCallback(async () => {
     try {
-      setIsLoadingConversations(true);
-      let list: InstagramConversation[] = [];
-
-      // 1. Tenta carregar do Supabase direto
+      setIsLoadingContacts(true);
       const client = getSupabaseBrowserClient();
-      if (client) {
-        const { data, error } = await client
+      if (!client) {
+        setWhatsAppContacts([]);
+        return;
+      }
+
+      const pageSize = 500;
+      const allConversations: any[] = [];
+
+      for (let from = 0; ; from += pageSize) {
+        const { data, error: conversationsError } = await client
           .from("instagram_conversations")
-          .select("id, username, full_name, avatar, last_message, last_message_at, last_direction, unread, status, is_restricted")
-          .neq("id", "__vault_data__")
+          .select("id, contact_id, full_name, display_name, avatar, avatar_url, last_message_at, status, is_converted, workflow_finalized_at")
+          .like("id", "wa2:%")
+          .eq("is_converted", true)
+          .not("workflow_finalized_at", "is", null)
+          .neq("status", "locked")
+          .neq("status", "archived")
+          .neq("status", "system")
           .neq("status", "vault")
           .order("last_message_at", { ascending: false, nullsFirst: false })
-          .limit(300);
+          .range(from, from + pageSize - 1);
 
-        if (!error && data && data.length > 0) {
-          list = data
-            .filter(
-              (c: any) =>
-                !c.id?.startsWith("__") &&
-                c.status !== "system" &&
-                c.status !== "vault"
-            )
-            .map((c: any) => ({
-              id: c.id,
-              username: c.username?.startsWith("ig_")
-                ? "instagram_user"
-                : c.username || "",
-              fullName: c.full_name || undefined,
-              avatar: c.avatar || undefined,
-              lastMessage: c.last_message || undefined,
-              lastMessageAt: c.last_message_at || undefined,
-              lastDirection: c.last_direction || "in",
-              unread: Boolean(c.unread),
-              status: c.status || "active",
-              isRestricted: Boolean(c.is_restricted),
-            }));
-        }
+        if (conversationsError) throw conversationsError;
+
+        const page = Array.isArray(data) ? data : [];
+        allConversations.push(...page);
+
+        if (page.length < pageSize) break;
       }
 
-      // 2. Fallback via API se lista estiver vazia
-      if (list.length === 0) {
-        const res = await fetch(getApiUrl("/api/instagram/conversations"));
-        if (res.ok) {
-          const data = await res.json();
-          const raw = Array.isArray(data)
-            ? data
-            : data.conversations || [];
+      const rows = allConversations
+        .filter((row: any) => {
+          const id = String(row?.id || "");
+          const providerId = String(row?.contact_id || id.replace(/^wa2:/, ""));
+          return (
+            id.startsWith("wa2:") &&
+            providerId &&
+            !providerId.endsWith("@g.us") &&
+            providerId !== "status@broadcast"
+          );
+        });
 
-          list = raw.map((c: any) => ({
-            id: c.id,
-            username: c.username || "",
-            fullName: c.fullName || c.full_name || undefined,
-            avatar: c.avatar || undefined,
-            lastMessage: c.lastMessage || c.last_message || undefined,
-            lastMessageAt: c.lastMessageAt || c.last_message_at || undefined,
-            lastDirection: c.lastDirection || c.last_direction || "in",
-            unread: Boolean(c.unread),
-            status: c.status || "active",
-          }));
-        }
+      if (rows.length === 0) {
+        setWhatsAppContacts([]);
+        return;
       }
 
-      if (list.length > 0) {
-        setInstagramConversations(list);
+      const providerIds = rows.map((row: any) =>
+        String(row.contact_id || row.id.replace(/^wa2:/, "")).trim()
+      );
+      const resolved = await resolveWhatsApp2PhoneNumbers(providerIds);
+      const identityByProviderId = new Map(
+        (resolved.contacts || []).map((item) => [item.chatId, item])
+      );
+
+      const contacts = new Map<string, RaffleBuyer>();
+      for (const row of rows) {
+        const providerId = String(
+          row.contact_id || String(row.id || "").replace(/^wa2:/, "")
+        ).trim();
+        const identity = identityByProviderId.get(providerId);
+        const phone = identity?.phoneNumber
+          ? String(identity.phoneNumber)
+          : undefined;
+        const conversationId = String(row.id);
+        const dedupeKey = phone ? `phone:${phone}` : `conversation:${conversationId}`;
+        if (contacts.has(dedupeKey)) continue;
+
+        const rawName = String(
+          identity?.savedName ||
+          row.full_name ||
+          row.display_name ||
+          ""
+        ).trim();
+        const internalLikeName =
+          !rawName ||
+          rawName === providerId ||
+          rawName.endsWith("@lid") ||
+          rawName.endsWith("@c.us") ||
+          /^\+?[\d\s().-]{8,}$/.test(rawName);
+
+        contacts.set(dedupeKey, {
+          name: internalLikeName ? "Contato WhatsApp" : rawName,
+          phone: phone || undefined,
+          avatar: row.avatar_url || row.avatar || undefined,
+          conversationId,
+        });
       }
+
+      setWhatsAppContacts(Array.from(contacts.values()));
     } catch (err) {
-      console.warn("Erro ao buscar conversas do Instagram para rifa:", err);
+      console.warn("Erro ao buscar contatos do WhatsApp para rifa:", err);
+      setWhatsAppContacts([]);
     } finally {
-      setIsLoadingConversations(false);
+      setIsLoadingContacts(false);
     }
   }, []);
 
   // Carregamento inicial e sincronização em tempo real (Supabase Realtime)
   useEffect(() => {
     loadRaffles(false);
-    loadInstagramConversations();
+    loadWhatsAppContacts();
 
     const client = getSupabaseBrowserClient();
     if (!client) return;
@@ -224,7 +250,7 @@ export function useRaffles() {
       } catch {}
       clearInterval(interval);
     };
-  }, [loadRaffles, loadInstagramConversations]);
+  }, [loadRaffles, loadWhatsAppContacts]);
 
   // Alterna seleção de um número na grade
   const toggleNumberSelection = useCallback(
@@ -354,7 +380,7 @@ export function useRaffles() {
           notes: params.notes,
         });
 
-        // Uma compra paga vinculada a uma conversa do Instagram também fecha o funil comercial.
+        // Uma compra paga vinculada a uma conversa do WhatsApp também fecha o funil comercial.
         // Reserva não conta como compra para não inflar a conversão do relatório.
         if (params.status === "paid" && params.buyer.conversationId) {
           try {
@@ -472,8 +498,8 @@ export function useRaffles() {
     isLoading,
     isSubmitting,
     error,
-    instagramConversations,
-    isLoadingConversations,
+    whatsappContacts,
+    isLoadingContacts,
     loadRaffles,
     selectRaffle,
     toggleNumberSelection,

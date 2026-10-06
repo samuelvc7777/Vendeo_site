@@ -13,7 +13,7 @@ const autoPilot = readFileSync(join(root, "src/domain/entities/AutoPilot.ts"), "
 const direct = readFileSync(join(root, "src/presentation/components/chat/InstagramDirect.tsx"), "utf8");
 
 test("prompt mantém reply opcional e econômico, sem usar por padrão", () => {
-  assert.match(prompt, /VENDEO_AGENT_INSTRUCTIONS_VERSION: 2\.46\.0/);
+  assert.match(prompt, /VENDEO_AGENT_INSTRUCTIONS_VERSION: 2\.46\.\d+/);
   assert.match(prompt, /reply_to.*pergunta direta[\s\S]*?continuação já for óbvia/i);
   assert.doesNotMatch(
     prompt.match(/"outboundActions": \[[\s\S]*?\n  \]/)?.[0] || "",

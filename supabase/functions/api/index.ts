@@ -37,11 +37,12 @@ import {
 } from "./instagram_profile_queue.ts";
 import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
 import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
-import { handleTinderRoutes } from "./tinder_routes.ts";
+import { readConversationScheduleRuntimeSnapshot } from "./conversation_schedule_runtime.ts";
+import { handleTinderMatchRoutes } from "./tinder_match_routes.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-match-session",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
 };
 
@@ -338,18 +339,14 @@ serve(async (req: Request) => {
   try {
     const supabase = getSupabaseClient();
 
-    // ==========================================
-    // 0. TINDER ROUTES (Rotas do Tinder)
-    // ==========================================
-    const tinderResponse = await handleTinderRoutes({
+    const tinderMatchResponse = await handleTinderMatchRoutes({
       request: req,
       path,
       supabase,
       corsHeaders,
+      originAllowed: brainOperatorAllowedOrigin(req),
     });
-    if (tinderResponse) {
-      return tinderResponse;
-    }
+    if (tinderMatchResponse) return tinderMatchResponse;
 
     if (path === "/operator/session" && ["GET", "POST", "DELETE"].includes(req.method)) {
       if (!brainOperatorAllowedOrigin(req)) {
@@ -370,6 +367,71 @@ serve(async (req: Request) => {
 
     if (path === "/operator/chat-progress" && req.method === "POST") {
       return await handleOperatorChatProgress(req, supabase, brainOperatorAllowedOrigin(req), corsHeaders);
+    }
+
+    if (path === "/operator/chat-schedule" && req.method === "PUT") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const body = await req.json().catch(() => ({}));
+      const conversationId = String(body?.conversationId || "").trim();
+      const scheduleId = String(body?.scheduleId || "").trim();
+      if (!conversationId || !scheduleId) {
+        return new Response(JSON.stringify({ success: false, error: "conversation_id_and_schedule_id_required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const { data, error } = await supabase.rpc("set_conversation_schedule_atomic", {
+        p_conversation_id: conversationId,
+        p_schedule_id: scheduleId,
+      });
+      if (error || data?.success !== true) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: error?.message || data?.reason || "manual_schedule_switch_failed",
+          result: data || null,
+        }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, result: data }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    if (path === "/operator/chat-runtime" && req.method === "GET") {
+      if (!brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const conversationId = String(url.searchParams.get("conversationId") || "").trim();
+      if (!conversationId) {
+        return new Response(JSON.stringify({ success: false, error: "conversation_id_required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      try {
+        const runtime = await readConversationScheduleRuntimeSnapshot(supabase, conversationId);
+        return new Response(JSON.stringify({ success: true, runtime }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      } catch (error: any) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: error?.message || "conversation_schedule_runtime_unavailable",
+        }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
     }
 
     if (path === "/whatsapp/stickers" && req.method === "GET") {
@@ -3007,29 +3069,23 @@ serve(async (req: Request) => {
     }
 
     // ==========================================
-    // 8.5. CONFIGURAÇÃO DO OPENAI BRAIN (/ai/openai-config)
-    // A chave nunca é devolvida ao browser. O modelo é aplicado no Agent remoto único.
+    // 8.5. CONFIGURAÇÃO GERAL DA CONEXÃO OPENAI (/ai/openai-config)
+    // O modelo não é global: cada cronograma define o modelo do Brain.
     // ==========================================
     if (path === "/ai/openai-config") {
-      const allowedModels = ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"] as const;
       // Valores suportados pelos modelos GPT-6 do Brain; `max` é o teto de esforço.
       const allowedReasoningEfforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
       const allowedVerbosityLevels = ["low", "medium", "high"] as const;
-      const labels: Record<string, string> = {
-        "gpt-6-luna": "GPT-6 Luna",
-        "gpt-6-sol": "GPT-6 Sol",
-        "gpt-6.1-sol": "GPT-6.1 Sol",
-      };
       const { data: configRows, error: configError } = await supabase
         .from("instagram_config")
         .select("id, app_secret")
-        .in("id", ["openai_api_key", "openai_brain_model", "openai_brain_agent_id"]);
+        .in("id", ["openai_api_key", "openai_brain_agent_id"]);
       if (configError) return new Response(JSON.stringify({ error: configError.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       const configs = new Map((configRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
       const apiKey = (Deno.env.get("OPENAI_API_KEY") || configs.get("openai_api_key") || "").trim();
       const agentId = (Deno.env.get("OPENAI_BRAIN_AGENT_ID") || configs.get("openai_brain_agent_id") || "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482").trim();
       const mask = (key: string) => key ? `${key.slice(0, 7)}...${key.slice(-4)}` : null;
-      if (!apiKey) return new Response(JSON.stringify({ configured: false, maskedKey: null, model: null, modelLabel: null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      if (!apiKey) return new Response(JSON.stringify({ configured: false, maskedKey: null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       const agentUrl = `https://api.openai.com/v1/agents/${agentId}`;
       const agentHeaders = { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "agents=v1" };
       const getAgent = () => fetch(agentUrl, { headers: agentHeaders });
@@ -3038,32 +3094,29 @@ serve(async (req: Request) => {
         const remote = await getAgent();
         if (!remote.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${remote.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const agent = await remote.json();
-        const model = String(agent.model || configs.get("openai_brain_model") || "").trim() || null;
         const reasoningEffort = allowedReasoningEfforts.includes(agent.reasoning?.effort) ? agent.reasoning.effort : null;
         const verbosity = allowedVerbosityLevels.includes(agent.text?.verbosity) ? agent.text.verbosity : null;
-        const modelLabel = model ? labels[model] || model : null;
-        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), model, modelLabel, reasoningEffort, verbosity }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), reasoningEffort, verbosity, modelSource: "conversation_schedule" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
       if (req.method === "PUT") {
         const body = await req.json().catch(() => ({}));
         const hasModel = body?.model !== undefined;
+        if (hasModel) return new Response(JSON.stringify({ error: "O modelo do Brain é definido no cronograma, não na configuração global." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const hasReasoningEffort = body?.reasoningEffort !== undefined;
         const hasVerbosity = body?.verbosity !== undefined;
-        if (!hasModel && !hasReasoningEffort && !hasVerbosity && typeof body?.apiKey !== "string") return new Response(JSON.stringify({ error: "Nenhuma configuração foi informada." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        const model = hasModel ? body.model : undefined;
+        if (!hasReasoningEffort && !hasVerbosity && typeof body?.apiKey !== "string") return new Response(JSON.stringify({ error: "Nenhuma configuração foi informada." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const reasoningEffort = hasReasoningEffort ? body.reasoningEffort : undefined;
         const verbosity = hasVerbosity ? body.verbosity : undefined;
-        if (hasModel && !allowedModels.includes(model)) return new Response(JSON.stringify({ error: "Modelo OpenAI inválido. Escolha GPT-6 Luna, GPT-6 Sol ou GPT-6.1 Sol." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha none, low, medium, high, xhigh ou max." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         if (hasVerbosity && !allowedVerbosityLevels.includes(verbosity)) return new Response(JSON.stringify({ error: "Verbosity inválida. Escolha low, medium ou high (máxima)." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const suppliedKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
         const effectiveKey = suppliedKey || apiKey;
-        if (!effectiveKey) return new Response(JSON.stringify({ error: "Configure a chave da API OpenAI antes de escolher o modelo." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (!effectiveKey) return new Response(JSON.stringify({ error: "Configure a chave da API OpenAI antes de salvar as configurações gerais." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const currentResponse = await fetch(agentUrl, { headers: { Authorization: `Bearer ${effectiveKey}`, "OpenAI-Beta": "agents=v1" } });
         if (!currentResponse.ok) return new Response(JSON.stringify({ error: `Falha ao consultar Agent remoto (${currentResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const currentAgent = await currentResponse.json();
-        const targetModel = model || currentAgent.model;
+        const targetModel = currentAgent.model;
         const targetReasoningEffort = reasoningEffort || currentAgent.reasoning?.effort;
         const targetVerbosity = verbosity || currentAgent.text?.verbosity;
         if (targetModel === "gpt-6.1-sol" && targetReasoningEffort === "none") {
@@ -3072,7 +3125,6 @@ serve(async (req: Request) => {
           }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
         const remotePatch: Record<string, any> = {};
-        if (hasModel) remotePatch.model = model;
         if (hasReasoningEffort) remotePatch.reasoning = { ...(currentAgent.reasoning || {}), effort: reasoningEffort };
         if (hasVerbosity) remotePatch.text = { ...(currentAgent.text || {}), verbosity };
         let updatedAgent = currentAgent;
@@ -3084,10 +3136,9 @@ serve(async (req: Request) => {
           });
           if (!updateResponse.ok) return new Response(JSON.stringify({ error: `Falha ao atualizar a configuração do Agent remoto (${updateResponse.status})` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           updatedAgent = await updateResponse.json();
-          if ((hasModel && updatedAgent.model !== model) || (hasReasoningEffort && updatedAgent.reasoning?.effort !== reasoningEffort) || (hasVerbosity && updatedAgent.text?.verbosity !== verbosity)) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou toda a configuração selecionada" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          if ((hasReasoningEffort && updatedAgent.reasoning?.effort !== reasoningEffort) || (hasVerbosity && updatedAgent.text?.verbosity !== verbosity)) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou toda a configuração selecionada" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
         const writes = [];
-        if (hasModel) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_model", app_secret: model, updated_at: new Date().toISOString() }));
         if (hasReasoningEffort) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_reasoning_effort", app_secret: reasoningEffort, updated_at: new Date().toISOString() }));
         if (hasVerbosity) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_verbosity", app_secret: verbosity, updated_at: new Date().toISOString() }));
         const writeResults = await Promise.all(writes);
@@ -3097,9 +3148,7 @@ serve(async (req: Request) => {
           const keyWrite = await supabase.from("instagram_config").upsert({ id: "openai_api_key", app_secret: suppliedKey, updated_at: new Date().toISOString() });
           if (keyWrite.error) return new Response(JSON.stringify({ error: keyWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
-        const finalModel = updatedAgent.model || targetModel;
-        const modelLabel = finalModel ? labels[finalModel] || finalModel : null;
-        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), model: finalModel, modelLabel, reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null, modelSource: "conversation_schedule" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
     }
 
@@ -4594,6 +4643,11 @@ serve(async (req: Request) => {
           "Se sugerir mensagens ao contato, preserve o estilo natural da conversa, mas apresente como opções para o operador escolher.",
           "Em temas políticos: não deduza ideologia a partir de sinais ambíguos e não recomende fingir alinhamento. Aponte apenas declarações explícitas, incertezas e perguntas neutras de esclarecimento.",
           "Seja direto e útil. Responda em português do Brasil.",
+          "",
+          "FATOS CANÔNICOS FIXOS DA LARISSA:",
+          "- Instagram pessoal: @lariresende_0611.",
+          "- Instagram da loja: @lari_modasr.",
+          "- Esses arrobas já são fatos conhecidos. Nunca diga que faltam ao operador e nunca mande procurar link ou perfil na bio.",
           "",
           `PEDIDO QUE BLOQUEOU O TURNO: ${manualQuestion}`,
           manualContext ? `CONTEXTO DO PEDIDO: ${manualContext}` : "",

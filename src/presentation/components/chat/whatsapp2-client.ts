@@ -1,7 +1,9 @@
 export const WHATSAPP2_GATEWAY_URL =
   process.env.NEXT_PUBLIC_WHATSAPP2_GATEWAY_URL || "http://127.0.0.1:8788";
 
-export const IS_WHATSAPP2_REMOTE_BUILD = WHATSAPP2_GATEWAY_URL === "/wa2";
+export const IS_WHATSAPP2_REMOTE_BUILD =
+  WHATSAPP2_GATEWAY_URL === "/wa2" ||
+  !/^http:\/\/(?:127\.0\.0\.1|localhost):8788\/?$/i.test(WHATSAPP2_GATEWAY_URL);
 
 export type WhatsApp2AttachmentKind =
   | "audio"
@@ -108,6 +110,25 @@ export interface WhatsApp2GatewayMessage {
   messageMetadata?: WhatsApp2MessageMetadata | null;
 }
 
+const WHATSAPP2_INTERNAL_SYSTEM_MESSAGE_TYPES = new Set([
+  "notification_template",
+  "e2e_notification",
+  "protocol",
+  "ciphertext",
+  "debug",
+  "notification",
+  "group_notification",
+  "broadcast_notification",
+]);
+
+export function isWhatsApp2InternalSystemMessage(
+  message: WhatsApp2GatewayMessage | null | undefined,
+): boolean {
+  return WHATSAPP2_INTERNAL_SYSTEM_MESSAGE_TYPES.has(
+    String(message?.type || "").toLowerCase(),
+  );
+}
+
 export function normalizeWhatsApp2Attachment(
   value: unknown,
   fallback?: Partial<WhatsApp2Attachment>,
@@ -201,7 +222,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data?.ok === false) {
-    throw new Error(data?.error || `WhatsApp 2 gateway HTTP ${response.status}`);
+    throw new Error(data?.error || `Gateway do WhatsApp HTTP ${response.status}`);
   }
   return data as T;
 }
@@ -249,7 +270,11 @@ export async function getWhatsApp2Chats(limit = 160) {
   const data = await request<{ ok: true; chats: WhatsApp2GatewayChat[] }>(
     `/chats?limit=${Math.max(1, Math.min(limit, 500))}`,
   );
-  return data.chats || [];
+  return (data.chats || []).map((chat) =>
+    isWhatsApp2InternalSystemMessage(chat.lastMessage)
+      ? { ...chat, lastMessage: null }
+      : chat
+  );
 }
 
 export interface WhatsApp2ChatControlState {
@@ -263,6 +288,57 @@ export async function getWhatsApp2ChatState(chatId: string) {
   return request<{ ok: true } & WhatsApp2ChatControlState>(
     `/chat/state?chatId=${encodeURIComponent(chatId)}`,
   );
+}
+
+export async function getWhatsApp2ExternalChatLink(chatId: string) {
+  return request<{
+    ok: true;
+    chatId: string;
+    available: boolean;
+    phoneNumber?: string;
+    url?: string;
+    reason?: string;
+  }>(
+    `/chat/external-link?chatId=${encodeURIComponent(chatId)}`,
+  );
+}
+
+export interface WhatsApp2ResolvedPhone {
+  chatId: string;
+  phoneNumber: string | null;
+  savedName?: string | null;
+  available: boolean;
+}
+
+export async function resolveWhatsApp2PhoneNumbers(chatIds: string[]) {
+  const uniqueChatIds = Array.from(
+    new Set(
+      (Array.isArray(chatIds) ? chatIds : [])
+        .map((chatId) => String(chatId || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  const contacts: WhatsApp2ResolvedPhone[] = [];
+  const batchSize = 200;
+
+  for (let index = 0; index < uniqueChatIds.length; index += batchSize) {
+    const response = await request<{
+      ok: true;
+      contacts: WhatsApp2ResolvedPhone[];
+    }>("/chat/resolve-phones", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatIds: uniqueChatIds.slice(index, index + batchSize) }),
+    });
+
+    contacts.push(...(response.contacts || []));
+  }
+
+  return {
+    ok: true as const,
+    contacts,
+  };
 }
 
 export async function setWhatsApp2ChatBlocked(chatId: string, blocked: boolean) {
@@ -302,7 +378,9 @@ export async function getWhatsApp2Messages(chatId: string, limit = 120) {
   }>(
     `/chat/messages?chatId=${encodeURIComponent(chatId)}&limit=${Math.max(1, Math.min(limit, 250))}`,
   );
-  return data.messages || [];
+  return (data.messages || []).filter(
+    (message) => !isWhatsApp2InternalSystemMessage(message),
+  );
 }
 
 export async function getWhatsApp2Presence(chatId: string) {
@@ -419,6 +497,192 @@ export async function sendWhatsApp2Media(params: {
   replyToMessageId?: string | null;
 }) {
   return request<{ ok: true; message: WhatsApp2GatewayMessage }>("/messages/send-media", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+
+export type WhatsAppStatusPrivacyType = "contact" | "deny-list" | "allow-list";
+
+export interface WhatsAppStatusPrivacyConfig {
+  type: WhatsAppStatusPrivacyType;
+  list?: string[];
+  count?: number;
+}
+
+export interface WhatsAppStatusContact {
+  id: string;
+  name: string;
+  number: string;
+  avatarUrl?: string | null;
+  isMyContact?: boolean;
+}
+
+export interface WhatsAppStatusContactsResult {
+  ok: true;
+  contacts: WhatsAppStatusContact[];
+  total: number;
+}
+
+export interface WhatsApp2PublishStatusTextParams {
+  text: string;
+  backgroundColor?: string;
+  font?: number;
+  idempotencyKey?: string;
+  privacy?: WhatsAppStatusPrivacyConfig;
+}
+
+export interface WhatsApp2StatusPublishResult {
+  ok: true;
+  id: string | null;
+  ack: number;
+  status: "sent";
+  type: "text";
+  text: string;
+  backgroundColor?: string | null;
+  font?: number;
+  publishedAt: string;
+  cached?: boolean;
+}
+
+export async function publishWhatsAppStatusText(
+  params: WhatsApp2PublishStatusTextParams,
+): Promise<WhatsApp2StatusPublishResult> {
+  return request<WhatsApp2StatusPublishResult>("/status/text", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+
+export interface WhatsApp2PublishStatusImageParams {
+  mediaBase64?: string;
+  mediaUrl?: string;
+  mimetype?: string;
+  filename?: string;
+  caption?: string;
+  idempotencyKey?: string;
+  privacy?: WhatsAppStatusPrivacyConfig;
+}
+
+export interface WhatsApp2StatusImagePublishResult {
+  ok: true;
+  id: string | null;
+  ack: number;
+  status: "sent";
+  type: "image";
+  caption?: string | null;
+  mimeType: string;
+  fileSize?: number;
+  publishedAt: string;
+  cached?: boolean;
+}
+
+export async function publishWhatsAppStatusImage(
+  params: WhatsApp2PublishStatusImageParams,
+): Promise<WhatsApp2StatusImagePublishResult> {
+  return request<WhatsApp2StatusImagePublishResult>("/status/image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+
+export interface WhatsApp2PublishStatusVideoParams {
+  mediaBase64?: string;
+  mediaUrl?: string;
+  mimetype?: string;
+  filename?: string;
+  caption?: string;
+  idempotencyKey?: string;
+  skipTranscode?: boolean;
+  privacy?: WhatsAppStatusPrivacyConfig;
+}
+
+export interface WhatsApp2StatusVideoPublishResult {
+  ok: true;
+  id: string | null;
+  ack: number;
+  status: "sent";
+  type: "video";
+  caption?: string | null;
+  mimeType: string;
+  fileSize?: number;
+  publishedAt: string;
+  cached?: boolean;
+}
+
+export async function publishWhatsAppStatusVideo(
+  params: WhatsApp2PublishStatusVideoParams,
+): Promise<WhatsApp2StatusVideoPublishResult> {
+  return request<WhatsApp2StatusVideoPublishResult>("/status/video", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+export async function getWhatsApp2StatusPrivacy(): Promise<WhatsAppStatusPrivacyConfig & { ok: boolean }> {
+  return request<WhatsAppStatusPrivacyConfig & { ok: boolean }>("/status/privacy", {
+    method: "GET",
+  });
+}
+
+export async function setWhatsApp2StatusPrivacy(
+  config: WhatsAppStatusPrivacyConfig,
+): Promise<{ ok: boolean; type: WhatsAppStatusPrivacyType; count: number }> {
+  return request<{ ok: boolean; type: WhatsAppStatusPrivacyType; count: number }>("/status/privacy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+}
+
+export async function getWhatsApp2StatusContacts(
+  search = "",
+  limit = 300,
+): Promise<WhatsAppStatusContactsResult> {
+  const query = new URLSearchParams();
+  if (search) query.set("search", search);
+  if (limit) query.set("limit", String(limit));
+  const queryString = query.toString();
+  return request<WhatsAppStatusContactsResult>(`/status/contacts${queryString ? `?${queryString}` : ""}`, {
+    method: "GET",
+  });
+}
+
+export interface WhatsAppStatusEvergreenRecipient {
+  contactKey: string;
+  contactId: string | null;
+  contactNumber: string | null;
+  statusPostId: string | null;
+  sentAt: string;
+}
+
+export async function getWhatsApp2EvergreenRecipients(storyKey: string) {
+  const query = new URLSearchParams({ storyKey });
+  return request<{
+    ok: true;
+    storyKey: string;
+    recipients: WhatsAppStatusEvergreenRecipient[];
+    count: number;
+  }>(`/status/evergreen-recipients?${query.toString()}`, {
+    method: "GET",
+  });
+}
+
+export async function recordWhatsApp2EvergreenRecipients(params: {
+  storyKey: string;
+  statusPostId?: string | null;
+  recipients: Array<{ id?: string | null; number?: string | null }>;
+}) {
+  return request<{
+    ok: true;
+    storyKey: string;
+    inserted: number;
+    recipients: WhatsAppStatusEvergreenRecipient[];
+    count: number;
+  }>("/status/evergreen-recipients", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),

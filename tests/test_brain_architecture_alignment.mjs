@@ -181,7 +181,7 @@ test("bridge de áudio revalida pelo objective_id que autorizou o candidato, nã
   const dispatchBlock = source.slice(dispatchStart, dispatchStart + 7000);
   assert.match(dispatchBlock, /authorizedAudioObjectiveId/);
   assert.match(dispatchBlock, /objectiveId:\s*authorizedAudioObjectiveId/);
-  assert.doesNotMatch(dispatchBlock, /objectiveId:\s*stageChecklistForRouter\.currentObjective\?\.id/);
+  assert.doesNotMatch(dispatchBlock, /objectiveId:\s*stageObjectivesForRouter\.currentObjective\?\.id/);
   assert.match(source, /brainAudioObjectiveById/);
   assert.match(sdkSource, /Objetivo completed significa somente não perguntar esse dado novamente ao pretendente; NÃO desabilita áudio/);
   assert.match(canonicalPrompt, /completed.*não perguntar novamente esse dado ao pretendente[\s\S]{0,180}NÃO significa "desabilitar os áudios/);

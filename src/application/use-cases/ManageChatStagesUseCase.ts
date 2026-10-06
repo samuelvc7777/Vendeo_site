@@ -10,7 +10,8 @@ export class ManageChatStagesUseCase {
 
   async createStage(data: {
     name: string;
-    folderId?: string;
+    scheduleId: string;
+    isRequired?: boolean;
     color?: string;
     icon?: string;
     description?: string;
@@ -20,10 +21,12 @@ export class ManageChatStagesUseCase {
     }
 
     const current = await this.stageRepository.getStages();
+    const currentScheduleStages = current.filter((stage) => stage.scheduleId === data.scheduleId);
     return this.stageRepository.createStage({
       name: data.name.trim(),
-      folderId: data.folderId,
-      order: current.length,
+      scheduleId: data.scheduleId,
+      isRequired: data.isRequired ?? true,
+      order: currentScheduleStages.length,
       color: data.color || "#3b82f6",
       icon: data.icon,
       description: data.description?.trim(),
@@ -34,10 +37,11 @@ export class ManageChatStagesUseCase {
     id: string,
     data: {
       name?: string;
-      folderId?: string;
       color?: string;
       icon?: string;
       description?: string;
+      scheduleId?: string;
+      isRequired?: boolean;
       goals?: ConversationGoal[];
     }
   ): Promise<ChatStage> {
@@ -50,10 +54,13 @@ export class ManageChatStagesUseCase {
 
   async moveStageUp(id: string): Promise<ChatStage[]> {
     const current = await this.stageRepository.getStages();
-    const index = current.findIndex((s) => s.id === id);
-    if (index <= 0) return current; // Já está no topo
+    const target = current.find((stage) => stage.id === id);
+    if (!target) return current;
+    const scheduleStages = current.filter((stage) => stage.scheduleId === target.scheduleId).sort((a, b) => a.order - b.order);
+    const index = scheduleStages.findIndex((s) => s.id === id);
+    if (index <= 0) return current;
 
-    const reordered = [...current];
+    const reordered = [...scheduleStages];
     const temp = reordered[index - 1];
     reordered[index - 1] = reordered[index];
     reordered[index] = temp;
@@ -63,10 +70,13 @@ export class ManageChatStagesUseCase {
 
   async moveStageDown(id: string): Promise<ChatStage[]> {
     const current = await this.stageRepository.getStages();
-    const index = current.findIndex((s) => s.id === id);
-    if (index === -1 || index >= current.length - 1) return current; // Já está na base
+    const target = current.find((stage) => stage.id === id);
+    if (!target) return current;
+    const scheduleStages = current.filter((stage) => stage.scheduleId === target.scheduleId).sort((a, b) => a.order - b.order);
+    const index = scheduleStages.findIndex((s) => s.id === id);
+    if (index === -1 || index >= scheduleStages.length - 1) return current;
 
-    const reordered = [...current];
+    const reordered = [...scheduleStages];
     const temp = reordered[index + 1];
     reordered[index + 1] = reordered[index];
     reordered[index] = temp;
@@ -120,7 +130,7 @@ export class ManageChatStagesUseCase {
         completionPolicy,
         actionType: data.actionType,
         actionConfig: data.actionConfig,
-        required: true,
+        required: data.required ?? true,
         order: 0,
         enabled: data.enabled ?? true,
       });
@@ -142,7 +152,7 @@ export class ManageChatStagesUseCase {
       completionPolicy,
       actionType: data.actionType,
       actionConfig: data.actionConfig,
-      required: true,
+      required: data.required ?? true,
       order: currentGoals.length,
       enabled: data.enabled ?? true,
     };

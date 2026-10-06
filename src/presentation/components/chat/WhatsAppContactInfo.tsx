@@ -24,7 +24,7 @@ type ContactConversation = {
   fullName: string;
   username: string;
   avatar: string;
-  type: "instagram" | "whatsapp";
+  type: "instagram" | "whatsapp" | "whatsapp2";
   isConverted?: boolean;
   raffleStatus?: string | null;
 };
@@ -132,7 +132,7 @@ export function WhatsAppContactInfo({
     };
   }, [conversation.id]);
 
-  const phone = formatWhatsAppPhone(dbRow?.contact_id || conversation.username || conversation.id.replace(/^wa:/, ""));
+  const phone = formatWhatsAppPhone(dbRow?.contact_id || conversation.username || conversation.id.replace(/^wa2?:/, ""));
   const rawAvatar = String(conversation.avatar || "").trim();
   const hasRealAvatar = /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
   const contactName = String(conversation.fullName || "").trim();
@@ -231,11 +231,11 @@ export function WhatsAppContactInfo({
           : { type: "spring", stiffness: 430, damping: 42, mass: 0.78 }
       }
     >
-      <div className="flex h-[58px] shrink-0 items-center border-b border-black/[0.08] bg-white/68 px-2 backdrop-blur-3xl dark:border-white/[0.07] dark:bg-[#1c1c1e]/72">
+      <div className="flex min-h-[calc(58px+env(safe-area-inset-top,0px))] pt-[env(safe-area-inset-top,0px)] shrink-0 items-center border-b border-black/[0.08] bg-white/68 px-2 backdrop-blur-3xl dark:border-white/[0.07] dark:bg-[#1c1c1e]/72">
         <button
           type="button"
           onClick={onClose}
-          className="flex h-9 w-9 items-center justify-center text-[#007aff] transition-transform active:scale-90"
+          className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-[#007aff] transition-transform active:scale-90"
           aria-label="Voltar"
         >
           <ChevronLeft className="h-7 w-7 stroke-[2.1]" />
@@ -245,7 +245,7 @@ export function WhatsAppContactInfo({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 pb-8 pt-5 scrollbar-none">
+      <div className="flex-1 overflow-y-auto px-3 pb-[calc(2rem+env(safe-area-inset-bottom,0px))] pt-5 scrollbar-none">
         <section className="flex flex-col items-center pb-5 text-center">
           <div className="relative flex h-[112px] w-[112px] items-center justify-center overflow-hidden rounded-full bg-[#667781] text-white shadow-sm">
             {hasRealAvatar ? (

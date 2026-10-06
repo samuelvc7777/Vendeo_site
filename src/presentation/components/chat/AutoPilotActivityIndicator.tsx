@@ -9,6 +9,7 @@ import {
   Loader2,
   Send,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Mic,
@@ -19,6 +20,7 @@ import {
   Maximize2,
   Edit3,
   Check,
+  Copy,
   X,
   FastForward,
   Search,
@@ -216,25 +218,72 @@ function OpenAiUsagePanel({ metadata }: { metadata: Record<string, unknown> }) {
   ] as const;
 
   return (
-    <section className="mt-3 rounded-lg border border-cyan-200 dark:border-cyan-900/50 bg-cyan-50 dark:bg-cyan-950/10 p-2.5" aria-label="Uso da OpenAI neste turno">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-cyan-700 dark:text-cyan-300">Uso da OpenAI</div>
-      <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-[10px] text-zinc-700 dark:text-zinc-300">
+    <section className="mt-3 rounded-xl border border-cyan-200 dark:border-cyan-900/50 bg-cyan-50/70 dark:bg-cyan-950/20 p-3" aria-label="Uso da OpenAI neste turno">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-cyan-200/60 dark:border-cyan-900/40 pb-2">
+        <div className="text-[11px] font-bold uppercase tracking-wider text-cyan-800 dark:text-cyan-300">
+          Uso da OpenAI
+        </div>
+        <div className="text-[10px] text-zinc-600 dark:text-zinc-400">
+          {requests === null ? "Solicitações indisponíveis" : `${formatUsageTokens(requests)} solicitações`}
+        </div>
+      </div>
+
+      <div className="mt-2 text-[10px] text-zinc-700 dark:text-zinc-300 font-medium">
         <span>{modelNames}{reasoningEffort ? ` · raciocínio ${reasoningEffort}` : ""}</span>
-        <span>{requests === null ? "Solicitações indisponíveis" : `${formatUsageTokens(requests)} solicitações`}</span>
       </div>
-      <div className="mt-2 space-y-1 border-t border-zinc-200 dark:border-zinc-800 pt-2">
-        {tokenRows.map(([label, value]) => <div key={label} className={`flex justify-between gap-3 text-[10px] ${label.startsWith("↳") ? "pl-2 text-zinc-500" : "text-zinc-700 dark:text-zinc-300"}`}><span>{label}</span><span>{formatUsageTokens(value)}</span></div>)}
+
+      <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+        {tokenRows.map(([label, value]) => (
+          <div
+            key={label}
+            className={`rounded-lg p-2 border ${
+              label.startsWith("↳")
+                ? "border-cyan-200/40 dark:border-cyan-900/30 bg-cyan-100/30 dark:bg-cyan-950/10 text-cyan-900 dark:text-cyan-200"
+                : label === "Total"
+                ? "border-cyan-300 dark:border-cyan-800/60 bg-cyan-100/60 dark:bg-cyan-900/30 font-semibold"
+                : "border-zinc-200/60 dark:border-white/5 bg-white/60 dark:bg-black/20"
+            }`}
+          >
+            <div className="text-[9px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400 truncate">
+              {label}
+            </div>
+            <div className="mt-0.5 text-xs font-mono font-bold text-zinc-900 dark:text-zinc-100">
+              {formatUsageTokens(value)}
+            </div>
+          </div>
+        ))}
       </div>
-      <div className="mt-2 flex flex-wrap justify-between gap-x-3 border-t border-zinc-200 dark:border-zinc-800 pt-2 text-[10px] text-zinc-700 dark:text-zinc-300">
-        <span>Acerto de cache</span><span>{cacheHitRate === null ? "Indisponível" : `${cacheHitRate.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}</span>
+
+      <div className="mt-2.5 flex flex-wrap justify-between items-center gap-x-3 text-[10px] text-zinc-700 dark:text-zinc-300 border-t border-cyan-200/60 dark:border-cyan-900/40 pt-2">
+        <span className="text-zinc-500">Acerto de cache:</span>
+        <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+          {cacheHitRate === null ? "Indisponível" : `${cacheHitRate.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}
+        </span>
       </div>
-      <div className="mt-2 border-t border-zinc-200 dark:border-zinc-800 pt-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Custo estimado · tarifa padrão</div>
-        <div className="mt-0.5 text-[12px] font-medium text-zinc-900 dark:text-zinc-100">{usd === null ? "Indisponível" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}</div>
-        {brl !== null && <div className="text-[10px] text-zinc-600 dark:text-zinc-400">≈ R$ {brl.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>}
-        {fx !== null && <div className="mt-0.5 text-[9px] text-zinc-600">Câmbio estimado: R${fx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}/US$</div>}
-        {usage.cacheWriteTokens == null && <div className="mt-1 text-[10px] text-zinc-500">A gravação no cache não foi informada pela API.</div>}
-        {typeof usage.serviceTier === "string" && <div className="mt-1 text-[10px] text-zinc-500">Categoria: {formatConsoleSetting(usage.serviceTier) || "Padrão"}</div>}
+
+      <div className="mt-2 rounded-lg bg-black/20 p-2.5 border border-white/5">
+        <div className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Custo estimado · tarifa padrão</div>
+        <div className="mt-1 flex flex-wrap items-baseline gap-2">
+          <span className="text-sm font-black font-mono text-zinc-900 dark:text-zinc-100">
+            {usd === null ? "Indisponível" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}
+          </span>
+          {brl !== null && (
+            <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+              ≈ R$ {brl.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          )}
+        </div>
+        {fx !== null && (
+          <div className="mt-1 text-[9px] text-zinc-500">
+            Câmbio estimado: R$ {fx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}/US$
+          </div>
+        )}
+        {usage.cacheWriteTokens == null && (
+          <div className="mt-1 text-[9.5px] text-zinc-500">A gravação no cache não foi informada pela API.</div>
+        )}
+        {typeof usage.serviceTier === "string" && (
+          <div className="mt-0.5 text-[9.5px] text-zinc-500">Categoria: {formatConsoleSetting(usage.serviceTier) || "Padrão"}</div>
+        )}
       </div>
     </section>
   );
@@ -610,14 +659,91 @@ function ProviderErrorDetails({ value }: { value: Record<string, unknown> }) {
   const subcode = value.subcode;
   const message = typeof value.message === "string" ? value.message : "Falha sem mensagem detalhada.";
   return (
-    <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.05] p-2 text-xs text-zinc-800 dark:text-zinc-200">
-      <div className="font-medium text-rose-900 dark:text-rose-100">
-        {provider}{httpStatus !== null ? ` HTTP ${httpStatus}` : ""}
-        {code !== undefined ? ` · código ${String(code)}` : ""}
-        {subcode !== undefined ? ` · subcódigo ${String(subcode)}` : ""}
+    <div className="rounded-xl border border-rose-400/30 bg-rose-400/[0.08] p-3 text-xs text-zinc-800 dark:text-zinc-200">
+      <div className="flex items-center gap-1.5 font-bold text-rose-800 dark:text-rose-200">
+        <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+        <span>{provider}{httpStatus !== null ? ` · HTTP ${httpStatus}` : ""}</span>
+        {code !== undefined ? <span className="opacity-75">· código {String(code)}</span> : null}
+        {subcode !== undefined ? <span className="opacity-75">· subcódigo {String(subcode)}</span> : null}
       </div>
-      <p className="mt-1 break-words">{formatVisibleBrainIdentity(message)}</p>
+      <p className="mt-1.5 break-words text-rose-900 dark:text-rose-100 leading-relaxed font-mono text-[11px] bg-black/20 p-2 rounded-lg">{formatVisibleBrainIdentity(message)}</p>
     </div>
+  );
+}
+
+function CopyableIdBadge({ label, value }: { label: string; value?: string | null }) {
+  const [copied, setCopied] = useState(false);
+  if (!value || value === "Não informado") {
+    return (
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <dt className="text-[10px] uppercase font-bold text-zinc-500">{label}</dt>
+        <dd className="break-all font-mono text-xs text-zinc-500">Não informado</dd>
+      </div>
+    );
+  }
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (navigator?.clipboard?.writeText) {
+      void navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-0.5 min-w-0">
+      <dt className="text-[10px] uppercase font-bold text-zinc-500">{label}</dt>
+      <dd className="flex items-center gap-1.5 min-w-0">
+        <span className="truncate font-mono text-xs text-zinc-800 dark:text-zinc-200 bg-black/10 dark:bg-white/5 px-2 py-0.5 rounded-lg border border-black/5 dark:border-white/5 select-all">
+          {value}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="p-1 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 active:scale-90 transition-transform shrink-0 cursor-pointer"
+          title={`Copiar ${label}`}
+          aria-label={`Copiar ${label}`}
+        >
+          {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+        </button>
+      </dd>
+    </div>
+  );
+}
+
+function ConsoleJsonViewer({ data, title = "Dados completos do evento" }: { data: unknown; title?: string }) {
+  const [copied, setCopied] = useState(false);
+  const jsonString = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (navigator?.clipboard?.writeText) {
+      void navigator.clipboard.writeText(jsonString);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <details className="group mt-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-100/60 dark:bg-black/40 overflow-hidden text-xs">
+      <summary className="min-h-[42px] px-3 py-2 flex items-center justify-between gap-2 cursor-pointer font-medium text-zinc-700 dark:text-zinc-300 select-none hover:bg-zinc-200/50 dark:hover:bg-white/[0.04]">
+        <span className="truncate font-semibold">{title}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold border border-zinc-300 dark:border-white/10 bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 active:scale-95 transition-transform shrink-0 cursor-pointer"
+        >
+          {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+          <span>{copied ? "Copiado!" : "Copiar"}</span>
+        </button>
+      </summary>
+      <div className="p-2.5 border-t border-zinc-200 dark:border-zinc-800 bg-black/60">
+        <pre className="max-h-72 overflow-x-auto overflow-y-auto whitespace-pre font-mono text-[11px] leading-5 text-zinc-300 p-2 rounded-lg bg-black/40 border border-white/5 scrollbar-thin">
+          {formatVisibleBrainIdentity(jsonString)}
+        </pre>
+      </div>
+    </details>
   );
 }
 
@@ -713,19 +839,24 @@ function BrainTurnTimeline({
             }`
       }`}
     >
-      <div className="flex items-stretch">
+      <div
+        onClick={() => onToggleTurn(turn.id)}
+        className="flex items-stretch cursor-pointer select-none transition-colors hover:bg-black/5 dark:hover:bg-white/[0.02]"
+      >
         <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 sm:px-4">
-          <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${statusTone}`}>
-              {turn.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : turn.status === "completed" ? <Check className="h-4 w-4" /> : turn.status === "failed" ? <AlertTriangle className="h-4 w-4" /> : turn.status === "cancelled" ? <StopCircle className="h-4 w-4" /> : turn.status === "stale" ? <Clock3 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+          <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${statusTone}`}>
+            {turn.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : turn.status === "completed" ? <Check className="h-4 w-4" /> : turn.status === "failed" ? <AlertTriangle className="h-4 w-4" /> : turn.status === "cancelled" ? <StopCircle className="h-4 w-4" /> : turn.status === "stale" ? <Clock3 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <h3 className={`text-sm font-semibold ${
+              <h3 className={`text-sm font-bold ${
                 whatsappTheme ? "text-[#e9edef]" : "text-zinc-900 dark:text-zinc-100"
               }`}>Turno {turnNumber}</h3>
-              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusTone}`}>{turn.provisional && active ? "Iniciando" : formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}</span>
+              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusTone}`}>
+                {turn.provisional && active ? "Iniciando" : formatBrainStatus(turn.status === "running" ? "brain_running" : turn.status === "cancelled" ? "cancelled" : turn.status)}
+              </span>
               {active && (
-                <span className={`text-[11px] font-semibold uppercase tracking-wide ${
+                <span className={`text-[11px] font-bold uppercase tracking-wide ${
                   whatsappTheme ? "text-[#25d366]" : "text-purple-700 dark:text-purple-300"
                 }`}>
                   Agora
@@ -743,8 +874,11 @@ function BrainTurnTimeline({
           type="button"
           aria-label={`${expanded ? "Recolher" : "Abrir"} detalhes do Turno ${turnNumber}`}
           aria-expanded={expanded}
-          onClick={() => onToggleTurn(turn.id)}
-          className={`flex min-h-14 w-14 shrink-0 items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset ${
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleTurn(turn.id);
+          }}
+          className={`flex min-h-[48px] w-12 shrink-0 items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset cursor-pointer ${
             whatsappTheme
               ? "text-[#8696a0] hover:bg-white/[0.04] active:scale-95 focus-visible:ring-[#25d366]/50"
               : "border-l border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-800/70 active:bg-zinc-700 focus-visible:ring-purple-300"
@@ -826,24 +960,42 @@ function BrainTurnTimeline({
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{label}</span></div>
                     {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-700 dark:text-zinc-300">{description}</p>}
                     {linkedAction && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-2.5"><span className="text-sm text-rose-900 dark:text-rose-100">Ação {linkedAction.action_index + 1}: {linkedAction.action_type === "audio" ? "áudio" : "mensagem"} não enviada</span><button type="button" onClick={() => onRetryAction(linkedAction.id)} disabled={Boolean(retryingActionId)} className="min-h-11 rounded-lg bg-rose-300 px-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{retryingActionId === linkedAction.id ? "Enviando…" : "Enviar manualmente"}</button></div>}
-                    <details className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                      <summary className="min-h-10 cursor-pointer py-2 font-medium">Ver detalhes técnicos</summary>
-                      <div className="space-y-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 p-3">
+                    <details className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+                      <summary className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-zinc-200 dark:border-white/5 bg-black/10 dark:bg-white/[0.03] cursor-pointer font-medium select-none flex items-center justify-between hover:bg-black/20 dark:hover:bg-white/[0.06] transition-colors">
+                        <span>Ver detalhes técnicos</span>
+                        <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+                      </summary>
+                      <div className="mt-2 space-y-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 p-3">
                         {event.metadata && event.metadata.providerError && typeof event.metadata.providerError === "object"
                           ? <ProviderErrorDetails value={event.metadata.providerError as Record<string, unknown>} />
                           : null}
-                        <dl className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
-                          <div><dt className="text-zinc-500">ID do turno</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.turnId || turn.turnId || "Não informado"}</dd></div>
-                          <div><dt className="text-zinc-500">ID da sessão</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.sessionId || turn.sessionId || "Não informado"}</dd></div>
-                          <div><dt className="text-zinc-500">ID do ciclo</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.cycleId || turn.cycleId || "Não informado"}</dd></div>
-                          {event.decisionId && <div><dt className="text-zinc-500">ID da decisão</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.decisionId}</dd></div>}
-                          <div><dt className="text-zinc-500">Etapa registrada</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span></dd></div>
-                          <div><dt className="text-zinc-500">Estado registrado</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}</dd></div>
-                          {event.actionId && <div><dt className="text-zinc-500">ID da ação</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.actionId}</dd></div>}
-                          <div className="sm:col-span-2"><dt className="text-zinc-500">Data e hora</dt><dd className="break-all font-mono text-zinc-700 dark:text-zinc-300">{event.timestamp}</dd></div>
+                        <dl className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2">
+                          <CopyableIdBadge label="ID do turno" value={event.turnId || turn.turnId} />
+                          <CopyableIdBadge label="ID da sessão" value={event.sessionId || turn.sessionId} />
+                          <CopyableIdBadge label="ID do ciclo" value={event.cycleId || turn.cycleId} />
+                          {event.decisionId && <CopyableIdBadge label="ID da decisão" value={event.decisionId} />}
+                          <div>
+                            <dt className="text-[10px] uppercase font-bold text-zinc-500">Etapa registrada</dt>
+                            <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                              {formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-[10px] uppercase font-bold text-zinc-500">Estado registrado</dt>
+                            <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                              {formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}
+                            </dd>
+                          </div>
+                          {event.actionId && <CopyableIdBadge label="ID da ação" value={event.actionId} />}
+                          <div className="sm:col-span-2">
+                            <dt className="text-[10px] uppercase font-bold text-zinc-500">Data e hora</dt>
+                            <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">{event.timestamp}</dd>
+                          </div>
                         </dl>
                         <ConsoleCycleEventCard event={event} />
-                        {event.metadata && Object.keys(event.metadata).length > 0 && <details><summary className="min-h-10 cursor-pointer py-2">Dados completos do evento</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2 text-[11px] leading-5 text-zinc-700 dark:text-zinc-300">{formatVisibleBrainIdentity(JSON.stringify(event.metadata, null, 2))}</pre></details>}
+                        {event.metadata && Object.keys(event.metadata).length > 0 && (
+                          <ConsoleJsonViewer data={event.metadata} title="Dados completos do evento" />
+                        )}
                       </div>
                     </details>
                   </div>
@@ -954,37 +1106,54 @@ function BrainOperationalConsole({
     });
   }, [open, activeTurn?.id, events.length]);
 
+  useEffect(() => {
+    if (!open) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [open]);
+
   const toggleTurn = (turnId: string) => dispatch({ type: "toggle", turnId });
   if (!open) return null;
 
   return (
     <div
-      className={`fixed inset-0 z-[100] p-2 sm:p-6 ${
+      className={`fixed inset-0 z-[100] ${
         whatsappTheme
-          ? "whatsapp-ios bg-black/35 backdrop-blur-[2px]"
+          ? "whatsapp-ios bg-black/40 backdrop-blur-[2px]"
           : "bg-black/80 backdrop-blur-sm"
-      }`}
+      } p-0 sm:p-6 flex flex-col justify-end sm:justify-center items-center`}
       role="dialog"
       aria-modal="true"
       aria-label="Console operacional do Brain"
     >
       <div
-        className={`mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden shadow-2xl ${
+        className={`flex h-full w-full max-w-4xl flex-col overflow-hidden shadow-2xl transition-all ${
           whatsappTheme
-            ? "brain-console-whatsapp rounded-[24px] border border-white/[0.08] bg-[#0b141a]/96 text-[#e9edef] shadow-black/40 backdrop-blur-3xl"
-            : "rounded-2xl border border-zinc-300 dark:border-zinc-700 bg-[#0b0b0f] text-zinc-900 dark:text-zinc-100"
+            ? "brain-console-whatsapp rounded-none sm:rounded-[24px] border-0 sm:border border-white/[0.08] bg-[#0b141a] sm:bg-[#0b141a]/96 text-[#e9edef] shadow-black/40 backdrop-blur-3xl"
+            : "rounded-none sm:rounded-2xl border-0 sm:border border-zinc-300 dark:border-zinc-700 bg-[#0b0b0f] text-zinc-900 dark:text-zinc-100"
         }`}
       >
         <header
-          className={`flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-5 ${
+          className={`flex items-center justify-between gap-3 border-b px-3.5 py-2.5 sm:px-5 sm:py-3 pt-[calc(0.75rem+env(safe-area-inset-top,0px))] sm:pt-3 shrink-0 ${
             whatsappTheme
-              ? "border-white/[0.07] bg-[#111b21]/84 backdrop-blur-2xl"
-              : "border-zinc-200 dark:border-zinc-800"
+              ? "border-white/[0.07] bg-[#111b21]/95 sm:bg-[#111b21]/84 backdrop-blur-2xl"
+              : "border-zinc-200 dark:border-zinc-800 bg-[#0b0b0f]/95 backdrop-blur-2xl"
           }`}
         >
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Voltar para a conversa"
+              className="flex sm:hidden h-10 w-10 shrink-0 items-center justify-center -ml-1 rounded-xl text-zinc-400 hover:text-white active:scale-90 transition-transform cursor-pointer"
+            >
+              <ChevronLeft className="h-6 w-6 stroke-[2.2]" />
+            </button>
             <span
-              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] border ${
+              className={`hidden sm:flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] border ${
                 whatsappTheme
                   ? "border-[#25d366]/20 bg-[#25d366]/10 text-[#25d366]"
                   : "border-purple-400/25 bg-purple-400/10 text-purple-800 dark:text-purple-200"
@@ -993,10 +1162,17 @@ function BrainOperationalConsole({
               <BrainCircuit className="h-5 w-5" />
             </span>
             <div className="min-w-0">
-              <h2 className={`truncate text-base font-semibold ${whatsappTheme ? "text-[#e9edef]" : ""}`}>
-                Console do Brain
-              </h2>
-              <p className={`text-xs ${whatsappTheme ? "text-[#8696a0]" : "text-zinc-600 dark:text-zinc-400"}`}>
+              <div className="flex items-center gap-2">
+                <h2 className={`truncate text-sm sm:text-base font-bold ${whatsappTheme ? "text-[#e9edef]" : "text-zinc-100"}`}>
+                  Console do Brain
+                </h2>
+                {activeTurn && (
+                  <span className="hidden xs:inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold border border-purple-500/30 bg-purple-500/10 text-purple-300">
+                    {activeTurn.status === "running" ? "Processando" : activeTurn.status === "waiting_human" ? "Aguardando Operador" : "Ativo"}
+                  </span>
+                )}
+              </div>
+              <p className={`truncate text-xs ${whatsappTheme ? "text-[#8696a0]" : "text-zinc-400"}`}>
                 Acompanhe o turno atual e consulte o histórico
               </p>
             </div>
@@ -1005,24 +1181,24 @@ function BrainOperationalConsole({
             type="button"
             onClick={onClose}
             aria-label="Fechar console"
-            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 ${
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 cursor-pointer ${
               whatsappTheme
                 ? "text-[#8696a0] hover:bg-white/[0.06] hover:text-[#e9edef] focus-visible:ring-[#25d366]/50"
-                : "rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 focus-visible:ring-purple-300"
+                : "rounded-xl text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 focus-visible:ring-purple-300"
             }`}
           >
             <X className="h-5 w-5" />
           </button>
         </header>
-        {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-900 dark:text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-11 rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
+        {isRetryExhausted && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/[0.07] px-4 py-3"><p className="text-sm leading-5 text-amber-900 dark:text-amber-100">As tentativas automáticas terminaram. Você pode autorizar mais uma tentativa.</p><button type="button" onClick={onManualRetry} disabled={isRetryingManual} className="min-h-[44px] rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-950 active:scale-95 transition-transform disabled:opacity-50 cursor-pointer">{isRetryingManual ? "Tentando novamente…" : "Tentar mais uma vez"}</button></div>}
         <div
           ref={scrollContainerRef}
           onScroll={(event) => {
             const element = event.currentTarget;
             followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88;
           }}
-          className={`min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3 sm:p-5 ${
-            whatsappTheme ? "bg-[#0b141a]" : ""
+          className={`min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-3 sm:p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] sm:pb-5 ${
+            whatsappTheme ? "bg-[#0b141a]" : "bg-[#0b0b0f]"
           }`}
         >
           {mediaObservation && (
@@ -1060,7 +1236,7 @@ function BrainOperationalConsole({
                   placeholder={mediaObservation.kind === "video"
                     ? "Ex: ele mostrou o carro novo e comentou que acabou de comprar..."
                     : "Ex: selfie dele numa trilha, sorrindo..."}
-                  className={`mt-3 min-h-24 w-full resize-y rounded-xl border p-3 text-sm leading-5 outline-none ${
+                  className={`mt-3 min-h-24 w-full resize-y rounded-xl border p-3 text-[16px] md:text-sm leading-5 outline-none ${
                     whatsappTheme
                       ? "border-white/[0.08] bg-[#202c33] text-[#e9edef] placeholder:text-[#8696a0] focus:border-[#25d366]/40"
                       : "border-violet-400/25 bg-white/80 text-zinc-900 focus:border-violet-400/60 dark:bg-black/25 dark:text-zinc-100"
@@ -1072,7 +1248,7 @@ function BrainOperationalConsole({
                     type="button"
                     onClick={onMediaObservationSubmit}
                     disabled={mediaObservationSubmitting || !mediaObservationAnswer.trim()}
-                    className={`inline-flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                    className={`inline-flex min-h-[44px] items-center gap-2 rounded-xl px-4 text-sm font-semibold text-white transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer ${
                       whatsappTheme ? "bg-[#00a884] hover:bg-[#06cf9c]" : "bg-violet-600 hover:bg-violet-500"
                     }`}
                   >

@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Camera,
+  Flame,
   CheckCircle2,
   Edit2,
   Eye,
@@ -17,24 +18,31 @@ import {
   Bot,
   Workflow,
   Link2,
-  MessageCircle,
   Sparkles,
-  Flame,
-  LogOut,
-  RefreshCw,
+  ChevronLeft,
+  MessageCircle,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { InstagramAccount } from "@/domain/entities/Instagram";
-import { TinderSession } from "@/domain/entities/Tinder";
-import { TinderConnectModal } from "@/presentation/components/tinder/TinderConnectModal";
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { getApiUrl } from "@/infrastructure/http/network";
-import { ChatStagesManager } from "./ChatStagesManager";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
+import { ConversationSchedulesManager } from "./ConversationSchedulesManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
+import { useConversationSchedules } from "@/presentation/hooks/useConversationSchedules";
 import { useTheme } from "@/presentation/context/ThemeContext";
 import { WhatsApp2ConnectionCard } from "./WhatsApp2ConnectionCard";
-import { IS_WHATSAPP2_REMOTE_BUILD } from "@/presentation/components/chat/whatsapp2-client";
+import { WhatsAppStoryMediaManager } from "./WhatsAppStoryMediaManager";
+import { TinderConnectionCard } from "./TinderConnectionCard";
+import { getTinderStatus } from "@/presentation/components/match/tinder-client";
+import { useIsMobile } from "@/presentation/hooks/useIsMobile";
+import { MobilePageHeader } from "@/presentation/components/ui/MobilePageHeader";
+import {
+  SettingsGroup,
+  SettingsItemRow,
+  SettingsToggleRow,
+} from "./SettingsSectionGroup";
 
 function SectionHeading({
   title,
@@ -80,8 +88,18 @@ function StatusPill({
   );
 }
 
-export function ConfigView() {
+type SettingsSubSection = "whatsapp" | "tinder" | "stories" | "ia" | "schedules" | "autopilot" | null;
+
+export interface ConfigViewProps {
+  onDetailOpenChange?: (isOpen: boolean) => void;
+}
+
+export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
   const { theme, toggleTheme } = useTheme();
+  const isMobile = useIsMobile();
+  const [activeSubSection, setActiveSubSection] = useState<SettingsSubSection>(null);
+  const isPushedToHistoryRef = useRef(false);
+
   const {
     stages,
     createStage,
@@ -95,16 +113,19 @@ export function ConfigView() {
     moveGoalUp,
     moveGoalDown,
   } = useChatStages(undefined, { loadAllProgresses: false });
+  const {
+    schedules,
+    createSchedule,
+    updateSchedule,
+    deleteSchedule,
+    moveSchedule,
+  } = useConversationSchedules();
 
   const [instagramAccount, setInstagramAccount] = useState<InstagramAccount | null>(null);
   const [isInstagramConnected, setIsInstagramConnected] = useState<boolean | null>(null);
   const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
-  const [isWhatsAppConnected, setIsWhatsAppConnected] = useState<boolean | null>(null);
   const [isWhatsApp2Connected, setIsWhatsApp2Connected] = useState<boolean | null>(null);
-  const [tinderSession, setTinderSession] = useState<TinderSession | null>(null);
-  const [isTinderModalOpen, setIsTinderModalOpen] = useState(false);
-  const [isLoadingTinder, setIsLoadingTinder] = useState(false);
-  const [syncSuccess, setSyncSuccess] = useState(false);
+  const [isTinderConnected, setIsTinderConnected] = useState<boolean | null>(null);
 
   const [groqKeyInput, setGroqKeyInput] = useState("");
   const [isGroqConfigured, setIsGroqConfigured] = useState(false);
@@ -114,13 +135,63 @@ export function ConfigView() {
   const [isEditingGroqKey, setIsEditingGroqKey] = useState(false);
 
   useEffect(() => {
-    if (!IS_WHATSAPP2_REMOTE_BUILD) {
-      void checkInstagramStatus();
-      void checkWhatsAppStatus();
-      void checkTinderStatus();
-    }
+    void checkInstagramStatus();
     void checkGroqStatus();
+    void checkTinderConnectionStatus();
   }, []);
+
+  const closeDetailDirectly = useCallback(() => {
+    setActiveSubSection(null);
+    onDetailOpenChange?.(false);
+  }, [onDetailOpenChange]);
+
+  // Suporte a botão de voltar nativo (Android/iOS/PWA)
+  useEffect(() => {
+    const handlePopState = () => {
+      if (activeSubSection) {
+        isPushedToHistoryRef.current = false;
+        closeDetailDirectly();
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [activeSubSection, closeDetailDirectly]);
+
+  const handleOpenSubSection = (section: NonNullable<SettingsSubSection>) => {
+    setActiveSubSection(section);
+    onDetailOpenChange?.(true);
+
+    if (typeof window !== "undefined") {
+      if (!isPushedToHistoryRef.current) {
+        window.history.pushState({ vendeoSettingsDetail: section }, "");
+        isPushedToHistoryRef.current = true;
+      } else {
+        window.history.replaceState({ vendeoSettingsDetail: section }, "");
+      }
+    }
+  };
+
+  const handleBackToSettings = () => {
+    if (isPushedToHistoryRef.current) {
+      isPushedToHistoryRef.current = false;
+      if (typeof window !== "undefined" && window.history.length > 1) {
+        window.history.back();
+      }
+    }
+    closeDetailDirectly();
+  };
+
+  const checkTinderConnectionStatus = async () => {
+    try {
+      const status = await getTinderStatus();
+      setIsTinderConnected(Boolean(status.connected));
+    } catch {
+      setIsTinderConnected(false);
+    }
+  };
 
   const checkGroqStatus = async () => {
     try {
@@ -130,7 +201,7 @@ export function ConfigView() {
       setIsGroqConfigured(Boolean(data.configured));
       setGroqMaskedKey(data.maskedKey || null);
     } catch {
-      // Falha temporária não deve desmontar o estado visual já conhecido.
+      // Falha temporária não desmonta o estado
     }
   };
 
@@ -173,95 +244,395 @@ export function ConfigView() {
       }
       setInstagramAccount(data.account || null);
     } catch {
-      // Mantém o último estado conhecido em oscilações de rede.
+      // Mantém o último estado conhecido
     }
   };
 
-  const checkWhatsAppStatus = async () => {
-    try {
-      const res = await fetch(getApiUrl("/api/whatsapp/config"), { cache: "no-store" });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (typeof data?.isConnected === "boolean") {
-        setIsWhatsAppConnected(data.isConnected);
-      }
-    } catch {
-      // Mantém o último estado conhecido em oscilações de rede.
-    }
-  };
-
-  const checkTinderStatus = async () => {
-    try {
-      const res = await fetch(getApiUrl("/api/tinder/status"), { cache: "no-store" });
-      if (!res.ok) {
-        setTinderSession(null);
-        return;
-      }
-      const data = await res.json();
-      if (data?.isConnected) {
-        setTinderSession({
-          token: data.token || "",
-          isConnected: true,
-          profile: data.profile,
-        });
-      } else {
-        setTinderSession(null);
-      }
-    } catch {
-      // Mantém o estado atual
-    }
-  };
-
-  const handleConnectTinder = async (token: string) => {
-    const res = await fetch(getApiUrl("/api/tinder/auth"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Falha ao conectar com o Tinder.");
-
-    setTinderSession({
-      token,
-      isConnected: true,
-      profile: data.profile,
-    });
-    toast.success("Tinder conectado com sucesso!");
-  };
-
-  const handleDisconnectTinder = async () => {
-    await fetch(getApiUrl("/api/tinder/disconnect"), { method: "POST" });
-    setTinderSession(null);
-    toast.success("Tinder desconectado.");
-  };
-
-  const handleSyncMatches = async () => {
-    setIsLoadingTinder(true);
-    try {
-      const res = await fetch(getApiUrl("/api/tinder/matches"));
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Falha ao sincronizar matches.");
-      }
-      setSyncSuccess(true);
-      toast.success("Matches do Tinder sincronizados!");
-      window.setTimeout(() => setSyncSuccess(false), 2500);
-    } catch (err: any) {
-      toast.error(err?.message || "Erro ao sincronizar matches do Tinder.");
-    } finally {
-      setIsLoadingTinder(false);
-    }
-  };
-
-  const connectedChannels = IS_WHATSAPP2_REMOTE_BUILD
-    ? Number(Boolean(isWhatsApp2Connected))
-    : Number(Boolean(isInstagramConnected)) + Number(Boolean(isWhatsAppConnected)) + Number(Boolean(tinderSession?.isConnected));
-  const availableChannelCount = IS_WHATSAPP2_REMOTE_BUILD ? 1 : 3;
+  const connectedChannels =
+    Number(Boolean(isInstagramConnected)) +
+    Number(Boolean(isWhatsApp2Connected));
+  const availableChannelCount = 2;
   const activeObjectives = stages.reduce(
     (total, stage) => total + (stage.goals || []).filter((goal) => goal.enabled !== false).length,
     0,
   );
 
+  // =========================================================================
+  // SUB-TELAS MOBILE (VISÃO DE DETALHE COMPLETA)
+  // =========================================================================
+  if (isMobile && activeSubSection !== null) {
+    let detailTitle = "Configuração";
+    let detailContent: React.ReactNode = null;
+
+    switch (activeSubSection) {
+      case "whatsapp":
+        detailTitle = "WhatsApp";
+        detailContent = (
+          <div className="space-y-4">
+            <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
+          </div>
+        );
+        break;
+
+      case "tinder":
+        detailTitle = "Tinder";
+        detailContent = (
+          <div className="space-y-4">
+            <TinderConnectionCard onConnectionChange={setIsTinderConnected} />
+          </div>
+        );
+        break;
+
+      case "stories":
+        detailTitle = "Stories (Evergreen)";
+        detailContent = (
+          <div className="space-y-4">
+            <WhatsAppStoryMediaManager />
+          </div>
+        );
+        break;
+
+      case "schedules":
+        detailTitle = "Cronogramas & Etapas";
+        detailContent = (
+          <div className="space-y-4">
+            <ConversationSchedulesManager
+              schedules={schedules}
+              stages={stages}
+              onCreateSchedule={createSchedule}
+              onUpdateSchedule={updateSchedule}
+              onDeleteSchedule={deleteSchedule}
+              onMoveSchedule={moveSchedule}
+              onCreateStage={createStage}
+              onUpdateStage={updateStage}
+              onDeleteStage={deleteStage}
+              onMoveStageUp={moveStageUp}
+              onMoveStageDown={moveStageDown}
+              onAddGoal={addGoal}
+              onUpdateGoal={updateGoal}
+              onDeleteGoal={deleteGoal}
+              onMoveGoalUp={moveGoalUp}
+              onMoveGoalDown={moveGoalDown}
+            />
+          </div>
+        );
+        break;
+
+      case "autopilot":
+        detailTitle = "Piloto Automático";
+        detailContent = (
+          <div className="space-y-4">
+            <AutoPilotConfigManager />
+          </div>
+        );
+        break;
+
+      case "ia":
+        detailTitle = "IA & Transcrição";
+        detailContent = (
+          <div className="space-y-4">
+            <article className="relative min-w-0 overflow-hidden rounded-[26px] border border-orange-200/80 dark:border-orange-500/15 bg-gradient-to-br from-white via-white to-orange-50/70 dark:from-[#121214] dark:via-[#111113] dark:to-[#18130f] p-4 shadow-sm">
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500" />
+              <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-500/15 text-orange-700 dark:text-orange-300">
+                    <Mic className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">Áudio e Transcrição</h3>
+                    <p className="mt-0.5 text-[11px] text-zinc-500">
+                      Transcrição automática das mensagens de voz
+                    </p>
+                  </div>
+                </div>
+                <StatusPill
+                  active={isGroqConfigured}
+                  activeLabel="Configurado"
+                  inactiveLabel="Chave pendente"
+                />
+              </div>
+
+              <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800/80 pt-4">
+                {isGroqConfigured && !isEditingGroqKey ? (
+                  <div className="flex min-w-0 flex-col gap-2">
+                    <div className="flex min-w-0 items-center gap-2 rounded-2xl border border-zinc-200 dark:border-white/10 bg-white/80 dark:bg-white/5 px-3 py-2.5 shadow-sm">
+                      <Key className="h-4 w-4 shrink-0 text-amber-400" />
+                      <span className="truncate font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
+                        {groqMaskedKey || "gsk_••••••••••••••••"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingGroqKey(true);
+                        setGroqKeyInput("");
+                      }}
+                      className="flex min-h-11 w-full items-center justify-center gap-2 rounded-2xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 text-xs font-bold text-zinc-800 dark:text-zinc-200 shadow-sm transition active:scale-95"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                      Alterar chave
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="relative min-w-0">
+                      <input
+                        type={showGroqKey ? "text" : "password"}
+                        value={groqKeyInput}
+                        onChange={(e) => setGroqKeyInput(e.target.value)}
+                        placeholder="gsk_..."
+                        className="min-h-11 w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 pr-11 font-mono text-[16px] md:text-xs text-zinc-950 dark:text-white outline-none transition focus:border-orange-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowGroqKey((current) => !current)}
+                        className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-200 dark:hover:bg-zinc-800 hover:text-zinc-950 dark:hover:text-white"
+                        title={showGroqKey ? "Ocultar chave" : "Mostrar chave"}
+                      >
+                        {showGroqKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveGroqKey}
+                        disabled={isSavingGroq || !groqKeyInput.trim()}
+                        className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 text-xs font-bold text-black transition active:scale-95 disabled:opacity-40"
+                      >
+                        {isSavingGroq ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                        Salvar chave
+                      </button>
+                      {isEditingGroqKey && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingGroqKey(false);
+                            setGroqKeyInput("");
+                          }}
+                          className="min-h-11 rounded-xl bg-zinc-200 dark:bg-zinc-800 px-4 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition active:scale-95"
+                        >
+                          Cancelar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </article>
+          </div>
+        );
+        break;
+    }
+
+    return (
+      <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[#f6f7fb] dark:bg-[#050506] text-zinc-950 dark:text-white animate-in fade-in duration-150">
+        <MobilePageHeader
+          title={detailTitle}
+          subtitle="Configurações"
+          leftAction={
+            <button
+              type="button"
+              onClick={handleBackToSettings}
+              className="flex min-h-[44px] min-w-[44px] items-center justify-center -ml-2 text-[#007aff] transition-transform active:scale-90"
+              aria-label="Voltar para Configurações"
+            >
+              <ChevronLeft className="h-7 w-7 stroke-[2.2]" />
+            </button>
+          }
+        />
+
+        <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 pb-[calc(24px+env(safe-area-inset-bottom,0px))] scrollbar-none">
+          {detailContent}
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // VISÃO PRINCIPAL MOBILE (LISTA CATEGORIZADA NATIVA COM CHEVRON)
+  // =========================================================================
+  if (isMobile) {
+    return (
+      <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[#f6f7fb] dark:bg-[#050506] text-zinc-950 dark:text-white">
+        <header className="shrink-0 pt-[env(safe-area-inset-top,0px)] border-b border-zinc-200/80 dark:border-white/10 bg-white/90 dark:bg-black/85 backdrop-blur-2xl">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500 via-violet-500 to-fuchsia-500 text-white shadow-md">
+                <Sliders className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400 dark:text-zinc-500">
+                  Vendeo
+                </p>
+                <h1 className="text-[15px] font-black tracking-tight text-zinc-950 dark:text-white">
+                  Configurações
+                </h1>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-white/5 px-2.5 text-[10px] font-bold text-zinc-700 dark:text-zinc-200 shadow-sm active:scale-95"
+              aria-label={theme === "dark" ? "Tema claro" : "Tema escuro"}
+            >
+              {theme === "dark" ? (
+                <Sun className="h-3.5 w-3.5 text-amber-400" />
+              ) : (
+                <Moon className="h-3.5 w-3.5 text-violet-500" />
+              )}
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 pb-28 space-y-5 scrollbar-none">
+          {/* Card Resumo do Sistema */}
+          <div className="rounded-2xl border border-zinc-200/80 dark:border-white/10 bg-gradient-to-br from-white via-sky-50/70 to-violet-50/70 dark:from-[#121218] dark:via-[#0d0d12] dark:to-[#171222] p-3.5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 dark:border-emerald-500/20 bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+                Operação Ativa
+              </span>
+              <Sparkles className="h-4 w-4 text-violet-400" />
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-white/80 dark:border-white/10 bg-white/80 dark:bg-white/[0.04] p-2 text-center backdrop-blur">
+                <p className="text-[9px] font-bold text-zinc-400 uppercase">Canais</p>
+                <p className="mt-0.5 text-base font-black text-zinc-950 dark:text-white">
+                  {connectedChannels}<span className="text-xs text-zinc-400">/{availableChannelCount}</span>
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/80 dark:border-white/10 bg-white/80 dark:bg-white/[0.04] p-2 text-center backdrop-blur">
+                <p className="text-[9px] font-bold text-zinc-400 uppercase">Etapas</p>
+                <p className="mt-0.5 text-base font-black text-zinc-950 dark:text-white">{stages.length}</p>
+              </div>
+              <div className="rounded-xl border border-white/80 dark:border-white/10 bg-white/80 dark:bg-white/[0.04] p-2 text-center backdrop-blur">
+                <p className="text-[9px] font-bold text-zinc-400 uppercase">Objetivos</p>
+                <p className="mt-0.5 text-base font-black text-zinc-950 dark:text-white">{activeObjectives}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Grupo: CANAIS & CONEXÕES */}
+          <SettingsGroup title="Canais & Conexões">
+            <SettingsItemRow
+              icon={<MessageCircle className="h-5 w-5" />}
+              iconBgClassName="bg-[#25d366] text-white"
+              title="WhatsApp"
+              subtitle="Dispositivo vinculado via WhatsApp Web"
+              badge={
+                <StatusPill
+                  active={Boolean(isWhatsApp2Connected)}
+                  activeLabel="Conectado"
+                  inactiveLabel="Desconectado"
+                />
+              }
+              onClick={() => handleOpenSubSection("whatsapp")}
+            />
+
+            <SettingsItemRow
+              icon={<Camera className="h-5 w-5" />}
+              iconBgClassName="bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white"
+              title="Instagram Direct"
+              subtitle={instagramAccount ? `@${instagramAccount.username}` : "Mensagens oficiais da Meta"}
+              badge={
+                <StatusPill
+                  active={Boolean(isInstagramConnected)}
+                  activeLabel="Conectado"
+                  inactiveLabel="Conectar"
+                />
+              }
+              onClick={() => setIsInstagramModalOpen(true)}
+            />
+
+            <SettingsItemRow
+              icon={<Flame className="h-5 w-5 fill-current" />}
+              iconBgClassName="bg-gradient-to-br from-[#ff6036] via-[#fd5068] to-[#e8368f] text-white"
+              title="Tinder"
+              subtitle="Provedor da nova área Match"
+              badge={
+                <StatusPill
+                  active={Boolean(isTinderConnected)}
+                  activeLabel="Conectado"
+                  inactiveLabel="Conectar"
+                />
+              }
+              onClick={() => handleOpenSubSection("tinder")}
+            />
+
+            <SettingsItemRow
+              icon={<Layers className="h-5 w-5" />}
+              iconBgClassName="bg-sky-500 text-white"
+              title="Stories (Evergreen)"
+              subtitle="Biblioteca de status com anti-repetição"
+              onClick={() => handleOpenSubSection("stories")}
+            />
+          </SettingsGroup>
+
+          {/* Grupo: AUTOMAÇÃO & IA */}
+          <SettingsGroup title="Automação & IA">
+            <SettingsItemRow
+              icon={<Bot className="h-5 w-5" />}
+              iconBgClassName="bg-purple-600 text-white"
+              title="Piloto Automático"
+              subtitle="Brain, tempo de resposta e autonomia"
+              onClick={() => handleOpenSubSection("autopilot")}
+            />
+
+            <SettingsItemRow
+              icon={<Workflow className="h-5 w-5" />}
+              iconBgClassName="bg-violet-600 text-white"
+              title="Cronogramas & Etapas"
+              subtitle={`${schedules.length} cronograma(s) · ${stages.length} etapa(s)`}
+              onClick={() => handleOpenSubSection("schedules")}
+            />
+
+            <SettingsItemRow
+              icon={<Mic className="h-5 w-5" />}
+              iconBgClassName="bg-orange-500 text-white"
+              title="IA & Transcrição"
+              subtitle="Groq Whisper para áudio das conversas"
+              badge={
+                <StatusPill
+                  active={isGroqConfigured}
+                  activeLabel="Ativo"
+                  inactiveLabel="Pendente"
+                />
+              }
+              onClick={() => handleOpenSubSection("ia")}
+            />
+          </SettingsGroup>
+
+          {/* Grupo: SISTEMA */}
+          <SettingsGroup title="Sistema">
+            <SettingsToggleRow
+              icon={theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              iconBgClassName={theme === "dark" ? "bg-violet-600 text-white" : "bg-amber-500 text-white"}
+              title="Tema Escuro"
+              subtitle={theme === "dark" ? "Ativado" : "Desativado"}
+              checked={theme === "dark"}
+              onChange={toggleTheme}
+            />
+          </SettingsGroup>
+        </div>
+
+        <InstagramConnectModal
+          isOpen={isInstagramModalOpen}
+          onClose={() => {
+            setIsInstagramModalOpen(false);
+            void checkInstagramStatus();
+          }}
+          onConnectionChange={checkInstagramStatus}
+        />
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // VISÃO DESKTOP (PRESERVADA 100% COM LAYOUT AMPLO E PAINÉIS LADO A LADO)
+  // =========================================================================
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[#f6f7fb] dark:bg-[#050506] text-zinc-950 dark:text-white">
       <header className="shrink-0 border-b border-zinc-200/80 dark:border-white/10 bg-white/90 dark:bg-black/85 backdrop-blur-2xl">
@@ -359,8 +730,6 @@ export function ConfigView() {
             />
 
             <div className="grid grid-cols-1 gap-3">
-              {!IS_WHATSAPP2_REMOTE_BUILD && (
-                <>
               <article className="min-w-0 rounded-2xl border border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#111113] p-4 shadow-sm sm:p-5">
                 <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
@@ -436,129 +805,19 @@ export function ConfigView() {
                 </div>
               </article>
 
-              <article className="min-w-0 rounded-2xl border border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#111113] p-4 shadow-sm sm:p-5">
-                <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500">
-                      <MessageCircle className="h-5 w-5 text-white" />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">
-                        WhatsApp Cloud API
-                      </h3>
-                      <p className="mt-0.5 text-[11px] text-zinc-500">
-                        Mesmo Brain, objetivos e automação em um canal oficial da Meta
-                      </p>
-                    </div>
-                  </div>
-                  {isWhatsAppConnected === null ? (
-                    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 dark:border-zinc-800 bg-zinc-100 dark:bg-zinc-900 px-2.5 py-1 text-[10px] text-zinc-600 dark:text-zinc-400">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Verificando
-                    </span>
-                  ) : (
-                    <StatusPill
-                      active={isWhatsAppConnected}
-                      activeLabel="Conectado"
-                      inactiveLabel="Credenciais pendentes"
-                    />
-                  )}
-                </div>
+              <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
 
-                <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800/80 pt-4">
-                  <div className="rounded-2xl border border-emerald-200/80 dark:border-emerald-500/15 bg-emerald-50/70 dark:bg-emerald-500/[0.06] p-3">
-                    <p className="text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300">
-                      {isWhatsAppConnected
-                        ? "Cloud API pronta no servidor. Mensagens do WhatsApp entram na mesma caixa e usam o mesmo Brain."
-                        : "A Meta já pode estar configurada; faltam as credenciais seguras da Cloud API no servidor para ativar o canal."}
-                    </p>
-                  </div>
-                </div>
-              </article>
-
-              <article className="min-w-0 rounded-2xl border border-zinc-200 dark:border-[#262626] bg-white dark:bg-[#111113] p-4 shadow-sm sm:p-5">
-                <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-[#fd297b] to-[#ff5864]">
-                      <Flame className="h-5 w-5 fill-white text-white" />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">Tinder</h3>
-                      <p className="mt-0.5 text-[11px] text-zinc-500">
-                        Matches e mensagens da conta conectada
-                      </p>
-                    </div>
-                  </div>
-                  <StatusPill active={Boolean(tinderSession?.isConnected)} />
-                </div>
-
-                <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800/80 pt-4">
-                  {tinderSession?.isConnected ? (
-                    <div className="space-y-3">
-                      <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-rose-200/80 dark:border-[#fe3c72]/20 bg-white/80 dark:bg-[#1a1416] p-3 shadow-sm">
-                        <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full ring-2 ring-[#fe3c72]/80">
-                          <Image
-                            src={tinderSession.profile?.photos?.[0]?.url || "/favicon.ico"}
-                            alt={tinderSession.profile?.name || "Tinder"}
-                            fill
-                            unoptimized
-                            className="object-cover"
-                          />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-bold text-zinc-950 dark:text-white">
-                            {tinderSession.profile?.name || "Conta Tinder"}
-                          </p>
-                          <p className="truncate text-[11px] text-[#ff7597]">
-                            Conta conectada
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <button
-                          onClick={handleSyncMatches}
-                          disabled={isLoadingTinder}
-                          className="flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 text-xs font-bold text-zinc-800 dark:text-zinc-100 shadow-sm transition hover:-translate-y-0.5 hover:bg-zinc-50 dark:hover:bg-white/10 disabled:opacity-50"
-                        >
-                          {isLoadingTinder ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <RefreshCw className="h-4 w-4 text-sky-400" />
-                          )}
-                          {syncSuccess ? "Sincronizado" : "Sincronizar"}
-                        </button>
-                        <button
-                          onClick={handleDisconnectTinder}
-                          className="flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-4 text-xs font-bold text-red-600 dark:text-red-400 transition hover:-translate-y-0.5 hover:bg-red-100 dark:hover:bg-red-950/50"
-                        >
-                          <LogOut className="h-4 w-4" />
-                          Desconectar
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400 sm:max-w-sm">
-                        Conecte a conta para receber e responder matches pelo Chat.
-                      </p>
-                      <button
-                        onClick={() => setIsTinderModalOpen(true)}
-                        className="min-h-11 w-full rounded-xl bg-gradient-to-r from-[#fd297b] to-[#ff5864] px-4 text-xs font-bold text-white transition active:scale-[0.98] sm:w-auto"
-                      >
-                        Conectar Tinder
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </article>
-                </>
-              )}
-
-              {IS_WHATSAPP2_REMOTE_BUILD && (
-                <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
-              )}
+              <TinderConnectionCard onConnectionChange={setIsTinderConnected} />
             </div>
+          </section>
+
+          <section id="config-stories" className="scroll-mt-16 space-y-3">
+            <SectionHeading
+              eyebrow="WhatsApp Stories"
+              title="Biblioteca de Stories (Evergreen)"
+              description="Gerencie fotos e vídeos para os status e utilize a estratégia anti-repetição: contatos que já viram um story nunca o recebem novamente."
+            />
+            <WhatsAppStoryMediaManager />
           </section>
 
           <section id="config-ia" className="scroll-mt-16 space-y-3">
@@ -618,7 +877,7 @@ export function ConfigView() {
                         value={groqKeyInput}
                         onChange={(e) => setGroqKeyInput(e.target.value)}
                         placeholder="gsk_..."
-                        className="min-h-11 w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 pr-11 font-mono text-xs text-zinc-950 dark:text-white outline-none transition focus:border-orange-400"
+                        className="min-h-11 w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 pr-11 font-mono text-[16px] md:text-xs text-zinc-950 dark:text-white outline-none transition focus:border-orange-400"
                       />
                       <button
                         type="button"
@@ -662,17 +921,22 @@ export function ConfigView() {
           <section id="config-funil" className="scroll-mt-16 space-y-3">
             <SectionHeading
               eyebrow="Estratégia"
-              title="Funil de conversa"
-              description="Organize etapas, objetivos e avanço das conversas."
+              title="Cronogramas de conversa"
+              description="Crie jornadas sequenciais com etapas, objetivos, modelo do Brain e tempo de resposta próprios."
             />
             <div className="min-w-0 overflow-hidden rounded-[28px] border border-violet-200/80 dark:border-violet-500/15 bg-gradient-to-br from-white to-violet-50/40 dark:from-[#111113] dark:to-[#15111d] p-2.5 shadow-[0_18px_50px_-34px_rgba(139,92,246,0.5)] sm:p-3.5">
-              <ChatStagesManager
+              <ConversationSchedulesManager
+                schedules={schedules}
                 stages={stages}
+                onCreateSchedule={createSchedule}
+                onUpdateSchedule={updateSchedule}
+                onDeleteSchedule={deleteSchedule}
+                onMoveSchedule={moveSchedule}
                 onCreateStage={createStage}
                 onUpdateStage={updateStage}
                 onDeleteStage={deleteStage}
-                onMoveUp={moveStageUp}
-                onMoveDown={moveStageDown}
+                onMoveStageUp={moveStageUp}
+                onMoveStageDown={moveStageDown}
                 onAddGoal={addGoal}
                 onUpdateGoal={updateGoal}
                 onDeleteGoal={deleteGoal}
@@ -686,7 +950,7 @@ export function ConfigView() {
             <SectionHeading
               eyebrow="Operação"
               title="Piloto Automático"
-              description="Controle o Brain, o tempo de resposta e a operação automática."
+              description="Controle a ativação global do Brain, notificações e operação automática. Modelo e tempo pertencem a cada cronograma."
             />
             <div className="min-w-0 overflow-hidden rounded-[28px] border border-purple-200/80 dark:border-purple-500/15 bg-gradient-to-br from-white to-purple-50/40 dark:from-[#111113] dark:to-[#15111b] p-2.5 shadow-[0_18px_50px_-34px_rgba(168,85,247,0.5)] sm:p-3.5">
               <AutoPilotConfigManager />
@@ -694,6 +958,7 @@ export function ConfigView() {
           </section>
         </main>
       </div>
+
       <InstagramConnectModal
         isOpen={isInstagramModalOpen}
         onClose={() => {
@@ -701,17 +966,6 @@ export function ConfigView() {
           void checkInstagramStatus();
         }}
         onConnectionChange={checkInstagramStatus}
-      />
-      <TinderConnectModal
-        isOpen={isTinderModalOpen}
-        onClose={() => {
-          setIsTinderModalOpen(false);
-          void checkTinderStatus();
-        }}
-        session={tinderSession}
-        onConnect={handleConnectTinder}
-        onDisconnect={handleDisconnectTinder}
-        onSyncMatches={handleSyncMatches}
       />
     </div>
   );

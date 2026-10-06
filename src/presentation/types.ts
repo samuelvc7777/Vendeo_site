@@ -1,1 +1,1 @@
-export type TabType = "vendas" | "chat" | "config";
+export type TabType = "vendas" | "chat" | "match" | "config";

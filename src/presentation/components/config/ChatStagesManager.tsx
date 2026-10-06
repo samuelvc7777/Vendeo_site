@@ -10,7 +10,6 @@ import {
   Edit2,
   Check,
   X,
-  Folder,
   Sparkles,
   AlertCircle,
   HelpCircle,
@@ -23,25 +22,28 @@ import {
   Power,
 } from "lucide-react";
 import { ChatStage, ConversationGoal } from "@/domain/entities/ChatStage";
-import { VaultFolderWithStats } from "@/domain/entities/Vault";
-import { useVault } from "@/presentation/hooks/useVault";
 import { toast } from "sonner";
+import { ResponsiveModal } from "@/presentation/components/ui/ResponsiveModal";
 
 interface ChatStagesManagerProps {
   stages: ChatStage[];
+  activeScheduleId?: string;
   onCreateStage: (data: {
     name: string;
-    folderId?: string;
     color?: string;
     description?: string;
+    scheduleId?: string;
+    isRequired?: boolean;
+    icon?: string;
   }) => Promise<any>;
   onUpdateStage: (
     id: string,
     data: {
       name?: string;
-      folderId?: string;
       color?: string;
       description?: string;
+      scheduleId?: string;
+      isRequired?: boolean;
       goals?: ConversationGoal[];
     }
   ) => Promise<any>;
@@ -86,6 +88,7 @@ const PRESET_COLORS = [
 
 export function ChatStagesManager({
   stages,
+  activeScheduleId,
   onCreateStage,
   onUpdateStage,
   onDeleteStage,
@@ -97,15 +100,14 @@ export function ChatStagesManager({
   onMoveGoalUp,
   onMoveGoalDown,
 }: ChatStagesManagerProps) {
-  const { folders, refreshFolders } = useVault();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStage, setEditingStage] = useState<ChatStage | null>(null);
 
   // Form states para Etapas
   const [name, setName] = useState("");
-  const [selectedFolderId, setSelectedFolderId] = useState("");
   const [selectedColor, setSelectedColor] = useState(PRESET_COLORS[0]);
   const [description, setDescription] = useState("");
+  const [stageRequired, setStageRequired] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Estados para Objetivos da Conversa (Goals)
@@ -120,12 +122,13 @@ export function ChatStagesManager({
   const [goalMemoryEntity, setGoalMemoryEntity] = useState("self");
   const [goalMemoryField, setGoalMemoryField] = useState("");
   const [goalDescription, setGoalDescription] = useState("");
+  const [goalRequired, setGoalRequired] = useState(true);
   const [goalEnabled, setGoalEnabled] = useState(true);
   const [isGoalSubmitting, setIsGoalSubmitting] = useState(false);
-
-  useEffect(() => {
-    refreshFolders();
-  }, [refreshFolders]);
+  const [stageToDelete, setStageToDelete] = useState<ChatStage | null>(null);
+  const [goalToDelete, setGoalToDelete] = useState<{ stageId: string; goal: ConversationGoal } | null>(null);
+  const [isDeletingStage, setIsDeletingStage] = useState(false);
+  const [isDeletingGoal, setIsDeletingGoal] = useState(false);
 
   const toggleStageGoals = (stageId: string) => {
     setExpandedStageGoals((prev) => ({
@@ -143,6 +146,7 @@ export function ChatStagesManager({
     setGoalMemoryEntity("self");
     setGoalMemoryField("");
     setGoalDescription("");
+    setGoalRequired(true);
     setGoalEnabled(true);
     setIsGoalModalOpen(true);
   };
@@ -156,6 +160,7 @@ export function ChatStagesManager({
     setGoalMemoryEntity(goal.memoryEntity || (goal.kind === "conversation_state" ? "conversation" : "self"));
     setGoalMemoryField(goal.memoryField || "");
     setGoalDescription(goal.description || "");
+    setGoalRequired(goal.required !== false);
     setGoalEnabled(goal.enabled ?? true);
     setIsGoalModalOpen(true);
   };
@@ -206,7 +211,7 @@ export function ChatStagesManager({
             completionPolicy,
             actionType: goalKind === "action" ? goalActionType : undefined,
             actionConfig,
-            required: true,
+            required: goalRequired,
             enabled: goalEnabled,
           });
         } else {
@@ -226,7 +231,7 @@ export function ChatStagesManager({
                     completionPolicy,
                     actionType: goalKind === "action" ? goalActionType : undefined,
                     actionConfig,
-                    required: true,
+                    required: goalRequired,
                     enabled: goalEnabled,
                   }
                 : g
@@ -245,7 +250,7 @@ export function ChatStagesManager({
             completionPolicy,
             actionType: goalKind === "action" ? goalActionType : undefined,
             actionConfig,
-            required: true,
+            required: goalRequired,
             enabled: goalEnabled,
           });
         } else {
@@ -265,7 +270,7 @@ export function ChatStagesManager({
               completionPolicy,
               actionType: goalKind === "action" ? goalActionType : undefined,
               actionConfig,
-              required: true,
+              required: goalRequired,
               order: currentGoals.length,
               enabled: goalEnabled,
             };
@@ -295,18 +300,41 @@ export function ChatStagesManager({
     }
   };
 
-  const handleDeleteGoal = async (stageId: string, goalId: string) => {
-    if (confirm("Deseja realmente excluir este objetivo da conversa?")) {
+  const handleConfirmDeleteStage = async () => {
+    if (!stageToDelete) return;
+    try {
+      setIsDeletingStage(true);
+      await onDeleteStage(stageToDelete.id);
+      setStageToDelete(null);
+      toast.success("Etapa removida com sucesso");
+    } catch {
+      toast.error("Erro ao remover etapa");
+    } finally {
+      setIsDeletingStage(false);
+    }
+  };
+
+  const handleConfirmDeleteGoal = async () => {
+    if (!goalToDelete) return;
+    try {
+      setIsDeletingGoal(true);
+      const { stageId, goal } = goalToDelete;
       if (onDeleteGoal) {
-        await onDeleteGoal(stageId, goalId);
+        await onDeleteGoal(stageId, goal.id);
       } else {
         const targetStage = stages.find((s) => s.id === stageId);
         if (targetStage) {
-          const updatedGoals = (targetStage.goals || []).filter((g) => g.id !== goalId);
+          const updatedGoals = (targetStage.goals || []).filter((g) => g.id !== goal.id);
           updatedGoals.forEach((g, i) => { g.order = i; });
           await onUpdateStage(stageId, { goals: updatedGoals });
         }
       }
+      setGoalToDelete(null);
+      toast.success("Objetivo removido com sucesso");
+    } catch {
+      toast.error("Erro ao remover objetivo");
+    } finally {
+      setIsDeletingGoal(false);
     }
   };
 
@@ -347,18 +375,18 @@ export function ChatStagesManager({
   const openCreateModal = () => {
     setEditingStage(null);
     setName("");
-    setSelectedFolderId(folders[0]?.id || "");
     setSelectedColor(PRESET_COLORS[stages.length % PRESET_COLORS.length]);
     setDescription("");
+    setStageRequired(true);
     setIsModalOpen(true);
   };
 
   const openEditModal = (stage: ChatStage) => {
     setEditingStage(stage);
     setName(stage.name);
-    setSelectedFolderId(stage.folderId || "");
     setSelectedColor(stage.color || PRESET_COLORS[0]);
     setDescription(stage.description || "");
+    setStageRequired(stage.isRequired !== false);
     setIsModalOpen(true);
   };
 
@@ -376,14 +404,15 @@ export function ChatStagesManager({
       if (editingStage) {
         await onUpdateStage(editingStage.id, {
           name: name.trim(),
-          folderId: selectedFolderId || undefined,
           color: selectedColor,
           description: description.trim(),
+          isRequired: stageRequired,
         });
       } else {
         await onCreateStage({
           name: name.trim(),
-          folderId: selectedFolderId || undefined,
+          scheduleId: activeScheduleId || "schedule_sales",
+          isRequired: stageRequired,
           color: selectedColor,
           description: description.trim(),
         });
@@ -392,18 +421,6 @@ export function ChatStagesManager({
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const getFolderName = (folderId?: string) => {
-    if (!folderId) return "Sem pasta associada";
-    const f = folders.find((item) => item.id === folderId);
-    return f ? f.name : "Pasta não encontrada";
-  };
-
-  const getFolderItemCount = (folderId?: string) => {
-    if (!folderId) return 0;
-    const f = folders.find((item) => item.id === folderId);
-    return f ? f.totalItems : 0;
   };
 
 
@@ -465,8 +482,6 @@ export function ChatStagesManager({
           {stages.map((stage, index) => {
             const isFirst = index === 0;
             const isLast = index === stages.length - 1;
-            const folderName = getFolderName(stage.folderId);
-            const itemCount = getFolderItemCount(stage.folderId);
 
             const isGoalsExpanded = !!expandedStageGoals[stage.id];
             const stageGoals = (stage.goals || []).sort((a, b) => a.order - b.order);
@@ -496,6 +511,13 @@ export function ChatStagesManager({
 
                       <div className="min-w-0 flex-1 flex items-center gap-2">
                         <h4 className="text-sm font-bold text-zinc-950 dark:text-white truncate">{stage.name}</h4>
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                          stage.isRequired !== false
+                            ? "bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25"
+                            : "bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/25"
+                        }`}>
+                          {stage.isRequired !== false ? "Obrigatória" : "Opcional"}
+                        </span>
                         {isLast && (
                           <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
                             finalizesWorkflow
@@ -544,12 +566,8 @@ export function ChatStagesManager({
 
                       <button
                         type="button"
-                        onClick={() => {
-                          if (confirm(`Deseja realmente excluir a etapa "${stage.name}"?`)) {
-                            onDeleteStage(stage.id);
-                          }
-                        }}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-red-400 active:scale-90 transition-all cursor-pointer"
+                        onClick={() => setStageToDelete(stage)}
+                        className="p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-red-400 active:scale-90 transition-all cursor-pointer"
                         title="Excluir etapa"
                         aria-label="Excluir etapa"
                       >
@@ -558,17 +576,7 @@ export function ChatStagesManager({
                     </div>
                   </div>
 
-                  {/* Linha 2: Metadados do Cofre */}
-                  <div className="flex items-center gap-3 text-xs text-zinc-600 dark:text-zinc-400 pl-0 sm:pl-7 flex-wrap">
-                    <span className="flex items-center gap-1 truncate text-zinc-700 dark:text-zinc-300">
-                      <Folder className="w-3 h-3 text-sky-400 shrink-0" />
-                      <span className="truncate max-w-[160px] sm:max-w-none">{folderName}</span>
-                    </span>
-                    <span>•</span>
-                    <span className="text-zinc-600 dark:text-zinc-400">{itemCount} itens no cofre</span>
-                  </div>
-
-                  {/* Linha 3: Barra de Acesso aos Checkpoints da Etapa */}
+                  {/* Barra de Acesso aos Objetivos da Etapa */}
                   <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <button
                       type="button"
@@ -607,7 +615,7 @@ export function ChatStagesManager({
                           Checkpoints / Objetivos da Etapa
                         </span>
                         <span className="text-[11px] text-zinc-500">
-                          (Executados em ordem sequencial; todos os ativos precisam ser concluídos para avançar)
+                          (Obrigatórios bloqueiam o avanço; opcionais ficam disponíveis ao Brain quando fizer sentido)
                         </span>
                       </div>
                       <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
@@ -657,7 +665,7 @@ export function ChatStagesManager({
                                     </span>
                                     {goal.kind === "action" ? (
                                       <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-medium border border-amber-500/30">
-                                        Ação Obrigatória
+                                        Ação
                                       </span>
                                     ) : goal.kind === "conversation_state" ? (
                                       <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 text-[10px] font-medium border border-purple-500/30">
@@ -677,13 +685,16 @@ export function ChatStagesManager({
                                         {goal.memoryEntity || "self"}.{goal.memoryField}
                                       </span>
                                     )}
-                                    {goal.enabled ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[10px] font-bold border border-sky-500/30">
-                                        Checkpoint Obrigatório
-                                      </span>
-                                    ) : (
+                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                      goal.required !== false
+                                        ? "bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25"
+                                        : "bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/25"
+                                    }`}>
+                                      {goal.required !== false ? "Obrigatório" : "Opcional"}
+                                    </span>
+                                    {!goal.enabled && (
                                       <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-500 text-[10px]">
-                                        Inativo (Ignorado)
+                                        Inativo
                                       </span>
                                     )}
                                   </div>
@@ -755,8 +766,8 @@ export function ChatStagesManager({
                                   {/* Excluir */}
                                   <button
                                     type="button"
-                                    onClick={() => handleDeleteGoal(stage.id, goal.id)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-[#f87171] hover:bg-red-100 dark:hover:bg-red-900/40 transition-all active:scale-95 cursor-pointer"
+                                    onClick={() => setGoalToDelete({ stageId: stage.id, goal })}
+                                    className="p-2 sm:p-1.5 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-[#f87171] hover:bg-red-100 dark:hover:bg-red-900/40 transition-all active:scale-95 cursor-pointer"
                                     title="Excluir objetivo"
                                     aria-label="Excluir objetivo"
                                   >
@@ -778,366 +789,375 @@ export function ChatStagesManager({
       )}
 
       {/* Modal de Criação / Edição de Etapa */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/40 dark:bg-black/80 backdrop-blur-md animate-fade-in">
-          <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-white dark:bg-[#141416] border border-white/70 dark:border-white/10 rounded-[28px] shadow-[0_30px_90px_-30px_rgba(0,0,0,0.65)] p-4 sm:p-5 space-y-4 overscroll-contain">
-            <div className="flex items-center justify-between border-b border-zinc-200 dark:border-[#27272a] pb-3">
-              <h4 className="text-base font-bold text-zinc-950 dark:text-white flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-sky-400" />
-                {editingStage ? "Editar Etapa" : "Nova Etapa do Funil"}
-              </h4>
+      <ResponsiveModal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        maxWidth="lg"
+        title={editingStage ? "Editar Etapa do Funil" : "Nova Etapa do Funil"}
+      >
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Nome da Etapa */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Nome da Etapa *
+            </label>
+            <input
+              type="text"
+              required
+              placeholder="Ex: 1. Apresentação & Fotos da Rotina"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+            />
+          </div>
+
+          {/* Descrição / Orientação da Etapa */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Descrição / Orientação para a Persona
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Ex: Conhecer o pretendente naturalmente, criar conexão inicial e entender seu estilo de vida."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+            />
+          </div>
+
+          {/* Cor da Etapa */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Cor de Identificação
+            </label>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {PRESET_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  onClick={() => setSelectedColor(color)}
+                  style={{ backgroundColor: color }}
+                  className={`w-8 h-8 rounded-full transition-transform flex items-center justify-center cursor-pointer ${
+                    selectedColor === color
+                      ? "ring-2 ring-white ring-offset-2 ring-offset-zinc-900 scale-110"
+                      : "opacity-80 hover:opacity-100 hover:scale-105"
+                  }`}
+                >
+                  {selectedColor === color && <Check className="w-3.5 h-3.5 text-white" />}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+            <div>
+              <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Etapa obrigatória</p>
+              <p className="text-[10px] text-zinc-500">Se for opcional, o Brain pode ignorar a etapa inteira quando não fizer sentido.</p>
+            </div>
+            <input
+              type="checkbox"
+              checked={stageRequired}
+              onChange={(e) => setStageRequired(e.target.checked)}
+              className="h-4 w-4 rounded"
+            />
+          </label>
+
+          {/* Botões de Ação */}
+          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
+            <button
+              type="button"
+              onClick={closeModal}
+              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting || !name.trim()}
+              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              {isSubmitting
+                ? "Salvando..."
+                : editingStage
+                ? "Salvar Alterações"
+                : "Criar Etapa"}
+            </button>
+          </div>
+        </form>
+      </ResponsiveModal>
+
+      {/* Modal de Criação / Edição de Objetivo Semântico (Goal) */}
+      <ResponsiveModal
+        isOpen={isGoalModalOpen}
+        onClose={closeGoalModal}
+        maxWidth="lg"
+        title={editingGoal ? "Editar Objetivo da Conversa" : "Novo Objetivo da Conversa"}
+      >
+        <form onSubmit={handleGoalSubmit} className="space-y-3.5">
+          {/* Rótulo do Goal */}
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Rótulo do Objetivo *
+            </label>
+            <input
+              type="text"
+              required
+              placeholder="Ex: Idade, Cidade onde mora, Profissão"
+              value={goalLabel}
+              onChange={(e) => setGoalLabel(e.target.value)}
+              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+            />
+          </div>
+
+          {/* Tipo de Objetivo: Fato vs Estado Conversacional */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Tipo Conceitual de Objetivo *
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 type="button"
-                onClick={closeModal}
-                className="p-2 sm:p-1 rounded-lg text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white cursor-pointer transition-colors"
-                aria-label="Fechar"
+                onClick={() => {
+                  setGoalKind("fact");
+                  if (goalMemoryEntity === "conversation") setGoalMemoryEntity("self");
+                }}
+                className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                  goalKind === "fact"
+                    ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                    : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                }`}
               >
-                <X className="w-4 h-4" />
+                <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
+                  Fato do Contato
+                </span>
+                <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
+                  Dado durável (idade, cidade, profissão).
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setGoalKind("conversation_state");
+                  if (goalMemoryEntity === "self") setGoalMemoryEntity("conversation");
+                }}
+                className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                  goalKind === "conversation_state"
+                    ? "bg-purple-500/15 border-purple-500/40 text-purple-700 dark:text-purple-300"
+                    : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                }`}
+              >
+                <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
+                  Estado da Conversa
+                </span>
+                <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
+                  Dinâmica qualitativa (reciprocidade, profundidade).
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setGoalKind("action");
+                  setGoalMemoryEntity("");
+                  setGoalMemoryField("");
+                }}
+                className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                  goalKind === "action"
+                    ? "bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300"
+                    : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                }`}
+              >
+                <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
+                  Ação
+                </span>
+                <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
+                  Missão que precisa ser executada pelo Brain.
+                </span>
               </button>
             </div>
+          </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Nome da Etapa */}
-              <div className="space-y-1.5">
+          {goalKind === "action" ? (
+            <div className="space-y-2.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Ação que o Brain precisa executar *</label>
+                <select
+                  value={goalActionType}
+                  onChange={(e) => setGoalActionType(e.target.value as NonNullable<ConversationGoal["actionType"]>)}
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-amber-500"
+                >
+                  <option value="send_audio">Enviar áudio vinculado ao objetivo</option>
+                  <option value="send_raffle_details" disabled>Enviar foto + detalhes da rifa — estrutura preparada</option>
+                  <option value="send_raffle_numbers" disabled>Enviar 10 números livres — estrutura preparada</option>
+                  <option value="operator_handoff" disabled>Finalizar e avisar operador — estrutura preparada</option>
+                </select>
+              </div>
+              <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+                O áudio é vinculado a este objetivo no Cofre de Áudios. O objetivo só será concluído após o provedor confirmar o envio.
+                Se o contexto estiver sensível, o Brain pode adiar, mas a missão permanece pendente para os próximos turnos.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
                 <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Nome da Etapa *
+                  Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}
                 </label>
                 <input
                   type="text"
-                  required
-                  placeholder="Ex: 1. Apresentação & Fotos da Rotina"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+                  required={goalKind === "fact"}
+                  placeholder={goalKind === "fact" ? "self" : "conversation"}
+                  value={goalMemoryEntity}
+                  onChange={(e) => setGoalMemoryEntity(e.target.value)}
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono"
                 />
-              </div>
-
-              {/* Descrição / Orientação da Etapa */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Descrição / Orientação para a Persona
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Ex: Conhecer o pretendente naturalmente, criar conexão inicial e entender seu estilo de vida."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
-                />
-              </div>
-
-              {/* Pasta do Cofre (Opcional) */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 flex items-center justify-between">
-                  <span>Pasta do Cofre de Arquivos (Opcional)</span>
-                  <span className="text-[10px] text-zinc-500">Opcional</span>
-                </label>
-                <select
-                  value={selectedFolderId}
-                  onChange={(e) => setSelectedFolderId(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-sky-500 cursor-pointer"
-                >
-                  <option value="">
-                    Nenhuma pasta vinculada (opcional)
-                  </option>
-                  {folders.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      📁 {f.name} ({f.totalItems} arquivos)
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-zinc-500">
-                  Etapas agora funcionam de forma autônoma baseadas em Objetivos Semânticos. A vinculação de pasta é opcional.
+                <p className="text-[10px] text-zinc-500">
+                  {goalKind === "fact" ? 'Padrão: "self" (o pretendente)' : 'Padrão: "conversation"'}
                 </p>
               </div>
 
-              {/* Cor da Etapa */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Cor de Identificação
-                </label>
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  {PRESET_COLORS.map((color) => (
-                    <button
-                      key={color}
-                      type="button"
-                      onClick={() => setSelectedColor(color)}
-                      style={{ backgroundColor: color }}
-                      className={`w-7 h-7 rounded-full transition-transform flex items-center justify-center cursor-pointer ${
-                        selectedColor === color
-                          ? "ring-2 ring-white ring-offset-2 ring-offset-zinc-900 scale-110"
-                          : "opacity-80 hover:opacity-100 hover:scale-105"
-                      }`}
-                    >
-                      {selectedColor === color && <Check className="w-3.5 h-3.5 text-white" />}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Descrição / Observações */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Descrição / Orientações (opcional)
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Ex: Mandar fotos de rotina no hospital e estabelecer conexão acolhedora..."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
-                />
-              </div>
-
-              {/* Botões de Ação */}
-              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting || !name.trim()}
-                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center"
-                >
-                  {isSubmitting
-                    ? "Salvando..."
-                    : editingStage
-                    ? "Salvar Alterações"
-                    : "Criar Etapa"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal de Criação / Edição de Objetivo Semântico (Goal) */}
-      {isGoalModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/40 dark:bg-black/80 backdrop-blur-md animate-fade-in">
-          <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-white dark:bg-[#141416] border border-white/70 dark:border-white/10 rounded-[28px] shadow-[0_30px_90px_-30px_rgba(0,0,0,0.65)] p-4 sm:p-5 space-y-4 overscroll-contain">
-            <div className="flex items-center justify-between border-b border-zinc-200 dark:border-[#27272a] pb-3">
-              <h4 className="text-base font-bold text-zinc-950 dark:text-white flex items-center gap-2">
-                <Target className="w-4 h-4 text-sky-400" />
-                {editingGoal ? "Editar Objetivo" : "Novo Objetivo da Conversa"}
-              </h4>
-              <button
-                type="button"
-                onClick={closeGoalModal}
-                className="p-2 sm:p-1 rounded-lg text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white cursor-pointer transition-colors"
-                aria-label="Fechar"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleGoalSubmit} className="space-y-3.5">
-              {/* Rótulo do Goal */}
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Rótulo do Objetivo *
+                  Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}
                 </label>
                 <input
                   type="text"
-                  required
-                  placeholder="Ex: Idade, Cidade onde mora, Profissão"
-                  value={goalLabel}
-                  onChange={(e) => setGoalLabel(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+                  required={goalKind === "fact"}
+                  placeholder={goalKind === "fact" ? "age, city, job" : "slug do estado"}
+                  value={goalMemoryField}
+                  onChange={(e) => setGoalMemoryField(e.target.value)}
+                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono"
                 />
+                <p className="text-[10px] text-zinc-500">
+                  {goalKind === "fact" ? "Campo salvo na ContactMemory" : "Avaliado pelo contexto e histórico"}
+                </p>
               </div>
+            </div>
+          )}
 
-              {/* Tipo de Objetivo: Fato vs Estado Conversacional */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Tipo Conceitual de Objetivo *
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setGoalKind("fact");
-                      if (goalMemoryEntity === "conversation") setGoalMemoryEntity("self");
-                    }}
-                    className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
-                      goalKind === "fact"
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
-                        : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
-                    }`}
-                  >
-                    <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-                      Fato do Contato
-                    </span>
-                    <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                      Dado durável (idade, cidade, profissão).
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setGoalKind("conversation_state");
-                      if (goalMemoryEntity === "self") setGoalMemoryEntity("conversation");
-                    }}
-                    className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
-                      goalKind === "conversation_state"
-                        ? "bg-purple-500/15 border-purple-500/40 text-purple-700 dark:text-purple-300"
-                        : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
-                    }`}
-                  >
-                    <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-                      Estado da Conversa
-                    </span>
-                    <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                      Dinâmica qualitativa (reciprocidade, profundidade).
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setGoalKind("action");
-                      setGoalMemoryEntity("");
-                      setGoalMemoryField("");
-                    }}
-                    className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
-                      goalKind === "action"
-                        ? "bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300"
-                        : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
-                    }`}
-                  >
-                    <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-                      Ação Obrigatória
-                    </span>
-                    <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                      Missão que precisa ser executada pelo Brain.
-                    </span>
-                  </button>
-                </div>
+          {/* Descrição / Orientação para a IA */}
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Orientação para a IA (Opcional)
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Ex: Descobrir a idade naturalmente quando falar de estudos ou trabalho, sem parecer interrogatório..."
+              value={goalDescription}
+              onChange={(e) => setGoalDescription(e.target.value)}
+              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+            />
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-100/70 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <div>
+                <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Obrigatório</p>
+                <p className="text-[10px] text-zinc-500">Se desligado, vira uma possibilidade e não bloqueia o avanço.</p>
               </div>
-
-              {goalKind === "action" ? (
-                <div className="space-y-2.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Ação que o Brain precisa executar *</label>
-                    <select
-                      value={goalActionType}
-                      onChange={(e) => setGoalActionType(e.target.value as NonNullable<ConversationGoal["actionType"]>)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-amber-500"
-                    >
-                      <option value="send_audio">Enviar áudio vinculado ao objetivo</option>
-                      <option value="send_raffle_details" disabled>Enviar foto + detalhes da rifa — estrutura preparada</option>
-                      <option value="send_raffle_numbers" disabled>Enviar 10 números livres — estrutura preparada</option>
-                      <option value="operator_handoff" disabled>Finalizar e avisar operador — estrutura preparada</option>
-                    </select>
-                  </div>
-                  <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-                    O áudio é vinculado a este objetivo no Cofre de Áudios. O objetivo só será concluído após o provedor confirmar o envio.
-                    Se o contexto estiver sensível, o Brain pode adiar, mas a missão permanece pendente para os próximos turnos.
-                  </p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                      Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}
-                    </label>
-                    <input
-                      type="text"
-                      required={goalKind === "fact"}
-                      placeholder={goalKind === "fact" ? "self" : "conversation"}
-                      value={goalMemoryEntity}
-                      onChange={(e) => setGoalMemoryEntity(e.target.value)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
-                    />
-                    <p className="text-[10px] text-zinc-500">
-                      {goalKind === "fact" ? 'Padrão: "self" (o pretendente)' : 'Padrão: "conversation"'}
-                    </p>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                      Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}
-                    </label>
-                    <input
-                      type="text"
-                      required={goalKind === "fact"}
-                      placeholder={goalKind === "fact" ? "age, city, job" : "slug do estado"}
-                      value={goalMemoryField}
-                      onChange={(e) => setGoalMemoryField(e.target.value)}
-                      className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono text-xs"
-                    />
-                    <p className="text-[10px] text-zinc-500">
-                      {goalKind === "fact" ? "Campo salvo na ContactMemory" : "Avaliado pelo contexto e histórico"}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Descrição / Orientação para a IA */}
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Orientação para a IA (Opcional)
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Ex: Descobrir a idade naturalmente quando falar de estudos ou trabalho, sem parecer interrogatório..."
-                  value={goalDescription}
-                  onChange={(e) => setGoalDescription(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
-                />
+              <input type="checkbox" checked={goalRequired} onChange={(e) => setGoalRequired(e.target.checked)} className="h-4 w-4 rounded" />
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-100/70 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <div>
+                <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Ativo</p>
+                <p className="text-[10px] text-zinc-500">Desligado remove o objetivo do repertório do Brain.</p>
               </div>
+              <input type="checkbox" checked={goalEnabled} onChange={(e) => setGoalEnabled(e.target.checked)} className="h-4 w-4 rounded" />
+            </label>
+          </div>
 
-              {/* Status do Checkpoint: Todo ativo é obrigatório no fluxo sequencial */}
-              <div className="pt-1 flex items-center justify-between p-3 rounded-xl bg-zinc-100/70 dark:bg-zinc-900/60 border border-zinc-200 dark:border-zinc-800">
-                <div className="space-y-0.5">
-                  <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Status do Checkpoint</span>
-                  <p className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                    No fluxo determinístico, todos os checkpoints ativos são obrigatórios e executados em ordem sequencial.
-                  </p>
-                </div>
+          {/* Botões do Modal */}
+          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
+            <button
+              type="button"
+              onClick={closeGoalModal}
+              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={isGoalSubmitting || !goalLabel.trim() || (goalKind === "fact" && !goalMemoryField.trim())}
+              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              {isGoalSubmitting
+                ? "Salvando..."
+                : editingGoal
+                ? "Salvar Alterações"
+                : "Adicionar Objetivo"}
+            </button>
+          </div>
+        </form>
+      </ResponsiveModal>
 
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={goalEnabled}
-                    onChange={(e) => {
-                      setGoalEnabled(e.target.checked);
-                    }}
-                    className="w-4 h-4 rounded text-emerald-500 bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700 focus:ring-0 focus:ring-offset-0"
-                  />
-                  <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                    {goalEnabled ? "Ativo (Obrigatório)" : "Inativo (Pular)"}
-                  </span>
-                </label>
-              </div>
-
-              {/* Botões do Modal */}
-              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
-                <button
-                  type="button"
-                  onClick={closeGoalModal}
-                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isGoalSubmitting || !goalLabel.trim() || (goalKind === "fact" && !goalMemoryField.trim())}
-                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center"
-                >
-                  {isGoalSubmitting
-                    ? "Salvando..."
-                    : editingGoal
-                    ? "Salvar Alterações"
-                    : "Adicionar Objetivo"}
-                </button>
-              </div>
-            </form>
+      {/* Modal de Confirmação de Exclusão de Etapa */}
+      <ResponsiveModal
+        isOpen={!!stageToDelete}
+        onClose={() => setStageToDelete(null)}
+        title="Excluir etapa"
+        maxWidth="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Tem certeza de que deseja excluir a etapa{" "}
+            <span className="font-bold text-zinc-950 dark:text-white">
+              &quot;{stageToDelete?.name}&quot;
+            </span>
+            ? Todos os objetivos desta etapa também serão removidos.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => setStageToDelete(null)}
+              className="flex-1 sm:flex-none rounded-xl border border-zinc-200 dark:border-white/10 px-4 py-2.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-white/5 active:scale-95 transition-transform min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={isDeletingStage}
+              onClick={handleConfirmDeleteStage}
+              className="flex-1 sm:flex-none rounded-xl bg-red-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-red-700 active:scale-95 transition-transform disabled:opacity-50 min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              {isDeletingStage ? "Excluindo..." : "Excluir etapa"}
+            </button>
           </div>
         </div>
-      )}
+      </ResponsiveModal>
+
+      {/* Modal de Confirmação de Exclusão de Objetivo */}
+      <ResponsiveModal
+        isOpen={!!goalToDelete}
+        onClose={() => setGoalToDelete(null)}
+        title="Excluir objetivo"
+        maxWidth="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Tem certeza de que deseja excluir o objetivo{" "}
+            <span className="font-bold text-zinc-950 dark:text-white">
+              &quot;{goalToDelete?.goal.label || goalToDelete?.goal.title}&quot;
+            </span>
+            ?
+          </p>
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => setGoalToDelete(null)}
+              className="flex-1 sm:flex-none rounded-xl border border-zinc-200 dark:border-white/10 px-4 py-2.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-white/5 active:scale-95 transition-transform min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={isDeletingGoal}
+              onClick={handleConfirmDeleteGoal}
+              className="flex-1 sm:flex-none rounded-xl bg-red-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-red-700 active:scale-95 transition-transform disabled:opacity-50 min-h-[44px] sm:min-h-0 flex items-center justify-center"
+            >
+              {isDeletingGoal ? "Excluindo..." : "Excluir objetivo"}
+            </button>
+          </div>
+        </div>
+      </ResponsiveModal>
     </div>
   );
 }

@@ -236,12 +236,12 @@ export function InstagramProfileModal({
           )}
         </div>
 
-        <div className="p-4 border-t border-white/10 bg-[#111113]/95 backdrop-blur-md shrink-0">
+        <div className="p-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:pb-4 border-t border-white/10 bg-[#111113]/95 backdrop-blur-md shrink-0">
           <div className="grid grid-cols-2 gap-2.5">
             <button
               type="button"
               onClick={onClose}
-              className="w-full py-3 px-2.5 rounded-full font-bold text-xs sm:text-sm text-white bg-zinc-800 hover:bg-zinc-700 active:scale-98 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+              className="w-full py-3 px-2.5 min-h-[44px] rounded-full font-bold text-xs sm:text-sm text-white bg-zinc-800 hover:bg-zinc-700 active:scale-98 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <MessageCircle className="w-4 h-4 shrink-0" />
               <span className="truncate">Voltar</span>
@@ -251,7 +251,7 @@ export function InstagramProfileModal({
               href={instagramProfileUrl}
               target={isAndroid ? undefined : "_blank"}
               rel="noopener noreferrer"
-              className="w-full py-3 px-2.5 rounded-full font-bold text-xs sm:text-sm text-white bg-gradient-to-r from-[#f09433] via-[#dc2743] to-[#bc1888] hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-pink-500/25 cursor-pointer"
+              className="w-full py-3 px-2.5 min-h-[44px] rounded-full font-bold text-xs sm:text-sm text-white bg-gradient-to-r from-[#f09433] via-[#dc2743] to-[#bc1888] hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-pink-500/25 cursor-pointer"
             >
               <Camera className="w-4 h-4 shrink-0" />
               <span className="truncate">Abrir Instagram</span>

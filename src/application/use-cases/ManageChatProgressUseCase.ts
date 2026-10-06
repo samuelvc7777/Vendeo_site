@@ -1,9 +1,7 @@
 import { IChatStageRepository } from "@/domain/repositories/IChatStageRepository";
-import { IVaultRepository } from "@/domain/repositories/IVaultRepository";
 import {
   ChatStage,
   ChatProgress,
-  StageChecklistItem,
   StageObjective,
   ConversationObjectiveProgress,
 } from "@/domain/entities/ChatStage";
@@ -30,9 +28,6 @@ export interface ChatStageDetail {
   requiredPendingCount: number;
   optionalPendingCount: number;
   // Compatibilidade legada transitória
-  checklist: StageChecklistItem[];
-  totalItems: number;
-  completedItemsCount: number;
   is100Percent: boolean;
   isConverted: boolean;
   allStages: ChatStage[];
@@ -40,22 +35,17 @@ export interface ChatStageDetail {
 
 export class ManageChatProgressUseCase {
   private stageRepository: IChatStageRepository;
-  private vaultRepository: IVaultRepository;
 
-  constructor(
-    stageRepository: IChatStageRepository,
-    vaultRepository: IVaultRepository
-  ) {
+  constructor(stageRepository: IChatStageRepository) {
     this.stageRepository = stageRepository;
-    this.vaultRepository = vaultRepository;
   }
 
   async getChatStageDetail(conversationId: string): Promise<ChatStageDetail> {
-    const stages = await this.stageRepository.getStages();
+    const allConfiguredStages = await this.stageRepository.getStages();
     let progress = await this.stageRepository.getChatProgress(conversationId);
 
     // Se não há etapas cadastradas no sistema
-    if (stages.length === 0) {
+    if (allConfiguredStages.length === 0) {
       return {
         conversationId,
         stage: null,
@@ -69,30 +59,38 @@ export class ManageChatProgressUseCase {
         completedObjectivesCount: 0,
         requiredPendingCount: 0,
         optionalPendingCount: 0,
-        checklist: [],
-        totalItems: 0,
-        completedItemsCount: 0,
         is100Percent: false,
         isConverted: progress?.isConverted || false,
         allStages: [],
       };
     }
 
+    const fallbackStage =
+      allConfiguredStages.find((stage) => stage.scheduleId === "schedule_sales") ||
+      allConfiguredStages[0];
+
     // Se a conversa ainda não tem progresso salvo, inicializa fallback em memória (100% READ-ONLY)
     const effectiveProgress: ChatProgress = progress && progress.currentStageId
       ? progress
       : {
           conversationId,
-          currentStageId: stages[0].id,
-          completedItemIds: progress?.completedItemIds || [],
+          currentStageId: fallbackStage.id,
           completedGoalIds: progress?.completedGoalIds || [],
           objectiveProgress: progress?.objectiveProgress,
           isConverted: progress?.isConverted || false,
           updatedAt: progress?.updatedAt || new Date().toISOString(),
         };
 
-    // Encontra a etapa atual
-    let stageIndex = stages.findIndex((s) => s.id === effectiveProgress.currentStageId);
+    const configuredCurrentStage =
+      allConfiguredStages.find((stage) => stage.id === effectiveProgress.currentStageId) ||
+      fallbackStage;
+    const activeScheduleId = configuredCurrentStage.scheduleId;
+    const stages = allConfiguredStages
+      .filter((stage) => stage.scheduleId === activeScheduleId)
+      .sort((a, b) => a.order - b.order);
+
+    // Encontra a etapa atual dentro do cronograma ativo
+    let stageIndex = stages.findIndex((s) => s.id === configuredCurrentStage.id);
     if (stageIndex === -1) {
       // Se a etapa que estava salva foi deletada ou não consta na tabela chat_stages,
       // utiliza a primeira etapa como fallback estritamente em memória (SEM mutação no banco em leitura).
@@ -117,7 +115,7 @@ export class ManageChatProgressUseCase {
       const isCompleted = completedGoalSet.has(obj.id) || prog?.status === "completed";
       return {
         ...obj,
-        required: true,
+        required: obj.required !== false,
         title: obj.title || obj.label || "Objetivo",
         status: isCompleted ? "completed" : "pending",
         value: prog?.value ?? null,
@@ -128,39 +126,16 @@ export class ManageChatProgressUseCase {
 
     const totalObjectives = objectives.length;
     const completedObjectivesCount = objectives.filter((o) => o.status === "completed").length;
-    const requiredPendingCount = objectives.filter((o) => o.status !== "completed").length;
-    const optionalPendingCount = 0;
+    const requiredPendingCount = objectives.filter(
+      (o) => o.required !== false && o.status !== "completed"
+    ).length;
+    const optionalPendingCount = objectives.filter(
+      (o) => o.required === false && o.status !== "completed"
+    ).length;
 
-    // Busca os itens legados da pasta do cofre vinculada (se folderId existir)
-    let checklist: StageChecklistItem[] = [];
-    if (currentStage.folderId) {
-      try {
-        const vaultItems = await this.vaultRepository.getItems(currentStage.folderId);
-        const completedSet = new Set(effectiveProgress.completedItemIds || []);
-        checklist = vaultItems.map((item) => ({
-          id: item.id,
-          folderId: item.folderId,
-          type: item.type,
-          title: item.title,
-          content: item.content,
-          mediaUrl: item.mediaUrl,
-          duration: item.duration,
-          linkedItemId: item.linkedItemId,
-          isCompleted: completedSet.has(item.id),
-        }));
-      } catch {
-        checklist = [];
-      }
-    }
-
-    const totalItems = checklist.length;
-    const completedItemsCount = checklist.filter((i) => i.isCompleted).length;
-
-    // A etapa é 100% apta quando todos os objetivos ativos foram atingidos
-    const is100Percent =
-      totalObjectives > 0
-        ? completedObjectivesCount === totalObjectives
-        : totalItems > 0 && completedItemsCount === totalItems;
+    // Objetivos opcionais não bloqueiam a etapa. Se não houver objetivo
+    // obrigatório, a etapa está apta a avançar quando o Brain decidir.
+    const is100Percent = totalObjectives > 0 && requiredPendingCount === 0;
 
     return {
       conversationId,
@@ -175,9 +150,6 @@ export class ManageChatProgressUseCase {
       completedObjectivesCount,
       requiredPendingCount,
       optionalPendingCount,
-      checklist,
-      totalItems,
-      completedItemsCount,
       is100Percent,
       isConverted: effectiveProgress.isConverted || false,
       allStages: stages,
@@ -193,92 +165,6 @@ export class ManageChatProgressUseCase {
       return this.stageRepository.toggleGoalCompletion(conversationId, objectiveId, isCompleted);
     }
     throw new Error("Método toggleGoalCompletion não disponível no repositório.");
-  }
-
-  async toggleItem(
-    conversationId: string,
-    itemId: string,
-    isCompleted: boolean
-  ): Promise<ChatProgress> {
-    return this.stageRepository.toggleItemCompletion(conversationId, itemId, isCompleted);
-  }
-
-  async markItemCompletedByVaultItem(
-    conversationId: string,
-    vaultItemId: string
-  ): Promise<ChatProgress | null> {
-    const detail = await this.getChatStageDetail(conversationId);
-    if (!detail.stage) return null;
-
-    // Verifica se o item pertence ao checklist da etapa atual
-    const itemInChecklist = detail.checklist.find((i) => i.id === vaultItemId);
-    if (itemInChecklist && !itemInChecklist.isCompleted) {
-      return this.stageRepository.toggleItemCompletion(conversationId, vaultItemId, true);
-    }
-    return null;
-  }
-
-  async markItemCompletedByExactText(
-    conversationId: string,
-    sentText: string
-  ): Promise<ChatProgress | null> {
-    const detail = await this.getChatStageDetail(conversationId);
-    if (!detail.stage) return null;
-
-    const trimmedSent = sentText.trim().toLowerCase();
-    const isAudioMsg = sentText.startsWith("[audio:");
-    const audioUrl = isAudioMsg
-      ? sentText.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1]?.trim().toLowerCase()
-      : undefined;
-
-    const matchingItem = detail.checklist.find((item) => {
-      if (isAudioMsg && item.type === "audio") {
-        const itemMedia = (item.mediaUrl || "").trim().toLowerCase();
-        if (audioUrl && itemMedia && (itemMedia === audioUrl || itemMedia.includes(audioUrl) || audioUrl.includes(itemMedia))) {
-          return true;
-        }
-        if (item.content && item.content.trim().toLowerCase() === trimmedSent) return true;
-        if (item.title && item.title.trim().toLowerCase() === trimmedSent) return true;
-        // Se a mensagem enviada for áudio, reconcilia com o próximo áudio pendente da etapa
-        if (!item.isCompleted) return true;
-      }
-      if (item.type === "text") {
-        const itemContent = (item.content || "").trim().toLowerCase();
-        const itemTitle = (item.title || "").trim().toLowerCase();
-        if (itemContent && (itemContent === trimmedSent || trimmedSent.includes(itemContent) || itemContent.includes(trimmedSent))) return true;
-        if (itemTitle && (itemTitle === trimmedSent || trimmedSent.includes(itemTitle) || itemTitle.includes(trimmedSent))) return true;
-
-        // Semântica inteligente de localização / cidade (São João del Rei, matozinhos, centro, etc.)
-        const isCityItem = /sao joao|sjdr|cidade|mora|onde voce mora/i.test(itemTitle + " " + itemContent);
-        const mentionsCity = /sao joao|sjdr|del rei|matozinhos|centro/i.test(trimmedSent);
-        if (isCityItem && mentionsCity) return true;
-      }
-      return false;
-    });
-
-    if (matchingItem && !matchingItem.isCompleted) {
-      let result = await this.stageRepository.toggleItemCompletion(conversationId, matchingItem.id, true);
-
-      // Resolução de item vinculado bidirecional
-      const partner = detail.checklist.find(
-        (other) =>
-          other.id !== matchingItem.id &&
-          (Boolean(matchingItem.linkedItemId && other.id === matchingItem.linkedItemId) ||
-           Boolean(other.linkedItemId && other.linkedItemId === matchingItem.id))
-      );
-      if (partner && !partner.isCompleted) {
-        const partnerContent = (partner.content || "").trim().toLowerCase();
-        const partnerTitle = (partner.title || "").trim().toLowerCase();
-        if (
-          partnerContent && (trimmedSent.includes(partnerContent) || partnerContent.includes(trimmedSent)) ||
-          partnerTitle && (trimmedSent.includes(partnerTitle) || partnerTitle.includes(trimmedSent))
-        ) {
-          result = await this.stageRepository.toggleItemCompletion(conversationId, partner.id, true);
-        }
-      }
-      return result;
-    }
-    return null;
   }
 
   async advanceStage(conversationId: string): Promise<ChatProgress> {

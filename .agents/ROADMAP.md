@@ -274,19 +274,126 @@
   - Bateria ampliada para **39 testes automatizados** em `scripts/test-cloud-autopilot.cjs` com **100% de aprovação**.
   - TypeScript estrito (`npx tsc --noEmit`) validado com **0 erros**.
 
-## Fase 20: Reconexão da Meta Graph API, Unificação & Deduplicação de Conversas (Concluída)
-- [x] Restabelecimento do Token do Instagram:
-  - Token de acesso oficial da Meta validado ao vivo (status 200 OK) para `@lariresende_0611`.
-  - Persistido na tabela `instagram_config` do Supabase com `is_connected: true`.
-- [x] Diagnóstico & Remoção de Duplicatas de Conversas:
-  - Causa Raiz: O Webhook da Meta registrava conversas usando o IGSID numérico do remetente (ex: `1122646087115510`), enquanto a sincronização da Graph API criava threads com o ID `aWdfZAG...`, gerando duas conversas para o mesmo usuário.
-  - 31 conversas duplicadas removidas do Supabase com sucesso.
-  - 219 mensagens históricas migradas e consolidadas nas conversas oficiais sem perda de dados.
-- [x] Prevenção Arquitetural contra Novas Duplicidades:
-  - Em `InstagramApiClient.ts`: padronizado para usar `contact.id` (IGSID numérico) como chave primária de conversas.
-  - Em `src/app/api/instagram/conversations/route.ts` e `supabase/functions/api/index.ts`: adicionada deduplicação defensiva em memória por username para garantir que cada pretendente apareça exatamente uma única vez na lista.
-- [x] Validação Completa:
-  - Banco de dados Supabase verificado com 0 duplicidades restantes.
-  - Suíte de 39 testes do piloto automático 100% verde (`scripts/test-cloud-autopilot.cjs`).
+## Fase 21: Publicação de Stories no WhatsApp 2 com Controle Granular de Privacidade e Audiência Específica (Concluída)
+- [x] Backend & Gateway WhatsApp 2 (`services/whatsapp2-gateway`):
+  - Endpoints REST dedicados: `GET /status/privacy`, `POST /status/privacy` e `GET /status/contacts`.
+  - Normalização de aliases e validação estrita com tipagem defensiva (`contact`, `deny-list`, `allow-list`).
+  - Sincronização em tempo de execução via WPPConnect (`WPP.privacy.setStatus` e `WPP.status.updateParticipants`).
+  - Agregação inteligente de contatos da agenda e conversas recentes ativas (`client.getContacts` + `client.getChats` + WPP) com busca em tempo real e ordenação alfabética.
+  - Suporte ao parâmetro `privacy` nos disparadores de status de texto, imagem e vídeo.
+- [x] Cliente Frontend & Camada de Domínio:
+  - Tipos TypeScript estritos em `whatsapp2-client.ts` e `src/domain/entities/WhatsAppStatus.ts` (`WhatsAppStatusPrivacyConfig`, `WhatsAppStatusContact`, `privacyType`, `privacyCount`).
+  - Métodos assíncronos `getWhatsApp2StatusPrivacy()`, `setWhatsApp2StatusPrivacy()` e `getWhatsApp2StatusContacts()`.
+  - Integração do payload de privacidade nas chamadas de publicação de texto, imagem e vídeo.
+- [x] Interface de Usuário Mobile First (`WhatsAppStatusModal.tsx`):
+  - Botão de seletor de público integrado no rodapé de publicação com visualização de status ativo e contadores dinâmicos (🟢 *Meus contatos*, 🟠 *Exceto X*, 🟣 *Somente X*).
+  - Sub-modal nativo com 3 opções claras de privacidade:
+    1. *Meus contatos* (Padrão para toda a agenda).
+    2. *Meus contatos, exceto...* (Bloqueio seletivo com lista de exclusão).
+    3. *Compartilhar somente com...* (Estilo Melhores Amigos / lista de inclusão seletiva).
+  - Barra de busca instantânea de contatos por nome ou número, com avatars, checkboxes arredondados e ações em lote ("Limpar", "Marcar listados").
+  - Badges visuais coloridas no histórico de publicações indicando o público de cada story enviado.
+- [x] Testes & Validação Técnica Ponta a Ponta:
+  - 21 testes automatizados específicos de Status/Stories aprovados (`tests/test_whatsapp_status_*.mjs`).
+  - Endpoints HTTP testados e validados ao vivo na porta 8788 com a sessão persistente da Larissa Resende conectada e intacta.
   - TypeScript estrito validado com 0 erros (`npx tsc --noEmit`).
+
+## Fase 22: Biblioteca de Stories Evergreen com Filtro Automático Anti-Repetição (Concluída)
+- [x] Arquitetura de Domínio & Repositório:
+  - Entidade `WhatsAppStoryMedia.ts` com ID único, tipo (`image` | `video`), `mediaUrl`, `caption`, `seenContactIds: string[]`, `timesPosted`, `createdAt`, `lastPostedAt`.
+  - Repositório `WhatsAppStoryMediaRepository.ts` com persistência estruturada local, métodos `getAll`, `getById`, `create`, `save`, `delete`, `recordContactsSeen` e `resetSeenContacts`.
+- [x] Central de Controle / Configurações:
+  - Componente `WhatsAppStoryMediaManager.tsx` integrado em `ConfigView.tsx` na seção *Biblioteca de Stories (Evergreen)*.
+  - Upload de imagens e vídeos com preview em tempo real, definição de título e legenda padrão.
+  - Grid com contadores em tempo real de visualizadores únicos (`seenContactIds`) e total de publicações (`timesPosted`).
+  - Ações para excluir e resetar histórico de visualizadores.
+- [x] Modal de Publicação do WhatsApp (`WhatsAppStatusModal.tsx`):
+  - Nova aba *Biblioteca* com cards dos stories salvos e botão "Usar este Story".
+  - **Filtro Estrito Anti-Repetição:** Contatos que já visualizaram aquele story específico **são sumariamente ocultados da lista de seleção** (`eligibleContactsList`), exibindo apenas novos contatos que nunca viram o conteúdo.
+  - Banner informativo dinâmico destacando a quantidade de contatos ocultados e novos elegíveis.
+  - Ação em lote "Marcar listados (N)" para selecionar rapidamente os contatos novos.
+  - Atualização automática e atômica de `seenContactIds` pós-publicação bem-sucedida, garantindo que os contatos marcados nunca mais apareçam para aquele mesmo story.
+- [x] Coexistência Fluida entre Modelo Tradicional e Biblioteca Evergreen:
+  - Preservação 100% integral do modo avulso tradicional: abas Texto, Foto e Vídeo funcionam de maneira independente sem ocultação de contatos (`selectedLibraryStory === null`).
+  - Badge no preview com botão tátil "Desmarcar" permitindo transitar instantaneamente do story da biblioteca de volta para o modelo tradicional avulso.
+  - Seleção manual de arquivo (upload de foto ou vídeo) redefine automaticamente o modo para avulso tradicional.
+  - No modo tradicional, o seletor de público exibe todos os contatos salvos da agenda sem nenhum filtro restritivo.
+- [x] Correção Definitiva da Publicação de Status (Pipeline Nativo WhatsApp Web):
+  - Diagnóstico em tempo de execução via Puppeteer: identificada falha de rejeição interna de criptografia multi-device na biblioteca WPPConnect (`isSendFailure: true`, `ack: 0`), mantendo o status em loop de "Enviando...".
+  - Implementação de automação de UI nativa oficial no WhatsApp Web para postagem de status de texto (abre modal oficial, injeta texto via `InputEvent`, ajusta formatação e aciona botão nativo "Enviar").
+  - Testado e comprovado ao vivo: status publicado oficialmente nos servidores da Meta com `ack: 1` e transição imediata para *"Hoje às 12:28"*.
+- [x] Qualidade & Compilação:
+  - `npx tsc --noEmit` validado com **0 erros**.
+  - Testes automatizados de privacidade e coexistência aprovados.
+
+## Fase 23: Conexão Oficial Badoo (Padrão Simples & Direto estilo Tinder) (Concluída)
+- [x] **Arquitetura & Domínio:**
+  - Criação da entidade `Badoo.ts` com tipagem estrita para `BadooProfile`, `BadooSession`, `BadooRawMatch`, `BadooRawMessage`, `BadooFilter`.
+- [x] **Banco de Dados & Supabase Realtime:**
+  - Criação e execução da migration `20261004130000_add_badoo_integration.sql`.
+  - Criação das tabelas `badoo_config`, `badoo_conversations`, `badoo_messages` com políticas públicas e adição à publicação `supabase_realtime`.
+  - Atualização das constraints `instagram_conversations_channel_check` e `instagram_messages_channel_check` para suportar o canal `'badoo'`.
+- [x] **Infraestrutura HTTP & Criptografia:**
+  - Criação do `BadooApiClient.ts` implementando o protocolo JSON-RPC (`webapi.phtml`) do cliente Web do Badoo com cálculo automático de assinatura MD5 no cabeçalho `X-Pingback`.
+  - Implementação de `broadcastBadooMessage` e `broadcastBadooConversation` em `RealtimeBroadcaster.ts`.
+- [x] **Rotas de API (Next.js App Router):**
+  - `/api/badoo/auth`: autenticação via cookie/token da Web com persistência em `badoo_config`.
+  - `/api/badoo/status`: verificação de conectividade e perfil do usuário autenticado com fallback para cache.
+  - `/api/badoo/disconnect`: desconexão limpa e expiração de sessão.
+  - `/api/badoo/matches`: sincronização bidirecional de contatos/matches com as tabelas locais e a visão unificada `instagram_conversations`.
+  - `/api/badoo/messages/[matchId]`: histórico completo e envio de mensagens com broadcast Realtime imediato.
+  - `/api/badoo/matches/[matchId]/restrict`: controle de restrição/pausa de automação por contato.
+- [x] **Interface do Usuário & Experiência Mobile-First:**
+  - Componente `BadooConnectModal.tsx`: modal temático roxo/violeta com passo a passo e script de 1 clique (`copy(document.cookie)`).
+  - Componente `BadooProfileModal.tsx`: visualizador de fotos em carrossel, bio, idade e cidade do contato.
+  - Atualização do `ChatFilterModal.tsx`: suporte a filtros de status específicos do Badoo.
+  - Integração no `InstagramDirect.tsx`:
+    - Aba Badoo na barra superior de seleção de canais com contadores e badge de não lidas.
+    - Suporte a envio de mensagens e carregamento de histórico do Badoo.
+    - Abertura de modal de perfil ao clicar no avatar do contato (cabeçalho ou lista).
+    - Estado vazio dedicado para Badoo conectado/desconectado com botão de ação direta.
+  - Integração no `ConfigView.tsx`: card de gerenciamento e status da conta Badoo com suporte a conectar, desconectar e sincronizar contatos.
+- [x] **Hooks & Realtime:**
+  - Atualização do `useChatRealtime.ts` para escutar em tempo real eventos de mensagens e conversas do Badoo.
+- [x] **Qualidade & Validação:**
+  - Teste automatizado `tests/test_badoo_integration.mjs` criado e aprovado (100% pass).
+  - `npx tsc --noEmit` validado com **0 erros** de TypeScript.
+
+## Fase 24: Refatoração Arquitetural — Experiência Exclusiva WhatsApp (Em Andamento)
+- [x] **Tarefa 1: Inventário Diagnóstico Completo:**
+  - Mapeamento exaustivo de runtime, tipos e componentes de Tinder, Badoo, WhatsApp 1 e WhatsApp 2.
+- [x] **Tarefa 2: Remoção do Runtime do Tinder:**
+  - Exclusão dos 12 arquivos exclusivos e limpeza de referências compartilhadas sem quebra de testes.
+- [x] **Tarefa 3: Remoção do Runtime do Badoo:**
+  - Exclusão dos arquivos exclusivos e limpeza de referências compartilhadas mantendo 100% de testes verdes.
+- [x] **Tarefa 4: Remoção do WhatsApp 1 (Meta Cloud API):**
+  - Remoção de prefixos `wa:`, cartões e polling legados em `ConfigView.tsx`, `WhatsAppContactInfo.tsx` e `InstagramDirect.tsx`.
+- [x] **Tarefa 5: Limpeza de Tipos, Imports e Estados Mortos:**
+  - Purga de canais e flags legadas em `DirectConversation`, types e broadcaster.
+- [x] **Tarefa 6: Ocultação do Instagram na Visão Operacional Principal de Chat:**
+  - Canal operacional fixado em WhatsApp (`whatsapp2`), remoção de abas, header iOS com botão `+ Status` e preservação do Instagram no backend e em `ConfigView.tsx`.
+- [x] **Tarefa 7: Simplificação Estrutural da View Principal para Operação Exclusiva do WhatsApp:**
+  - `autoPilotConversations` e `platformConversations` simplificados para operar diretamente sobre `whatsapp2Conversations`.
+  - Remoção de contadores e listas intermediárias mortas do Instagram (`visiblePlatformConversations`, `instagramConversationCount`, `instagramUnreadCount`).
+  - Cabeçalho da conversa aberto simplificado para layout nativo WhatsApp iOS (`ChevronLeft`, avatar com abertura de `WhatsAppContactInfo`, botão de IA com feedback tátil e glass).
+  - Remoção de botões mortos de Restringir e Sincronizar Instagram no cabeçalho do chat.
+  - Remoção de modais mortos na tela de chat (`InstagramProfileModal`, `InstagramConnectModal` e Action Sheet de contexto do Instagram), mantendo apenas as ações contextuais nativas do WhatsApp iOS (bloquear, trancar, marcar leitura).
+- [x] **Tarefa 8: Rebranding Visual "WhatsApp 2" -> "WhatsApp" (Concluída):**
+  - Eliminação completa de sufixos " 2" e menções "WhatsApp 2" em todos os textos exibidos ao usuário (título do card de conexão, botões "Conectar WhatsApp" / "Desconectar WhatsApp", modal de confirmação, toasts de sucesso e erro, empty states e erros de rede).
+  - Preservação estrita de todos os identificadores e contratos técnicos internos (`channel === "whatsapp2"`, prefixo `wa2:`, `WHATSAPP2_GATEWAY_URL`, RPCs, tabelas e métodos de cliente).
+  - TypeScript compilando com 0 erros (`npx tsc --noEmit`), build de produção do Next.js gerado com sucesso e 58/58 testes oficiais aprovados.
+- [x] **Tarefa 9: Investigação de Banco e Migrations Futuras (Concluída):**
+  - Mapeamento exaustivo de 15+ foreign keys que dependem com `ON DELETE CASCADE` de `instagram_conversations` (espinha dorsal do Brain, sessões, outbox e estados).
+  - Constatação de integridade: Badoo e Tinder possuem 6 tabelas vazias em produção (`tinder_config`, `tinder_conversations`, `tinder_messages`, `badoo_config`, `badoo_conversations`, `badoo_messages`) com 0 registros e sem FKs externas.
+  - Salvaguarda do identificador `whatsapp2`: comprovada a necessidade crítica de manter o identificador interno `whatsapp2` no banco, tabelas do gateway (`whatsapp2_*`) e nas 17+ RPCs atômicas do PostgreSQL para evitar quebras em cadeia, mantendo o rebranding 100% restrito à camada de UI.
+  - Salvaguarda das constraints: manutenção tolerante de `instagram_conversations_channel_check` e `instagram_messages_channel_check` para preservar integralmente o histórico de 38 conversas e 1.044 mensagens reais de `channel='whatsapp'`.
+- [x] **Tarefa 9.2: Preparação Final da Limpeza e Reconciliação do Ledger (Concluída):**
+  - Arquivamento fora da pasta ativa de `20261003233000_reconnect_tinder_integration.sql` em `supabase/migrations_archive/` impedindo ressurreição acidental de Tinder via `db push`.
+  - Alinhamento de timestamp da migration de Status local para `20261005013711_whatsapp_status_posts.sql` em sincronia com o ledger remoto de produção.
+  - Criação da migration oficial de limpeza via Supabase CLI (`supabase/migrations/20261005041506_cleanup_legacy_tinder_badoo_and_whatsapp1.sql`) sem aplicar em produção:
+    * Remoção explícita do RPC sem consumidor `ingest_whatsapp_inbound_atomic`.
+    * `DROP TABLE IF EXISTS` fail-safe sem `CASCADE` para as 6 tabelas órfãs vazias de Tinder e Badoo (com desassociação automática nativa de `supabase_realtime` no PostgreSQL 17).
+    * Atualização das constraints para permitir apenas `'instagram'`, `'whatsapp'` (legado preservado) e `'whatsapp2'` (atual).
+- [ ] **Tarefa 10: Verificação e Validação Ponta a Ponta.**
+
 

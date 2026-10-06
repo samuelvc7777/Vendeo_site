@@ -36,6 +36,10 @@ test("imagem e vídeo entram no pipeline; arquivo e emoji isolado continuam fora
     text: "[video:https://cdn.test/video.mp4]",
   }), true);
   assert.equal(quality.isActionableInboundMessage({
+    mediaType: "sticker",
+    text: "[sticker:https://cdn.test/sticker.webp]",
+  }), true);
+  assert.equal(quality.isActionableInboundMessage({
     mediaType: "file",
     text: "[file:https://cdn.test/a.pdf]",
   }), false);
@@ -49,6 +53,8 @@ test("análise visual usa apenas Luna Flex e reaproveita descrição persistida"
   assert.match(source, /reasoning: \{ effort: "none" \}/);
   assert.match(source, /type: "input_image"/);
   assert.match(source, /detail: "low"/);
+  assert.match(source, /callImageModel\(false\)/);
+  assert.match(source, /flex processing is temporarily unavailable/i);
   assert.match(source, /image_description: description/);
   assert.match(source, /if \(existing\)/);
 });
@@ -62,7 +68,7 @@ test("worker resolve toda mídia coalescida antes do Brain e persiste fora da CD
   const brain = worker.indexOf("const result = await runBrainOrchestration");
   assert.ok(batchLoad >= 0 && batchLoop >= 0 && brain >= 0);
   assert.ok(batchLoad < batchLoop && batchLoop < brain);
-  assert.match(source, /\.in\("media_type", \["image", "video"\]\)/);
+  assert.match(source, /\.in\("media_type", \["image", "video", "sticker"\]\)/);
   assert.match(source, /\.gte\("created_at", String\(batchStartedAt\)\)/);
   assert.match(source, /\.lte\("created_at", latestCreatedAt\)/);
   assert.match(source, /persistInboundMediaToVault\(\s*supabase,\s*pendingMedia,/);
@@ -78,7 +84,7 @@ test("regressão Luan: foto seguida de texto continua acionando o Brain pelo lot
 });
 
 test("schema guarda descrição/observação e retoma pelo inbound mais recente", () => {
-  const migration = read("supabase/migrations/20260930170000_instagram_media_understanding_and_observation.sql");
+  const migration = read("supabase/migrations/20260930183821_instagram_media_understanding_and_observation.sql");
   assert.match(migration, /add column if not exists image_description text/);
   assert.match(migration, /add column if not exists media_operator_observation text/);
   assert.match(migration, /prepare_instagram_media_observation/);

@@ -27,9 +27,10 @@ try {
   }
 
   const npmCli = process.env.npm_execpath;
+  const isCmd = !npmCli && process.platform === "win32";
   const executable = npmCli ? process.execPath : (process.platform === "win32" ? "npm.cmd" : "npm");
   const args = npmCli ? [npmCli, "exec", "next", "build"] : ["exec", "next", "build"];
-  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit" });
+  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", shell: isCmd });
   buildExitCode = result.status ?? 1;
 } finally {
   const generatedDevTypes = path.join(root, ".next", "dev", "types");

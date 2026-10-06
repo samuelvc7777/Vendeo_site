@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   buildOpenAiAgentToolsForSession,
   extractWebSearchAudit,
@@ -157,6 +158,18 @@ test("pergunta atual pode gerar busca e as fontes reais entram na telemetria sem
   assert.equal(result.telemetry.webSearchCallCount, 1);
   assert.deepEqual(result.telemetry.webSearchSources, ["https://dados.example.com/cafe"]);
   assert.doesNotMatch(JSON.stringify(result.telemetry), /Samuel Vitor|samuel_private|cotação atual/);
+});
+
+test("Agents SDK aplica a mesma política e bloqueio de vazamento do web_search", () => {
+  const sdkSource = readFileSync(
+    new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sdkSource, /BRAIN_WEB_SEARCH_POLICY/);
+  assert.match(sdkSource, /validateWebSearchOutputPrivacy/);
+  assert.match(sdkSource, /!webSearchPrivacy\.valid/);
+  assert.match(sdkSource, /accepted_plan_rejected_by_current_contracts/);
 });
 
 test("web_search vira conhecimento interno e nunca pode vazar citação ou URL na fala", async () => {

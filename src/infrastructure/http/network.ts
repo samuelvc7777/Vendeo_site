@@ -140,6 +140,10 @@ export function getApiUrl(path: string): string {
     (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") &&
     window.location.port === "3000";
 
+  if (cleanPath.startsWith("/match/")) {
+    return `https://wsdualhvopidgqcumonr.supabase.co/functions/v1/api${cleanPath}`;
+  }
+
   if (isLocalNextDev) {
     return `/api${cleanPath}`;
   }

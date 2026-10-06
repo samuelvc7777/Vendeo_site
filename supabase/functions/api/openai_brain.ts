@@ -198,12 +198,20 @@ export type OutboundAction =
   | {
       type: "text";
       text: string;
+      arsenalItemId?: string;
       delayBeforeSendSeconds?: number;
       replyToMessageId?: string;
     }
   | {
       type: "audio";
       audioId: string;
+      arsenalItemId?: string;
+      delayBeforeSendSeconds?: number;
+      replyToMessageId?: string;
+    }
+  | {
+      type: "image";
+      arsenalItemId: string;
       delayBeforeSendSeconds?: number;
       replyToMessageId?: string;
     };
@@ -911,8 +919,15 @@ export function validateConversationBrainPlan(
         if (typeof act.audioId !== "string" || !act.audioId.trim()) {
           return { valid: false, error: `outboundActions[${i}] de áudio deve ter 'audioId' como string não vazia` };
         }
+      } else if (act.type === "image") {
+        if (typeof act.arsenalItemId !== "string" || !act.arsenalItemId.trim()) {
+          return { valid: false, error: `outboundActions[${i}] de imagem exige 'arsenalItemId' autorizado` };
+        }
       } else {
         return { valid: false, error: `outboundActions[${i}] tipo inválido: '${act.type}'` };
+      }
+      if (act.arsenalItemId !== undefined && (typeof act.arsenalItemId !== "string" || !act.arsenalItemId.trim())) {
+        return { valid: false, error: `outboundActions[${i}].arsenalItemId deve ser string não vazia quando informado` };
       }
       const rawReplyTarget = act.reply_to ?? act.replyToMessageId;
       if (rawReplyTarget !== undefined && rawReplyTarget !== null) {
@@ -1378,6 +1393,7 @@ export function validateStageProgressionInvariant(
   plan: any,
   params: {
     currentStageId?: string | null;
+    currentStageRequired?: boolean;
     nextStageId?: string | null;
     isFinalStage?: boolean;
     stageObjectives?: Array<{
@@ -1397,7 +1413,6 @@ export function validateStageProgressionInvariant(
   }
 
   const requiredObjectives = params.stageObjectives.filter((objective) => objective.required !== false);
-  if (requiredObjectives.length === 0) return { valid: true };
 
   const completedThisTurn = new Set<string>();
   if (plan.objectiveDecision === "already_satisfied" && plan.satisfiedObjectiveId) {
@@ -1426,6 +1441,29 @@ export function validateStageProgressionInvariant(
     "",
   ).trim();
   const nextStageId = String(params.nextStageId || "").trim();
+
+  if (params.currentStageRequired === false) {
+    if (params.isFinalStage && requestedStageId && requestedStageId !== currentStageId) {
+      return {
+        valid: false,
+        error: "PLAN_STAGE_TRANSITION_INVALID_FINAL_STAGE: etapa opcional final não possui próxima etapa configurada",
+      };
+    }
+    if (
+      requestedStageId &&
+      nextStageId &&
+      requestedStageId !== currentStageId &&
+      requestedStageId !== nextStageId
+    ) {
+      return {
+        valid: false,
+        error: "PLAN_STAGE_TRANSITION_SKIP_FORBIDDEN: etapa opcional pode permanecer ou avançar somente para a próxima etapa configurada",
+      };
+    }
+    return { valid: true };
+  }
+
+  if (requiredObjectives.length === 0) return { valid: true };
 
   if (allRequiredCompleted && nextStageId) {
     if (requestedStageId !== nextStageId) {
@@ -1580,7 +1618,50 @@ export interface RunOpenAiBrainParams {
   persistentSessionEnabled?: boolean;
   replyTargets?: Record<string, { id: string; sender: string; text: string }>;
   searchCofreAudios?: (params: any) => Promise<any[]>;
+  currentScheduleId?: string | null;
+  currentScheduleName?: string | null;
+  currentScheduleCategory?: string | null;
+  currentScheduleDescription?: string | null;
+  currentScheduleExecutionMode?: "goal_driven" | "connection_window";
+  currentScheduleStartedAt?: string | null;
+  currentScheduleExpiresAt?: string | null;
+  connectionIntent?: string | null;
+  scheduleElapsedPercent?: number;
+  scheduleRemainingMinutes?: number | null;
+  scheduleTemporalPhase?: { id: string; label: string; fromPercent: number; toPercent: number; guidance: string } | null;
+  arsenalCandidates?: Array<{
+    itemId: string;
+    type: "topic" | "question" | "story" | "audio" | "photo";
+    title: string;
+    description?: string | null;
+    semanticContent?: string | null;
+    usageInstruction?: string | null;
+    socialFunction?: string | null;
+    assetId?: string | null;
+    mediaUrl?: string | null;
+    whatsappMediaUrl?: string | null;
+    transcript?: string | null;
+    visualDescription?: string | null;
+    validityType: "evergreen" | "recurring" | "moment";
+    priority: number;
+    maxUsesPerConversation?: number | null;
+    sentUseCount: number;
+    lastUsedAt?: string | null;
+  }>;
+  scheduleFinalAction?: {
+    type: "send_audio";
+    assetId: string;
+    title?: string | null;
+    required: true;
+    opportunityRequired: true;
+    activationThresholdPercent: number;
+    persistedStatus?: string | null;
+    effectiveStatus: "pending" | "available" | "delivered" | "manual_required" | "failed";
+    availableNow: boolean;
+  } | null;
+  scheduleManualActionNote?: string | null;
   currentStageId: string;
+  currentStageRequired?: boolean;
   nextStageId?: string | null;
   nextStageName?: string | null;
   isFinalStage?: boolean;
@@ -1624,6 +1705,7 @@ export interface RunOpenAiBrainParams {
   candidateEvidence?: Array<{ objectiveId: string; evidenceMessageId: string; summary: string }>;
   schemaRetryCount?: number;
   technicalRepairCount?: number;
+  providerBusyRetryCount?: number;
   schemaFeedback?: string;
   recoveredAudioToolState?: RecoveredAudioToolState;
   prefetchedAudioCandidateGroups?: Array<{
@@ -2236,10 +2318,12 @@ function buildAgentRecentWindow(params: RunOpenAiBrainParams): {
  */
 export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string {
   const objectiveDesc = params.currentObjectiveDescription ? ` - Descrição: ${params.currentObjectiveDescription}` : "";
-  const objectiveType = params.currentObjectiveKind === "action"
+  const objectiveType = params.currentObjectiveRequired === false
+    ? params.currentObjectiveKind === "action"
+      ? `[AÇÃO OPCIONAL; action=${params.currentObjectiveActionType || "não definida"}; usar somente se fizer sentido]`
+      : "[OPCIONAL; possibilidade, não checklist]"
+    : params.currentObjectiveKind === "action"
     ? `[AÇÃO OBRIGATÓRIA; action=${params.currentObjectiveActionType || "não definida"}; completion=${params.currentObjectiveCompletionPolicy || "delivery_confirmed"}]`
-    : params.currentObjectiveRequired === false
-    ? "[OPCIONAL; seguir somente se natural]"
     : "[OBRIGATÓRIO; missão persistente até conclusão]";
   const objectiveLine = params.currentObjectiveId
     ? `${params.currentObjectiveId} ("${params.currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
@@ -2248,7 +2332,11 @@ export function buildPersistentTurnContext(params: RunOpenAiBrainParams): string
   const sections: string[] = [
     BRAIN_WEB_SEARCH_POLICY,
     "# TURNO ATUAL DA CONVERSA",
+    `CRONOGRAMA ATUAL: ${params.currentScheduleName || params.currentScheduleId || "desconhecido"}`,
+    `CATEGORIA DO CRONOGRAMA: ${params.currentScheduleCategory || "desconhecida"}`,
+    `CRONOGRAMA EXPIRA EM: ${params.currentScheduleExpiresAt || "sem limite"}`,
     `ETAPA ATUAL: ${params.currentStageId || "identificacao"}`,
+    `ETAPA ATUAL OBRIGATÓRIA: ${params.currentStageRequired !== false}`,
     `PRÓXIMA ETAPA CONFIGURADA: ${params.nextStageId || "nenhuma"}${params.nextStageName ? ` ("${params.nextStageName}")` : ""}`,
     `ETAPA FINAL: ${params.isFinalStage === true}`,
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
@@ -2502,10 +2590,12 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
     : buildAgentRecentWindow(params);
 
   const objectiveDesc = currentObjectiveDescription ? ` - Descrição: ${currentObjectiveDescription}` : "";
-  const objectiveType = params.currentObjectiveKind === "action"
+  const objectiveType = params.currentObjectiveRequired === false
+    ? params.currentObjectiveKind === "action"
+      ? `[AÇÃO OPCIONAL; action=${params.currentObjectiveActionType || "não definida"}; usar somente se fizer sentido]`
+      : "[OPCIONAL; possibilidade, não checklist]"
+    : params.currentObjectiveKind === "action"
     ? `[AÇÃO OBRIGATÓRIA; action=${params.currentObjectiveActionType || "não definida"}; completion=${params.currentObjectiveCompletionPolicy || "delivery_confirmed"}]`
-    : params.currentObjectiveRequired === false
-    ? "[OPCIONAL; seguir somente se natural]"
     : "[OBRIGATÓRIO; missão persistente até conclusão]";
   const objectiveLine = currentObjectiveId
     ? `${currentObjectiveId} ("${currentObjectiveLabel || "em aberto"}") ${objectiveType}${objectiveDesc}`
@@ -2514,7 +2604,11 @@ export function buildOpenAiBrainContextMessageWithObservability(params: RunOpenA
   const sections: string[] = [
     BRAIN_WEB_SEARCH_POLICY,
     "# TURNO ATUAL DA CONVERSA",
+    `CRONOGRAMA ATUAL: ${params.currentScheduleName || params.currentScheduleId || "desconhecido"}`,
+    `CATEGORIA DO CRONOGRAMA: ${params.currentScheduleCategory || "desconhecida"}`,
+    `CRONOGRAMA EXPIRA EM: ${params.currentScheduleExpiresAt || "sem limite"}`,
     `ETAPA ATUAL: ${currentStageId}`,
+    `ETAPA ATUAL OBRIGATÓRIA: ${params.currentStageRequired !== false}`,
     `OBJETIVO ATIVO DA ETAPA: ${objectiveLine}`,
   ];
 

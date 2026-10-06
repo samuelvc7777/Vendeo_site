@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Loader2, MessageCircle, Smartphone } from "lucide-react";
+import { AlertTriangle, Loader2, MessageCircle, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import {
   disconnectWhatsApp2,
   getWhatsApp2Status,
   requestWhatsApp2PairingCode,
 } from "@/presentation/components/chat/whatsapp2-client";
+import { ResponsiveModal } from "@/presentation/components/ui/ResponsiveModal";
 
 interface WhatsApp2ConnectionCardProps {
   onConnectionChange?: (connected: boolean) => void;
@@ -21,6 +22,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [requestingCode, setRequestingCode] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [isDisconnectModalOpen, setIsDisconnectModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = async () => {
@@ -34,7 +36,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
       onConnectionChange?.(connected);
       if (connected) setShowConnect(false);
     } catch (err) {
-      setError((err as Error).message || "Gateway do WhatsApp 2 indisponível.");
+      setError((err as Error).message || "Gateway do WhatsApp indisponível.");
       onConnectionChange?.(false);
     } finally {
       setLoading(false);
@@ -84,9 +86,8 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
     }
   };
 
-  const disconnect = async () => {
-    if (!window.confirm("Desconectar o WhatsApp 2 deste Vendeo? O dispositivo vinculado será encerrado.")) return;
-
+  const confirmDisconnect = async () => {
+    setIsDisconnectModalOpen(false);
     setDisconnecting(true);
     setError(null);
     try {
@@ -103,10 +104,10 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
       setPhone("");
       setShowConnect(true);
       onConnectionChange?.(false);
-      toast.success("WhatsApp 2 desconectado.");
+      toast.success("WhatsApp desconectado.");
       window.setTimeout(() => void refresh(), 1200);
     } catch (err) {
-      const message = (err as Error).message || "Não foi possível desconectar o WhatsApp 2.";
+      const message = (err as Error).message || "Não foi possível desconectar o WhatsApp.";
       setError(message);
       toast.error(message);
     } finally {
@@ -122,7 +123,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
             <MessageCircle className="h-5 w-5 text-white" />
           </div>
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">WhatsApp 2</h3>
+            <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">WhatsApp</h3>
             <p className="mt-0.5 text-[11px] text-zinc-500">Dispositivo vinculado pelo WhatsApp Web</p>
           </div>
         </div>
@@ -164,12 +165,12 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
 
             <button
               type="button"
-              onClick={() => void disconnect()}
+              onClick={() => setIsDisconnectModalOpen(true)}
               disabled={disconnecting}
-              className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 text-xs font-bold text-red-700 transition hover:bg-red-100 disabled:opacity-50 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300 dark:hover:bg-red-500/15"
+              className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 text-xs font-bold text-red-700 transition hover:bg-red-100 active:scale-[0.99] disabled:opacity-50 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300 dark:hover:bg-red-500/15"
             >
               {disconnecting && <Loader2 className="h-4 w-4 animate-spin" />}
-              {disconnecting ? "Desconectando..." : "Desconectar WhatsApp 2"}
+              {disconnecting ? "Desconectando..." : "Desconectar WhatsApp"}
             </button>
           </div>
         ) : !showConnect ? (
@@ -185,7 +186,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
               }}
               className="min-h-11 w-full rounded-xl bg-[#00a884] px-4 text-xs font-bold text-white transition active:scale-[0.98] sm:w-auto"
             >
-              Conectar WhatsApp 2
+              Conectar WhatsApp
             </button>
           </div>
         ) : (
@@ -205,7 +206,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
                   setError(null);
                 }}
                 placeholder="5537999999999"
-                className="min-h-11 min-w-0 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-950 outline-none transition focus:border-[#00a884] dark:border-white/10 dark:bg-[#18181b] dark:text-white"
+                className="min-h-11 min-w-0 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[16px] md:text-xs text-zinc-950 outline-none transition focus:border-[#00a884] dark:border-white/10 dark:bg-[#18181b] dark:text-white"
               />
               <button
                 type="button"
@@ -224,9 +225,12 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
                 <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#008069] dark:text-[#25d366]">Código de conexão</p>
                 <button
                   type="button"
-                  onClick={() => void navigator.clipboard?.writeText(pairingCode)}
-                  className="mt-1 font-mono text-[26px] font-black tracking-[0.18em] text-zinc-950 dark:text-white"
-                  title="Copiar código"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(pairingCode);
+                    toast.success("Código copiado para a área de transferência!");
+                  }}
+                  className="mt-1 font-mono text-[26px] font-black tracking-[0.18em] text-zinc-950 dark:text-white active:scale-95 transition-transform"
+                  title="Toque para copiar código"
                 >
                   {pairingCode.replace(/(.{4})(?=.)/g, "$1-")}
                 </button>
@@ -250,6 +254,47 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
           </div>
         )}
       </div>
+
+      {/* Modal de Confirmação Responsivo para Desconectar */}
+      <ResponsiveModal
+        isOpen={isDisconnectModalOpen}
+        onClose={() => setIsDisconnectModalOpen(false)}
+        maxWidth="sm"
+        title="Desconectar WhatsApp?"
+        description="O dispositivo vinculado será encerrado neste Vendeo."
+        icon={
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-100 text-red-600 dark:bg-red-500/10 dark:text-red-400">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+        }
+        footer={
+          <div className="flex w-full gap-2 sm:justify-end">
+            <button
+              type="button"
+              onClick={() => setIsDisconnectModalOpen(false)}
+              className="min-h-11 flex-1 sm:flex-initial rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 text-xs font-semibold text-zinc-700 dark:text-zinc-200"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => void confirmDisconnect()}
+              className="min-h-11 flex-1 sm:flex-initial rounded-xl bg-red-600 px-4 text-xs font-bold text-white shadow-sm hover:bg-red-700 active:scale-95"
+            >
+              Sim, desconectar
+            </button>
+          </div>
+        }
+      >
+        <div className="text-xs text-zinc-600 dark:text-zinc-400 space-y-2 py-1">
+          <p>
+            Ao desconectar, o envio e recebimento de mensagens pelo WhatsApp 2 serão interrompidos até que uma nova sessão seja conectada.
+          </p>
+          <p className="text-[11px] text-zinc-500">
+            Suas conversas e contatos salvos no Vendeo permanecerão intactos.
+          </p>
+        </div>
+      </ResponsiveModal>
     </article>
   );
 }

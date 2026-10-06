@@ -207,14 +207,11 @@ export async function handleOperatorChatProgress(
   }
 
   const currentStageId = typeof patch.currentStageId === "string" ? patch.currentStageId.trim() : "";
-  const completedGoalIds = Array.isArray(patch.completedGoalIds) ? patch.completedGoalIds : [];
-  const completedItemIds = Array.isArray(patch.completedItemIds) ? patch.completedItemIds : [];
-  const objectiveProgress = patch.objectiveProgress && typeof patch.objectiveProgress === "object" && !Array.isArray(patch.objectiveProgress)
+  const completedGoalIds = Array.isArray(patch.completedGoalIds) ? patch.completedGoalIds : [];  const objectiveProgress = patch.objectiveProgress && typeof patch.objectiveProgress === "object" && !Array.isArray(patch.objectiveProgress)
     ? patch.objectiveProgress
     : {};
-  if (!currentStageId || completedGoalIds.length > 200 || completedItemIds.length > 500 || Object.keys(objectiveProgress).length > 200
-    || !completedGoalIds.every((id: unknown) => typeof id === "string" && id.length <= 256)
-    || !completedItemIds.every((id: unknown) => typeof id === "string" && id.length <= 256)) {
+  if (!currentStageId || completedGoalIds.length > 200 || Object.keys(objectiveProgress).length > 200
+    || !completedGoalIds.every((id: unknown) => typeof id === "string" && id.length <= 256)) {
     return jsonResponse({ error: "O conteúdo do progresso está fora do formato permitido." }, 400, corsHeaders);
   }
 
@@ -260,9 +257,7 @@ export async function handleOperatorChatProgress(
 
   const patchPayload = {
     currentStageId,
-    completedGoalIds: [...new Set(completedGoalIds)],
-    completedItemIds: [...new Set(completedItemIds)],
-    objectiveProgress,
+    completedGoalIds: [...new Set(completedGoalIds)],    objectiveProgress,
     isConverted: patch.isConverted === true,
     updatedAt: typeof patch.updatedAt === "string" ? patch.updatedAt : new Date().toISOString(),
   };

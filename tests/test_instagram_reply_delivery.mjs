@@ -22,18 +22,20 @@ test("reply_to nativo é usado tanto no envio imediato quanto no envio agendado"
     /const buildMetaSendPayload = \(\) => \{[\s\S]*?payload\.reply_to = \{ mid: replyToMessageId \};[\s\S]*?payload\.messaging_type = "RESPONSE"/
   );
 
-  const payloadUses = instagramPostRoute.match(/JSON\.stringify\(buildMetaSendPayload\(\)\)/g) || [];
-  assert.equal(payloadUses.length, 2);
+  assert.match(instagramPostRoute, /const sendProviderMessage = async \(\): Promise<string> => \{/);
+  assert.match(instagramPostRoute, /body: JSON\.stringify\(buildMetaSendPayload\(\)\)/);
+  const sendProviderUses = instagramPostRoute.match(/metaMid = await sendProviderMessage\(\);/g) || [];
+  assert.equal(sendProviderUses.length, 2);
 });
 
 test("fila agendada preserva a referência da mensagem respondida no banco, realtime e resposta", () => {
   const queueStart = instagramPostRoute.indexOf("if (delaySeconds > 0)");
-  const queueEnd = instagramPostRoute.indexOf("// 4. Envia para a Meta Graph API", queueStart);
+  const queueEnd = instagramPostRoute.indexOf("// 4. Envia pelo provedor da conversa.", queueStart);
   assert.ok(queueStart >= 0 && queueEnd > queueStart);
   const queueSource = instagramPostRoute.slice(queueStart, queueEnd);
 
   const dbReferences = queueSource.match(/reply_to_message_id: replyToMessageId/g) || [];
-  assert.ok(dbReferences.length >= 3);
+  assert.ok(dbReferences.length >= 2);
   assert.match(queueSource, /event: "instagram_message"[\s\S]*?replyToMessageId/);
   assert.match(queueSource, /queued: true[\s\S]*?replyToMessageId/);
 });

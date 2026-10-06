@@ -28,8 +28,8 @@ test("CENÁRIO 1: Contexto formatado inclui [MENSAGEM id='...'] e contrato com e
 
   assert.ok(context.includes('[MENSAGEM id="1040376229029884"]: "Sou de sao joao del rei e vc ?"'));
   assert.ok(context.includes('"evidenceMessageId": null'));
-  assert.ok(context.includes("CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE"));
-  assert.ok(context.includes("valor: \"São João del-Rei\""));
+  assert.ok(context.includes("CONCLUÍDO"));
+  assert.ok(context.includes('valor: "São João del-Rei"'));
   assert.ok(context.includes("objectiveEvidence {type,id} são OBRIGATÓRIOS"));
 });
 

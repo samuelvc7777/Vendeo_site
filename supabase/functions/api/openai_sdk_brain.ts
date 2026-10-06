@@ -2,6 +2,8 @@ import { Agent, getDefaultOpenAIClient, run, setDefaultOpenAIKey, system, tool, 
 import { z } from "npm:zod@4.6.5";
 import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
 import {
+  BRAIN_WEB_SEARCH_POLICY,
+  BRAIN_WEB_SEARCH_POLICY_MARKER,
   executeOpenAiAppTool,
   extractJsonFromText,
   recoverSafeBrainPlan,
@@ -10,6 +12,7 @@ import {
   validateQuestionIntentsInvariant,
   validateResponseGenerationInvariant,
   validateStageProgressionInvariant,
+  validateWebSearchOutputPrivacy,
   type OpenAiBrainTurnResult,
   type RunOpenAiBrainParams,
 } from "./openai_brain.ts";
@@ -24,6 +27,13 @@ const AudioSearchArgs = z.object({
   query: z.string().max(200).optional(),
 });
 
+const OPENAI_CONVERSATION_BUSY_RE = /Another process is currently operating on this conversation/i;
+const OPENAI_CONVERSATION_BUSY_MAX_RETRIES = 2;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function env(name: string): string | undefined {
   return typeof Deno !== "undefined" ? Deno.env.get(name) : process.env[name];
 }
@@ -34,7 +44,14 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     "Este bloco é estado interno do Vendeo, não é mensagem do pretendente.",
     "A Conversation da OpenAI é a fonte do histórico conversacional vivo. Não peça ao backend o histórico bruto.",
     "Na cronologia, DATA/HORA ORIGINAL vence a ordem de sincronização.",
+    `CRONOGRAMA_ATUAL_ID=${params.currentScheduleId || "desconhecido"}`,
+    `CRONOGRAMA_ATUAL_NOME=${params.currentScheduleName || "desconhecido"}`,
+    `CRONOGRAMA_ATUAL_CATEGORIA=${params.currentScheduleCategory || "desconhecida"}`,
+    `CRONOGRAMA_MODO=${params.currentScheduleExecutionMode || "goal_driven"}`,
+    `CRONOGRAMA_INICIADO_EM=${params.currentScheduleStartedAt || "desconhecido"}`,
+    `CRONOGRAMA_EXPIRA_EM=${params.currentScheduleExpiresAt || "sem_limite"}`,
     `ETAPA_ATUAL=${params.currentStageId || "identificacao"}`,
+    `ETAPA_ATUAL_OBRIGATORIA=${params.currentStageRequired !== false}`,
     `PROXIMA_ETAPA_CONFIGURADA=${params.nextStageId || "nenhuma"}${params.nextStageName ? ` ("${params.nextStageName}")` : ""}`,
     `ETAPA_FINAL=${params.isFinalStage === true}`,
     `OBJETIVO_ATIVO=${params.currentObjectiveId || "nenhum"}`,
@@ -44,6 +61,56 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     `OBJETIVO_ATIVO_POLITICA_CONCLUSAO=${params.currentObjectiveCompletionPolicy || "conversation_evidence"}`,
   ];
 
+  lines.push("REGRA_CRONOGRAMA: obrigatoriedade vem da configuração do operador e não pode ser redefinida.");
+  lines.push("REGRA_OPCIONAIS: etapa ou objetivo opcional é possibilidade, não checklist; use somente se fizer sentido.");
+  if (params.currentScheduleDescription) lines.push(`CRONOGRAMA_DESCRICAO=${params.currentScheduleDescription}`);
+  if (params.currentScheduleExecutionMode === "connection_window") {
+    lines.push(
+      "CONNECTION_WINDOW_REGRA_CENTRAL: não existem checkpoints a cumprir neste modo. O arsenal é opcional e serve como caixa de ferramentas; não tente consumir todos os itens.",
+      `CONNECTION_WINDOW_INTENCAO=${params.connectionIntent || params.currentScheduleDescription || "manter conexão natural"}`,
+      `CONNECTION_WINDOW_DECORRIDO=${Math.round(params.scheduleElapsedPercent || 0)}%`,
+      `CONNECTION_WINDOW_RESTANTE_MIN=${params.scheduleRemainingMinutes ?? "sem_limite"}`,
+      `CONNECTION_WINDOW_FASE=${params.scheduleTemporalPhase?.label || "não definida"}`,
+      `CONNECTION_WINDOW_FASE_ORIENTACAO=${params.scheduleTemporalPhase?.guidance || "manter naturalidade"}`,
+      "ARSENAL_USO: use um recurso somente quando houver encaixe orgânico. Não mude de assunto apenas para usar recurso. Itens não usados não são falha.",
+      "ARSENAL_MARCAÇÃO: se usar materialmente um recurso, informe arsenalItemId na outboundAction correspondente. Para foto, use type=image e o arsenalItemId autorizado; não invente URL. Para áudio do arsenal, use type=audio, audioId=assetId e arsenalItemId.",
+    );
+    if (params.arsenalCandidates?.length) {
+      lines.push("ARSENAL_DISPONIVEL_AGORA:");
+      for (const item of params.arsenalCandidates) {
+        const parts = [
+          `id=${item.itemId}`,
+          `type=${item.type}`,
+          `titulo=${JSON.stringify(item.title)}`,
+          item.socialFunction ? `funcao=${item.socialFunction}` : "",
+          item.semanticContent ? `significado=${JSON.stringify(item.semanticContent)}` : "",
+          item.description ? `descricao=${JSON.stringify(item.description)}` : "",
+          item.usageInstruction ? `quando_usar=${JSON.stringify(item.usageInstruction)}` : "",
+          item.type === "audio" && item.assetId ? `audioId=${item.assetId}` : "",
+          item.type === "audio" && item.transcript ? `transcricao=${JSON.stringify(item.transcript)}` : "",
+          item.type === "photo" && item.visualDescription ? `visual=${JSON.stringify(item.visualDescription)}` : "",
+          `validade=${item.validityType}`,
+          `prioridade_operador=${item.priority}`,
+          `usos_confirmados=${item.sentUseCount}`,
+        ].filter(Boolean);
+        lines.push("- " + parts.join(" | "));
+      }
+    } else {
+      lines.push("ARSENAL_DISPONIVEL_AGORA: vazio. Isso não impede a conversa.");
+    }
+    if (params.scheduleFinalAction) {
+      lines.push(
+        `ACAO_FINAL_TIPO=${params.scheduleFinalAction.type}`,
+        `ACAO_FINAL_AUDIO_ID=${params.scheduleFinalAction.assetId}`,
+        `ACAO_FINAL_TITULO=${params.scheduleFinalAction.title || params.scheduleFinalAction.assetId}`,
+        `ACAO_FINAL_STATUS=${params.scheduleFinalAction.effectiveStatus}`,
+        `ACAO_FINAL_JANELA_A_PARTIR_DE=${params.scheduleFinalAction.activationThresholdPercent}%`,
+        `ACAO_FINAL_DISPONIVEL_AGORA=${params.scheduleFinalAction.availableNow}`,
+        "ACAO_FINAL_REGRA: quando disponível, procure uma oportunidade NATURAL para enviar. Nunca interrompa contexto incompatível, nunca envie só para bater meta e nunca envie por conta da expiração sem novo turno do contato.",
+      );
+    }
+    if (params.scheduleManualActionNote) lines.push(`ACAO_MANUAL_PENDENTE=${params.scheduleManualActionNote}`);
+  }
   if (params.currentObjectiveLabel) lines.push(`OBJETIVO_LABEL=${params.currentObjectiveLabel}`);
   if (params.currentObjectiveDescription) lines.push(`OBJETIVO_DESCRICAO=${params.currentObjectiveDescription}`);
 
@@ -397,6 +464,10 @@ function validateAndNormalizeSdkPlan(
     (params.currentInboundMessages || []).slice(-4).map((message) => message.id),
   );
   const response = validateResponseGenerationInvariant(parsedPlan);
+  const webSearchPrivacy = validateWebSearchOutputPrivacy(
+    parsedPlan,
+    Number(telemetry.webSearchCallCount || 0) > 0 || telemetry.sourcesUsed.includes("web_search"),
+  );
   const progression = validateObjectiveProgressionInvariant(parsedPlan, {
     currentObjectiveId: params.currentObjectiveId,
     currentObjectiveRequired: params.currentObjectiveRequired,
@@ -406,6 +477,7 @@ function validateAndNormalizeSdkPlan(
   });
   const stageProgression = validateStageProgressionInvariant(parsedPlan, {
     currentStageId: params.currentStageId,
+    currentStageRequired: params.currentStageRequired,
     nextStageId: params.nextStageId,
     isFinalStage: params.isFinalStage,
     stageObjectives: params.stageObjectives,
@@ -425,16 +497,49 @@ function validateAndNormalizeSdkPlan(
   const selectedAudioId = Array.isArray(parsedPlan?.outboundActions)
     ? parsedPlan.outboundActions.find((action: any) => action?.type === "audio")?.audioId
     : parsedPlan?.selectedAudioId || parsedPlan?.audioId;
+  const arsenalById = new Map((params.arsenalCandidates || []).map((candidate) => [candidate.itemId, candidate]));
   const authorizedAudioIds = new Set([
     ...(telemetry.authorizedCandidateAudios || []).map((candidate) => candidate.audioId),
     ...(params.recoveredAudioToolState?.candidates || []).map((candidate) => candidate.audioId),
+    ...(params.arsenalCandidates || [])
+      .filter((candidate) => candidate.type === "audio" && candidate.assetId)
+      .map((candidate) => String(candidate.assetId)),
+    ...(params.scheduleFinalAction?.availableNow ? [String(params.scheduleFinalAction.assetId)] : []),
   ]);
   const audioAuthorized = !selectedAudioId || authorizedAudioIds.has(String(selectedAudioId));
+
+  let arsenalActionsAuthorized = true;
+  for (const action of Array.isArray(parsedPlan?.outboundActions) ? parsedPlan.outboundActions : []) {
+    const arsenalItemId = String(action?.arsenalItemId || "").trim();
+    if (!arsenalItemId) {
+      if (action?.type === "image") arsenalActionsAuthorized = false;
+      continue;
+    }
+    const candidate = arsenalById.get(arsenalItemId);
+    if (!candidate) {
+      arsenalActionsAuthorized = false;
+      break;
+    }
+    if (action?.type === "audio" && (candidate.type !== "audio" || String(candidate.assetId || "") !== String(action.audioId || ""))) {
+      arsenalActionsAuthorized = false;
+      break;
+    }
+    if (action?.type === "image" && (candidate.type !== "photo" || !candidate.mediaUrl)) {
+      arsenalActionsAuthorized = false;
+      break;
+    }
+    if (action?.type === "text" && !["topic", "question", "story"].includes(candidate.type)) {
+      arsenalActionsAuthorized = false;
+      break;
+    }
+  }
 
   const validationError = !basic.valid
     ? basic.error || "invalid_brain_plan"
     : !response.valid
     ? response.error || "invalid_response_generation"
+    : !webSearchPrivacy.valid
+    ? webSearchPrivacy.error || "web_search_output_leak"
     : !progression.valid
     ? progression.error || "invalid_objective_progression"
     : !stageProgression.valid
@@ -445,15 +550,19 @@ function validateAndNormalizeSdkPlan(
     ? "manual_resolution_reask_forbidden_after_operator_answer"
     : !audioAuthorized
     ? "audio_not_authorized_for_this_turn"
+    : !arsenalActionsAuthorized
+    ? "arsenal_item_not_authorized_for_this_turn"
     : null;
 
   if (!parsedPlan || validationError) {
     const hardContractViolation =
+      !webSearchPrivacy.valid ||
       !progression.valid ||
       !stageProgression.valid ||
       (isObjectivePursuit && !questionValidation.valid) ||
       manualReask ||
-      validationError === "audio_not_authorized_for_this_turn";
+      validationError === "audio_not_authorized_for_this_turn" ||
+      validationError === "arsenal_item_not_authorized_for_this_turn";
     if (!params.strictOpenAiPilot && !hardContractViolation) {
       parsedPlan = recoverSafeBrainPlan(parsedPlan);
     }
@@ -1098,8 +1207,9 @@ export async function runOpenAiSdkBrainTurn(
     const executionMeta = executionRow.runtime_metadata || {};
     restoreExecutionToolState(telemetry, executionMeta.toolState);
 
-    // Se um processo anterior já checkpointou o plano aceito, reutiliza exatamente
-    // esse resultado e não chama o modelo novamente.
+    // Se um processo anterior já checkpointou o plano aceito, só reutiliza depois
+    // de revalidar os contratos atuais. Isso impede que um plano antigo com vazamento
+    // de web_search continue elegível para despacho após uma correção de segurança.
     if (executionMeta.acceptedPlan) {
       telemetry.executionAttempt = Number(executionMeta.attemptCount || 0);
       telemetry.executionRecovered = true;
@@ -1107,21 +1217,45 @@ export async function runOpenAiSdkBrainTurn(
       telemetry.recoveredConversationItemId = executionMeta.recoveredConversationItemId || undefined;
       restoreExecutionUsage(telemetry, executionMeta.usage);
 
-      if (executionMeta.markerItemId && !executionMeta.technicalCleanupCompletedAt) {
-        await cleanupSdkConversationTechnicalItems({
-          supabase: params.supabase,
-          client,
-          executionKey,
-          turnId: executionTurnId,
-          openAiConversationId: link.openAiConversationId,
-          markerItemId: executionMeta.markerItemId,
-        });
+      const acceptedPlanValidation = validateAndNormalizeSdkPlan(
+        params,
+        executionMeta.acceptedPlan,
+        telemetry,
+      );
+      if (acceptedPlanValidation.plan && !acceptedPlanValidation.error) {
+        if (executionMeta.markerItemId && !executionMeta.technicalCleanupCompletedAt) {
+          await cleanupSdkConversationTechnicalItems({
+            supabase: params.supabase,
+            client,
+            executionKey,
+            turnId: executionTurnId,
+            openAiConversationId: link.openAiConversationId,
+            markerItemId: executionMeta.markerItemId,
+          });
+        }
+
+        telemetry.status = "completed";
+        telemetry.finalPlanParsed = true;
+        telemetry.durationMs = Date.now() - startedAt;
+        return { success: true, plan: acceptedPlanValidation.plan, telemetry };
       }
 
-      telemetry.status = "completed";
-      telemetry.finalPlanParsed = true;
-      telemetry.durationMs = Date.now() - startedAt;
-      return { success: true, plan: executionMeta.acceptedPlan, telemetry };
+      const rejectedAcceptedPlanError = acceptedPlanValidation.error || "accepted_plan_failed_current_contracts";
+      console.warn(
+        `[OpenAI SDK] accepted_plan_rejected_by_current_contracts executionKey=${executionKey} error=${rejectedAcceptedPlanError}`,
+      );
+      await patchSdkExecutionMetadata(
+        params.supabase,
+        executionKey,
+        {
+          acceptedPlan: null,
+          lastError: rejectedAcceptedPlanError,
+          acceptedPlanRejectedAt: new Date().toISOString(),
+        },
+        executionTurnId,
+      );
+      executionMeta.acceptedPlan = null;
+      telemetry.executionRecovered = false;
     }
 
     const markerItemId = await ensureSdkExecutionMarker({
@@ -1228,7 +1362,10 @@ export async function runOpenAiSdkBrainTurn(
   // Keep Agent instructions byte-for-byte stable across turns so the provider can
   // reuse the large canonical prefix through prompt caching. Turn-specific state
   // is sent separately by buildTurnInput().
-  const instructions = buildCanonicalAgentInstructions({ persistentMode: true });
+  const canonicalInstructions = buildCanonicalAgentInstructions({ persistentMode: true });
+  const instructions = canonicalInstructions.includes(BRAIN_WEB_SEARCH_POLICY_MARKER)
+    ? canonicalInstructions
+    : [canonicalInstructions, BRAIN_WEB_SEARCH_POLICY].join("\n\n");
 
   const reasoningEffort = params.reasoningEffort as any;
   const serviceTier: "auto" | "default" | "flex" = params.serviceTier || "auto";
@@ -1406,6 +1543,31 @@ export async function runOpenAiSdkBrainTurn(
   } catch (error) {
     const errorMessage = String((error as Error)?.message || error);
     const missingToolOutput = /No tool output found for function call/i.test(errorMessage);
+    const providerConversationBusy = OPENAI_CONVERSATION_BUSY_RE.test(errorMessage);
+    const providerBusyRetryCount = Number(params.providerBusyRetryCount || 0);
+
+    // A OpenAI Conversation também recebe sync assíncrona de mensagens. Se um item
+    // estiver sendo gravado exatamente quando o Agent inicia, o provider pode
+    // responder 400 "Another process is currently operating...". Isso é transitório:
+    // reutiliza o MESMO executionKey/marker e tenta novamente, sem gerar outro turno.
+    if (
+      providerConversationBusy
+      && providerBusyRetryCount < OPENAI_CONVERSATION_BUSY_MAX_RETRIES
+    ) {
+      const retryNo = providerBusyRetryCount + 1;
+      const backoffMs = retryNo * 2000;
+      console.warn(
+        `[OpenAI SDK] conversation_busy_retry retry=${retryNo}/${OPENAI_CONVERSATION_BUSY_MAX_RETRIES} backoffMs=${backoffMs} conversationId=${params.conversationId}`,
+      );
+      await sleep(backoffMs);
+      const retried = await runOpenAiSdkBrainTurn({
+        ...params,
+        providerBusyRetryCount: retryNo,
+      });
+      if (retried.success) retried.telemetry.executionRecovered = true;
+      return retried;
+    }
+
     telemetry.status = "failed";
     telemetry.durationMs = Date.now() - startedAt;
 
