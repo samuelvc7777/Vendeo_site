@@ -7,14 +7,11 @@ import {
   Bot,
   CalendarClock,
   ChevronDown,
-  ChevronRight,
   Edit2,
   Plus,
   Timer,
   Trash2,
   Workflow,
-  X,
-  AlertTriangle,
 } from "lucide-react";
 import { ConversationSchedule, SCHEDULE_BRAIN_MODELS, SCHEDULE_CATEGORIES } from "@/domain/entities/ConversationSchedule";
 import { ChatStage, ConversationGoal } from "@/domain/entities/ChatStage";
@@ -25,20 +22,20 @@ import { ResponsiveModal } from "@/presentation/components/ui/ResponsiveModal";
 interface Props {
   schedules: ConversationSchedule[];
   stages: ChatStage[];
-  onCreateSchedule: (data: Omit<ConversationSchedule, "id" | "createdAt" | "updatedAt" | "order">) => Promise<any>;
-  onUpdateSchedule: (id: string, data: Partial<Omit<ConversationSchedule, "id" | "createdAt" | "updatedAt">>) => Promise<any>;
-  onDeleteSchedule: (id: string) => Promise<any>;
-  onMoveSchedule: (id: string, direction: -1 | 1) => Promise<any>;
-  onCreateStage: (data: any) => Promise<any>;
-  onUpdateStage: (id: string, data: any) => Promise<any>;
-  onDeleteStage: (id: string) => Promise<any>;
-  onMoveStageUp: (id: string) => Promise<any>;
-  onMoveStageDown: (id: string) => Promise<any>;
-  onAddGoal?: (stageId: string, data: any) => Promise<any>;
-  onUpdateGoal?: (stageId: string, goalId: string, updates: Partial<ConversationGoal>) => Promise<any>;
-  onDeleteGoal?: (stageId: string, goalId: string) => Promise<any>;
-  onMoveGoalUp?: (stageId: string, goalId: string) => Promise<any>;
-  onMoveGoalDown?: (stageId: string, goalId: string) => Promise<any>;
+  onCreateSchedule: (data: Omit<ConversationSchedule, "id" | "createdAt" | "updatedAt" | "order">) => Promise<unknown>;
+  onUpdateSchedule: (id: string, data: Partial<Omit<ConversationSchedule, "id" | "createdAt" | "updatedAt">>) => Promise<unknown>;
+  onDeleteSchedule: (id: string) => Promise<unknown>;
+  onMoveSchedule: (id: string, direction: -1 | 1) => Promise<unknown>;
+  onCreateStage: (data: Parameters<React.ComponentProps<typeof ChatStagesManager>["onCreateStage"]>[0]) => Promise<unknown>;
+  onUpdateStage: (id: string, data: Parameters<React.ComponentProps<typeof ChatStagesManager>["onUpdateStage"]>[1]) => Promise<unknown>;
+  onDeleteStage: (id: string) => Promise<unknown>;
+  onMoveStageUp: (id: string) => Promise<unknown>;
+  onMoveStageDown: (id: string) => Promise<unknown>;
+  onAddGoal?: (stageId: string, data: Parameters<NonNullable<React.ComponentProps<typeof ChatStagesManager>["onAddGoal"]>>[1]) => Promise<unknown>;
+  onUpdateGoal?: (stageId: string, goalId: string, updates: Partial<ConversationGoal>) => Promise<unknown>;
+  onDeleteGoal?: (stageId: string, goalId: string) => Promise<unknown>;
+  onMoveGoalUp?: (stageId: string, goalId: string) => Promise<unknown>;
+  onMoveGoalDown?: (stageId: string, goalId: string) => Promise<unknown>;
 }
 
 type FormState = {
@@ -167,7 +164,7 @@ export function ConversationSchedulesManager(props: Props) {
         brainModel: form.brainModel,
       } as const;
       if (editing) await props.onUpdateSchedule(editing.id, payload);
-      else await props.onCreateSchedule(payload as any);
+      else await props.onCreateSchedule(payload);
       setModalOpen(false);
     } finally {
       setSaving(false);
@@ -176,84 +173,230 @@ export function ConversationSchedulesManager(props: Props) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-[22px] border border-violet-200/80 bg-gradient-to-br from-violet-50 via-white to-sky-50/60 p-3.5 shadow-sm dark:border-violet-500/15 dark:from-violet-500/[0.07] dark:via-white/[0.025] dark:to-sky-500/[0.06]">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-sky-500 text-white shadow-md">
-              <Workflow className="h-4.5 w-4.5" />
-            </div>
-            <div>
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-600 dark:text-violet-400">Jornadas do Brain</p>
-              <h3 className="text-[13px] font-black text-zinc-950 dark:text-white">Cronogramas de conversa</h3>
-              <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400">Cada cronograma pode ser orientado por objetivos ou por uma janela de conexão com arsenal próprio.</p>
-            </div>
+      {/* Cabeçalho compacto da tela */}
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between px-1 py-1">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm sm:text-base font-bold tracking-tight text-zinc-950 dark:text-white">
+              Cronogramas & Etapas
+            </h3>
+            <span className="inline-flex items-center rounded-full bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300 border border-violet-200/50 dark:border-violet-500/20 px-2 py-0.5 text-[10px] font-semibold">
+              {ordered.length} {ordered.length === 1 ? "cronograma" : "cronogramas"}
+            </span>
           </div>
-          <button type="button" onClick={openCreate} className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl bg-zinc-950 px-4 text-xs font-bold text-white shadow-sm active:scale-95 transition-transform dark:bg-white dark:text-black">
-            <Plus className="h-4 w-4" /> Novo cronograma
-          </button>
+          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+            Jornadas sequenciais do Brain com cadência, modelos e objetivos próprios.
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={openCreate}
+          className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-zinc-950 px-3.5 text-xs font-semibold text-white shadow-sm transition hover:bg-zinc-800 active:scale-95 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-100 shrink-0 self-start sm:self-auto"
+        >
+          <Plus className="h-4 w-4" />
+          <span>Novo cronograma</span>
+        </button>
       </div>
 
-      {ordered.map((schedule, index) => {
-        const scheduleStages = props.stages.filter((stage) => stage.scheduleId === schedule.id);
-        const expanded = expandedId === schedule.id;
-        return (
-          <div key={schedule.id} className="overflow-hidden rounded-[22px] border border-zinc-200 bg-white/90 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
-            <div className="p-3.5">
-              <div className="flex items-start gap-2.5">
-                <button type="button" onClick={() => setExpandedId(expanded ? null : schedule.id)} className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-zinc-100 active:scale-90 transition-transform dark:bg-white/[0.06]">
-                  {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                </button>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-[10px] font-bold text-zinc-400">#{index + 1}</span>
-                    <h4 className="text-sm font-black text-zinc-950 dark:text-white">{schedule.name}</h4>
-                    <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold ${schedule.isActive ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-zinc-200 bg-zinc-100 text-zinc-500 dark:border-white/10 dark:bg-white/5"}`}>
-                      {schedule.isActive ? "Ativo" : "Inativo"}
-                    </span>
+      {/* Lista de cronogramas escaneável */}
+      {ordered.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-white/10 p-8 text-center">
+          <Workflow className="mx-auto h-8 w-8 text-zinc-300 dark:text-zinc-600 mb-2" />
+          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Nenhum cronograma cadastrado</p>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Crie o primeiro cronograma para estruturar as etapas de atendimento do Brain.</p>
+          <button
+            type="button"
+            onClick={openCreate}
+            className="mt-3.5 inline-flex items-center gap-1.5 rounded-xl bg-zinc-950 dark:bg-white text-white dark:text-zinc-950 px-3.5 py-2 text-xs font-semibold active:scale-95 transition"
+          >
+            <Plus className="h-3.5 w-3.5" /> Criar cronograma
+          </button>
+        </div>
+      ) : (
+        ordered.map((schedule, index) => {
+          const scheduleStages = props.stages.filter((stage) => stage.scheduleId === schedule.id);
+          const expanded = expandedId === schedule.id;
+          return (
+            <div
+              key={schedule.id}
+              className={`overflow-hidden rounded-2xl border transition-all duration-150 ${
+                expanded
+                  ? "border-violet-300 bg-white ring-2 ring-violet-500/10 shadow-sm dark:border-violet-500/30 dark:bg-zinc-900/90 dark:ring-violet-500/10"
+                  : "border-zinc-200/90 bg-white hover:border-zinc-300 hover:shadow-xs dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-white/20"
+              }`}
+            >
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => setExpandedId(expanded ? null : schedule.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setExpandedId(expanded ? null : schedule.id);
+                  }
+                }}
+                className="w-full cursor-pointer p-3 sm:p-3.5 text-left select-none transition-colors hover:bg-zinc-50/60 dark:hover:bg-white/[0.02]"
+                aria-expanded={expanded}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  {/* Informações do Cronograma em 3 Linhas Hierárquicas */}
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    {/* Linha 1: # ordem, Nome do cronograma, status */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="flex h-5 items-center justify-center rounded-md bg-zinc-100 px-1.5 font-mono text-[11px] font-bold text-zinc-500 dark:bg-white/5 dark:text-zinc-400">
+                        #{index + 1}
+                      </span>
+                      <h4 className="text-sm font-bold tracking-tight text-zinc-950 dark:text-white truncate max-w-[150px] sm:max-w-xs md:max-w-none">
+                        {schedule.name}
+                      </h4>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          schedule.isActive
+                            ? "border border-emerald-200/70 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400"
+                            : "border border-zinc-200/70 bg-zinc-100 text-zinc-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400"
+                        }`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            schedule.isActive ? "bg-emerald-500" : "bg-zinc-400"
+                          }`}
+                        />
+                        {schedule.isActive ? "Ativo" : "Inativo"}
+                      </span>
+                    </div>
+
+                    {/* Linha 2: Descrição */}
+                    {schedule.description ? (
+                      <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400 line-clamp-1">
+                        {schedule.description}
+                      </p>
+                    ) : null}
+
+                    {/* Linha 3: Metadados compactos: modelo • tempo de resposta • duração • etapas • modo */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                      <span className="inline-flex items-center gap-1 font-medium text-zinc-700 dark:text-zinc-200">
+                        <Bot className="h-3 w-3 text-violet-500 shrink-0" />
+                        {SCHEDULE_BRAIN_MODELS.find((x) => x.value === schedule.brainModel)?.label || schedule.brainModel}
+                      </span>
+                      <span className="text-zinc-300 dark:text-zinc-700 select-none">•</span>
+                      <span className="inline-flex items-center gap-1 font-medium">
+                        <Timer className="h-3 w-3 text-sky-500 shrink-0" />
+                        {formatDelay(schedule)}
+                      </span>
+                      <span className="text-zinc-300 dark:text-zinc-700 select-none">•</span>
+                      <span className="inline-flex items-center gap-1 font-medium">
+                        <CalendarClock className="h-3 w-3 text-amber-500 shrink-0" />
+                        {schedule.durationMinutes
+                          ? `${schedule.durationMinutes >= 1440 ? `${schedule.durationMinutes / 1440}d` : `${schedule.durationMinutes / 60}h`}`
+                          : "Sem limite"}
+                      </span>
+                      <span className="text-zinc-300 dark:text-zinc-700 select-none">•</span>
+                      <span className="inline-flex items-center gap-1 font-medium">
+                        <Workflow className="h-3 w-3 text-emerald-500 shrink-0" />
+                        {scheduleStages.length} {scheduleStages.length === 1 ? "etapa" : "etapas"}
+                      </span>
+                      <span className="text-zinc-300 dark:text-zinc-700 select-none">•</span>
+                      <span className="inline-flex items-center gap-1 font-medium text-zinc-600 dark:text-zinc-400">
+                        {schedule.executionMode === "connection_window" ? "Janela de conexão" : "Orientado a objetivos"}
+                      </span>
+                    </div>
                   </div>
-                  {schedule.description && <p className="mt-1 text-[10.5px] leading-relaxed text-zinc-500 dark:text-zinc-400">{schedule.description}</p>}
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <span className="inline-flex items-center gap-1 rounded-lg bg-violet-50 px-2 py-1 text-[9px] font-bold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"><Bot className="h-3 w-3" /> {SCHEDULE_BRAIN_MODELS.find((x) => x.value === schedule.brainModel)?.label || schedule.brainModel}</span>
-                    <span className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-2 py-1 text-[9px] font-bold text-sky-700 dark:bg-sky-500/10 dark:text-sky-300"><Timer className="h-3 w-3" /> {formatDelay(schedule)}</span>
-                    <span className="inline-flex items-center gap-1 rounded-lg bg-zinc-100 px-2 py-1 text-[9px] font-bold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300"><CalendarClock className="h-3 w-3" /> {schedule.durationMinutes ? `${schedule.durationMinutes >= 1440 ? schedule.durationMinutes / 1440 + " dia(s)" : schedule.durationMinutes / 60 + "h"}` : "Sem limite"}</span>
-                    <span className="rounded-lg bg-zinc-100 px-2 py-1 text-[9px] font-bold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300">{schedule.executionMode === "connection_window" ? "Arsenal & tempo" : `${scheduleStages.length} etapa(s)`}</span>
-                    <span className="rounded-lg bg-zinc-100 px-2 py-1 text-[9px] font-bold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300">{schedule.executionMode === "connection_window" ? "Janela de conexão" : "Orientado a objetivos"}</span>
+
+                  {/* Ações e Alternador de Expansão */}
+                  <div
+                    className="flex shrink-0 items-center gap-1 self-start pt-0.5"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      disabled={index === 0}
+                      onClick={() => props.onMoveSchedule(schedule.id, -1)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+                      aria-label="Mover cronograma para cima"
+                      title="Mover para cima"
+                    >
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={index === ordered.length - 1}
+                      onClick={() => props.onMoveSchedule(schedule.id, 1)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+                      aria-label="Mover cronograma para baixo"
+                      title="Mover para baixo"
+                    >
+                      <ArrowDown className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEdit(schedule)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-sky-50 hover:text-sky-600 dark:hover:bg-sky-500/10 dark:hover:text-sky-400"
+                      aria-label="Editar configurações do cronograma"
+                      title="Editar cronograma"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScheduleToDelete(schedule)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                      aria-label="Excluir cronograma"
+                      title="Excluir cronograma"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+
+                    {/* Botão evidente de expandir/recolher */}
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(expanded ? null : schedule.id)}
+                      className={`ml-1 flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold transition active:scale-95 ${
+                        expanded
+                          ? "bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300"
+                          : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 dark:bg-white/5 dark:text-zinc-300 dark:hover:bg-white/10 dark:hover:text-white"
+                      }`}
+                      aria-label={expanded ? "Recolher etapas" : "Expandir etapas"}
+                      title={expanded ? "Recolher etapas" : "Expandir etapas"}
+                    >
+                      <span className="hidden sm:inline text-[11px]">
+                        {expanded ? "Recolher" : "Etapas"}
+                      </span>
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 transition-transform duration-200 ${
+                          expanded ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
                   </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <button disabled={index === 0} onClick={() => props.onMoveSchedule(schedule.id, -1)} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-white/[0.06] active:scale-90 transition-transform disabled:opacity-20" aria-label="Mover para cima"><ArrowUp className="h-4 w-4" /></button>
-                  <button disabled={index === ordered.length - 1} onClick={() => props.onMoveSchedule(schedule.id, 1)} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-white/[0.06] active:scale-90 transition-transform disabled:opacity-20" aria-label="Mover para baixo"><ArrowDown className="h-4 w-4" /></button>
-                  <button onClick={() => openEdit(schedule)} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:text-sky-500 hover:bg-zinc-100 dark:hover:bg-white/[0.06] active:scale-90 transition-transform" aria-label="Editar cronograma"><Edit2 className="h-4 w-4" /></button>
-                  <button onClick={() => setScheduleToDelete(schedule)} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 active:scale-90 transition-transform" aria-label="Excluir cronograma"><Trash2 className="h-4 w-4" /></button>
                 </div>
               </div>
+
+              {expanded && (
+                <div className="border-t border-zinc-200/80 bg-zinc-50/60 p-3.5 sm:p-5 dark:border-white/10 dark:bg-black/30">
+                  {schedule.executionMode === "connection_window" ? (
+                    <ConnectionWindowManager schedule={schedule} onUpdateSchedule={props.onUpdateSchedule} />
+                  ) : (
+                    <ChatStagesManager
+                      stages={scheduleStages}
+                      activeScheduleId={schedule.id}
+                      onCreateStage={props.onCreateStage}
+                      onUpdateStage={props.onUpdateStage}
+                      onDeleteStage={props.onDeleteStage}
+                      onMoveUp={props.onMoveStageUp}
+                      onMoveDown={props.onMoveStageDown}
+                      onAddGoal={props.onAddGoal}
+                      onUpdateGoal={props.onUpdateGoal}
+                      onDeleteGoal={props.onDeleteGoal}
+                      onMoveGoalUp={props.onMoveGoalUp}
+                      onMoveGoalDown={props.onMoveGoalDown}
+                    />
+                  )}
+                </div>
+              )}
             </div>
-            {expanded && (
-              <div className="border-t border-zinc-200 bg-zinc-50/70 p-2.5 dark:border-white/10 dark:bg-black/20">
-                {schedule.executionMode === "connection_window" ? (
-                  <ConnectionWindowManager schedule={schedule} onUpdateSchedule={props.onUpdateSchedule} />
-                ) : (
-                  <ChatStagesManager
-                    stages={scheduleStages}
-                    activeScheduleId={schedule.id}
-                    onCreateStage={props.onCreateStage}
-                    onUpdateStage={props.onUpdateStage}
-                    onDeleteStage={props.onDeleteStage}
-                    onMoveUp={props.onMoveStageUp}
-                    onMoveDown={props.onMoveStageDown}
-                    onAddGoal={props.onAddGoal}
-                    onUpdateGoal={props.onUpdateGoal}
-                    onDeleteGoal={props.onDeleteGoal}
-                    onMoveGoalUp={props.onMoveGoalUp}
-                    onMoveGoalDown={props.onMoveGoalDown}
-                  />
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
+          );
+        })
+      )}
 
       {/* Modal Responsivo de Edição/Criação de Cronograma */}
       <ResponsiveModal
@@ -261,255 +404,310 @@ export function ConversationSchedulesManager(props: Props) {
         onClose={() => setModalOpen(false)}
         maxWidth="lg"
         title={editing ? "Editar cronograma" : "Novo cronograma"}
-        description="Configure o modo da jornada, cadência e modelo do Brain."
+        description="Configure o modo da jornada, modelo do Brain e cadência de resposta."
         icon={
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-100 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400">
             <Workflow className="h-5 w-5" />
           </div>
         }
       >
-        <form onSubmit={submit} className="space-y-4 pt-1">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              <span>Nome *</span>
-              <input
-                required
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="Ex: Pós-venda 24h"
-                className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none focus:border-violet-500"
-              />
-            </label>
-            <label className="space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              <span>Classificação</span>
+        <form onSubmit={submit} className="space-y-3.5 pt-1">
+          {/* Seção 1: Identificação Básica */}
+          <div className="space-y-3 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+              Identificação & Modelo
+            </p>
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <label className="space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                <span>Nome do cronograma *</span>
+                <input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Ex: Pós-venda 24h"
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500 transition-colors"
+                />
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                <span>Classificação</span>
+                <select
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value as ConversationSchedule["category"] })}
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500 transition-colors"
+                >
+                  {SCHEDULE_CATEGORIES.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              <span>Modelo do Brain</span>
               <select
-                value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value as any })}
-                className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none focus:border-violet-500"
+                value={form.brainModel}
+                onChange={(e) => setForm({ ...form, brainModel: e.target.value as ConversationSchedule["brainModel"] })}
+                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500 transition-colors"
               >
-                {SCHEDULE_CATEGORIES.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
+                {SCHEDULE_BRAIN_MODELS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
                 ))}
               </select>
             </label>
           </div>
 
-          <div className="rounded-2xl border border-zinc-200 p-3 dark:border-white/10">
-            <p className="text-xs font-bold text-zinc-950 dark:text-white">Modo de execução</p>
-            <p className="mt-0.5 text-[10px] text-zinc-500">Define como o Brain entende progresso neste cronograma.</p>
-            <div className="mt-2 grid grid-cols-2 gap-2">
+          {/* Seção 2: Modo de Execução */}
+          <div className="space-y-2 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                Modo de Execução
+              </p>
+              {isSalesModeLocked && (
+                <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                  Modo de Vendas travado por sistema
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
                 type="button"
                 disabled={isSalesModeLocked}
                 onClick={() => setForm({ ...form, executionMode: "goal_driven" })}
-                className={`min-h-12 rounded-xl border p-2 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.executionMode === "goal_driven" ? "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300" : "border-zinc-200 text-zinc-600 dark:border-white/10 dark:text-zinc-400"}`}
+                className={`rounded-xl border p-2.5 text-left transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                  form.executionMode === "goal_driven"
+                    ? "border-sky-500 bg-sky-50/70 text-sky-950 shadow-xs dark:bg-sky-500/15 dark:border-sky-500/40 dark:text-sky-200"
+                    : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+                }`}
               >
-                Orientado a objetivos
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold">Orientado a objetivos</span>
+                  <Workflow className="h-3.5 w-3.5 opacity-60" />
+                </div>
+                <p className="mt-1 text-[10px] leading-relaxed opacity-75">
+                  Segue sequência estruturada com etapas e checkpoints a validar.
+                </p>
               </button>
+
               <button
                 type="button"
                 disabled={isSalesModeLocked}
                 onClick={() => setForm({ ...form, executionMode: "connection_window", hasDuration: true })}
-                className={`min-h-12 rounded-xl border p-2 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.executionMode === "connection_window" ? "border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300" : "border-zinc-200 text-zinc-600 dark:border-white/10 dark:text-zinc-400"}`}
+                className={`rounded-xl border p-2.5 text-left transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                  form.executionMode === "connection_window"
+                    ? "border-violet-500 bg-violet-50/70 text-violet-950 shadow-xs dark:bg-violet-500/15 dark:border-violet-500/40 dark:text-violet-200"
+                    : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+                }`}
               >
-                Janela de conexão
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold">Janela de conexão</span>
+                  <Timer className="h-3.5 w-3.5 opacity-60" />
+                </div>
+                <p className="mt-1 text-[10px] leading-relaxed opacity-75">
+                  Sem checkpoints fixos. O Brain utiliza arsenal, fases e tempo.
+                </p>
               </button>
             </div>
-            <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">
-              {form.executionMode === "connection_window"
-                ? "Sem checkpoints obrigatórios. O Brain usa tempo, fases, arsenal e uma ação final."
-                : "Mantém o fluxo atual de etapas e objetivos/checkpoints."}
-            </p>
-          </div>
 
-          <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-            <span>{form.executionMode === "connection_window" ? "Intenção inicial" : "Descrição"}</span>
-            <textarea
-              rows={2}
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder="Qual é a missão deste cronograma?"
-              className="w-full resize-none rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-[16px] md:text-xs text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none focus:border-violet-500"
-            />
-          </label>
-
-          <div className="rounded-2xl border border-zinc-200 p-3 dark:border-white/10">
-            <div className="mb-2 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-bold text-zinc-950 dark:text-white">Duração</p>
-                <p className="text-[10px] text-zinc-500">{form.executionMode === "connection_window" ? "Obrigatória neste modo: define a janela em que o Brain trabalha." : "Sem limite ou janela máxima para o cronograma."}</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={form.hasDuration}
-                disabled={form.executionMode === "connection_window"}
-                onChange={(e) => setForm({ ...form, hasDuration: e.target.checked })}
-                className="h-5 w-5 rounded border-zinc-300 text-violet-600 focus:ring-violet-500"
+            <label className="block pt-1 space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              <span>{form.executionMode === "connection_window" ? "Intenção inicial da janela" : "Descrição / Missão"}</span>
+              <textarea
+                rows={2}
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+                placeholder={
+                  form.executionMode === "connection_window"
+                    ? "Qual é o objetivo principal desta janela de contato?"
+                    : "Qual a missão ou contexto deste cronograma?"
+                }
+                className="w-full resize-none rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500 transition-colors leading-relaxed"
               />
-            </div>
-            {form.hasDuration && (
-              <div className="grid grid-cols-[1fr_140px] gap-2 pt-1">
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  value={form.durationValue}
-                  onChange={(e) => setForm({ ...form, durationValue: Number(e.target.value) })}
-                  className="rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                />
-                <select
-                  value={form.durationUnit}
-                  onChange={(e) => setForm({ ...form, durationUnit: e.target.value as any })}
-                  className="rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                >
-                  <option value="hours">Horas</option>
-                  <option value="days">Dias</option>
-                </select>
-              </div>
-            )}
+            </label>
           </div>
 
-          <div className="rounded-2xl border border-zinc-200 p-3 dark:border-white/10">
-            <p className="text-xs font-bold text-zinc-950 dark:text-white">Tempo de resposta</p>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setForm({ ...form, responseDelayMode: "fixed" })}
-                className={`min-h-10 rounded-xl border p-2 text-xs font-bold transition-colors ${
-                  form.responseDelayMode === "fixed"
-                    ? "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300"
-                    : "border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400"
-                }`}
-              >
-                Fixo
-              </button>
-              <button
-                type="button"
-                onClick={() => setForm({ ...form, responseDelayMode: "range" })}
-                className={`min-h-10 rounded-xl border p-2 text-xs font-bold transition-colors ${
-                  form.responseDelayMode === "range"
-                    ? "border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
-                    : "border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400"
-                }`}
-              >
-                Intervalo
-              </button>
+          {/* Seção 3: Cadência & Duração */}
+          <div className="space-y-3 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+              Cadência & Duração
+            </p>
+
+            {/* Tempo de resposta */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">Tempo de resposta</span>
+                <div className="flex rounded-lg border border-zinc-200 bg-zinc-100 p-0.5 dark:border-white/10 dark:bg-zinc-900">
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, responseDelayMode: "fixed" })}
+                    className={`rounded-md px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                      form.responseDelayMode === "fixed"
+                        ? "bg-white text-zinc-950 shadow-2xs dark:bg-white/15 dark:text-white"
+                        : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+                    }`}
+                  >
+                    Fixo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, responseDelayMode: "range" })}
+                    className={`rounded-md px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                      form.responseDelayMode === "range"
+                        ? "bg-white text-zinc-950 shadow-2xs dark:bg-white/15 dark:text-white"
+                        : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+                    }`}
+                  >
+                    Intervalo
+                  </button>
+                </div>
+              </div>
+
+              {form.responseDelayMode === "fixed" ? (
+                <div className="grid grid-cols-[1fr_120px] gap-2 pt-0.5">
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.1"
+                    value={form.fixedValue}
+                    onChange={(e) => setForm({ ...form, fixedValue: Number(e.target.value) })}
+                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500"
+                  />
+                  <select
+                    value={form.fixedUnit}
+                    onChange={(e) => setForm({ ...form, fixedUnit: e.target.value as "minutes" | "hours" })}
+                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500"
+                  >
+                    <option value="minutes">Minutos</option>
+                    <option value="hours">Horas</option>
+                  </select>
+                </div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2 pt-0.5">
+                  <div>
+                    <span className="text-[10px] font-medium text-zinc-500">Mínimo</span>
+                    <div className="grid grid-cols-[1fr_80px] gap-1.5 mt-0.5">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.1"
+                        value={form.minValue}
+                        onChange={(e) => setForm({ ...form, minValue: Number(e.target.value) })}
+                        className="rounded-xl border border-zinc-200 bg-white px-2.5 py-1.5 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500"
+                      />
+                      <select
+                        value={form.minUnit}
+                        onChange={(e) => setForm({ ...form, minUnit: e.target.value as "minutes" | "hours" })}
+                        className="rounded-xl border border-zinc-200 bg-white px-2.5 py-1.5 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none"
+                      >
+                        <option value="minutes">min</option>
+                        <option value="hours">h</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-medium text-zinc-500">Máximo</span>
+                    <div className="grid grid-cols-[1fr_80px] gap-1.5 mt-0.5">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.1"
+                        value={form.maxValue}
+                        onChange={(e) => setForm({ ...form, maxValue: Number(e.target.value) })}
+                        className="rounded-xl border border-zinc-200 bg-white px-2.5 py-1.5 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500"
+                      />
+                      <select
+                        value={form.maxUnit}
+                        onChange={(e) => setForm({ ...form, maxUnit: e.target.value as "minutes" | "hours" })}
+                        className="rounded-xl border border-zinc-200 bg-white px-2.5 py-1.5 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none"
+                      >
+                        <option value="minutes">min</option>
+                        <option value="hours">h</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-            {form.responseDelayMode === "fixed" ? (
-              <div className="mt-2 grid grid-cols-[1fr_140px] gap-2">
+
+            {/* Duração Máxima */}
+            <div className="space-y-1.5 pt-1 border-t border-zinc-200/60 dark:border-white/5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">Duração limite</span>
+                  <p className="text-[10px] text-zinc-500">
+                    {form.executionMode === "connection_window"
+                      ? "Obrigatória neste modo: delimita a janela de ação."
+                      : "Opcional: encerra ou avança após este período."}
+                  </p>
+                </div>
                 <input
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.1"
-                  value={form.fixedValue}
-                  onChange={(e) => setForm({ ...form, fixedValue: Number(e.target.value) })}
-                  className="rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
+                  type="checkbox"
+                  checked={form.hasDuration}
+                  disabled={form.executionMode === "connection_window"}
+                  onChange={(e) => setForm({ ...form, hasDuration: e.target.checked })}
+                  className="h-4.5 w-4.5 rounded border-zinc-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
                 />
-                <select
-                  value={form.fixedUnit}
-                  onChange={(e) => setForm({ ...form, fixedUnit: e.target.value as any })}
-                  className="rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                >
-                  <option value="minutes">Minutos</option>
-                  <option value="hours">Horas</option>
-                </select>
               </div>
-            ) : (
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <div>
-                  <p className="mb-1 text-[10px] font-bold text-zinc-500">Mínimo</p>
-                  <div className="grid grid-cols-[1fr_92px] gap-1">
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      min={0}
-                      step="0.1"
-                      value={form.minValue}
-                      onChange={(e) => setForm({ ...form, minValue: Number(e.target.value) })}
-                      className="rounded-xl border border-zinc-300 bg-zinc-50 px-2 py-2 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                    />
-                    <select
-                      value={form.minUnit}
-                      onChange={(e) => setForm({ ...form, minUnit: e.target.value as any })}
-                      className="rounded-xl border border-zinc-300 bg-zinc-50 px-2 py-2 text-[16px] md:text-xs text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                    >
-                      <option value="minutes">min</option>
-                      <option value="hours">h</option>
-                    </select>
-                  </div>
+
+              {form.hasDuration && (
+                <div className="grid grid-cols-[1fr_120px] gap-2 pt-0.5">
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    value={form.durationValue}
+                    onChange={(e) => setForm({ ...form, durationValue: Number(e.target.value) })}
+                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500"
+                  />
+                  <select
+                    value={form.durationUnit}
+                    onChange={(e) => setForm({ ...form, durationUnit: e.target.value as "hours" | "days" })}
+                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white outline-none focus:border-violet-500"
+                  >
+                    <option value="hours">Horas</option>
+                    <option value="days">Dias</option>
+                  </select>
                 </div>
-                <div>
-                  <p className="mb-1 text-[10px] font-bold text-zinc-500">Máximo</p>
-                  <div className="grid grid-cols-[1fr_92px] gap-1">
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      min={0}
-                      step="0.1"
-                      value={form.maxValue}
-                      onChange={(e) => setForm({ ...form, maxValue: Number(e.target.value) })}
-                      className="rounded-xl border border-zinc-300 bg-zinc-50 px-2 py-2 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                    />
-                    <select
-                      value={form.maxUnit}
-                      onChange={(e) => setForm({ ...form, maxUnit: e.target.value as any })}
-                      className="rounded-xl border border-zinc-300 bg-zinc-50 px-2 py-2 text-[16px] md:text-xs text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none"
-                    >
-                      <option value="minutes">min</option>
-                      <option value="hours">h</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-            )}
-            {form.responseDelayMode === "range" && (
-              <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">
-                O backend escolhe uma única hora dentro da janela, persiste e reutiliza a mesma escolha em retries e novas mensagens do lote.
-              </p>
-            )}
+              )}
+            </div>
           </div>
 
-          <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-            <span>Modelo do Brain</span>
-            <select
-              value={form.brainModel}
-              onChange={(e) => setForm({ ...form, brainModel: e.target.value as any })}
-              className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-[16px] md:text-sm text-zinc-950 dark:text-white dark:border-zinc-700 dark:bg-zinc-900 outline-none focus:border-violet-500"
-            >
-              {SCHEDULE_BRAIN_MODELS.map((item) => (
-                <option key={item.value} value={item.value}>{item.label}</option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center justify-between rounded-2xl border border-zinc-200 p-3 dark:border-white/10">
+          {/* Ativo Switch */}
+          <label className="flex items-center justify-between rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02] cursor-pointer">
             <div>
               <p className="text-xs font-bold text-zinc-950 dark:text-white">Cronograma ativo</p>
-              <p className="text-[10px] text-zinc-500">Cronogramas inativos não entram na sequência.</p>
+              <p className="text-[10px] text-zinc-500">Cronogramas inativos não são iniciados pelo Brain.</p>
             </div>
             <input
               type="checkbox"
               checked={form.isActive}
               onChange={(e) => setForm({ ...form, isActive: e.target.checked })}
-              className="h-5 w-5 rounded border-zinc-300 text-violet-600 focus:ring-violet-500"
+              className="h-4.5 w-4.5 rounded border-zinc-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
             />
           </label>
 
+          {/* Rodapé de Ações */}
           <div className="flex justify-end gap-2 border-t border-zinc-200 pt-3 dark:border-white/10">
             <button
               type="button"
               onClick={() => setModalOpen(false)}
-              className="min-h-11 rounded-xl px-4 py-2 text-xs font-bold text-zinc-500"
+              className="min-h-[38px] rounded-xl px-4 py-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white transition-colors"
             >
               Cancelar
             </button>
             <button
               disabled={saving || !form.name.trim()}
               type="submit"
-              className="min-h-11 rounded-xl bg-violet-600 px-5 py-2 text-xs font-bold text-white shadow-sm hover:bg-violet-700 active:scale-95 disabled:opacity-40"
+              className="min-h-[38px] rounded-xl bg-violet-600 px-5 py-2 text-xs font-bold text-white shadow-xs hover:bg-violet-700 active:scale-95 disabled:opacity-40 transition"
             >
-              {saving ? "Salvando..." : editing ? "Salvar" : "Criar cronograma"}
+              {saving ? "Salvando..." : editing ? "Salvar alterações" : "Criar cronograma"}
             </button>
           </div>
         </form>

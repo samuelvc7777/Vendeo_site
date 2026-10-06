@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   Layers,
   Plus,
@@ -9,16 +9,8 @@ import {
   Trash2,
   Edit2,
   Check,
-  X,
-  Sparkles,
-  AlertCircle,
-  HelpCircle,
   Target,
   ChevronDown,
-  ChevronUp,
-  Sliders,
-  CheckCircle2,
-  CircleDot,
   Power,
 } from "lucide-react";
 import { ChatStage, ConversationGoal } from "@/domain/entities/ChatStage";
@@ -35,7 +27,7 @@ interface ChatStagesManagerProps {
     scheduleId?: string;
     isRequired?: boolean;
     icon?: string;
-  }) => Promise<any>;
+  }) => Promise<unknown>;
   onUpdateStage: (
     id: string,
     data: {
@@ -46,10 +38,10 @@ interface ChatStagesManagerProps {
       isRequired?: boolean;
       goals?: ConversationGoal[];
     }
-  ) => Promise<any>;
-  onDeleteStage: (id: string) => Promise<any>;
-  onMoveUp: (id: string) => Promise<any>;
-  onMoveDown: (id: string) => Promise<any>;
+  ) => Promise<unknown>;
+  onDeleteStage: (id: string) => Promise<unknown>;
+  onMoveUp: (id: string) => Promise<unknown>;
+  onMoveDown: (id: string) => Promise<unknown>;
   onAddGoal?: (
     stageId: string,
     data: {
@@ -64,15 +56,15 @@ interface ChatStagesManagerProps {
       required?: boolean;
       enabled?: boolean;
     }
-  ) => Promise<any>;
+  ) => Promise<unknown>;
   onUpdateGoal?: (
     stageId: string,
     goalId: string,
     updates: Partial<ConversationGoal>
-  ) => Promise<any>;
-  onDeleteGoal?: (stageId: string, goalId: string) => Promise<any>;
-  onMoveGoalUp?: (stageId: string, goalId: string) => Promise<any>;
-  onMoveGoalDown?: (stageId: string, goalId: string) => Promise<any>;
+  ) => Promise<unknown>;
+  onDeleteGoal?: (stageId: string, goalId: string) => Promise<unknown>;
+  onMoveGoalUp?: (stageId: string, goalId: string) => Promise<unknown>;
+  onMoveGoalDown?: (stageId: string, goalId: string) => Promise<unknown>;
 }
 
 const PRESET_COLORS = [
@@ -426,55 +418,52 @@ export function ChatStagesManager({
 
   return (
     <div className="space-y-3">
-      {/* Cabeçalho da Seção */}
-      <div className="rounded-[22px] border border-sky-200/80 dark:border-sky-500/15 bg-gradient-to-br from-sky-50 via-white to-violet-50/50 dark:from-sky-500/[0.07] dark:via-white/[0.025] dark:to-violet-500/[0.06] p-3.5 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 text-white shadow-md shadow-sky-500/20">
-              <Layers className="h-4.5 w-4.5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-sky-600 dark:text-sky-400">
-                Arquitetura da conversa
-              </p>
-              <h3 className="mt-0.5 text-[13px] font-black text-zinc-950 dark:text-white">
-                Etapas & Checkpoints
-              </h3>
-              <p className="mt-0.5 text-[10.5px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-                Organize o caminho que o Brain percorre em cada conversa.
-              </p>
-            </div>
+      {/* Cabeçalho Contextual da Seção de Etapas */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between px-0.5 pb-1">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400">
+              <Layers className="h-3.5 w-3.5" />
+            </span>
+            <h4 className="text-xs sm:text-sm font-bold tracking-tight text-zinc-950 dark:text-white">
+              Etapas & Checkpoints
+            </h4>
+            <span className="inline-flex items-center rounded-full bg-zinc-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:text-zinc-300">
+              {stages.length} {stages.length === 1 ? "etapa" : "etapas"}
+            </span>
           </div>
-
-          <button
-            type="button"
-            onClick={openCreateModal}
-            className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-2xl bg-zinc-950 px-4 text-xs font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-zinc-800 active:scale-95 dark:bg-white dark:text-black dark:hover:bg-zinc-200 sm:w-auto"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Nova etapa</span>
-          </button>
+          <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+            Sequência de progressão do Brain e marcos obrigatórios/opcionais da conversa.
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={openCreateModal}
+          className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl bg-zinc-950 px-3 text-xs font-semibold text-white shadow-xs transition hover:bg-zinc-800 active:scale-95 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-100 shrink-0 self-start sm:self-auto"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span>Nova etapa</span>
+        </button>
       </div>
 
       {/* Lista de Etapas */}
       {stages.length === 0 ? (
-        <div className="p-6 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-center space-y-3 bg-zinc-100/60 dark:bg-zinc-900/30">
-          <div className="w-10 h-10 rounded-full bg-zinc-200/80 dark:bg-zinc-800/80 text-zinc-600 dark:text-zinc-400 flex items-center justify-center mx-auto">
-            <Layers className="w-5 h-5" />
+        <div className="p-6 rounded-xl border border-dashed border-zinc-200 dark:border-white/10 text-center space-y-2.5 bg-zinc-50/50 dark:bg-white/[0.02]">
+          <div className="w-9 h-9 rounded-full bg-zinc-100 dark:bg-white/5 text-zinc-500 dark:text-zinc-400 flex items-center justify-center mx-auto">
+            <Layers className="w-4.5 h-4.5" />
           </div>
           <div>
-            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Nenhuma etapa cadastrada ainda</p>
-            <p className="text-xs text-zinc-500 mt-1 max-w-sm mx-auto">
-              Crie etapas como &ldquo;1. Conexão & Apresentação&rdquo;, &ldquo;2. Semeadura da Rifa&rdquo; e vincule às suas pastas do cofre.
+            <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Nenhuma etapa cadastrada neste cronograma</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 max-w-sm mx-auto">
+              Crie etapas como &ldquo;1. Conexão & Apresentação&rdquo; e &ldquo;2. Oferta da Rifa&rdquo; para estruturar a progressão.
             </p>
           </div>
           <button
             type="button"
             onClick={openCreateModal}
-            className="px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-xs font-semibold text-zinc-950 dark:text-white transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 text-xs font-semibold active:scale-95 transition"
           >
-            Criar Primeira Etapa
+            <Plus className="w-3.5 h-3.5" /> Criar primeira etapa
           </button>
         </div>
       ) : (
@@ -494,51 +483,80 @@ export function ChatStagesManager({
             return (
               <div
                 key={stage.id}
-                className="rounded-[20px] bg-white/90 dark:bg-white/[0.035] border border-zinc-200/90 dark:border-white/10 hover:border-sky-300 dark:hover:border-sky-500/25 transition-all overflow-hidden shadow-sm"
+                className={`overflow-hidden rounded-xl border transition-all duration-150 ${
+                  isGoalsExpanded
+                    ? "border-sky-300/80 bg-white shadow-xs dark:border-sky-500/30 dark:bg-zinc-900/80"
+                    : "border-zinc-200/80 bg-white/90 hover:border-zinc-300 dark:border-white/10 dark:bg-white/[0.025] dark:hover:border-white/15"
+                }`}
               >
                 {/* Linha Principal da Etapa */}
-                <div className="p-3 sm:p-3.5 space-y-2.5">
-                  {/* Linha 1: Nome da Etapa e Ações */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    {/* Lado Esquerdo: Posição, Cor, Nome */}
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleStageGoals(stage.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleStageGoals(stage.id);
+                    }
+                  }}
+                  className="w-full cursor-pointer p-2.5 sm:p-3 text-left select-none transition-colors hover:bg-zinc-50/50 dark:hover:bg-white/[0.015]"
+                  aria-expanded={isGoalsExpanded}
+                >
+                  <div className="flex items-center justify-between gap-2.5">
+                    {/* Lado Esquerdo: Ordem, Cor, Nome e Badges */}
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <span className="text-xs font-bold text-zinc-500 w-5 shrink-0">#{index + 1}</span>
+                      <span className="font-mono text-[11px] font-bold text-zinc-400 dark:text-zinc-500 w-5 text-center shrink-0">
+                        #{index + 1}
+                      </span>
 
                       <div
-                        className="w-2.5 h-6 rounded-full shrink-0 shadow-sm"
+                        className="w-2 h-5 rounded-full shrink-0 shadow-xs"
                         style={{ backgroundColor: stage.color || "#3b82f6" }}
                       />
 
-                      <div className="min-w-0 flex-1 flex items-center gap-2">
-                        <h4 className="text-sm font-bold text-zinc-950 dark:text-white truncate">{stage.name}</h4>
-                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                          stage.isRequired !== false
-                            ? "bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25"
-                            : "bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/25"
-                        }`}>
+                      <div className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
+                        <h5 className="text-xs sm:text-sm font-bold text-zinc-950 dark:text-white truncate max-w-[120px] sm:max-w-xs md:max-w-none">
+                          {stage.name}
+                        </h5>
+                        <span
+                          className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                            stage.isRequired !== false
+                              ? "bg-rose-50 text-rose-700 border-rose-200/70 dark:bg-rose-500/10 dark:text-rose-300 dark:border-rose-500/25"
+                              : "bg-violet-50 text-violet-700 border-violet-200/70 dark:bg-violet-500/10 dark:text-violet-300 dark:border-violet-500/25"
+                          }`}
+                        >
                           {stage.isRequired !== false ? "Obrigatória" : "Opcional"}
                         </span>
                         {isLast && (
-                          <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                            finalizesWorkflow
-                              ? "bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/30"
-                              : "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30"
-                          }`}>
-                            {finalizesWorkflow ? "Final" : "Continua aberta"}
+                          <span
+                            className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                              finalizesWorkflow
+                                ? "bg-amber-50 text-amber-700 border-amber-200/70 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30"
+                                : "bg-sky-50 text-sky-700 border-sky-200/70 dark:bg-sky-500/15 dark:text-sky-300 dark:border-sky-500/30"
+                            }`}
+                          >
+                            {finalizesWorkflow ? "Finaliza jornada" : "Continua aberta"}
                           </span>
                         )}
+                        <span className="text-[10.5px] text-zinc-500 dark:text-zinc-400 font-medium">
+                          • {stageGoals.length} {stageGoals.length === 1 ? "checkpoint" : "checkpoints"}
+                        </span>
                       </div>
                     </div>
 
-                    {/* Lado Direito: Ações (Reordenar, Editar, Excluir) */}
-                    <div className="flex items-center justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t border-zinc-200 dark:border-zinc-800/40 sm:border-t-0">
+                    {/* Lado Direito: Ações da Etapa & Alternador de Checkpoints */}
+                    <div
+                      className="flex shrink-0 items-center gap-0.5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <button
                         type="button"
                         disabled={isFirst}
                         onClick={() => onMoveUp(stage.id)}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform cursor-pointer"
-                        title="Mover para cima"
-                        aria-label="Mover para cima"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-20 disabled:hover:bg-transparent dark:hover:bg-white/10 dark:hover:text-white"
+                        title="Mover etapa para cima"
+                        aria-label="Mover etapa para cima"
                       >
                         <ArrowUp className="w-3.5 h-3.5" />
                       </button>
@@ -547,9 +565,9 @@ export function ChatStagesManager({
                         type="button"
                         disabled={isLast}
                         onClick={() => onMoveDown(stage.id)}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-25 disabled:pointer-events-none active:scale-90 transition-transform cursor-pointer"
-                        title="Mover para baixo"
-                        aria-label="Mover para baixo"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-20 disabled:hover:bg-transparent dark:hover:bg-white/10 dark:hover:text-white"
+                        title="Mover etapa para baixo"
+                        aria-label="Mover etapa para baixo"
                       >
                         <ArrowDown className="w-3.5 h-3.5" />
                       </button>
@@ -557,7 +575,7 @@ export function ChatStagesManager({
                       <button
                         type="button"
                         onClick={() => openEditModal(stage)}
-                        className="p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-sky-400 active:scale-90 transition-all ml-0.5 cursor-pointer"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-sky-50 hover:text-sky-600 dark:hover:bg-sky-500/10 dark:hover:text-sky-400"
                         title="Editar etapa"
                         aria-label="Editar etapa"
                       >
@@ -567,80 +585,55 @@ export function ChatStagesManager({
                       <button
                         type="button"
                         onClick={() => setStageToDelete(stage)}
-                        className="p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:text-red-400 active:scale-90 transition-all cursor-pointer"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
                         title="Excluir etapa"
                         aria-label="Excluir etapa"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
+
+                      <button
+                        type="button"
+                        onClick={() => toggleStageGoals(stage.id)}
+                        className={`ml-1 flex h-7 items-center gap-1 rounded-lg px-2 text-xs font-semibold transition active:scale-95 ${
+                          isGoalsExpanded
+                            ? "bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300"
+                            : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-white/5 dark:text-zinc-300 dark:hover:bg-white/10"
+                        }`}
+                        aria-label={isGoalsExpanded ? "Recolher checkpoints" : "Ver checkpoints"}
+                        title={isGoalsExpanded ? "Recolher checkpoints" : "Ver checkpoints"}
+                      >
+                        <span className="hidden sm:inline text-[10.5px]">
+                          {isGoalsExpanded ? "Recolher" : "Checkpoints"}
+                        </span>
+                        <ChevronDown
+                          className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                            isGoalsExpanded ? "rotate-180" : ""
+                          }`}
+                        />
+                      </button>
                     </div>
-                  </div>
-
-                  {/* Barra de Acesso aos Objetivos da Etapa */}
-                  <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => toggleStageGoals(stage.id)}
-                      className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg bg-zinc-100/90 dark:bg-zinc-900/90 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-800/80 transition-colors text-xs font-semibold active:scale-95 cursor-pointer"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                        <span>Checkpoints da Etapa ({stageGoals.length})</span>
-                      </div>
-                      {isGoalsExpanded ? (
-                        <ChevronUp className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-400 ml-0.5" />
-                      ) : (
-                        <ChevronDown className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-400 ml-0.5" />
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => openAddGoalModal(stage.id)}
-                      className="w-full sm:w-auto flex items-center justify-center gap-1 px-3 py-2 sm:py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 text-xs font-semibold active:scale-95 transition-all cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Novo Checkpoint</span>
-                    </button>
                   </div>
                 </div>
 
-                {/* Seção Expandida: Checkpoints / Objetivos da Etapa */}
+                {/* Seção Expandida: Árvore Hierárquica de Checkpoints */}
                 {isGoalsExpanded && (
-                  <div className="border-t border-zinc-200 dark:border-[#27272a] bg-zinc-100/80 dark:bg-zinc-950/40 p-3 sm:p-3.5 space-y-3 animate-fade-in">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Target className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                        <span className="text-xs font-bold text-zinc-950 dark:text-white">
-                          Checkpoints / Objetivos da Etapa
-                        </span>
-                        <span className="text-[11px] text-zinc-500">
-                          (Obrigatórios bloqueiam o avanço; opcionais ficam disponíveis ao Brain quando fizer sentido)
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
+                  <div className="border-t border-zinc-100 dark:border-white/5 bg-zinc-50/50 dark:bg-black/20 p-2.5 sm:p-3 space-y-2">
+                    {stageGoals.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-zinc-200 dark:border-white/10 p-3 text-center">
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Nenhum checkpoint definido nesta etapa.
+                        </p>
                         <button
                           type="button"
                           onClick={() => openAddGoalModal(stage.id)}
-                          className="flex-1 sm:flex-initial flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 text-xs font-semibold active:scale-95 transition-all min-h-[34px] sm:min-h-0 cursor-pointer"
+                          className="mt-1.5 inline-flex items-center gap-1 rounded-lg text-xs font-semibold text-sky-600 dark:text-sky-400 hover:underline"
                         >
-                          <Plus className="w-3 h-3 shrink-0" />
-                          <span>Adicionar Checkpoint</span>
+                          <Plus className="w-3 h-3" /> Adicionar primeiro checkpoint
                         </button>
                       </div>
-                    </div>
-
-                    {stageGoals.length === 0 ? (
-                      <div className="p-4 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-center">
-                        <p className="text-xs text-zinc-600 dark:text-zinc-400">
-                          Nenhum checkpoint conversacional definido para esta etapa.
-                        </p>
-                        <p className="text-[11px] text-zinc-500 mt-0.5">
-                          Adicione tópicos que a persona deve descobrir organicamente (ex: Idade, Cidade, Profissão).
-                        </p>
-                      </div>
                     ) : (
-                      <div className="space-y-2">
+                      <div className="space-y-1.5 relative before:absolute before:left-3 before:top-2 before:bottom-2 before:w-0.5 before:bg-zinc-200 dark:before:bg-zinc-800">
                         {stageGoals.map((goal, gIdx) => {
                           const isFirstGoal = gIdx === 0;
                           const isLastGoal = gIdx === stageGoals.length - 1;
@@ -648,138 +641,136 @@ export function ChatStagesManager({
                           return (
                             <div
                               key={goal.id}
-                              className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
+                              className={`relative flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border p-2 sm:px-3 sm:py-2 text-xs transition-all ml-6 ${
                                 goal.enabled
-                                  ? "bg-zinc-100/80 dark:bg-zinc-900/80 border-zinc-200 dark:border-zinc-800"
-                                  : "bg-zinc-100/60 dark:bg-zinc-900/30 border-zinc-200 dark:border-zinc-800/50 opacity-60"
+                                  ? "bg-white dark:bg-zinc-900/90 border-zinc-200/80 dark:border-white/10 shadow-2xs"
+                                  : "bg-zinc-50/60 dark:bg-zinc-900/30 border-zinc-200/50 dark:border-white/5 opacity-60"
                               }`}
                             >
-                              <div className="flex items-start gap-2 min-w-0 flex-1">
-                                <span className="text-[11px] font-mono text-zinc-500 w-5 shrink-0 pt-0.5">
-                                  #{gIdx + 1}
-                                </span>
-                                <div className="min-w-0 flex-1 space-y-1.5">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                                      {goal.label}
+                              {/* Linha horizontal conectora da árvore */}
+                              <div className="pointer-events-none absolute -left-3 top-1/2 -translate-y-1/2 w-3 h-0.5 bg-zinc-200 dark:bg-zinc-800" />
+
+                              {/* Conteúdo do Checkpoint */}
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-mono text-[10px] text-zinc-400 dark:text-zinc-500">
+                                    #{gIdx + 1}
+                                  </span>
+                                  <span className="font-semibold text-zinc-900 dark:text-white">
+                                    {goal.label}
+                                  </span>
+
+                                  {/* Tipo / Configuração relevante */}
+                                  {goal.kind === "action" ? (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px] font-medium border border-amber-200/60 dark:border-amber-500/20">
+                                      Ação: {goal.actionType === "send_audio" ? "enviar áudio" : goal.actionType || "ação"}
                                     </span>
-                                    {goal.kind === "action" ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-medium border border-amber-500/30">
-                                        Ação
-                                      </span>
-                                    ) : goal.kind === "conversation_state" ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 text-[10px] font-medium border border-purple-500/30">
-                                        Estado da Conversa
-                                      </span>
-                                    ) : (
-                                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
-                                        Fato do Contato
-                                      </span>
-                                    )}
-                                    {goal.kind === "action" ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-amber-800 dark:text-amber-200 text-[10px] font-mono border border-zinc-300 dark:border-zinc-700/50">
-                                        {goal.actionType === "send_audio" ? "enviar áudio" : goal.actionType || "ação"}
-                                      </span>
-                                    ) : (
-                                      <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 text-[10px] font-mono border border-zinc-300 dark:border-zinc-700/50">
-                                        {goal.memoryEntity || "self"}.{goal.memoryField}
-                                      </span>
-                                    )}
-                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                  ) : goal.kind === "conversation_state" ? (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 text-[10px] font-medium border border-purple-200/60 dark:border-purple-500/20">
+                                      Estado: {goal.memoryField || "conversa"}
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-[10px] font-medium border border-emerald-200/60 dark:border-emerald-500/20">
+                                      Fato: {goal.memoryEntity || "self"}.{goal.memoryField}
+                                    </span>
+                                  )}
+
+                                  <span
+                                    className={`px-1.5 py-0.2 rounded text-[10px] font-medium border ${
                                       goal.required !== false
-                                        ? "bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25"
-                                        : "bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/25"
-                                    }`}>
-                                      {goal.required !== false ? "Obrigatório" : "Opcional"}
+                                        ? "bg-rose-50 text-rose-700 border-rose-200/60 dark:bg-rose-500/10 dark:text-rose-300 dark:border-rose-500/20"
+                                        : "bg-zinc-100 text-zinc-600 border-zinc-200/60 dark:bg-white/5 dark:text-zinc-400 dark:border-white/10"
+                                    }`}
+                                  >
+                                    {goal.required !== false ? "Obrigatório" : "Opcional"}
+                                  </span>
+
+                                  {!goal.enabled && (
+                                    <span className="px-1.5 py-0.2 rounded bg-zinc-100 dark:bg-white/5 text-zinc-400 text-[10px]">
+                                      Inativo
                                     </span>
-                                    {!goal.enabled && (
-                                      <span className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-500 text-[10px]">
-                                        Inativo
-                                      </span>
-                                    )}
-                                  </div>
-                                  {goal.description && (
-                                    <div className="p-2 rounded-lg bg-white/90 dark:bg-zinc-950/70 border border-zinc-200 dark:border-zinc-800/80 text-[11px] text-zinc-700 dark:text-zinc-300 break-words leading-relaxed">
-                                      <span className="font-semibold text-sky-400">Missão do Checkpoint: </span>
-                                      {goal.description}
-                                    </div>
                                   )}
                                 </div>
+
+                                {/* Descrição sutil se houver */}
+                                {goal.description && (
+                                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-snug line-clamp-1">
+                                    {goal.description}
+                                  </p>
+                                )}
                               </div>
 
-                              {/* Ações do Objetivo: barra dedicada com touch targets mínimos de 34px */}
-                              <div className="flex items-center justify-between sm:justify-end gap-1.5 pt-2 border-t border-zinc-200 dark:border-zinc-800/60 sm:border-t-0 sm:pt-0 shrink-0 w-full sm:w-auto">
-                                <span className="sm:hidden text-[10px] text-zinc-500 font-medium">
-                                  Prioridade & Ações
-                                </span>
-                                <div className="flex items-center gap-1.5">
-                                  {/* Toggle Ativo / Inativo */}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleToggleGoalEnabled(stage.id, goal)}
-                                    className={`p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg border transition-all active:scale-95 cursor-pointer ${
-                                      goal.enabled
-                                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20"
-                                        : "bg-zinc-200 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-300 dark:hover:bg-zinc-700"
-                                    }`}
-                                    title={goal.enabled ? "Desativar objetivo" : "Ativar objetivo"}
-                                    aria-label={goal.enabled ? "Desativar objetivo" : "Ativar objetivo"}
-                                  >
-                                    <Power className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  {/* Seta Subir */}
-                                  <button
-                                    type="button"
-                                    disabled={isFirstGoal}
-                                    onClick={() => handleMoveGoalUp(stage.id, goal.id)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700/60 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
-                                    title="Subir prioridade"
-                                    aria-label="Subir prioridade"
-                                  >
-                                    <ArrowUp className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  {/* Seta Descer */}
-                                  <button
-                                    type="button"
-                                    disabled={isLastGoal}
-                                    onClick={() => handleMoveGoalDown(stage.id, goal.id)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700/60 text-zinc-700 dark:text-zinc-300 hover:text-zinc-950 dark:hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
-                                    title="Descer prioridade"
-                                    aria-label="Descer prioridade"
-                                  >
-                                    <ArrowDown className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  {/* Editar */}
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditGoalModal(stage.id, goal)}
-                                    className="p-2 sm:p-1.5 min-w-[34px] min-h-[34px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700/60 text-zinc-700 dark:text-zinc-300 hover:text-sky-400 transition-all active:scale-95 cursor-pointer"
-                                    title="Editar objetivo"
-                                    aria-label="Editar objetivo"
-                                  >
-                                    <Edit2 className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  {/* Excluir */}
-                                  <button
-                                    type="button"
-                                    onClick={() => setGoalToDelete({ stageId: stage.id, goal })}
-                                    className="p-2 sm:p-1.5 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-[#f87171] hover:bg-red-100 dark:hover:bg-red-900/40 transition-all active:scale-95 cursor-pointer"
-                                    title="Excluir objetivo"
-                                    aria-label="Excluir objetivo"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
+                              {/* Ações do Checkpoint */}
+                              <div className="flex shrink-0 items-center gap-0.5 self-end sm:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleGoalEnabled(stage.id, goal)}
+                                  className={`flex h-6 w-6 items-center justify-center rounded-md transition ${
+                                    goal.enabled
+                                      ? "text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/15"
+                                      : "text-zinc-400 hover:bg-zinc-100 dark:hover:bg-white/5"
+                                  }`}
+                                  title={goal.enabled ? "Desativar checkpoint" : "Ativar checkpoint"}
+                                  aria-label={goal.enabled ? "Desativar checkpoint" : "Ativar checkpoint"}
+                                >
+                                  <Power className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isFirstGoal}
+                                  onClick={() => handleMoveGoalUp(stage.id, goal.id)}
+                                  className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 disabled:opacity-20 disabled:hover:bg-transparent dark:hover:text-white dark:hover:bg-white/10 transition"
+                                  title="Subir prioridade"
+                                  aria-label="Subir prioridade"
+                                >
+                                  <ArrowUp className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isLastGoal}
+                                  onClick={() => handleMoveGoalDown(stage.id, goal.id)}
+                                  className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 disabled:opacity-20 disabled:hover:bg-transparent dark:hover:text-white dark:hover:bg-white/10 transition"
+                                  title="Descer prioridade"
+                                  aria-label="Descer prioridade"
+                                >
+                                  <ArrowDown className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditGoalModal(stage.id, goal)}
+                                  className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:text-sky-600 hover:bg-sky-50 dark:hover:text-sky-400 dark:hover:bg-sky-500/10 transition"
+                                  title="Editar checkpoint"
+                                  aria-label="Editar checkpoint"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setGoalToDelete({ stageId: stage.id, goal })}
+                                  className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition"
+                                  title="Excluir checkpoint"
+                                  aria-label="Excluir checkpoint"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
                               </div>
                             </div>
                           );
                         })}
                       </div>
                     )}
+
+                    {/* Botão Contextual de Novo Checkpoint dentro da Etapa */}
+                    <div className="pt-1 flex justify-start">
+                      <button
+                        type="button"
+                        onClick={() => openAddGoalModal(stage.id)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-sky-300 dark:border-sky-500/30 bg-sky-50/50 dark:bg-sky-500/5 px-2.5 py-1 text-[11px] font-semibold text-sky-700 dark:text-sky-300 transition hover:bg-sky-100/70 dark:hover:bg-sky-500/15 active:scale-95"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Novo checkpoint nesta etapa</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -793,55 +784,58 @@ export function ChatStagesManager({
         isOpen={isModalOpen}
         onClose={closeModal}
         maxWidth="lg"
-        title={editingStage ? "Editar Etapa do Funil" : "Nova Etapa do Funil"}
+        title={editingStage ? "Editar etapa do funil" : "Nova etapa do funil"}
+        description="Configure o nome, cor de identificação e regras de avanço desta etapa."
+        icon={
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-100 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400">
+            <Layers className="h-5 w-5" />
+          </div>
+        }
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3.5 pt-1">
           {/* Nome da Etapa */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Nome da Etapa *
-            </label>
+          <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+            <span>Nome da etapa *</span>
             <input
               type="text"
               required
-              placeholder="Ex: 1. Apresentação & Fotos da Rotina"
+              placeholder="Ex: 1. Conexão & Apresentação"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+              className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-sky-500 transition-colors"
             />
-          </div>
+          </label>
 
           {/* Descrição / Orientação da Etapa */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Descrição / Orientação para a Persona
-            </label>
+          <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+            <span>Orientação para o Brain nesta etapa (Opcional)</span>
             <textarea
               rows={2}
               placeholder="Ex: Conhecer o pretendente naturalmente, criar conexão inicial e entender seu estilo de vida."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+              className="w-full resize-none rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-sky-500 transition-colors leading-relaxed"
             />
-          </div>
+          </label>
 
           {/* Cor da Etapa */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Cor de Identificação
-            </label>
-            <div className="flex items-center gap-2.5 flex-wrap">
+          <div className="space-y-1.5 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+            <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Cor de identificação
+            </span>
+            <div className="flex items-center gap-2.5 flex-wrap pt-0.5">
               {PRESET_COLORS.map((color) => (
                 <button
                   key={color}
                   type="button"
                   onClick={() => setSelectedColor(color)}
                   style={{ backgroundColor: color }}
-                  className={`w-8 h-8 rounded-full transition-transform flex items-center justify-center cursor-pointer ${
+                  className={`w-7 h-7 rounded-full transition-transform flex items-center justify-center cursor-pointer ${
                     selectedColor === color
-                      ? "ring-2 ring-white ring-offset-2 ring-offset-zinc-900 scale-110"
+                      ? "ring-2 ring-zinc-950 dark:ring-white ring-offset-2 ring-offset-white dark:ring-offset-zinc-900 scale-110"
                       : "opacity-80 hover:opacity-100 hover:scale-105"
                   }`}
+                  aria-label={`Selecionar cor ${color}`}
                 >
                   {selectedColor === color && <Check className="w-3.5 h-3.5 text-white" />}
                 </button>
@@ -849,38 +843,39 @@ export function ChatStagesManager({
             </div>
           </div>
 
-          <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+          {/* Obrigatoriedade */}
+          <label className="flex items-center justify-between rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02] cursor-pointer">
             <div>
               <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Etapa obrigatória</p>
-              <p className="text-[10px] text-zinc-500">Se for opcional, o Brain pode ignorar a etapa inteira quando não fizer sentido.</p>
+              <p className="text-[10px] text-zinc-500">Se for opcional, o Brain pode ignorá-la caso o contexto da conversa avance organicamente.</p>
             </div>
             <input
               type="checkbox"
               checked={stageRequired}
               onChange={(e) => setStageRequired(e.target.checked)}
-              className="h-4 w-4 rounded"
+              className="h-4.5 w-4.5 rounded border-zinc-300 text-sky-600 focus:ring-sky-500 cursor-pointer"
             />
           </label>
 
           {/* Botões de Ação */}
-          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
+          <div className="flex justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-white/10">
             <button
               type="button"
               onClick={closeModal}
-              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+              className="min-h-[38px] rounded-xl px-4 py-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white transition-colors"
             >
               Cancelar
             </button>
             <button
               type="submit"
               disabled={isSubmitting || !name.trim()}
-              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+              className="min-h-[38px] rounded-xl bg-zinc-950 px-5 py-2 text-xs font-bold text-white shadow-xs hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-100 active:scale-95 disabled:opacity-40 transition"
             >
               {isSubmitting
                 ? "Salvando..."
                 : editingStage
-                ? "Salvar Alterações"
-                : "Criar Etapa"}
+                ? "Salvar alterações"
+                : "Criar etapa"}
             </button>
           </div>
         </form>
@@ -891,68 +886,66 @@ export function ChatStagesManager({
         isOpen={isGoalModalOpen}
         onClose={closeGoalModal}
         maxWidth="lg"
-        title={editingGoal ? "Editar Objetivo da Conversa" : "Novo Objetivo da Conversa"}
+        title={editingGoal ? "Editar checkpoint" : "Novo checkpoint"}
+        description="Defina o que o Brain deve descobrir, registrar ou executar nesta etapa."
+        icon={
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-100 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400">
+            <Target className="h-5 w-5" />
+          </div>
+        }
       >
-        <form onSubmit={handleGoalSubmit} className="space-y-3.5">
+        <form onSubmit={handleGoalSubmit} className="space-y-3.5 pt-1">
           {/* Rótulo do Goal */}
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Rótulo do Objetivo *
-            </label>
+          <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+            <span>Rótulo do checkpoint *</span>
             <input
               type="text"
               required
               placeholder="Ex: Idade, Cidade onde mora, Profissão"
               value={goalLabel}
               onChange={(e) => setGoalLabel(e.target.value)}
-              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-sm text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500"
+              className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-sky-500 transition-colors"
             />
-          </div>
+          </label>
 
-          {/* Tipo de Objetivo: Fato vs Estado Conversacional */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Tipo Conceitual de Objetivo *
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {/* Tipo de Objetivo: Segmented Control Moderno */}
+          <div className="space-y-1.5 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+            <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Tipo conceitual de objetivo *
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5">
               <button
                 type="button"
                 onClick={() => {
                   setGoalKind("fact");
                   if (goalMemoryEntity === "conversation") setGoalMemoryEntity("self");
                 }}
-                className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
                   goalKind === "fact"
-                    ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
-                    : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                    ? "bg-emerald-50/80 border-emerald-300 text-emerald-950 shadow-2xs dark:bg-emerald-500/15 dark:border-emerald-500/40 dark:text-emerald-200"
+                    : "bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300 dark:bg-zinc-900 dark:border-white/10 dark:text-zinc-400"
                 }`}
               >
-                <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-                  Fato do Contato
-                </span>
-                <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                  Dado durável (idade, cidade, profissão).
-                </span>
+                <span className="block text-xs font-bold">Fato do Contato</span>
+                <span className="block text-[10px] opacity-75 mt-0.5">Dado durável (idade, cidade, profissão).</span>
               </button>
+
               <button
                 type="button"
                 onClick={() => {
                   setGoalKind("conversation_state");
                   if (goalMemoryEntity === "self") setGoalMemoryEntity("conversation");
                 }}
-                className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
                   goalKind === "conversation_state"
-                    ? "bg-purple-500/15 border-purple-500/40 text-purple-700 dark:text-purple-300"
-                    : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                    ? "bg-purple-50/80 border-purple-300 text-purple-950 shadow-2xs dark:bg-purple-500/15 dark:border-purple-500/40 dark:text-purple-200"
+                    : "bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300 dark:bg-zinc-900 dark:border-white/10 dark:text-zinc-400"
                 }`}
               >
-                <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-                  Estado da Conversa
-                </span>
-                <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                  Dinâmica qualitativa (reciprocidade, profundidade).
-                </span>
+                <span className="block text-xs font-bold">Estado da Conversa</span>
+                <span className="block text-[10px] opacity-75 mt-0.5">Dinâmica (reciprocidade, interesse).</span>
               </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -960,130 +953,132 @@ export function ChatStagesManager({
                   setGoalMemoryEntity("");
                   setGoalMemoryField("");
                 }}
-                className={`px-3 py-2.5 sm:py-2 rounded-xl text-xs font-medium border text-left flex flex-col gap-0.5 transition-all cursor-pointer ${
+                className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
                   goalKind === "action"
-                    ? "bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300"
-                    : "bg-zinc-100 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                    ? "bg-amber-50/80 border-amber-300 text-amber-950 shadow-2xs dark:bg-amber-500/15 dark:border-amber-500/40 dark:text-amber-200"
+                    : "bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300 dark:bg-zinc-900 dark:border-white/10 dark:text-zinc-400"
                 }`}
               >
-                <span className="font-semibold text-zinc-950 dark:text-white flex items-center gap-1.5">
-                  Ação
-                </span>
-                <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-                  Missão que precisa ser executada pelo Brain.
-                </span>
+                <span className="block text-xs font-bold">Ação</span>
+                <span className="block text-[10px] opacity-75 mt-0.5">Missão executada pelo Brain (ex: áudio).</span>
               </button>
             </div>
           </div>
 
+          {/* Configuração Específica do Tipo */}
           {goalKind === "action" ? (
-            <div className="space-y-2.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Ação que o Brain precisa executar *</label>
+            <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-50/50 dark:bg-amber-500/5 p-3">
+              <label className="block space-y-1 text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                <span>Ação que o Brain precisa executar *</span>
                 <select
                   value={goalActionType}
                   onChange={(e) => setGoalActionType(e.target.value as NonNullable<ConversationGoal["actionType"]>)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-sm text-zinc-950 dark:text-white focus:outline-none focus:border-amber-500"
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white focus:outline-none focus:border-amber-500"
                 >
                   <option value="send_audio">Enviar áudio vinculado ao objetivo</option>
                   <option value="send_raffle_details" disabled>Enviar foto + detalhes da rifa — estrutura preparada</option>
                   <option value="send_raffle_numbers" disabled>Enviar 10 números livres — estrutura preparada</option>
                   <option value="operator_handoff" disabled>Finalizar e avisar operador — estrutura preparada</option>
                 </select>
-              </div>
+              </label>
               <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-                O áudio é vinculado a este objetivo no Cofre de Áudios. O objetivo só será concluído após o provedor confirmar o envio.
-                Se o contexto estiver sensível, o Brain pode adiar, mas a missão permanece pendente para os próximos turnos.
+                O áudio é vinculado a este objetivo no Cofre de Áudios. O checkpoint só é concluído após a confirmação do envio.
               </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}
-                </label>
+              <label className="space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                <span>Entidade de Memória {goalKind === "fact" ? "*" : "(Opcional)"}</span>
                 <input
                   type="text"
                   required={goalKind === "fact"}
                   placeholder={goalKind === "fact" ? "self" : "conversation"}
                   value={goalMemoryEntity}
                   onChange={(e) => setGoalMemoryEntity(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono"
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-sky-500 font-mono"
                 />
-                <p className="text-[10px] text-zinc-500">
+                <span className="block text-[10px] text-zinc-400">
                   {goalKind === "fact" ? 'Padrão: "self" (o pretendente)' : 'Padrão: "conversation"'}
-                </p>
-              </div>
+                </span>
+              </label>
 
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}
-                </label>
+              <label className="space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                <span>Campo de Memória {goalKind === "fact" ? "*" : "(Auto se vazio)"}</span>
                 <input
                   type="text"
                   required={goalKind === "fact"}
                   placeholder={goalKind === "fact" ? "age, city, job" : "slug do estado"}
                   value={goalMemoryField}
                   onChange={(e) => setGoalMemoryField(e.target.value)}
-                  className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 font-mono"
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-sky-500 font-mono"
                 />
-                <p className="text-[10px] text-zinc-500">
-                  {goalKind === "fact" ? "Campo salvo na ContactMemory" : "Avaliado pelo contexto e histórico"}
-                </p>
-              </div>
+                <span className="block text-[10px] text-zinc-400">
+                  {goalKind === "fact" ? "Campo salvo no histórico/perfil" : "Avaliado pelo contexto e histórico"}
+                </span>
+              </label>
             </div>
           )}
 
-          {/* Descrição / Orientação para a IA */}
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Orientação para a IA (Opcional)
-            </label>
+          {/* Orientação para a IA */}
+          <label className="block space-y-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+            <span>Orientação para a IA (Opcional)</span>
             <textarea
               rows={2}
-              placeholder="Ex: Descobrir a idade naturalmente quando falar de estudos ou trabalho, sem parecer interrogatório..."
+              placeholder="Ex: Descobrir a idade naturalmente ao falar de rotina ou trabalho, sem parecer interrogatório..."
               value={goalDescription}
               onChange={(e) => setGoalDescription(e.target.value)}
-              className="w-full px-3 py-2.5 sm:py-2 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-xl text-[16px] md:text-xs text-zinc-950 dark:text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500 resize-none leading-relaxed"
+              className="w-full resize-none rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-xs text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white placeholder:text-zinc-400 outline-none focus:border-sky-500 transition-colors leading-relaxed"
             />
-          </div>
+          </label>
 
+          {/* Flags: Obrigatório e Ativo */}
           <div className="grid gap-2 sm:grid-cols-2">
-            <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-100/70 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+            <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02] cursor-pointer">
               <div>
                 <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Obrigatório</p>
-                <p className="text-[10px] text-zinc-500">Se desligado, vira uma possibilidade e não bloqueia o avanço.</p>
+                <p className="text-[10px] text-zinc-500">Bloqueia o avanço da etapa até ser concluído.</p>
               </div>
-              <input type="checkbox" checked={goalRequired} onChange={(e) => setGoalRequired(e.target.checked)} className="h-4 w-4 rounded" />
+              <input
+                type="checkbox"
+                checked={goalRequired}
+                onChange={(e) => setGoalRequired(e.target.checked)}
+                className="h-4.5 w-4.5 rounded border-zinc-300 text-sky-600 focus:ring-sky-500 cursor-pointer"
+              />
             </label>
-            <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-100/70 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+
+            <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-white/10 dark:bg-white/[0.02] cursor-pointer">
               <div>
                 <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Ativo</p>
-                <p className="text-[10px] text-zinc-500">Desligado remove o objetivo do repertório do Brain.</p>
+                <p className="text-[10px] text-zinc-500">Disponível no repertório e objetivos da IA.</p>
               </div>
-              <input type="checkbox" checked={goalEnabled} onChange={(e) => setGoalEnabled(e.target.checked)} className="h-4 w-4 rounded" />
+              <input
+                type="checkbox"
+                checked={goalEnabled}
+                onChange={(e) => setGoalEnabled(e.target.checked)}
+                className="h-4.5 w-4.5 rounded border-zinc-300 text-sky-600 focus:ring-sky-500 cursor-pointer"
+              />
             </label>
           </div>
 
           {/* Botões do Modal */}
-          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-[#27272a]">
+          <div className="flex justify-end gap-2 pt-3 border-t border-zinc-200 dark:border-white/10">
             <button
               type="button"
               onClick={closeGoalModal}
-              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white transition-colors cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+              className="min-h-[38px] rounded-xl px-4 py-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white transition-colors"
             >
               Cancelar
             </button>
             <button
               type="submit"
               disabled={isGoalSubmitting || !goalLabel.trim() || (goalKind === "fact" && !goalMemoryField.trim())}
-              className="w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold transition-all shadow-md shadow-sky-500/20 active:scale-95 cursor-pointer text-center min-h-[44px] sm:min-h-0 flex items-center justify-center"
+              className="min-h-[38px] rounded-xl bg-zinc-950 px-5 py-2 text-xs font-bold text-white shadow-xs hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-100 active:scale-95 disabled:opacity-40 transition"
             >
               {isGoalSubmitting
                 ? "Salvando..."
                 : editingGoal
-                ? "Salvar Alterações"
-                : "Adicionar Objetivo"}
+                ? "Salvar alterações"
+                : "Adicionar checkpoint"}
             </button>
           </div>
         </form>
