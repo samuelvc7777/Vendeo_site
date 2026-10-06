@@ -96,7 +96,13 @@ async function request<T>(
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok || payload?.success === false) {
-    if (response.status === 401) clearTinderSession();
+    if (
+      payload?.code === "MATCH_SESSION_INVALID" ||
+      payload?.code === "MATCH_SESSION_MISSING" ||
+      payload?.code === "MATCH_SESSION_REQUIRED"
+    ) {
+      clearTinderSession();
+    }
     const error = new Error(
       payload?.error || ("Falha na integração Tinder (HTTP " + response.status + ")."),
     ) as Error & { code?: string; status?: number };
