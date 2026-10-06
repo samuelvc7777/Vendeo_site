@@ -5,6 +5,7 @@ import Image from "next/image";
 import { ArrowLeft, Loader2, Send, UserRound, AlertCircle, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useVisualViewport } from "@/presentation/hooks/useVisualViewport";
 import {
   getTinderMessages,
   sendTinderMessage,
@@ -39,10 +40,24 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { isKeyboardOpen } = useVisualViewport();
 
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
+
+  // Intercepta botão voltar físico no celular (Android / gesto do iOS)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.history.pushState({ matchChatOpen: true }, "");
+    const handlePopState = () => {
+      onClose();
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [onClose]);
 
   const loadMessages = async () => {
     if (!match?.id) return;
@@ -100,7 +115,7 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
   const avatar = match.person.photos?.[0]?.url || "";
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-black">
+    <div className="absolute inset-0 z-50 flex flex-col bg-white dark:bg-black w-full h-full overflow-hidden">
       {/* Header Fixo */}
       <header className="shrink-0 flex items-center justify-between border-b border-zinc-200/80 bg-white/95 px-3 py-2.5 pt-[calc(0.5rem+env(safe-area-inset-top,0px))] backdrop-blur-xl dark:border-white/10 dark:bg-black/95">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -216,8 +231,15 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Composer Fixo Inferior */}
-      <footer className="shrink-0 border-t border-zinc-200/80 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] backdrop-blur-xl dark:border-white/10 dark:bg-black/95">
+      {/* Composer Fixo Inferior com Adaptação Dinâmica ao Teclado e Safe Area */}
+      <footer
+        className={cn(
+          "shrink-0 border-t border-zinc-200/80 bg-white/95 px-3 backdrop-blur-xl dark:border-white/10 dark:bg-black/95 transition-[padding] duration-150",
+          isKeyboardOpen
+            ? "py-2 pb-2"
+            : "pt-2 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]"
+        )}
+      >
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -234,7 +256,7 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
             placeholder={`Conversar com ${match.person.name}...`}
             disabled={sending}
             spellCheck={false}
-            className="flex-1 min-h-11 rounded-full border border-zinc-200 bg-zinc-50 px-4 text-[16px] sm:text-xs text-zinc-950 outline-none transition focus:border-[#fd5068] focus:bg-white dark:border-white/10 dark:bg-[#161618] dark:text-white dark:focus:border-[#fd5068]"
+            className="flex-1 min-h-11 rounded-full border border-zinc-200 bg-zinc-50 px-4 text-[16px] text-zinc-950 outline-none transition focus:border-[#fd5068] focus:bg-white dark:border-white/10 dark:bg-[#161618] dark:text-white dark:focus:border-[#fd5068]"
           />
 
           <button

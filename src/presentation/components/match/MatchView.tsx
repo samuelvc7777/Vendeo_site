@@ -842,7 +842,11 @@ function ProfileView({
   );
 }
 
-export function MatchView() {
+export interface MatchViewProps {
+  onChatOpenChange?: (isOpen: boolean) => void;
+}
+
+export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
   const [section, setSection] = useState<TinderSection>("discover");
   const [statusLoading, setStatusLoading] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -866,6 +870,10 @@ export function MatchView() {
 
   const [selectedMatch, setSelectedMatch] = useState<TinderMatchItem | null>(null);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
+
+  useEffect(() => {
+    onChatOpenChange?.(Boolean(selectedMatch));
+  }, [selectedMatch, onChatOpenChange]);
 
   const refreshStatus = useCallback(async () => {
     setStatusLoading(true);

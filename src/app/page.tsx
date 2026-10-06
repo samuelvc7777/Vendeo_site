@@ -16,6 +16,7 @@ export default function Home() {
   const [currentTab, setCurrentTab] = useState<TabType>("chat");
   const [isChatRoomOpen, setIsChatRoomOpen] = useState(false);
   const [isConfigDetailOpen, setIsConfigDetailOpen] = useState(false);
+  const [isMatchChatOpen, setIsMatchChatOpen] = useState(false);
 
   return (
     <ErrorBoundary>
@@ -54,7 +55,7 @@ export default function Home() {
 
           {currentTab === "match" && (
             <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col w-full max-w-md md:max-w-5xl lg:max-w-7xl mx-auto">
-              <MatchView />
+              <MatchView onChatOpenChange={setIsMatchChatOpen} />
             </div>
           )}
 
@@ -66,11 +67,12 @@ export default function Home() {
         </div>
 
         {/* Navegação Inferior Fixa: some automaticamente ao abrir uma conversa ou sub-tela de configuração */}
-        {!isChatRoomOpen && !(currentTab === "config" && isConfigDetailOpen) && (
+        {!isChatRoomOpen && !isMatchChatOpen && !(currentTab === "config" && isConfigDetailOpen) && (
           <BottomNav
             currentTab={currentTab}
             onTabChange={(tab) => {
               if (tab !== "config") setIsConfigDetailOpen(false);
+              if (tab !== "match") setIsMatchChatOpen(false);
               setCurrentTab(tab);
             }}
           />
