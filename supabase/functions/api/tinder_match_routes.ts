@@ -69,15 +69,19 @@ function ensureIdentity(config?: any): TinderIdentity {
 }
 
 function tinderHeaders(token: string, identity: TinderIdentity): Record<string, string> {
+  const elapsed = Math.max(0, Date.now() - identity.sessionStartedAt).toString();
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
     platform: "web",
-    "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     "app-version": APP_VERSION,
     "tinder-version": TINDER_VERSION,
     "persistent-device-id": identity.deviceId,
     "app-session-id": identity.appSessionId,
+    "app-session-time-elapsed": elapsed,
+    "user-session-id": identity.appSessionId,
+    "user-session-time-elapsed": elapsed,
     "x-supported-image-formats": "webp,jpeg",
     "User-Agent": WEB_UA,
     Origin: "https://tinder.com",
@@ -682,46 +686,6 @@ export async function handleTinderMatchRoutes({
   originAllowed,
 }: TinderRouteParams): Promise<Response | null> {
   if (!path.startsWith("/match/tinder")) return null;
-
-  if (path === "/match/tinder/diagnostic" && request.method === "GET") {
-    const key = new URL(request.url).searchParams.get("key") || "";
-    if (key !== "diag_7f6a8d85c2304b74a61e769b61dc70b1") {
-      return json({ success: false, error: "not_found" }, 404, corsHeaders);
-    }
-    const config = await fetchConfig(supabase);
-    if (!config?.auth_token) {
-      return json({ success: true, connected: false }, 200, corsHeaders);
-    }
-    const identity = ensureIdentity(config);
-    const checks: Record<string, unknown> = {};
-    const run = async (name: string, fn: () => Promise<any>) => {
-      try {
-        const value = await fn();
-        checks[name] = {
-          ok: true,
-          count: Array.isArray(value) ? value.length : undefined,
-          locked: value?.locked,
-          likesCount: value?.count,
-          hasData: Boolean(value),
-        };
-      } catch (error: any) {
-        checks[name] = { ok: false, status: Number(error?.status) || 500, message: error?.message || "failed" };
-      }
-    };
-    await run("profile", () => fetchOwnProfile(String(config.auth_token), identity));
-    await run("account", () => fetchAccountState(String(config.auth_token), identity));
-    await run("recommendations", () => fetchRecommendations(String(config.auth_token), identity));
-    await run("likesYou", () => fetchLikesYou(String(config.auth_token), identity));
-    await run("matches", () => fetchMatches(String(config.auth_token), identity));
-    await run("channels", () => loadChannels(String(config.auth_token), identity));
-    return json({
-      success: true,
-      connected: true,
-      appVersion: APP_VERSION,
-      tinderVersion: TINDER_VERSION,
-      checks
-    }, 200, corsHeaders);
-  }
 
   if (!originAllowed) return json({ success: false, error: "origin_not_allowed" }, 403, corsHeaders);
 
