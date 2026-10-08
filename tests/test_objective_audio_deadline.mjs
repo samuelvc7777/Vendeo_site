@@ -31,7 +31,17 @@ test('antes do prazo pode conversar; outro áudio não cumpre o objetivo', () =>
 
 test('falta de áudio elegível exige operador e preserva resolução manual', () => {
   assert.match(validateObjectiveAudioDeadline({ deadline, candidates: [], plan: { action: 'reply' } }), /no_eligible_audio/);
-  assert.equal(validateObjectiveAudioDeadline({ deadline, candidates: [], plan: { action: 'manual_resolution' } }), null);
+  assert.equal(validateObjectiveAudioDeadline({ deadline, candidates: [], plan: { action: 'manual_resolution', manualResolution: { reasonCategory: 'other' } } }), null);
+});
+
+test('áudio aprovado não volta para confirmação no terceiro nem no quarto turno', () => {
+  for (const currentTurn of [3, 4, 7]) {
+    const approval = { ...deadline, currentTurn };
+    const question = { action: 'manual_resolution', manualResolution: { reasonCategory: 'audio_content', question: 'O boleto vence hoje e faltam dez bilhetes? Há uma gravação sem falar do estágio agora?' } };
+    assert.match(validateObjectiveAudioDeadline({ deadline: approval, candidates, plan: question }), /confirmation_forbidden/);
+    assert.match(validateObjectiveAudioDeadline({ deadline: approval, candidates, plan: { action: 'manual_resolution', manualResolution: { question: 'Confirma o áudio?' } } }), /manual_reason_required/);
+    assert.equal(validateObjectiveAudioDeadline({ deadline: approval, candidates, plan: { action: 'reply', outboundActions: [{ type: 'audio', audioId: 'raffle-audio' }] } }), null);
+  }
 });
 
 test('contador usa decisões duráveis, deduplica versões e delimita a entrada mais recente', async () => {

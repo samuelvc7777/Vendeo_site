@@ -43,7 +43,13 @@ export function validateObjectiveAudioDeadline(params: {
   plan: any;
 }): string | null {
   const deadline = params.deadline;
-  if (!deadline || deadline.currentTurn < deadline.maxTurns) return null;
+  if (!deadline) return null;
+  if (deadline.allowTemporalMismatch && params.plan?.action === "manual_resolution") {
+    const reason = params.plan?.manualResolution?.reasonCategory;
+    if (!["audio_content", "other"].includes(reason)) return "approved_audio_manual_reason_required: informe manualResolution.reasonCategory como audio_content ou other; não peça confirmação do áudio aprovado";
+    if (reason === "audio_content") return "approved_audio_confirmation_forbidden: não solicite confirmação sobre horário ou conteúdo da gravação aprovada; inclua o áudio autorizado em outboundActions";
+  }
+  if (deadline.currentTurn < deadline.maxTurns) return null;
   // Pausas de segurança continuam possíveis; não substituímos decisões semânticas.
   if (["manual_resolution", "wait", "silent"].includes(params.plan?.action)) return null;
   const authorized = new Set((params.candidates || [])

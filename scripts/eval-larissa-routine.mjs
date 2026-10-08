@@ -32,6 +32,7 @@ const cases=[
  {id:'incompatible_audio',time:'08:28',message:'oq tá fazendo agora?',expected:/loja|roupa|pedido|envio|estud/i,audio:true,forbidden:/estágio|estagio|hospital/i},
  {id:'unknown_specific_event',time:'08:28',message:'que horas você chegou em casa ontem?',manual:true},
  {id:'raffle_fourth_turn_morning',time:'10:24',message:'vc já tá planejando os abraços kkk',raffleTurn:4},
+ {id:'raffle_third_turn_no_reask',time:'10:55',message:'Eu tbm gosto de ajudar as pessoas. Eu sou simpático com as pessoas tbm',raffleTurn:3},
  {id:'raffle_overdue_evening',time:'20:15',message:'qual passeio vc queria fazer comigo?',raffleTurn:7},
 ];
 const only=process.argv.find(x=>x.startsWith('--case='))?.slice(7);
