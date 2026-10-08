@@ -7,6 +7,8 @@ import { selectJevMemories } from "../supabase/functions/api/jev_memory_selector
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = JSON.parse(fs.readFileSync(path.join(root, "tests/fixtures/jev-memory-evaluation.json"), "utf8"));
+const dataset = process.argv.includes("--holdout") ? "holdout" : "calibration";
+if (dataset === "holdout") fixture.cases = JSON.parse(fs.readFileSync(path.join(root, "tests/fixtures/jev-memory-holdout.json"), "utf8")).cases;
 const ids = new Set(fixture.memories.map(memory => memory.id));
 if (ids.size !== fixture.memories.length || fixture.cases.some(item => item.expected.some(id => !ids.has(id)))) throw new Error("Fixture de avaliação inconsistente");
 if (!process.argv.includes("--live")) {
@@ -19,7 +21,7 @@ async function runEvaluation() {
   const local = fs.existsSync(path.join(root, ".env.local")) ? parseEnv(fs.readFileSync(path.join(root, ".env.local"), "utf8")) : {};
   const apiKey = process.env.TYPESAFE_API_KEY || local.TYPESAFE_API_KEY;
   if (!apiKey) { console.error("TYPESAFE_API_KEY ausente; avaliação real não executada."); process.exitCode = 2; return; }
-  const threshold = Number(process.env.JEV_MEMORY_THRESHOLD || local.JEV_MEMORY_THRESHOLD);
+  const threshold = Number(process.argv.find(arg => arg.startsWith("--threshold="))?.split("=")[1] || process.env.JEV_MEMORY_THRESHOLD || local.JEV_MEMORY_THRESHOLD);
   if (!Number.isFinite(threshold) || threshold <= 0 || threshold >= 1) { console.error("Defina JEV_MEMORY_THRESHOLD explicitamente para a rodada de calibração."); process.exitCode = 2; return; }
   const results = [];
   for (const item of fixture.cases) {
@@ -30,13 +32,13 @@ async function runEvaluation() {
     const actual = selected.memories.map(memory => memory.id);
     const recalled = item.expected.filter(id => actual.includes(id)).length;
     const passed = selected.status === "complete" && recalled === item.expected.length && (item.allowExtra !== false || actual.every(id => item.expected.includes(id)));
-    results.push({ id: item.id, critical: Boolean(item.critical), expected: item.expected, selected: actual, recalled, passed, ...Object.fromEntries(["status", "reason", "durationMs", "inputTokens", "outputTokens", "model", "policyVersion"].map(key => [key, selected[key]])) });
+    results.push({ id: item.id, critical: Boolean(item.critical), expected: item.expected, selected: actual, scores: selected.scores, recalled, passed, ...Object.fromEntries(["status", "reason", "durationMs", "inputTokens", "outputTokens", "model", "policyVersion"].map(key => [key, selected[key]])) });
     console.log(JSON.stringify({ id: item.id, passed, status: selected.status, selected: actual }));
   }
   const expectedCount = results.reduce((sum, item) => sum + item.expected.length, 0);
   const inputTokens = results.reduce((sum, item) => sum + item.inputTokens, 0);
   const report = {
-    checkedAt: new Date().toISOString(), threshold, cases: results.length,
+    checkedAt: new Date().toISOString(), dataset, threshold, cases: results.length,
     recall: results.reduce((sum, item) => sum + item.recalled, 0) / Math.max(1, expectedCount),
     criticalPassed: results.filter(item => item.critical).every(item => item.passed),
     inputTokens, selectorEstimatedUsd: inputTokens / 1000000 * 0.042,

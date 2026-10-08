@@ -11,7 +11,8 @@ const memory = (id, text = "Gosta de filmes de terror.") => ({ id, text, source:
 const transport = (score = 0.9, mutate = value => value) => async (_url, options) => {
   const body = JSON.parse(options.body);
   assert.equal(body.model, "jev-1.13.0");
-  return Response.json(mutate({ model: body.model, answers: Object.fromEntries(Object.keys(body.questions).map(key => [key, { type: "noul", noul: score }])), usage: { input_tokens: 10, output_tokens: 0 } }));
+  const optionsKeys = Object.keys(body.questions.review.criteria);
+  return Response.json(mutate({ model: body.model, answers: { review: { type: "choice", choice: optionsKeys[0] }, second: { type: "choice", choice: optionsKeys[1] || "none" }, has_answer: { type: "noul", noul: score } }, usage: { input_tokens: 10, output_tokens: 0 } }));
 };
 function database(rows, failingPage = -1) {
   const calls = [];
@@ -31,10 +32,10 @@ function database(rows, failingPage = -1) {
 const row = (index, fields = {}) => ({ id: String(index).padStart(4, "0"), persona_id: "larissa", key: `fato_${index}`, value: { fact: `Fato original ${index}` }, source_type: "generated", confidence: 0.9, aliases: [], updated_at: "2026-10-08T00:00:00Z", ...fields });
 const turn = supabase => ({ supabase, conversationId: "chat-A", sessionId: "session-A", currentStageId: "inicio", inboundMessages: ["Você pensa em ser mãe?"], recentMessages: [], manualSessionFacts: [{ id: "manual-1", question: "Confirma?", fact: "Resposta humana atual" }] });
 
-test("seleção resolve textos originais e pode entregar mais de duas memórias", async () => {
+test("revisão pelo Jev resolve textos originais e limita a duas memórias", async () => {
   const memories = Array.from({ length: 8 }, (_, index) => memory(String(index)));
   const result = await selectJevMemories({ memories, state: { query: "Que filmes você curte?" }, config, fetchImpl: transport() });
-  assert.equal(result.status, "complete"); assert.deepEqual(result.memories, memories); assert.equal(result.evaluatedCount, 8);
+  assert.equal(result.status, "complete"); assert.deepEqual(result.memories, memories.slice(0, 2)); assert.equal(result.evaluatedCount, 8);
   assert.equal(result.inputTokens, 10);
 });
 
@@ -43,13 +44,35 @@ test("nenhuma memória relevante é sucesso, distinto de indisponibilidade", asy
   assert.equal(result.status, "complete"); assert.deepEqual(result.memories, []);
 });
 
+test("Jev pode dispensar segunda memória repetida sem backend comparar texto", async () => {
+  const memories = [memory("A", "Conhecer alguém sem pressa."), memory("B", "Conhecer uma pessoa com calma.")];
+  let reviews = 0;
+  const result = await selectJevMemories({ memories, state: {}, config, fetchImpl: async (url, options) => {
+    const body = JSON.parse(options.body);
+    if (!body.questions.review) return transport()(url, options);
+    reviews++;
+    assert.equal(body.state.selected.length, 0);
+    return Response.json({ model: body.model, answers: { review: { type: "choice", choice: "1" }, second: { type: "choice", choice: "none" }, has_answer: { type: "noul", noul: 0.9 } }, usage: { input_tokens: 10, output_tokens: 1 } });
+  } });
+  assert.equal(result.status, "complete"); assert.deepEqual(result.memories, [memories[1]]); assert.equal(reviews, 1);
+});
+
+test("ID inventado na revisão descarta seleção e conserva fallback", async () => {
+  const result = await selectJevMemories({ memories: [memory("A")], state: {}, config, fetchImpl: async (url, options) => {
+    const body = JSON.parse(options.body);
+    if (!body.questions.review) return transport()(url, options);
+    return Response.json({ model: body.model, answers: { review: { type: "choice", choice: "inventado" }, second: { type: "choice", choice: "none" }, has_answer: { type: "noul", noul: 0.9 } }, usage: { input_tokens: 10, output_tokens: 1 } });
+  } });
+  assert.equal(result.status, "unavailable"); assert.equal(result.reason, "invalid_answer"); assert.deepEqual(result.memories, []);
+});
+
 for (const [name, mutate] of [
   ["ID ausente", value => ({ ...value, answers: {} })],
   ["ID substituído", value => ({ ...value, answers: { unknown: { type: "noul", noul: 0.9 } } })],
   ["ID adicional", value => ({ ...value, answers: { ...value.answers, unknown: { type: "noul", noul: 0.9 } } })],
-  ["tipo errado", value => ({ ...value, answers: { memory_0: { type: "text", noul: 0.9 } } })],
-  ["número fora do intervalo", value => ({ ...value, answers: { memory_0: { type: "noul", noul: 1.1 } } })],
-  ["número como string", value => ({ ...value, answers: { memory_0: { type: "noul", noul: "0.9" } } })],
+  ["tipo errado", value => ({ ...value, answers: { has_answer: { type: "text", noul: 0.9 } } })],
+  ["número fora do intervalo", value => ({ ...value, answers: { has_answer: { type: "noul", noul: 1.1 } } })],
+  ["número como string", value => ({ ...value, answers: { has_answer: { type: "noul", noul: "0.9" } } })],
   ["modelo diferente", value => ({ ...value, model: "other" })],
   ["uso ausente", value => ({ ...value, usage: undefined })],
 ]) test(`retorno inválido: ${name} nunca vira seleção vazia bem-sucedida`, async () => {
@@ -83,7 +106,7 @@ test("lotes cobrem todo catálogo além de 120 sem cortar fatos", async () => {
   let calls = 0;
   const memories = Array.from({ length: 250 }, (_, index) => memory(String(index), "a".repeat(400)));
   const result = await selectJevMemories({ memories, state: {}, config, fetchImpl: async (...args) => { calls++; return transport()(...args); } });
-  assert.equal(result.status, "complete"); assert.equal(result.evaluatedCount, 250); assert.equal(result.memories.length, 250); assert.ok(calls > 1);
+  assert.equal(result.status, "complete"); assert.equal(result.evaluatedCount, 250); assert.equal(result.memories.length, 2); assert.ok(calls > 1);
 });
 
 test("falha em lote posterior descarta seleção parcial e conserva tokens já medidos", async () => {
@@ -121,6 +144,29 @@ test("modo desligado não consulta banco nem Jev", async () => {
   assert.equal(prepared.useSelectedPrompt, false); assert.equal(prepared.selection, undefined);
 });
 
+test("orçamento evita nova leitura cara no mesmo turno sem inventar memória", async () => {
+  let calls = 0;
+  const prepared = await prepareBrainMemoryContext(turn(database([row(1)])), config, { fetchImpl: async (...args) => {
+    calls++;
+    return transport(0.9, payload => ({ ...payload, usage: { input_tokens: 30000, output_tokens: 0 } }))(...args);
+  } });
+  assert.equal(prepared.useSelectedPrompt, true);
+  const lookup = JSON.parse(await prepared.lookup("Qual outra informação?"));
+  assert.equal(lookup.reason, "turn_memory_budget"); assert.equal(calls, 1);
+  assert.match(lookup.instruction, /Não invente/);
+});
+
+test("compactação envia todos os fatos e preserva negação sem aliases de busca", async () => {
+  const input = memory("A", JSON.stringify({ key: "children", value: "Não quer filhos", aliases: ["alias que não deve ir"], confidence: 0.9 }));
+  const result = await selectJevMemories({ memories: [input], state: {}, config, fetchImpl: async (url, options) => {
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body.state.memories["0"], { children: "Não quer filhos" });
+    assert.equal(options.body.includes("alias que não deve ir"), false);
+    return transport()(url, options);
+  } });
+  assert.deepEqual(result.memories, [input]);
+});
+
 test("modo sombra avalia, mas conserva prompt completo e não habilita ferramenta", async () => {
   const prepared = await prepareBrainMemoryContext(turn(database([row(1)])), { ...config, mode: "shadow" }, { fetchImpl: transport() });
   assert.equal(prepared.selection.status, "complete"); assert.equal(prepared.useSelectedPrompt, false); assert.equal(prepared.lookup, undefined);
@@ -133,7 +179,7 @@ test("modo ativo consulta todos e mantém fatos da sessão separados no contexto
     assert.deepEqual(payload.state.context.sessionFacts, params.manualSessionFacts);
     return transport()(url, options);
   } });
-  assert.equal(prepared.useSelectedPrompt, true); assert.equal(prepared.selection.memories.length, LARISSA_OPTIONAL_MEMORIES.length + 1);
+  assert.equal(prepared.useSelectedPrompt, true); assert.equal(prepared.selection.memories.length, 2);
   assert.equal(JSON.parse(await prepared.lookup("filhos")).status, "complete");
   assert.equal(JSON.parse(await prepared.lookup("filmes")).status, "complete");
   assert.equal(JSON.parse(await prepared.lookup("música")).reason, "turn_lookup_limit");
@@ -153,10 +199,10 @@ test("prompt essencial mantém rotina/regras e todo fato retirado tem origem can
   for (const item of LARISSA_OPTIONAL_MEMORIES) { assert.ok(LARISSA_CANONICAL_PROMPT.includes(item.text)); assert.equal(LARISSA_ESSENTIAL_PROMPT.includes(item.text), false); }
 });
 
-test("configuração exige ativação e limiar explícitos", () => {
+test("configuração exige ativação explícita; limiar antigo não decide fatos", () => {
   const get = values => key => values[key];
   assert.equal(readJevMemoryConfig(get({})).mode, "off");
-  assert.equal(readJevMemoryConfig(get({ JEV_MEMORY_MODE: "active" })).mode, "off");
+  assert.equal(readJevMemoryConfig(get({ JEV_MEMORY_MODE: "active" })).mode, "active");
   assert.equal(readJevMemoryConfig(get({ JEV_MEMORY_MODE: "active", JEV_MEMORY_THRESHOLD: "0.6" })).mode, "active");
 });
 
