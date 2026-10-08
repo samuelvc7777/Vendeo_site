@@ -991,14 +991,29 @@ export async function handleTinderMatchRoutes({
         );
       }
 
-      // The stored account is shared by the app. Allow a browser that lost its
-      // local session to recover it with the exact same Tinder token, but only
-      // an already-authenticated session may replace the configured account.
-      if (existingConfig?.auth_token && token !== String(existingConfig.auth_token)) {
-        await requireSession(request, supabase);
-      }
-
+      // Validate the supplied token against Tinder before deciding whether
+      // the existing browser session is required. Renewed tokens for the SAME
+      // Tinder account can restore a lost browser session safely.
       const profile = await fetchOwnProfile(token);
+      if (existingConfig?.auth_token && token !== String(existingConfig.auth_token)) {
+        const verifiedSameAccount = Boolean(
+          existingConfig.user_id
+          && profile.id
+          && String(existingConfig.user_id) === String(profile.id),
+        );
+        if (!verifiedSameAccount) {
+          // Switching to a different account still requires the old session.
+          try {
+            await requireSession(request, supabase);
+          } catch {
+            return json({
+              success: false,
+              code: "MATCH_ACCOUNT_SWITCH_REQUIRES_SESSION",
+              error: "Já existe outra conta Tinder conectada. Para trocar de conta, use uma sessão autenticada ou desconecte a conta atual.",
+            }, 409, corsHeaders);
+          }
+        }
+      }
       const sessionSecret = randomSessionSecret();
       const sessionHash = await sha256Hex(sessionSecret);
       const now = new Date().toISOString();

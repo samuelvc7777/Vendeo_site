@@ -451,9 +451,10 @@ test("reconectar recupera sessão com o mesmo token e impede substituir a conta 
     session_hash: "existing-session-hash",
     profile: null,
   };
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_input, init) => {
     tinderRequests++;
-    return new Response(JSON.stringify({ data: { user: { _id: "account-1", name: "Conta atual" } } }), {
+    const isDifferentAccount = init.headers["X-Auth-Token"] === "another-account-token-which-must-not-replace";
+    return new Response(JSON.stringify({ data: { user: { _id: isDifferentAccount ? "account-2" : "account-1", name: "Conta atual" } } }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -497,9 +498,10 @@ test("reconectar recupera sessão com o mesmo token e impede substituir a conta 
       corsHeaders: {},
       originAllowed: true,
     });
-    assert.equal(takeover.status, 401);
+    assert.equal(takeover.status, 409);
+    assert.equal((await takeover.json()).code, "MATCH_ACCOUNT_SWITCH_REQUIRES_SESSION");
     assert.equal(config.auth_token, "the-existing-private-tinder-token");
-    assert.equal(tinderRequests, 1);
+    assert.equal(tinderRequests, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
