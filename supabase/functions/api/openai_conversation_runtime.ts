@@ -16,7 +16,31 @@ export interface OpenAiConversationLink {
 
 const BOOTSTRAP_DB_PAGE_SIZE = 500;
 const BOOTSTRAP_OPENAI_BATCH_SIZE = 20;
+const BOOTSTRAP_RECEIPT_BATCH_SIZE = 50;
+const BOOTSTRAP_RECEIPT_FILTER_MAX_LENGTH = 6000;
 const LARISSA_TIMEZONE = "America/Sao_Paulo";
+
+function bootstrapReceiptIdBatches(ids: string[]): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  const filterLength = (values: string[]) => new URLSearchParams({
+    // Orçamento conservador: inclui as aspas que o PostgREST pode exigir.
+    provider_message_id: `in.(${values.map((id) => JSON.stringify(id)).join(",")})`,
+  }).toString().length;
+  for (const id of ids) {
+    if (filterLength([id]) > BOOTSTRAP_RECEIPT_FILTER_MAX_LENGTH) {
+      throw new Error("openai_bootstrap_receipt_id_too_long");
+    }
+    if (batch.length && (batch.length >= BOOTSTRAP_RECEIPT_BATCH_SIZE ||
+      filterLength([...batch, id]) > BOOTSTRAP_RECEIPT_FILTER_MAX_LENGTH)) {
+      batches.push(batch);
+      batch = [];
+    }
+    batch.push(id);
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
 
 function configureOpenAiRuntimeClient(apiKey: string): void {
   const normalizedKey = apiKey.trim();
@@ -181,13 +205,16 @@ export async function bootstrapOpenAiConversationHistory(params: {
       const page = (rows || []).filter(shouldBootstrapRow);
       if (page.length > 0) {
         const pageIds = page.map((row: any) => String(row.id));
-        const { data: receipts, error: receiptsError } = await supabase
-          .from("openai_message_receipts")
-          .select("provider_message_id, openai_item_id, synced_at")
-          .in("provider_message_id", pageIds);
-
-        if (receiptsError) {
-          throw new Error(`openai_bootstrap_receipts_read_failed: ${receiptsError.message}`);
+        const receipts: any[] = [];
+        for (const receiptIds of bootstrapReceiptIdBatches(pageIds)) {
+          const { data: batchReceipts, error: receiptsError } = await supabase
+            .from("openai_message_receipts")
+            .select("provider_message_id, openai_item_id, synced_at")
+            .in("provider_message_id", receiptIds);
+          if (receiptsError) {
+            throw new Error(`openai_bootstrap_receipts_read_failed: ${receiptsError.message}`);
+          }
+          receipts.push(...(batchReceipts || []));
         }
 
         const alreadySynced = new Set(
