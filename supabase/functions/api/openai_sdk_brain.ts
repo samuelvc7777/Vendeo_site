@@ -1,6 +1,7 @@
 import { Agent, getDefaultOpenAIClient, run, setDefaultOpenAIKey, system, tool, webSearchTool } from "npm:@openai/agents@0.18.0";
 import { z } from "npm:zod@4.6.5";
 import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
+import { validateObjectiveAudioDeadline } from "./objective_audio_deadline.ts";
 import { readJevMemoryConfig } from "./jev_memory_selector.ts";
 import { prepareBrainMemoryContext, formatSelectedBrainMemories } from "./brain_memory_context.ts";
 import {
@@ -127,6 +128,17 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   }
   if (params.currentObjectiveLabel) lines.push(`OBJETIVO_LABEL=${params.currentObjectiveLabel}`);
   if (params.currentObjectiveDescription) lines.push(`OBJETIVO_DESCRICAO=${params.currentObjectiveDescription}`);
+  if (params.objectiveAudioDeadline) {
+    const deadline = params.objectiveAudioDeadline;
+    lines.push(
+      `OBJETIVO_AUDIO_TURNO_NA_ETAPA=${deadline.currentTurn}`,
+      `OBJETIVO_AUDIO_LIMITE_TURNOS=${deadline.maxTurns}`,
+      "OBJETIVO_AUDIO_PRAZO: ofereça o áudio nos primeiros turnos e inclua uma outboundAction de áudio autorizado até o último turno permitido. No limite ou depois dele, não continue apenas no flerte nem adie por falta de ponte; use o próprio áudio como mudança de assunto. Se já foi entregue, não reenvie. Sem candidato elegível ou diante de bloqueio de segurança, solicite resolução manual.",
+    );
+    if (deadline.allowTemporalMismatch) lines.push(
+      "EXCECAO_TEMPORAL_AUDIO_DO_OBJETIVO: o operador autorizou expressamente enviar o áudio gravado deste objetivo mesmo que sua transcrição mencione estágio, horário, hoje ou cobrança sem compatibilidade temporal atual. Esta exceção prevalece sobre o bloqueio temporal geral SOMENTE para esse áudio. Não adie o áudio por esses motivos e não repita essas afirmações em texto. Preserve autorização do Cofre, uso único e confirmação real de entrega.",
+    );
+  }
 
   if (params.stageObjectives?.length) {
     lines.push("OBJETIVOS_DA_ETAPA:");
@@ -517,6 +529,11 @@ function validateAndNormalizeSdkPlan(
     stageObjectives: params.stageObjectives,
   });
   const manualReask = Boolean(params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution");
+  const audioDeadlineError = validateObjectiveAudioDeadline({
+    deadline: params.objectiveAudioDeadline,
+    candidates: telemetry.authorizedCandidateAudiosByObjective || params.prefetchedAudioCandidateGroups,
+    plan: parsedPlan,
+  });
 
   const questionValidation = validateQuestionIntentsInvariant(parsedPlan);
   const isObjectivePursuit =
@@ -600,6 +617,8 @@ function validateAndNormalizeSdkPlan(
     ? "audio_not_authorized_for_this_turn"
     : !arsenalActionsAuthorized
     ? "arsenal_item_not_authorized_for_this_turn"
+    : audioDeadlineError
+    ? audioDeadlineError
     : null;
 
   if (!parsedPlan || validationError) {
@@ -609,6 +628,7 @@ function validateAndNormalizeSdkPlan(
       !stageProgression.valid ||
       (isObjectivePursuit && !questionValidation.valid) ||
       manualReask ||
+      Boolean(audioDeadlineError) ||
       validationError === "audio_not_authorized_for_this_turn" ||
       validationError === "arsenal_item_not_authorized_for_this_turn";
     if (!params.strictOpenAiPilot && !hardContractViolation) {

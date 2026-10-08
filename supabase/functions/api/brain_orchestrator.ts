@@ -4,6 +4,7 @@
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import { loadObjectiveAudioDeadline } from "./objective_audio_deadline.ts";
 import {
   enqueueAndWaitWhatsApp2Delivery,
   whatsapp2ProviderIdFromConversationId,
@@ -9246,6 +9247,16 @@ export async function runBrainOrchestration(
           }
         }
 
+        const objectiveAudioDeadline = await loadObjectiveAudioDeadline({
+          supabase,
+          conversationId,
+          stageId: currentStageId,
+          objective: stageObjectivesForRouter.currentObjective,
+        });
+        if (objectiveAudioDeadline) {
+          currentCycle.trace.push(`objective_audio_stage_turn=${objectiveAudioDeadline.currentTurn}/${objectiveAudioDeadline.maxTurns}`);
+        }
+
         // Turnos antigos ainda marcados como brain_late terminam no runtime legado.
         // Novos turnos usam Agents SDK + Conversations por padrão.
         const runOpenAiBrainProvider = useSdkConversationRuntime
@@ -9366,6 +9377,7 @@ export async function runBrainOrchestration(
           currentObjectiveKind: stageObjectivesForRouter.currentObjective?.kind,
           currentObjectiveActionType: stageObjectivesForRouter.currentObjective?.actionType,
           currentObjectiveCompletionPolicy: stageObjectivesForRouter.currentObjective?.completionPolicy,
+          objectiveAudioDeadline,
           inboundMessages: claimedMessages.map((m) => m.text).filter(Boolean),
           currentInboundMessages: claimedMessages
             .map((m: any) => ({

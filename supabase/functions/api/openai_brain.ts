@@ -1715,6 +1715,7 @@ export interface RunOpenAiBrainParams {
   currentObjectiveActionType?: string | null;
   currentObjectiveCompletionPolicy?: string | null;
   inboundMessages: string[];
+  objectiveAudioDeadline?: import("./objective_audio_deadline.ts").ObjectiveAudioDeadline | null;
   currentInboundMessages?: Array<{
     id: string;
     text: string;
