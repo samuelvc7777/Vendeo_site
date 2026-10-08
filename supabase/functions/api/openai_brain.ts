@@ -1652,6 +1652,9 @@ export interface RunOpenAiBrainParams {
   manualResolutionAnswer?: { question: string; context?: string; answer: string; factId?: string };
   manualSessionFacts?: Array<{ id: string; question: string; fact: string }>;
   persistentManualFacts?: Array<{ key: string; question: string; fact: string }>;
+  loadLegacyPersistentManualFacts?: () => Promise<Array<{ key: string; question: string; fact: string }>>;
+  selectedPersonaMemories?: import("./jev_memory_selector.ts").PersonaMemoryCandidate[];
+  preparedPersonaMemoryContext?: import("./brain_memory_context.ts").PreparedBrainMemory;
   pendingOutboundActions?: Array<{ actionId: string; actionIndex: number; type: string; preview: string }>;
   persistentSessionEnabled?: boolean;
   replyTargets?: Record<string, { id: string; sender: string; text: string }>;
@@ -1936,6 +1939,10 @@ export interface OpenAiBrainTurnResult {
     contactMemoryInjected?: boolean;
     episodicMemoryInjected?: boolean;
     personaMemoryToolEnabled?: boolean;
+    jevMemory?: {
+      mode: string; status: string; reason?: string; model: string; policyVersion: string;
+      evaluatedCount: number; selectedIds: string[]; selectedRevisions: Array<{ id: string; revision: string }>; durationMs: number; inputTokens: number; outputTokens: number;
+    };
     contactMemoryToolEnabled?: boolean;
     conversationMemoryToolEnabled?: boolean;
     audioSearchToolEnabled?: boolean;

@@ -1,6 +1,8 @@
 import { Agent, getDefaultOpenAIClient, run, setDefaultOpenAIKey, system, tool, webSearchTool } from "npm:@openai/agents@0.18.0";
 import { z } from "npm:zod@4.6.5";
 import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
+import { readJevMemoryConfig } from "./jev_memory_selector.ts";
+import { prepareBrainMemoryContext, formatSelectedBrainMemories } from "./brain_memory_context.ts";
 import {
   BRAIN_WEB_SEARCH_POLICY,
   BRAIN_WEB_SEARCH_POLICY_MARKER,
@@ -258,6 +260,10 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     lines.push("Use esses fatos diretamente; não peça ao operador o mesmo dado novamente.");
   }
 
+  if (params.selectedPersonaMemories) {
+    lines.push(formatSelectedBrainMemories(params.selectedPersonaMemories));
+  }
+
   if (params.recentStyleStateSnippet) lines.push(params.recentStyleStateSnippet.trim());
   if (params.greetingRepeatFeedback) lines.push(`GREETING_REPEAT_GUARD: ${params.greetingRepeatFeedback}`);
   if (params.schemaFeedback) lines.push(`SCHEMA_RETRY: ${params.schemaFeedback}`);
@@ -441,6 +447,7 @@ function executionUsageSnapshot(
     serviceTierRequested: telemetry.serviceTierRequested || null,
     serviceTierActual: telemetry.serviceTierActual || null,
     sourcesUsed: telemetry.sourcesUsed || [],
+    jevMemory: telemetry.jevMemory || null,
   };
 }
 
@@ -449,6 +456,7 @@ function restoreExecutionUsage(
   usage: Record<string, any> | null | undefined,
 ): void {
   if (!usage || typeof usage !== "object") return;
+  if (usage.jevMemory && typeof usage.jevMemory === "object") telemetry.jevMemory = usage.jevMemory;
   for (const key of [
     "inputTokens",
     "outputTokens",
@@ -1404,6 +1412,48 @@ export async function runOpenAiSdkBrainTurn(
     };
   }
 
+  const jevConfig = readJevMemoryConfig(env);
+  // Reuse only inside retries of this exact execution, never between chats/turns.
+  const memoryContext = params.preparedPersonaMemoryContext || await prepareBrainMemoryContext(params, jevConfig);
+  params = { ...params, preparedPersonaMemoryContext: memoryContext };
+  if (memoryContext.selection) {
+    const selection = memoryContext.selection;
+    telemetry.jevMemory = {
+      mode: jevConfig.mode, status: selection.status, reason: selection.reason,
+      model: selection.model, policyVersion: selection.policyVersion,
+      evaluatedCount: selection.evaluatedCount, selectedIds: selection.memories.map(memory => memory.id),
+      selectedRevisions: selection.memories.map(memory => ({ id: memory.id, revision: memory.revision })),
+      durationMs: selection.durationMs,
+      inputTokens: selection.inputTokens + memoryContext.lookupSelections.reduce((sum, lookup) => sum + lookup.inputTokens, 0),
+      outputTokens: selection.outputTokens + memoryContext.lookupSelections.reduce((sum, lookup) => sum + lookup.outputTokens, 0),
+    };
+  }
+  if (memoryContext.useSelectedPrompt) {
+    params = { ...params, persistentManualFacts: [], selectedPersonaMemories: memoryContext.selection!.memories };
+  } else if (jevConfig.mode === "active" && params.loadLegacyPersistentManualFacts) {
+    params = { ...params, persistentManualFacts: await params.loadLegacyPersistentManualFacts() };
+  }
+  telemetry.personaMemoryToolEnabled = Boolean(memoryContext.lookup);
+  const personaMemoryTool = tool({
+    name: "persona_memory_lookup",
+    description: "Consulta fatos pessoais de Larissa por significado via Jev quando falta informação para responder. Não pesquisa na web e não inventa fatos.",
+    parameters: z.object({ query: z.string().min(1).max(1000) }),
+    execute: async ({ query }) => {
+      telemetry.actualMemoryToolCalled = true;
+      telemetry.toolsRequested.push("persona_memory_lookup");
+      telemetry.toolExecutionsCount++;
+      const output = memoryContext.lookup ? await memoryContext.lookup(query) : JSON.stringify({ status: "unavailable" });
+      const parsed = JSON.parse(output);
+      telemetry.memoryToolResults.push({ toolName: "persona_memory_lookup", status: parsed.status, reasonCode: parsed.reason, resultCount: parsed.memories?.length || 0 });
+      if (parsed.status === "complete" && !telemetry.sourcesUsed.includes("persona_memory")) telemetry.sourcesUsed.push("persona_memory");
+      if (telemetry.jevMemory && memoryContext.selection) {
+        telemetry.jevMemory.inputTokens = memoryContext.selection.inputTokens + memoryContext.lookupSelections.reduce((sum, selection) => sum + selection.inputTokens, 0);
+        telemetry.jevMemory.outputTokens = memoryContext.selection.outputTokens + memoryContext.lookupSelections.reduce((sum, selection) => sum + selection.outputTokens, 0);
+      }
+      return output;
+    },
+  });
+
   const seenAudioObjectives = new Map<string, string>();
   const audioTool = tool({
     name: "cofre_audio_search",
@@ -1437,10 +1487,11 @@ export async function runOpenAiSdkBrainTurn(
   // Keep Agent instructions byte-for-byte stable across turns so the provider can
   // reuse the large canonical prefix through prompt caching. Turn-specific state
   // is sent separately by buildTurnInput().
-  const canonicalInstructions = buildCanonicalAgentInstructions({ persistentMode: true });
+  const canonicalInstructions = buildCanonicalAgentInstructions({ persistentMode: true, selectedMemoryMode: memoryContext.useSelectedPrompt });
   const instructions = canonicalInstructions.includes(BRAIN_WEB_SEARCH_POLICY_MARKER)
     ? canonicalInstructions
     : [canonicalInstructions, BRAIN_WEB_SEARCH_POLICY].join("\n\n");
+  telemetry.agentInstructionChars = instructions.length;
 
   const reasoningEffort = params.reasoningEffort as any;
   const serviceTier: "auto" | "default" | "flex" = params.serviceTier || "auto";
@@ -1460,13 +1511,15 @@ export async function runOpenAiSdkBrainTurn(
         service_tier: serviceTier,
       },
     },
-    tools: params.audioPrefetchComplete
+    tools: [...(memoryContext.lookup ? [personaMemoryTool] : []), ...(params.audioPrefetchComplete
       ? [webSearchTool({ searchContextSize: "low", externalWebAccess: true })]
-      : [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })],
+      : [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })])],
     resetToolChoice: true,
   });
   try {
-    const result = await run(brain, buildTurnInput(params) as any, {
+    const turnInput = buildTurnInput(params);
+    telemetry.turnContextChars = typeof turnInput === "string" ? turnInput.length : JSON.stringify(turnInput).length;
+    const result = await run(brain, turnInput as any, {
       conversationId: link.openAiConversationId,
       maxTurns: 8,
       signal: params.signal,

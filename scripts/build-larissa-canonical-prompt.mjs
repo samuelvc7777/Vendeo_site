@@ -7,6 +7,15 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const markdownPath = path.join(root, "supabase/functions/api/larissa_canonical_prompt.md");
 const generatedPath = path.join(root, "supabase/functions/api/larissa_canonical_prompt.generated.ts");
 const prompt = fs.readFileSync(markdownPath, "utf8").replace(/\r\n/g, "\n").trim();
+const optionalManifest = JSON.parse(fs.readFileSync(path.join(root, "supabase/functions/api/larissa_optional_memory_manifest.json"), "utf8"));
+const promptLines = prompt.split("\n");
+const optionalMemories = optionalManifest.map((prefix, index) => {
+  const matching = promptLines.filter(line => line.startsWith(prefix));
+  if (matching.length !== 1) throw new Error(`Fato opcional precisa de uma origem única: ${prefix}`);
+  return { id: `canonical:optional:${index + 1}`, text: matching[0].trim(), source: "canonical_prompt", revision: prompt.match(/^VENDEO_AGENT_INSTRUCTIONS_VERSION: (\S+)$/m)?.[1] || "" };
+});
+const removedLines = new Set(optionalMemories.map(memory => memory.text));
+const essentialPrompt = promptLines.filter(line => !removedLines.has(line.trim())).join("\n");
 const version = prompt.match(/^VENDEO_AGENT_INSTRUCTIONS_VERSION: (\S+)$/m)?.[1];
 const questionContract = prompt.match(/\[\r?\n  \{\r?\n    "responseIndex": 1,[\s\S]*?\r?\n  \}\r?\n\]/)?.[0];
 if (!questionContract) throw new Error("Contrato questionIntents não encontrado no Markdown.");
@@ -15,6 +24,8 @@ const generated = [
   "/** Arquivo gerado; edite larissa_canonical_prompt.md. */",
   `export const LARISSA_CANONICAL_PROMPT_VERSION = ${JSON.stringify(version)};`,
   `export const LARISSA_CANONICAL_PROMPT = ${JSON.stringify(prompt)};`,
+  `export const LARISSA_ESSENTIAL_PROMPT = ${JSON.stringify(essentialPrompt)};`,
+  `export const LARISSA_OPTIONAL_MEMORIES = ${JSON.stringify(optionalMemories)};`,
   `export const QUESTION_INTENTS_CONTRACT_EXAMPLE = ${JSON.stringify(questionContract)};`,
   "",
 ].join("\n");

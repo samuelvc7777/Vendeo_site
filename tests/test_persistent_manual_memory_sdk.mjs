@@ -12,13 +12,14 @@ test("Agent SDK recebe memória manual permanente relevante em formato compacto"
   assert.match(sdk, /não peça ao operador o mesmo dado novamente/);
 });
 
-test("orquestrador limita memória permanente a dois fatos por turno", () => {
+test("fallback legado mantém dois fatos; modo Jev ativo não faz seleção lexical", () => {
   const relevantBlock = orchestrator.slice(
-    orchestrator.indexOf("const relevantPersistentManualFacts"),
+    orchestrator.indexOf("const loadLegacyPersistentManualFacts"),
     orchestrator.indexOf("let recoveredAudioToolState"),
   );
   assert.match(relevantBlock, /limit: 2/);
   assert.doesNotMatch(relevantBlock, /limit: 6/);
+  assert.match(relevantBlock, /jevConfig.mode === "active" && useSdkConversationRuntime\s*\? \[\] : await loadLegacyPersistentManualFacts\(\)/);
 });
 
 test("correção não adiciona chamada de modelo ou ferramenta", () => {

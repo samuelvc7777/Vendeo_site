@@ -130,6 +130,7 @@ import {
   type OutboundAction,
 } from "./openai_brain.ts";
 import { runOpenAiSdkBrainTurn } from "./openai_sdk_brain.ts";
+import { getJevRuntimeConfig } from "./jev_memory_selector.ts";
 import { persistConfirmedOutboundToOpenAiConversation } from "./openai_conversation_runtime.ts";
 import { computeBoundedDebounce } from "./debounce_policy.ts";
 import {
@@ -9105,7 +9106,7 @@ export async function runBrainOrchestration(
           ),
         );
 
-        const relevantPersistentManualFacts = (await fetchRelevantPersistentManualFacts({
+        const loadLegacyPersistentManualFacts = async () => (await fetchRelevantPersistentManualFacts({
           supabase,
           query: persistentManualQuery,
           limit: 2,
@@ -9114,6 +9115,11 @@ export async function runBrainOrchestration(
             normalizePersistentManualFactText(`${fact.question} ${fact.fact}`)
           )
         );
+
+        // Lexical retrieval is only the old/off/shadow path or an explicit failure fallback.
+        const jevConfig = getJevRuntimeConfig();
+        const relevantPersistentManualFacts = jevConfig.mode === "active" && useSdkConversationRuntime
+          ? [] : await loadLegacyPersistentManualFacts();
 
         if (relevantPersistentManualFacts.length > 0) {
           currentCycle.trace.push(`persistent_manual_facts_relevant=${relevantPersistentManualFacts.length}`);
@@ -9317,6 +9323,7 @@ export async function runBrainOrchestration(
             factId: params.manualResolution.factId,
           } : undefined,
           manualSessionFacts,
+          loadLegacyPersistentManualFacts,
           persistentManualFacts: relevantPersistentManualFacts.map((fact) => ({
             key: fact.key,
             question: fact.question,
@@ -9830,6 +9837,10 @@ export async function runBrainOrchestration(
           currentCycle.trace.push(`contact_memory_injected=${openAiBrainTurn.telemetry.contactMemoryInjected}`);
           currentCycle.trace.push(`episodic_memory_injected=${openAiBrainTurn.telemetry.episodicMemoryInjected}`);
           currentCycle.trace.push(`persona_memory_tool_enabled=${openAiBrainTurn.telemetry.personaMemoryToolEnabled}`);
+          if (openAiBrainTurn.telemetry.jevMemory) {
+            const jev = openAiBrainTurn.telemetry.jevMemory;
+            currentCycle.trace.push(`jev_memory_mode=${jev.mode} status=${jev.status} reason=${jev.reason || "none"} evaluated=${jev.evaluatedCount} selected=${jev.selectedIds.length} input_tokens=${jev.inputTokens} output_tokens=${jev.outputTokens} duration_ms=${jev.durationMs}`);
+          }
           currentCycle.trace.push(`contact_memory_tool_enabled=${openAiBrainTurn.telemetry.contactMemoryToolEnabled}`);
           currentCycle.trace.push(`conversation_memory_tool_enabled=${openAiBrainTurn.telemetry.conversationMemoryToolEnabled}`);
           currentCycle.trace.push(`audio_search_tool_enabled=${openAiBrainTurn.telemetry.audioSearchToolEnabled}`);
