@@ -1,5 +1,14 @@
-export type ArsenalItemType = "topic" | "question" | "story" | "audio" | "photo";
+export type ArsenalItemType = "topic" | "question" | "story" | "audio" | "photo" | "video";
 export type ArsenalValidityType = "evergreen" | "recurring" | "moment";
+export type ArsenalRoutineContext =
+  | "memory"
+  | "weekday_home_morning"
+  | "internship"
+  | "college"
+  | "weekday_home_evening"
+  | "weekend_home"
+  | "weekend_outing"
+  | "specific_moment";
 export type ArsenalSocialFunction =
   | "open_topic"
   | "learn_about_contact"
@@ -58,6 +67,7 @@ export const ARSENAL_ITEM_TYPES: Array<{ value: ArsenalItemType; label: string }
   { value: "story", label: "História da Larissa" },
   { value: "audio", label: "Áudio" },
   { value: "photo", label: "Foto" },
+  { value: "video", label: "Vídeo" },
 ];
 
 export const ARSENAL_SOCIAL_FUNCTIONS: Array<{ value: ArsenalSocialFunction; label: string }> = [

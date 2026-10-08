@@ -148,7 +148,7 @@ export function useRaffles() {
       const rows = allConversations
         .filter((row: any) => {
           const id = String(row?.id || "");
-          const providerId = String(row?.contact_id || id.replace(/^wa2:/, ""));
+          const providerId = String(row?.contact_id || id.replace(/^wa2:(?:account-[^:]+:)?/i, ""));
           return (
             id.startsWith("wa2:") &&
             providerId &&
@@ -163,7 +163,7 @@ export function useRaffles() {
       }
 
       const providerIds = rows.map((row: any) =>
-        String(row.contact_id || row.id.replace(/^wa2:/, "")).trim()
+        String(row.contact_id || row.id.replace(/^wa2:(?:account-[^:]+:)?/i, "")).trim()
       );
       const resolved = await resolveWhatsApp2PhoneNumbers(providerIds);
       const identityByProviderId = new Map(
@@ -173,7 +173,7 @@ export function useRaffles() {
       const contacts = new Map<string, RaffleBuyer>();
       for (const row of rows) {
         const providerId = String(
-          row.contact_id || String(row.id || "").replace(/^wa2:/, "")
+          row.contact_id || String(row.id || "").replace(/^wa2:(?:account-[^:]+:)?/i, "")
         ).trim();
         const identity = identityByProviderId.get(providerId);
         const phone = identity?.phoneNumber

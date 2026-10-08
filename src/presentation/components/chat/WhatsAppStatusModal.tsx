@@ -33,6 +33,7 @@ import {
   getWhatsApp2StatusContacts,
   getWhatsApp2EvergreenRecipients,
   recordWhatsApp2EvergreenRecipients,
+  whatsappProviderIdFromConversationId,
   type WhatsAppStatusPrivacyType,
   type WhatsAppStatusPrivacyConfig,
   type WhatsAppStatusContact,
@@ -74,7 +75,7 @@ const WHATSAPP_FONTS = [
 function normalizeEvergreenContactAlias(value?: string | null): string {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const withoutPrefix = raw.replace(/^wa2:/i, "");
+  const withoutPrefix = whatsappProviderIdFromConversationId(raw);
   const base = withoutPrefix.replace(/@.*$/, "");
   const digits = base.replace(/\D+/g, "");
   return digits || base.toLowerCase();

@@ -86,7 +86,7 @@ export interface AutoPilotPendingOutboundMessage {
   cycleId: string;
   actionIndex: number;
   content: string;
-  messageType: "text" | "audio";
+  messageType: "text" | "audio" | "image" | "video";
   mediaUrl?: string | null;
   deliverAt: string;
   createdAt: string;

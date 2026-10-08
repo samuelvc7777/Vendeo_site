@@ -1,0 +1,1795 @@
+{
+  "api": {
+    "version": 526,
+    "bundle": "f25f08c6c45493dc5d8c8ea660f03d09028f0b9cb827d00ad985d86dd175bce6"
+  },
+  "mcp": {
+    "version": 33,
+    "bundle": "24af8dfdca3584e50b3fe80ba607361790f820dd4e44ee82a88340823f707a4d"
+  },
+  "frontendVersion": "377b1468256bab18",
+  "entries": [
+    {
+      "path": "src/app/api/ai/transcribe/route.ts",
+      "sha256": "c4a3f9a8312f867210e275c9c6a26ab572fb8030a9d0d4182f0a70ee83d104d9",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/ai/transcribe/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/config/route.ts",
+      "sha256": "0f0fd45ed92dc8930bd11ebd5fe5da48bd844d1f1273621e1d0d5a60818983bd",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/config/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/conversations/route.ts",
+      "sha256": "d387ca43b1e37882d2e2e4abf6f8a07cd849bfa69d9c0c79844a2f8ad8bef4bb",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/conversations/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/conversations/[conversationId]/read/route.ts",
+      "sha256": "7ee42b256c670fcfb0b33c27b28e8f774849499fb7491c1cf07723d0e176754f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/conversations/[conversationId]/read/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/conversations/[conversationId]/restrict/route.ts",
+      "sha256": "ff5ed9666dfde6645df1a97811f3039c70e5b9680813577cc27b3798aa360f74",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/conversations/[conversationId]/restrict/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/messages/[conversationId]/route.ts",
+      "sha256": "e22f437e6efd23a13234c13065f967673d0708527b70a77752b4f318063cde75",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/messages/[conversationId]/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/sync/route.ts",
+      "sha256": "67c5443ea4e4a761e14cb1d3aa5b41afe5bd840ec9a860b12108659d03e366b2",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/sync/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/upload/route.ts",
+      "sha256": "6af11981ff32a489995a32e5368e4baa7257ca0befb496299383423f8cdcb3cb",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/upload/route.ts"
+    },
+    {
+      "path": "src/app/api/instagram/webhook/route.ts",
+      "sha256": "ce96ba307c3def8e8ef113a3d927d5c49d59a92069549ab7721790ae078fdf34",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/instagram/webhook/route.ts"
+    },
+    {
+      "path": "src/app/api/operator/brain/[operation]/route.ts",
+      "sha256": "eabcf39aa15d5e56644d367ecee62febaee21814de5c3844e104f13f43991fdf",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/operator/brain/[operation]/route.ts"
+    },
+    {
+      "path": "src/app/api/operator/session/route.ts",
+      "sha256": "742edf269474870d4d64d221e351d343c1d55964ca0d80299911c1cd725124e9",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/api/operator/session/route.ts"
+    },
+    {
+      "path": "src/app/data-deletion/page.tsx",
+      "sha256": "5b83ec2523e8e442fb8fc37b36583fa0f993a590ca03ce1b5f08acf928600475",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/data-deletion/page.tsx"
+    },
+    {
+      "path": "src/app/favicon.ico",
+      "sha256": "2b8ad2d33455a8f736fc3a8ebf8f0bdea8848ad4c0db48a2833bd0f9cd775932",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/favicon.ico"
+    },
+    {
+      "path": "src/app/globals.css",
+      "sha256": "54af3b38584cd16acabca81fe3b1b0339c849aa865f2a06f5cc2738b2034efee",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/globals.css"
+    },
+    {
+      "path": "src/app/layout.tsx",
+      "sha256": "d642b949a28202a58fe1e827461ef2893400277f9258832f843c455b43607e9e",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/layout.tsx"
+    },
+    {
+      "path": "src/app/operator/page.tsx",
+      "sha256": "33e1300c20fc4353deb6a50351025ea699c530fb8ffbf401f6792baa9eb91e49",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/operator/page.tsx"
+    },
+    {
+      "path": "src/app/page.tsx",
+      "sha256": "8e750ad2a9b06fdb055af05e045d89143d007eb6b7641b5fe77a6f33d278f3c8",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/page.tsx"
+    },
+    {
+      "path": "src/app/privacy/page.tsx",
+      "sha256": "32eeba9bad679b834d76429a74f25bcca973a9bf02c61fb7ad53b844754ebc90",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/privacy/page.tsx"
+    },
+    {
+      "path": "src/app/terms/page.tsx",
+      "sha256": "6bc94b29051ca4b6f1d2535d5c6c3fd812dd412470a77a117be962b2c387ba02",
+      "origin": ".firebase/whatsapp-account-scope-release/src/app/terms/page.tsx"
+    },
+    {
+      "path": "src/application/use-cases/ManageChatProgressUseCase.ts",
+      "sha256": "c386ed0457abc0973f62c36948f35a3519209388d81e0b38ceeb24283c7acc4e",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManageChatProgressUseCase.ts"
+    },
+    {
+      "path": "src/application/use-cases/ManageChatStagesUseCase.ts",
+      "sha256": "a78c0ce358fb239594e453448da71e974ccbb8790113cac38a1b20e41699eca5",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManageChatStagesUseCase.ts"
+    },
+    {
+      "path": "src/application/use-cases/ManageClothingSaleUseCase.ts",
+      "sha256": "0180ff955517fb795e9e70e9dc4bec52d1f4c32f09c5eaef86c3cbd1f0cd5c6b",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManageClothingSaleUseCase.ts"
+    },
+    {
+      "path": "src/application/use-cases/ManageConversationSchedulesUseCase.ts",
+      "sha256": "fb1e419f988855e896d5d40245fdbf9e94a0d0c9b60d381fd5c922f8c0547607",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManageConversationSchedulesUseCase.ts"
+    },
+    {
+      "path": "src/application/use-cases/ManagePersonaAudiosUseCase.ts",
+      "sha256": "f1729de16ad6d4701d03e5262f42fa3daf0b2bc4e49353ec42dcb48152cb1f7f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManagePersonaAudiosUseCase.ts"
+    },
+    {
+      "path": "src/application/use-cases/ManageRaffleUseCase.ts",
+      "sha256": "b84f84bc50f4bc2a2c7b358532bfe9fb6ee16158a3d121e6c5c3f8a70904763b",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManageRaffleUseCase.ts"
+    },
+    {
+      "path": "src/application/use-cases/ManageVaultUseCase.ts",
+      "sha256": "687393f30c1f61d123068e62f70272b693032a7d357c1bd44e6850f515f05f20",
+      "origin": ".firebase/whatsapp-account-scope-release/src/application/use-cases/ManageVaultUseCase.ts"
+    },
+    {
+      "path": "src/domain/entities/AutoPilot.ts",
+      "sha256": "38e3c8f16b7c2a84db0bc298187605af2019a71aa35cf7c3521b862f08964f57",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/AutoPilot.ts"
+    },
+    {
+      "path": "src/domain/entities/ChannelIdentity.ts",
+      "sha256": "1a8b621c76ac3390e5392028628a4a96a6b8d0b11ec0529ef1b31e6b88a5c825",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/ChannelIdentity.ts"
+    },
+    {
+      "path": "src/domain/entities/ChatStage.ts",
+      "sha256": "89f23cefa2528782e65303bdb30f51c327f86e6e39c0dba3ec0f909f15480580",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/ChatStage.ts"
+    },
+    {
+      "path": "src/domain/entities/ClothingSale.ts",
+      "sha256": "9e595745305bd4535cf12eb285323e3d0924e1ee571bccde9ac97fc82e8102ac",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/ClothingSale.ts"
+    },
+    {
+      "path": "src/domain/entities/ConversationArsenal.ts",
+      "sha256": "774c98c8e59a645f58e48af272c0f16e649f2730dfe069d5cae0a05bfe2e5437",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/ConversationArsenal.ts"
+    },
+    {
+      "path": "src/domain/entities/ConversationSchedule.ts",
+      "sha256": "8c4e09a82320758d1f586468d71de367c1f67a85d6257fb39a3639cd390512c7",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/ConversationSchedule.ts"
+    },
+    {
+      "path": "src/domain/entities/Instagram.ts",
+      "sha256": "a22655f6cc3486f7ce44164006aee63947c5c4fc92769a9c64238b6b09176fd0",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/Instagram.ts"
+    },
+    {
+      "path": "src/domain/entities/Raffle.ts",
+      "sha256": "bbd4f8f4f83f2fe74c27818ceeff504041b9c5233a104b7be94667f277375446",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/Raffle.ts"
+    },
+    {
+      "path": "src/domain/entities/RaffleReport.ts",
+      "sha256": "cc0e98ce8456fddbe50653cf8ec84f2f31e474b1f952952bcfcaf9210b0175e5",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/RaffleReport.ts"
+    },
+    {
+      "path": "src/domain/entities/RaffleStatus.ts",
+      "sha256": "91847726ae3b8a1cb9ce89435a48c4f2046ec0003b519cfb4c018224c8e19851",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/RaffleStatus.ts"
+    },
+    {
+      "path": "src/domain/entities/stageAuthority.ts",
+      "sha256": "788698a67e90af5ce0d7b227f77048e11a8b0143c79c5d0ed0e8f9f97aff06c3",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/stageAuthority.ts"
+    },
+    {
+      "path": "src/domain/entities/Vault.ts",
+      "sha256": "e1e943117735abc7a50f58c1691bdf687326616e3ad6a5451a9399b9ad623c40",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/Vault.ts"
+    },
+    {
+      "path": "src/domain/entities/whatsapp2-account-scope.cjs",
+      "sha256": "bc621d66edda4c961e8295df3c82423f06fedacc667173f2c67ed1b31cd24e9a",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/whatsapp2-account-scope.cjs"
+    },
+    {
+      "path": "src/domain/entities/whatsapp2-account-scope.d.cts",
+      "sha256": "6a85b60fec1e9cec9ea5c281f90285e712e24c6c2a6f334162978f16636e5ea8",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/whatsapp2-account-scope.d.cts"
+    },
+    {
+      "path": "src/domain/entities/whatsapp2-state-owner.cjs",
+      "sha256": "87c0fdf319157e4891383b3389013fa15218e1f401b08568308dff4d64d1f589",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/whatsapp2-state-owner.cjs"
+    },
+    {
+      "path": "src/domain/entities/whatsapp2-state-owner.d.cts",
+      "sha256": "43da6049d3a88b03e5055bb3f48211e9b8803c1e7fc39262ea7b7c5dccad7adc",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/whatsapp2-state-owner.d.cts"
+    },
+    {
+      "path": "src/domain/entities/WhatsAppConversationIdentity.ts",
+      "sha256": "55595882b0020c2b4e0f103bc7507e6abd5cc70c537d412e30b4546a38445052",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/WhatsAppConversationIdentity.ts"
+    },
+    {
+      "path": "src/domain/entities/WhatsAppStatus.ts",
+      "sha256": "f2afc9c76fd58f85775446111aba23abe20850a34f3f0acab764b40030daa669",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/WhatsAppStatus.ts"
+    },
+    {
+      "path": "src/domain/entities/WhatsAppStoryMedia.ts",
+      "sha256": "28d60147a51a220cf234f31f3b7f6ca597dfc627246b6c0f0b35fc955ee00a88",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/entities/WhatsAppStoryMedia.ts"
+    },
+    {
+      "path": "src/domain/repositories/IAutoPilotRepository.ts",
+      "sha256": "eb2ab6bdb69d837fc9bd21b6f50dbfda803d3a76a9f95135db18f7a26f0dfac3",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IAutoPilotRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IChatStageRepository.ts",
+      "sha256": "bc541ffe49d90da354634a51e1336d9d4134dfb433df6de38c91242e1684576c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IChatStageRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IClothingSaleRepository.ts",
+      "sha256": "73bb7e3cd1e9b3dbbee10642443dcd0674e364202d09a862a4ff0c1ec9b7984f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IClothingSaleRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IConversationArsenalRepository.ts",
+      "sha256": "7ebe8b78debc469122e0ee8153443f8161bfd03f526c8b165909219687dee094",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IConversationArsenalRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IConversationScheduleRepository.ts",
+      "sha256": "546236db172d22ed806a9e5409d885cbbabfb3cd07f81e5e51171168e7f5a91e",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IConversationScheduleRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IInstagramRepository.ts",
+      "sha256": "122973f5eec01123bc115a2a8b5608f74155c2cd9ac77a52aab7057759c92ba9",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IInstagramRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IPersonaAudioRepository.ts",
+      "sha256": "51c4b81352d77c58c64a81ea9c47e71d27c19d506d5fca80d7815cfb85e15dfd",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IPersonaAudioRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IRaffleRepository.ts",
+      "sha256": "2ac6ad124467d246bb708d31fdacfdd529b032d5ccb84dac13ed974fc545692c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IRaffleRepository.ts"
+    },
+    {
+      "path": "src/domain/repositories/IVaultRepository.ts",
+      "sha256": "6ab316364094b7e693d61dd775babe5592b5dbc175549febae10b23da59ffd78",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/repositories/IVaultRepository.ts"
+    },
+    {
+      "path": "src/domain/services/AvatarResolverService.ts",
+      "sha256": "a3a4397c3926f27a68597eef7c4fe1d6a4196ff7eef5188a718fc6d71050e617",
+      "origin": ".firebase/whatsapp-account-scope-release/src/domain/services/AvatarResolverService.ts"
+    },
+    {
+      "path": "src/infrastructure/ai/GroqCloudAudioTranscriber.ts",
+      "sha256": "4b08e0c1af16c6c4c6fcac27e155b8bb99e86f3b79162076904de6c5409c23ab",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/ai/GroqCloudAudioTranscriber.ts"
+    },
+    {
+      "path": "src/infrastructure/di/container.ts",
+      "sha256": "aedefbc1170a0e1274e3e4fbc07aafc8994c15c2e43c81b53e59947bfe94aa5f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/di/container.ts"
+    },
+    {
+      "path": "src/infrastructure/firebase/firebaseClient.ts",
+      "sha256": "bf5fee2f3b6abbf45cac3e6b673d08284b206c1c6aa4e6fee471a07307f585fa",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/firebase/firebaseClient.ts"
+    },
+    {
+      "path": "src/infrastructure/http/autopilotApiFetch.ts",
+      "sha256": "f9527ed0ecf58940964fdcc84fd49062e7d88b16fc90ce6c4bebaf07f12156fe",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/http/autopilotApiFetch.ts"
+    },
+    {
+      "path": "src/infrastructure/http/brainOperatorApi.ts",
+      "sha256": "0de3c8b122e5cf1f0a50e9c55fc4111854591e8c4c9f6000f0f83d9e53fc35e5",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/http/brainOperatorApi.ts"
+    },
+    {
+      "path": "src/infrastructure/http/network.ts",
+      "sha256": "d39a66390bd8cc30d9dda0efa557375b2a4bfd638df94c35a629d391830ecf85",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/http/network.ts"
+    },
+    {
+      "path": "src/infrastructure/instagram/InstagramApiClient.ts",
+      "sha256": "b8414afa93299fd6632d7e599dae68da7b1d4c46c5446feae6c8f424ea4f881b",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/instagram/InstagramApiClient.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseAutoPilotRepository.ts",
+      "sha256": "dfb84a47bd32bce9cc46829591f8ab08570bf1e276611a18e0bea4740629e111",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseAutoPilotRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseChatStageRepository.ts",
+      "sha256": "72a4d2bd9df45bdcdc83f125b40bcfdfe25a9097db5b1306b4391ba73074e927",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseChatStageRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseClothingSaleRepository.ts",
+      "sha256": "faf9a9b6773f2e6a463556eb842e01af25be2fa885a5e7ae9db0ab72f53dc0b7",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseClothingSaleRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseConversationArsenalRepository.ts",
+      "sha256": "53df90bbdca49bc6f6b1c4854882eb95ff023853db057b607dff5b96175ae71c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseConversationArsenalRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseConversationScheduleRepository.ts",
+      "sha256": "a6b9ee3f210c5ded1eeb1d3718e068dcc669eab2c347d6179910b315d29f4852",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseConversationScheduleRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseInstagramRepository.ts",
+      "sha256": "9e42156ea5de7f16d9d31cdab020c60167359595fa6c410836454755f74e60b2",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseInstagramRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabasePersonaAudioRepository.ts",
+      "sha256": "57b13d8f2fbbdd50b09a4d5f9b6cda7426aa284ece8cd3f1f9f2d4cc8d341799",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabasePersonaAudioRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseRaffleRepository.ts",
+      "sha256": "c8acdfced329341cc81b17d1fda772bd6eb3c75e2594fb04516399226fe087d2",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseRaffleRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/SupabaseVaultRepository.ts",
+      "sha256": "f44b0af7b42835bd9c072987400f40762c01c4b1a5b2b34d142774e288c0f920",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/SupabaseVaultRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/WhatsAppStatusRepository.ts",
+      "sha256": "7baa889e9764703940ddba94867b44116dc58a887831dcd1c46acc91b8bd498b",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/WhatsAppStatusRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/repositories/WhatsAppStoryMediaRepository.ts",
+      "sha256": "a448a5b84edd57867a8f47e5a84b4b3b53c3873db9a077bd72a3e2f03577bee3",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/repositories/WhatsAppStoryMediaRepository.ts"
+    },
+    {
+      "path": "src/infrastructure/storage/SupabaseMediaStorage.ts",
+      "sha256": "32206b87d3e95e1f5ad2595f3799918078b0053054cd2fe45c71a8226c99ac61",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/storage/SupabaseMediaStorage.ts"
+    },
+    {
+      "path": "src/infrastructure/supabase/client.ts",
+      "sha256": "2ef64d336bb4ddf2e15d891d7b88eb954f0252f36aadffcdd7055c6537289a18",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/supabase/client.ts"
+    },
+    {
+      "path": "src/infrastructure/supabase/RealtimeBroadcaster.ts",
+      "sha256": "c56c8d22733b807e8ceebdcf81dda421db06a91a9c1b28dbd7e85b1c5e6f7733",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/supabase/RealtimeBroadcaster.ts"
+    },
+    {
+      "path": "src/infrastructure/supabase/server.ts",
+      "sha256": "3bacdfe4ba8047acdfdaa2f3cd8449c25b7a0bd500d85771c632226d49cc187a",
+      "origin": ".firebase/whatsapp-account-scope-release/src/infrastructure/supabase/server.ts"
+    },
+    {
+      "path": "src/lib/utils.ts",
+      "sha256": "36358ca4a5e3378b74a07e7e62a451707aae3fc89b2ebf2ced13dcb8154dbbf4",
+      "origin": ".firebase/whatsapp-account-scope-release/src/lib/utils.ts"
+    },
+    {
+      "path": "src/presentation/components/chat/audio-converter.ts",
+      "sha256": "f4c186c03fdd6fcbbe04488c1059da284ab68fc453ff9ec196ae42b013d63207",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/audio-converter.ts"
+    },
+    {
+      "path": "src/presentation/components/chat/AutoPilotActivationModal.tsx",
+      "sha256": "43d4b73a32607f0de24dc3a37ea1d7e3335a4849f1297a43f67647090682e6a7",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/AutoPilotActivationModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/AutoPilotActivityIndicator.tsx",
+      "sha256": "dccafc9a22a18b29265eb99d2d6354ff4366c4831dbfba05be3d642b1fe80d78",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/AutoPilotActivityIndicator.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/AutoPilotApprovalCard.tsx",
+      "sha256": "29bd00649f8ec331476768fd2f17338663c8bf4f95a87a69fb8c3ec0f12e9021",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/AutoPilotApprovalCard.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/brain-turn-view-model.ts",
+      "sha256": "c32e917ca42511d876b43c621ab57d1bc0f140bd75f947f23a495bb7f64b4839",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/brain-turn-view-model.ts"
+    },
+    {
+      "path": "src/presentation/components/chat/BrainConsultationPanel.tsx",
+      "sha256": "c8bb0e0afc181d5e42fb4f0260b70e7c73cc5ffe7a3a8244a4528fc778a8911b",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/BrainConsultationPanel.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/ChatFilterModal.tsx",
+      "sha256": "565e12149f822453819dbecd44b2f3030f1c235b546a16747b4bbe1ddd3a0702",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/ChatFilterModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/ChatStageBar.tsx",
+      "sha256": "ae783eae437ae11e60a2e6a00afb326b6700bef827372f285c02c9bed2419c59",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/ChatStageBar.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/instagram-message-loading.ts",
+      "sha256": "c2a5112ff7e83d57cb22efaf81c5f77a949a7dc8a26baf8d6d07e2af332cdd43",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/instagram-message-loading.ts"
+    },
+    {
+      "path": "src/presentation/components/chat/InstagramAudioMessage.tsx",
+      "sha256": "73d9a5a3af7dd09f727382b6f055c0589e3012bd3b186af30f9ac3f9ffe05c44",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/InstagramAudioMessage.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/InstagramChatComposer.tsx",
+      "sha256": "34a877c2e50dcd27f34dacf2c71383d48d3252dbc3b6ff2df2cf203af6d09cab",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/InstagramChatComposer.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/InstagramDirect.tsx",
+      "sha256": "2b2d45de3b34538347a2e39e5f04062bfd76806e1f604a29ecac5d5d379d0d87",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/InstagramDirect.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/InstagramReplyGesture.tsx",
+      "sha256": "8a0ca50b0de869f1d38f5a473d0be2761691082a1b33b13e549f5e8bb5ac7ed8",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/InstagramReplyGesture.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/whatsapp2-autopilot-activation.ts",
+      "sha256": "91a0d850c142c94296057dd47f622475a7a007a1e5419ecc508deff3da42e36f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/whatsapp2-autopilot-activation.ts"
+    },
+    {
+      "path": "src/presentation/components/chat/whatsapp2-client.ts",
+      "sha256": "159f832d700e1ab830e29dc2984b980f62a0da575951b5aa7853c09e3c9418dd",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/whatsapp2-client.ts"
+    },
+    {
+      "path": "src/presentation/components/chat/WhatsAppContactInfo.tsx",
+      "sha256": "3f5a87bd106e55a1f9881d0bbe5cc817e2ea437cfccc3e25efbf27b791d6c64c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/WhatsAppContactInfo.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/WhatsAppDocumentMessage.tsx",
+      "sha256": "355af4ff59855349c139dcb78ea3f7d485911f60c7f40af8cea1f94e23a3a64e",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/WhatsAppDocumentMessage.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/WhatsAppNativeMessage.tsx",
+      "sha256": "840b8cfd3b439fd0db8f3f949ce2160133f1a574c45963e14b9265f1d36cb900",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/WhatsAppNativeMessage.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/WhatsAppStatusModal.tsx",
+      "sha256": "2e8ed326c436a83dd359ac1ddc6e2b7e27fcc4a4353095608be20c629b099d98",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/WhatsAppStatusModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/chat/WhatsAppStickerTray.tsx",
+      "sha256": "e27f4279db9f526c1871b624481d126a70ff17b53437be8b21d905b4c969618d",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/chat/WhatsAppStickerTray.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/AutoPilotConfigManager.tsx",
+      "sha256": "1180b729f1fe5098bedfb7e99e245357b2e765b6135215b9f0f4320146c351c2",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/AutoPilotConfigManager.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/ChatStagesManager.tsx",
+      "sha256": "10e995c1ae7bf4f1682b475574e9f6a38497f56bb7e5ac50bfacefbfdb5f55d6",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/ChatStagesManager.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/ConfigView.tsx",
+      "sha256": "21dcc2ff78b9ba75c07e2e50c2f2f4cb7889855c652769c8aac6d31fff719b5e",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/ConfigView.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/ConnectionWindowManager.tsx",
+      "sha256": "0baad657b70b3bdd3632da48b69275aee1df124e5d4a5e653b4fbff28390bcc5",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/ConnectionWindowManager.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/ConversationSchedulesManager.tsx",
+      "sha256": "646ebd4f11210cbbd376296601371c83062e14dee3668c11975c9a373639b03e",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/ConversationSchedulesManager.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/SettingsSectionGroup.tsx",
+      "sha256": "c86fcadaa5a90c09a0272f42fdb321f61314ebe3dd3a0133058a35a794dc9a42",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/SettingsSectionGroup.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/TinderConnectionCard.tsx",
+      "sha256": "a5c230c38bfbdf1079b3278c7674b0a9ddefdbf67f95af691ea68ff6098b18e3",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/TinderConnectionCard.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/WhatsApp2ConnectionCard.tsx",
+      "sha256": "0800e2dcf9c920df41bbb643f4c5ebdbdb6096cc58d0cdccb88abb2b7e8b8666",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/WhatsApp2ConnectionCard.tsx"
+    },
+    {
+      "path": "src/presentation/components/config/WhatsAppStoryMediaManager.tsx",
+      "sha256": "81f569ac660b8dbe246ba42a22c7f01c4524394629eeabe0be274955c414f46c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/config/WhatsAppStoryMediaManager.tsx"
+    },
+    {
+      "path": "src/presentation/components/instagram/InstagramConnectModal.tsx",
+      "sha256": "58171629c790ae06cb4838419c6e7097f3fb52e44b817e3a76b6e5c1ccb3d9a8",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/instagram/InstagramConnectModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/instagram/InstagramProfileModal.tsx",
+      "sha256": "f6fe30d19f5361f740d546fc2bc47e43a55c7fb7ac63257f168602b27249c5b8",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/instagram/InstagramProfileModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/layout/BottomNav.tsx",
+      "sha256": "0a5c9ba931bace6f399860546a99cad7f14cc43d769b4f4e43d3a281ebca2575",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/layout/BottomNav.tsx"
+    },
+    {
+      "path": "src/presentation/components/layout/MobileContainer.tsx",
+      "sha256": "fbb0f06bb62b7d05e8f7e475dd74a3eb51418be02d3aec1448fe55a8ed826eff",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/layout/MobileContainer.tsx"
+    },
+    {
+      "path": "src/presentation/components/match/MatchChatModal.tsx",
+      "sha256": "028508074b0de50838937ccf59081d0290ea4b513d47d3b54493cb9b79901cbc",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/match/MatchChatModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/match/MatchView.tsx",
+      "sha256": "1886aa7c1ed8dd1bd8901f0f577d8d41195e3c8a487a22c9b068388a1768bf92",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/match/MatchView.tsx"
+    },
+    {
+      "path": "src/presentation/components/match/tinder-client.ts",
+      "sha256": "0e8878c94a278dcf73ca1a4408bb35d3ee59252588026d7331e1246af440aeb5",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/match/tinder-client.ts"
+    },
+    {
+      "path": "src/presentation/components/match/TinderConnectModal.tsx",
+      "sha256": "a448ae180ba9eaba70beabe735097d6bb712dbc129f06db6e41f565643806903",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/match/TinderConnectModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/ClothingSalesView.tsx",
+      "sha256": "cfb415319382a7b579df855bfc7034131390333082df07142c6d74f499114420",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/ClothingSalesView.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/CreateClothingSaleModal.tsx",
+      "sha256": "79a012e840b7c11bef29a067bd49c1b1a49cfe6c5331970d31ee48119890505c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/CreateClothingSaleModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/CreateRaffleModal.tsx",
+      "sha256": "6436a7664ea880e4185c1168143fe13d69cecf8fe43de5336fab21124bdca406",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/CreateRaffleModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/EditClothingSaleModal.tsx",
+      "sha256": "7cd4071e06bbd69caffacde52fbda2451fab7972e7e078f8093635fb06b8ddd9",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/EditClothingSaleModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/EditRaffleModal.tsx",
+      "sha256": "a6e5e52091ffa668a7cd12757f2d7de77975d749f4996dab74e721ba60933f73",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/EditRaffleModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/InstagramBuyerConnector.tsx",
+      "sha256": "363c0db42b062d270c97d011e985726859cdb290aee8e84a116e380e59459bdd",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/InstagramBuyerConnector.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/RaffleBuyersModal.tsx",
+      "sha256": "73d2125bf7eb7ecf802eddbdeb319a3ee15eda0625265400324f18e944939d30",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/RaffleBuyersModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/RaffleCheckoutDrawer.tsx",
+      "sha256": "4bb704e0ab729de441c03602f2b5c76648dc98f66582b30b8577310f5ca6b991",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/RaffleCheckoutDrawer.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/RaffleDashboard.tsx",
+      "sha256": "a94010e888d7af383f7b87452da746816c3b52691ef8173df44304d86bfa9f74",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/RaffleDashboard.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/RaffleNumberGrid.tsx",
+      "sha256": "912b054f2818a2e6e2aff52ff0170dd282488d6bd75d974d9d8c7cdc98dd4073",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/RaffleNumberGrid.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/RaffleReportView.tsx",
+      "sha256": "ee1121127575f901d285784d635186f9d25c6c699f92e07400970b042925b36f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/RaffleReportView.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/RaffleTicketDetailsModal.tsx",
+      "sha256": "1e02adcdca1f26d80b8a9a86922eec762fbe3417df69a8adc1509a96363ccc11",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/RaffleTicketDetailsModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/SalesView.tsx",
+      "sha256": "e7cd99809b2d4a5654a3daf27cdaeaa85e0a6d3cf429a9902bc5a012f9d22bd3",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/SalesView.tsx"
+    },
+    {
+      "path": "src/presentation/components/sales/WhatsAppBuyerConnector.tsx",
+      "sha256": "440ae8008cd5cf58dd639a0ddce911b1a9c28533179a3b78a0116358f2983819",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/sales/WhatsAppBuyerConnector.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/ErrorBoundary.tsx",
+      "sha256": "06eb51d41a1f4c179fa14467ffbaaa63ca1620fc9e191913b0bf84e0feacaa1f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/ErrorBoundary.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/LoadingState.tsx",
+      "sha256": "10f40c182f32a029eb9e98a47fbe18e8db32115ee020e3f5a2219ef636232216",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/LoadingState.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/MobilePageHeader.tsx",
+      "sha256": "a982be8149bf4185dfec8412dea4ce9d25abc973d911e6f1b38226d9ec0fb0c6",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/MobilePageHeader.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/NetworkBanner.tsx",
+      "sha256": "e230fff836c5ebf42e46918f8b285a1da1938b361a2e57ce3be18ffacc3f170a",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/NetworkBanner.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/ResponsiveModal.tsx",
+      "sha256": "7cbd98574875e3cd12b621f4eb6cab49d8c5ceef33c11517cf2919a817470711",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/ResponsiveModal.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/SafeAreaContainer.tsx",
+      "sha256": "aee2ada3227af0418643185f8bf22d9cead69c91b3fffd9c5ea54f2124385f8b",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/SafeAreaContainer.tsx"
+    },
+    {
+      "path": "src/presentation/components/ui/Skeleton.tsx",
+      "sha256": "dc65725ab9a3e3d0322b48d4dfc770981c126d028d32bb2650f20a62bdc2ee1c",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/ui/Skeleton.tsx"
+    },
+    {
+      "path": "src/presentation/components/vault/PersonaAudioVaultModal.tsx",
+      "sha256": "1482a6a67a2ac0c3848602d7398e64efcc358842e9bf7df24b52328924e049a1",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/components/vault/PersonaAudioVaultModal.tsx"
+    },
+    {
+      "path": "src/presentation/context/LoadingContext.tsx",
+      "sha256": "e9a5fcb1abdce2c9a5d8f6769d57877169424bab4e5c59c26b2c69c5f96315d8",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/context/LoadingContext.tsx"
+    },
+    {
+      "path": "src/presentation/context/ThemeContext.tsx",
+      "sha256": "95c89e51943589776cfb5b4aff5d37dc4c0a85c2a4efab445a33313288ee6a5a",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/context/ThemeContext.tsx"
+    },
+    {
+      "path": "src/presentation/hooks/useAutoPilot.ts",
+      "sha256": "2aee7f842d37f54b4f0df484144fb890247de9c5cf367e9d3da404c313bbf869",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useAutoPilot.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useChatRealtime.ts",
+      "sha256": "d1f3fe8315c9c05e5d8c8e0060d0abbd2f544e81c366fe539098bfa06d7ef512",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useChatRealtime.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useChatStages.ts",
+      "sha256": "b6aeda34dda57f154b99a38a9fa42e280575f718a712cc9115ef8b4f5f923cee",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useChatStages.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useClothingSales.ts",
+      "sha256": "f6df8593003807a6c306c721d0b4f62c9bb6c2a9e7cd70d4226c4c8e0e9ccd29",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useClothingSales.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useConversationArsenal.ts",
+      "sha256": "3793b7e990ae25fba2e2cbdd788e3734764835d5040a0e7db8716c54e703dd1f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useConversationArsenal.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useConversationSchedules.ts",
+      "sha256": "64db22cfa4e45e433e53253ff7f84eb36583b6a56c299ddf187b167177d5ac9d",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useConversationSchedules.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useIsMobile.ts",
+      "sha256": "203acab9fefef09e9982c21ce328c5b43e39dc44febf2963e13b35b12344eafb",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useIsMobile.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useIsStandalone.ts",
+      "sha256": "0d787381b01836f47c9e3b8bc554a4ae9bd421dd29a9a34c3d9789d302ded62d",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useIsStandalone.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useMobileNotifications.ts",
+      "sha256": "4993742e8d64da1bb4a59747c388f400d58154a0c7876fa1b63665bf8f3783f1",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useMobileNotifications.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useNetworkStatus.ts",
+      "sha256": "c815a1aa6f700a346f5d06d7656a6339315b15b153b5a0dc6813a034d80f6c3f",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useNetworkStatus.ts"
+    },
+    {
+      "path": "src/presentation/hooks/usePersonaAudios.ts",
+      "sha256": "81326453334b729cb97b3a4eb553794c737d8de85f5152ec725e534c3a2401bd",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/usePersonaAudios.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useRaffles.ts",
+      "sha256": "4089a119ad2c1111f3a60eef4956817b7c1ce985d66afdb678ec04b66c958669",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useRaffles.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useVault.ts",
+      "sha256": "d49a1ac1b6b0b7355961e73e74eac061faaf47aed7526bbef4fd9690b7f0d386",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useVault.ts"
+    },
+    {
+      "path": "src/presentation/hooks/useVisualViewport.ts",
+      "sha256": "c7ead1d339ef4c0ac74f05ed758ebfc631b5cd0589925a8e7dfadc0020d90a57",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/hooks/useVisualViewport.ts"
+    },
+    {
+      "path": "src/presentation/types.ts",
+      "sha256": "4a39aa85e75f9150a387639a0346fba2ebe57697963085e6216e1a7650fdd2cc",
+      "origin": ".firebase/whatsapp-account-scope-release/src/presentation/types.ts"
+    },
+    {
+      "path": "src/__tests__/resilience-and-queries.test.mjs",
+      "sha256": "3f936c93a4d856626b163fccbcfa968fd675875828dd6cbb801ff9672823e3b7",
+      "origin": ".firebase/whatsapp-account-scope-release/src/__tests__/resilience-and-queries.test.mjs"
+    },
+    {
+      "path": "public/file.svg",
+      "sha256": "2b67812c325c199a02536cdbeea0c593a72f707d323b72ee3e08dbab06753bd4",
+      "origin": ".firebase/whatsapp-account-scope-release/public/file.svg"
+    },
+    {
+      "path": "public/firebase-messaging-sw.js",
+      "sha256": "aa702f9ded9a3e6c59bfc7c97e9ad02e8b82d00929252f3bfdfbe9e04bae3758",
+      "origin": ".firebase/whatsapp-account-scope-release/public/firebase-messaging-sw.js"
+    },
+    {
+      "path": "public/globe.svg",
+      "sha256": "b614b9bf183925957661ac851498fe1d8029fd43a62fbfed86f9e2624a57e7cf",
+      "origin": ".firebase/whatsapp-account-scope-release/public/globe.svg"
+    },
+    {
+      "path": "public/icons/apple-touch-icon.png",
+      "sha256": "92af42032d670754b2d51a3d9e1238db2998d8a85742cc2d4a28ef9af37630aa",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/apple-touch-icon.png"
+    },
+    {
+      "path": "public/icons/icon-192.png",
+      "sha256": "e1df165cdadda99b097910ba6de3395723c406f94a8fc21f4663d66e46893ac9",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/icon-192.png"
+    },
+    {
+      "path": "public/icons/icon-32.png",
+      "sha256": "ad981de46874e7ea50c54c52a7810a07126e40290d304976c5b593513a807c5d",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/icon-32.png"
+    },
+    {
+      "path": "public/icons/icon-512.png",
+      "sha256": "3aaf94d6e033b52fabdef0e30a584078c1138c125935a0e32c34189fadfde708",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/icon-512.png"
+    },
+    {
+      "path": "public/icons/icon-maskable-192.png",
+      "sha256": "9e1d36bbc531f10a138d002a7fc70de256cb7c562357c02a1a6dc02855f2ff81",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/icon-maskable-192.png"
+    },
+    {
+      "path": "public/icons/icon-maskable-512.png",
+      "sha256": "337ec915930fa3d11f48fc366d1f146b88650ab7fc3171932aec8d204e7f66b1",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/icon-maskable-512.png"
+    },
+    {
+      "path": "public/icons/vendeo-512.webp",
+      "sha256": "6f57432fb601256131c4d36ef34e07cdbf24fa7840cf58ea979d8a57d02b08c9",
+      "origin": ".firebase/whatsapp-account-scope-release/public/icons/vendeo-512.webp"
+    },
+    {
+      "path": "public/images/default-avatar.svg",
+      "sha256": "30c12d2512672f793e05fa19c51ed02fdc6f7647cfe3c3f159070a9254c76e2f",
+      "origin": ".firebase/whatsapp-account-scope-release/public/images/default-avatar.svg"
+    },
+    {
+      "path": "public/manifest.json",
+      "sha256": "e888a97619d6c0b64b5448c1f580dd9ed93c55f5909c39cc9beb75d7c531efc0",
+      "origin": ".firebase/whatsapp-account-scope-release/public/manifest.json"
+    },
+    {
+      "path": "public/next.svg",
+      "sha256": "55995dfad6ecb4945a1e856ddca03c5e16aa5bf13fd21b4df6a74ae79357bcfc",
+      "origin": ".firebase/whatsapp-account-scope-release/public/next.svg"
+    },
+    {
+      "path": "public/vercel.svg",
+      "sha256": "f081337b2fee635b455b63275406a3e7f39d6a014e25ad90dab5a67e62a12ac4",
+      "origin": ".firebase/whatsapp-account-scope-release/public/vercel.svg"
+    },
+    {
+      "path": "public/window.svg",
+      "sha256": "644768c4aaeb4767bce293344eeb0c125fb804a94d801440424072202d85e3a1",
+      "origin": ".firebase/whatsapp-account-scope-release/public/window.svg"
+    },
+    {
+      "path": "package.json",
+      "sha256": "338f7665bd89b7bdcf78b4fe4fbdf1eee47ab5ed330d9d7375018b51b56a6773",
+      "origin": "frontend release"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "d3d7754370ba1bf0780eea47a49514d61cd0bd65c946675bb91b5683530cf1bd",
+      "origin": "frontend release"
+    },
+    {
+      "path": "next.config.ts",
+      "sha256": "22c6c6357a53687f8a0653a5f8b9d167fc446c592e3d71ff3280170d8ce1b946",
+      "origin": "frontend release"
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "81580dddcf7c26c18a4becabbf6b9dee730aeece3c1b85727334d65179a61c57",
+      "origin": "frontend release"
+    },
+    {
+      "path": "eslint.config.mjs",
+      "sha256": "275a07c13fc7c83a652efcfa9fb6a207c451a2f5088e6793415ce44281285720",
+      "origin": "frontend release"
+    },
+    {
+      "path": "postcss.config.mjs",
+      "sha256": "7b299d3d3b16699ddda397c0b2373b3af4f25f8fc9ccc9b3d9e64ef083bc1c21",
+      "origin": "frontend release"
+    },
+    {
+      "path": "firebase.json",
+      "sha256": "e93fa508400c18bf497287c88fbec1555576601afe0e7789d1a4b3fb38dc5e48",
+      "origin": "frontend release"
+    },
+    {
+      "path": ".firebaserc",
+      "sha256": "87b65b385309ca2bb2fdae02a6be3b6167646aaa64ac0b1c61a60df796addb5b",
+      "origin": "frontend release"
+    },
+    {
+      "path": "supabase/functions/api/index.ts",
+      "sha256": "efd6defb764862f68380faa29312384801b884cde420e38525590b23d46f8865",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/brain_orchestrator.ts",
+      "sha256": "9ff45601b69786e46d5ac034540b9a305dd27e2c5372f87659538360e8d97316",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/autopilot_state.ts",
+      "sha256": "498816271c639e9cf5531e34312abdb363b728d0bd5feed2134ad4353d682694",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/web_push.ts",
+      "sha256": "2fcc6121c0a76d6a61dcb719d0155b4a3ef44a101f414951e3a0b69f520b992f",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/whatsapp2_gateway.ts",
+      "sha256": "c0c594f773b8c5b7372c36ad56b15e1286f2fda2555238d68bb13a9dcf09c82b",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/channel_transfer_service.ts",
+      "sha256": "d5c97741faf5bfd9e22a9436e3021e08a91db72f316b43fe5c16dcfc6e628730",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/channel_identity.ts",
+      "sha256": "adb093515ce40aa6f716c9a881107cc9ff8bd1551c450c8fdbeafbfc10275ecd",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/multichannel_identity_service.ts",
+      "sha256": "a233294d4bcc95ab96b8d8ac73b52b7cb42fa4781948aa1539f78d25197b5fdf",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/channel_transfer_reentry.ts",
+      "sha256": "cfb7b4ae3ab1e2c47843f36ee49b66f37d25c9bb02a420b555d9e075360e057c",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/channel_dispatcher.ts",
+      "sha256": "1ccb033c5c079e77b7b424a393552aab7cb31f801907042033322e03e3f72829",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/tinder_match_routes.ts",
+      "sha256": "42575cae63853a4ac6eae0fce3acfaf50ce22b47a31c13f6abe8bdcb9b85b4b5",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/tinder_sync_service.ts",
+      "sha256": "67cfeffc2d702276c571cfc89d687841354049a2289bd57f6952867a94222bbf",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/objective_evidence.ts",
+      "sha256": "2492ff0dd6c2ddec0651fb68d3b3708a8f5366b2847b15ffefec989f68acd667",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/greeting_repeat_guard.ts",
+      "sha256": "858f253ea97511745434a13ada590445f9dbda44a1aaf8d2392684d56a04b74b",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/_shared/stage_authority.ts",
+      "sha256": "7265a67c1e91e9308e65bbdcca36b2f57470c3dc1467d1976c39003bb1c7f72e",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/autopilot_cycle_safety.ts",
+      "sha256": "b0210be2c1988af29c432e93ae9641915f4f16b7b9ad8dd56206c3fd282fdfc4",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/openai_usage.ts",
+      "sha256": "a2955f2303f70254b2b85b86592d55e4d1361e6d8e592664400f6637df2f9204",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/conversation_episodic_memory.ts",
+      "sha256": "1d893da66621545596252efccc5da98a91f60c4b0193a32be4fc5d3288f3af7e",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/contact_memory.ts",
+      "sha256": "2a8bdbef544d8112dbc906990986a3855d480e7778712c3505def44eae2492e8",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/LarissaConversationStyle.ts",
+      "sha256": "87b8d97aff39dc017e4d2756236f0bb8f6ef829c34598b0345d1dca8846234b5",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/LarissaChatStyle.ts",
+      "sha256": "ebfbee87e4243df23e035e67d841430f42f4eb0a999b2c180250c0471af546fb",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/ConversationQualityGate.ts",
+      "sha256": "5164510d3eccbba25c4f9d5ee9e026f097e3e068da447f0432513005e5a47300",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/persona_memory.ts",
+      "sha256": "bf1638fa086e08df17691996484ad5477e248134ce531e1777b36c978ee70e92",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/openai_brain.ts",
+      "sha256": "54ba26c9e433777f6b60e0fe739038dd330651a23ae70029a8362b77e129dd23",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/larissa_interaction_dna.ts",
+      "sha256": "7fdcf17dc2de6a56b697c3c8f73df1b930e56f64ab8c7b70d961dd7530f4570d",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/brain_conversation_guidance.ts",
+      "sha256": "0ef028a5d03fd3db117d35c71251d3dcc8f943a4a26f6fe2f721e454215ed406",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/_shared/memory_tool_context.ts",
+      "sha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/openai_agent_instructions.ts",
+      "sha256": "d9d1e49d380f514ba9775320378ce0ef28328b0b36ea1b10b36d9acdf97605b8",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/larissa_canonical_prompt.generated.ts",
+      "sha256": "4464b0d54cd587a410fb812fa7c13df68905d515d9f4a452469ca4837831cdad",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/openai_sdk_brain.ts",
+      "sha256": "40f75642268d8fff23a9c35976381bd822df6240f6f35dd78aa87d672db5fdd6",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/openai_conversation_runtime.ts",
+      "sha256": "c596026454fa817c436b423df5388f9a7367afd968347d9e11b15ec810035833",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/debounce_policy.ts",
+      "sha256": "9fc6cfba92557023e9055975d336b57d1445c5e4871d83bf71f011837d29cb71",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/conversation_schedule_runtime.ts",
+      "sha256": "50c846a1e595cd13d381b211884e9163886e71220bb383e2709b62a1f6cccbcc",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/connection_window_runtime.ts",
+      "sha256": "f76b935bcbccfaa8a018dcad261c1f7f473c02c768a4b83c7c04640cb14ee57f",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/brain_audio_tool_recovery.ts",
+      "sha256": "b7d44b72e0e94c986b2c0af9faa9e4b0aa1eba4c80dec095b64e0d862121406b",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/audio_transcription.ts",
+      "sha256": "5cc76977990b594b63cb9d1afa0685ae8aa81ac7732cb0e70f53009c5a0c1847",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/autopilot_projection_route.ts",
+      "sha256": "249051e2e4e1fd07b41cf44064d72972493272acf5ffb8db340bfe75750c7b31",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/brain_event_enrichment.ts",
+      "sha256": "1bb59f14b511698fe3e75812414141900ab2e6da743f399c394d3592bc8e3507",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/image_analysis.ts",
+      "sha256": "0ca8d58e2470656b8072c0d75c6eeb9784ce26c03752d75053ca6f18c1f24145",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/operational_authorization.ts",
+      "sha256": "213eb1e18bb0c0dcbb1b6b9247b353440713f552b165f8c169daacc537594169",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/brain_operator_auth.ts",
+      "sha256": "01342b6ca1a428d2b4ef08c6744b6703ba0e03fd554dbc8bd49a5dd9b017ed27",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/operator_chat_progress.ts",
+      "sha256": "6b5a5cb3dca7088da2eaa37f1c1fa0eed8eafe5eb5096293817da536c018a998",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/autopilot_inbound_queue.ts",
+      "sha256": "ecd794b292d8576c7b041b4e225774b94db29bc6c62657f940b4d49162efedc9",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/instagram_profile_queue.ts",
+      "sha256": "c681f340efd54dc33b57d4d58d992793f14959aeb14fad75f4ac7adde0a65480",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/instagram_reactions.ts",
+      "sha256": "5cf29f1bd18882c2efc6e2c3834df89880abef6e6ace3a9277483b4fbde0df7f",
+      "origin": "Supabase API v526"
+    },
+    {
+      "path": "supabase/functions/api/larissa_canonical_prompt.md",
+      "sha256": "d5e42a56ff50380796121d233d4e795b7c3fe02c03ac38878d78f9901a0fd6cd",
+      "origin": "Markdown extraído do prompt publicado"
+    },
+    {
+      "path": "supabase/functions/vendeo-brain-mcp/index.ts",
+      "sha256": "772228b1bdd095c9dfbc677f50e7a0704d73a093ecc5b28ac0a2f110474300ba",
+      "origin": "Supabase MCP v33"
+    },
+    {
+      "path": "supabase/functions/vendeo-brain-mcp/_shared/persona_memory.ts",
+      "sha256": "076bc977646f13281bf5054a05c6ebe9c65cb7ee5ca52457d7bf687efa842d6b",
+      "origin": "Supabase MCP v33"
+    },
+    {
+      "path": "supabase/functions/vendeo-brain-mcp/_shared/mcp_memory_helpers.ts",
+      "sha256": "813d362b976c2729ac20220689515e4d138e30ba5a9b996d025c5011d04c3a28",
+      "origin": "Supabase MCP v33"
+    },
+    {
+      "path": "supabase/functions/_shared/memory_tool_context.ts",
+      "sha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "origin": "Supabase MCP v33"
+    },
+    {
+      "path": "services/whatsapp2-gateway/.gitignore",
+      "sha256": "1ca2d3aaad676319c00e8343aa3d492c40dd794e9cef191f6f13a91b31e1dc1a",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/canonical-identity.cjs",
+      "sha256": "a648f0257698e7fd847894e91a4d644d79f4a27b03806aa5be12c29c9deac932",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/chat-snapshot-policy.cjs",
+      "sha256": "403caa3044d710d0fb5c218cca1b9885dbbf15245350fad20de037fb4b34031b",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/contact-address-book.cjs",
+      "sha256": "1474f042c7e90ed80af912d89460a33dcae41197115431a002ec42648860d0c3",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/index.cjs",
+      "sha256": "69d612618b5ebc356c69e3ff5d79eaf0da4bc2fb8282af90c3bbef4d7ac0b36f",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/latest-provider-message.cjs",
+      "sha256": "0eb3e2a0514b1d04ecccb11e8069dda5e300cd13114056a1788d839458ab95c8",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/media-security.cjs",
+      "sha256": "ea798ffcfe709f58871526e1de3c31c69ed336cc8d58ad6239a9da14ed6ed515",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/office-document.cjs",
+      "sha256": "13df3fe1c9124c4eacfc0290ae9be05e672396d1fc68dc1a9376d8ac401aa00c",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/package-lock.json",
+      "sha256": "e11d4b4f6dc3b857b279c0504221d807215de4868d3cd6058ad6484f3f577285",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/package.json",
+      "sha256": "1746e0393baceb1a7aa74cf8040d21efa76fcbea69d7ce03c286577a4df50e4b",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/patches/whatsapp-web.js+1.34.7.patch",
+      "sha256": "d30c454bc739e78b0e31d45339d3f3a2d5b23c3f92450c6d31a97cd567c78e85",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/pdf-document.cjs",
+      "sha256": "d74de8da85843bfa6f993064bf361a3daabd5ca7ee1693402ce469c07cff6d48",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/status/status-service.cjs",
+      "sha256": "eda4837a5da37e55e0681ce0bfe90cc8e3a7645c8477014c392b29596a06c217",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/status/video-transcoder.cjs",
+      "sha256": "e620524d07fb723683637f1eaded8e1d06966e430d4d4e1770de7adeedfc063a",
+      "origin": "gateway auditado"
+    },
+    {
+      "path": "services/whatsapp2-gateway/index.cjs",
+      "sha256": "69d612618b5ebc356c69e3ff5d79eaf0da4bc2fb8282af90c3bbef4d7ac0b36f",
+      "origin": "gateway ativo"
+    },
+    {
+      "path": "supabase/migrations/20261008020018_harden_whatsapp_delivery_and_scheduler.sql",
+      "sha256": "a514dff16801a706a84ef7b18fec448d93061ec5adaed133f389d0ac765cc8ca",
+      "origin": "versão aplicada no banco"
+    },
+    {
+      "path": "supabase/migrations/20261008020021_respect_automation_pause_in_outbox_claim.sql",
+      "sha256": "999ca9cf1e33de2dccb40f36f88c59efd3621b8069bc5cd3005ee46fde1f95eb",
+      "origin": "versão aplicada no banco"
+    },
+    {
+      "path": "supabase/migrations/20261008111042_restart_clears_scheduling_and_stale_runtime.sql",
+      "sha256": "1e6c24e5a8d1ef1937e971dec93196885c6ffc53ad928bb69414c991f043cc7d",
+      "origin": "versão aplicada no banco"
+    }
+  ],
+  "retired": [
+    "src/presentation/components/match/tinder-autopilot-activation.ts",
+    "supabase/functions/api/jev_memory_selector.ts",
+    "supabase/functions/api/web_push_routes.ts",
+    "tests/test_jev_memory_selector.mjs",
+    "supabase/migrations/20261008015000_harden_whatsapp_delivery_and_scheduler.sql",
+    "supabase/migrations/20261008015100_respect_automation_pause_in_outbox_claim.sql",
+    "supabase/migrations/20261008110938_restart_clears_scheduling_and_stale_runtime.sql"
+  ],
+  "migrations": [
+    {
+      "version": "20260917174419",
+      "name": "enable_pg_net_and_cron"
+    },
+    {
+      "version": "20260917174834",
+      "name": "schedule_autopilot_cron_job"
+    },
+    {
+      "version": "20260918105225",
+      "name": "create_claim_outbox_entry_rpc"
+    },
+    {
+      "version": "20260918175728",
+      "name": "create_ack_experimental_cycle_preemption"
+    },
+    {
+      "version": "20260918214448",
+      "name": "create_persona_memory"
+    },
+    {
+      "version": "20260919031513",
+      "name": "create_conversation_episodic_memory"
+    },
+    {
+      "version": "20260919093748",
+      "name": "add_unique_constraint_episodic_memory"
+    },
+    {
+      "version": "20260919094318",
+      "name": "add_episode_fingerprint_constraint"
+    },
+    {
+      "version": "20260920144958",
+      "name": "create_official_stages_subagents_vault"
+    },
+    {
+      "version": "20260921170927",
+      "name": "create_claim_experimental_cycle"
+    },
+    {
+      "version": "20260921171020",
+      "name": "create_claim_experimental_cycle_messages"
+    },
+    {
+      "version": "20260921171053",
+      "name": "create_request_experimental_cycle_preemption"
+    },
+    {
+      "version": "20260921171106",
+      "name": "create_release_experimental_cycle_if_owned"
+    },
+    {
+      "version": "20260921171121",
+      "name": "create_prepare_experimental_outbox_entry"
+    },
+    {
+      "version": "20260921171135",
+      "name": "update_claim_outbox_entry_with_ownership"
+    },
+    {
+      "version": "20260921171149",
+      "name": "security_hardening_ack_and_commit_rpcs"
+    },
+    {
+      "version": "20260921171220",
+      "name": "security_hardening_cycle_rpcs"
+    },
+    {
+      "version": "20260922104752",
+      "name": "contact_and_conversation_memory_00_05"
+    },
+    {
+      "version": "20260922193849",
+      "name": "drop_subagent_definitions"
+    },
+    {
+      "version": "20260923062000",
+      "name": "recover_stale_autopilot_cycles"
+    },
+    {
+      "version": "20260923120000",
+      "name": "idx_conversations_last_message_at"
+    },
+    {
+      "version": "20260923140000",
+      "name": "authorize_manual_autopilot_retry"
+    },
+    {
+      "version": "20260923150000",
+      "name": "scope_manual_retry_outbox_validation"
+    },
+    {
+      "version": "20260923160000"
+    },
+    {
+      "version": "20260923170000"
+    },
+    {
+      "version": "20260924150525",
+      "name": "durable_outbox_and_activation_watermark"
+    },
+    {
+      "version": "20260924160503",
+      "name": "fix_guilherme_outbox_replay_idempotency"
+    },
+    {
+      "version": "20260924165558",
+      "name": "fix_inbound_timestamp_cast_and_autopilot_arm_status"
+    },
+    {
+      "version": "20260925182415",
+      "name": "atomic_stale_cycle_recovery"
+    },
+    {
+      "version": "20260925193449",
+      "name": "protect_sensitive_inbound_messages"
+    },
+    {
+      "version": "20260925193851",
+      "name": "restrict_manual_review_rpc"
+    },
+    {
+      "version": "20260925221536",
+      "name": "restrict_single_operator_access"
+    },
+    {
+      "version": "20260925221858",
+      "name": "route_privileged_rpc_calls"
+    },
+    {
+      "version": "20260925222041",
+      "name": "harden_function_paths_and_indexes"
+    },
+    {
+      "version": "20260925223542",
+      "name": "restore_anonymous_app_access"
+    },
+    {
+      "version": "20260925233201",
+      "name": "autopilot_cron_vault_auth"
+    },
+    {
+      "version": "20260926102044",
+      "name": "20260926100734_restore_pre_refactor_pause_rpc_compatibility"
+    },
+    {
+      "version": "20260926145923",
+      "name": "fix_stage_completed_rules_default_object"
+    },
+    {
+      "version": "20260926212713",
+      "name": "brain_decision_outbox_sessions"
+    },
+    {
+      "version": "20260926235806",
+      "name": "brain_late_recovery_and_manual_facts"
+    },
+    {
+      "version": "20260927005646",
+      "name": "brain_decision_delivery_independence"
+    },
+    {
+      "version": "20260927011238",
+      "name": "brain_action_confirmed_memory_projection"
+    },
+    {
+      "version": "20260927045446",
+      "name": "restore_canonical_chat_stage_catalog"
+    },
+    {
+      "version": "20260927050332",
+      "name": "migrate_legacy_profession_objective_progress"
+    },
+    {
+      "version": "20260927113736",
+      "name": "separate_autopilot_runtime_pause_and_projection_patch"
+    },
+    {
+      "version": "20260928095847",
+      "name": "cap_autopilot_debounce_window"
+    },
+    {
+      "version": "20260928100551",
+      "name": "finalize_brain_architecture_alignment"
+    },
+    {
+      "version": "20260928113937",
+      "name": "migrate_legacy_profession_goal_progress"
+    },
+    {
+      "version": "20260928173222",
+      "name": "graceful_global_autopilot_shutdown"
+    },
+    {
+      "version": "20260928173256",
+      "name": "finalize_graceful_global_autopilot_drains"
+    },
+    {
+      "version": "20260928182209",
+      "name": "scale_autopilot_realtime_projection"
+    },
+    {
+      "version": "20260928194450",
+      "name": "reduce_brain_runtime_pressure"
+    },
+    {
+      "version": "20260928194657",
+      "name": "dedupe_autopilot_projection_updates"
+    },
+    {
+      "version": "20260928200148",
+      "name": "create_canonical_autopilot_settings"
+    },
+    {
+      "version": "20260928233539",
+      "name": "openai_conversation_runtime"
+    },
+    {
+      "version": "20260929010026",
+      "name": "pause_waiting_human_scheduler"
+    },
+    {
+      "version": "20260929115942",
+      "name": "enforce_authoritative_response_delay"
+    },
+    {
+      "version": "20260929124408",
+      "name": "refine_relationship_history_objective"
+    },
+    {
+      "version": "20260929132218",
+      "name": "finalize_workflow_on_last_objective"
+    },
+    {
+      "version": "20260929132600",
+      "name": "backfill_completed_workflows"
+    },
+    {
+      "version": "20260929153753",
+      "name": "backfill_completed_intermediate_stage_transitions"
+    },
+    {
+      "version": "20260929172257",
+      "name": "remote_web_push_critical_alerts"
+    },
+    {
+      "version": "20260930022154",
+      "name": "optimize_instagram_webhook_hot_path"
+    },
+    {
+      "version": "20260930022209",
+      "name": "queue_autopilot_inbound_work"
+    },
+    {
+      "version": "20260930022221",
+      "name": "coalesce_autopilot_projection_updates"
+    },
+    {
+      "version": "20260930022229",
+      "name": "optimize_autopilot_scheduler_lanes"
+    },
+    {
+      "version": "20260930022239",
+      "name": "queue_instagram_profile_enrichment"
+    },
+    {
+      "version": "20260930022248",
+      "name": "ingest_instagram_inbound_hot_path"
+    },
+    {
+      "version": "20260930022258",
+      "name": "optimize_instagram_seen_hot_path"
+    },
+    {
+      "version": "20260930022321",
+      "name": "ingest_instagram_echo_hot_path"
+    },
+    {
+      "version": "20260930022752",
+      "name": "harden_autopilot_internal_rpc_grants"
+    },
+    {
+      "version": "20260930034920",
+      "name": "allow_started_outbox_batch_during_new_inbound"
+    },
+    {
+      "version": "20260930183821",
+      "name": "instagram_media_understanding_and_observation"
+    },
+    {
+      "version": "20260930192243",
+      "name": "instagram_message_reactions"
+    },
+    {
+      "version": "20260930200357",
+      "name": "raffle_commercial_status"
+    },
+    {
+      "version": "20260930203613",
+      "name": "raffle_report_tracking"
+    },
+    {
+      "version": "20261001022350",
+      "name": "remove_brain_operator_login"
+    },
+    {
+      "version": "20261001144628",
+      "name": "prevent_outbox_scheduler_starvation"
+    },
+    {
+      "version": "20261001150851",
+      "name": "finalize_raffle_after_audio_delivery"
+    },
+    {
+      "version": "20261001190230",
+      "name": "remove_tinder_integration"
+    },
+    {
+      "version": "20261002024542",
+      "name": "add_whatsapp_channel_support"
+    },
+    {
+      "version": "20261002030842",
+      "name": "add_whatsapp_audio_variant"
+    },
+    {
+      "version": "20261002115009",
+      "name": "whatsapp_sticker_vault"
+    },
+    {
+      "version": "20261002181850",
+      "name": "add_whatsapp2_channel_support"
+    },
+    {
+      "version": "20261002181905",
+      "name": "whatsapp2_delivery_queue"
+    },
+    {
+      "version": "20261002212529",
+      "name": "whatsapp2_inbound_queue"
+    },
+    {
+      "version": "20261002212548",
+      "name": "whatsapp2_transcription_queue"
+    },
+    {
+      "version": "20261002212557",
+      "name": "whatsapp2_backpressure_limits"
+    },
+    {
+      "version": "20261002213139",
+      "name": "fix_whatsapp2_claim_ambiguity"
+    },
+    {
+      "version": "20261002213732",
+      "name": "index_whatsapp2_transcription_conversation"
+    },
+    {
+      "version": "20261002214022",
+      "name": "whatsapp2_scale_retention"
+    },
+    {
+      "version": "20261002214849",
+      "name": "harden_whatsapp2_retention"
+    },
+    {
+      "version": "20261002224255",
+      "name": "whatsapp2_outbound_audio_transcription_trigger"
+    },
+    {
+      "version": "20261003194541",
+      "name": "whatsapp2_universal_attachment_contract"
+    },
+    {
+      "version": "20261003200236",
+      "name": "whatsapp2_native_message_metadata"
+    },
+    {
+      "version": "20261005013711",
+      "name": "whatsapp_status_posts"
+    },
+    {
+      "version": "20261005041506",
+      "name": "cleanup_legacy_tinder_badoo_and_whatsapp1"
+    },
+    {
+      "version": "20261005152914",
+      "name": "whatsapp_status_evergreen_recipient_history"
+    },
+    {
+      "version": "20261006022055",
+      "name": "conversation_schedules"
+    },
+    {
+      "version": "20261006022723",
+      "name": "index_conversation_schedule_runs_current_stage"
+    },
+    {
+      "version": "20261006030626",
+      "name": "remove_legacy_global_brain_model_and_timing"
+    },
+    {
+      "version": "20261006033859",
+      "name": "manual_conversation_schedule_switch"
+    },
+    {
+      "version": "20261006034038",
+      "name": "fix_manual_schedule_switch_state_projection"
+    },
+    {
+      "version": "20261006050716",
+      "name": "match_tinder_secure_connection"
+    },
+    {
+      "version": "20261006052220",
+      "name": "remove_stage_vault_legacy"
+    },
+    {
+      "version": "20261006052630",
+      "name": "match_tinder_web_session_identity"
+    },
+    {
+      "version": "20261006052656",
+      "name": "match_tinder_device_identity_and_state"
+    },
+    {
+      "version": "20261006060603",
+      "name": "connection_window_arsenal"
+    },
+    {
+      "version": "20261006101932",
+      "name": "harden_connection_window_runtime"
+    },
+    {
+      "version": "20261006133505",
+      "name": "manual_only_schedule_completion"
+    },
+    {
+      "version": "20261006164856",
+      "name": "restart_autopilot_runtime_atomic"
+    },
+    {
+      "version": "20261007024535",
+      "name": "tinder_multichannel_identities"
+    },
+    {
+      "version": "20261007024549",
+      "name": "tinder_background_sync_brain_reentry"
+    },
+    {
+      "version": "20261007024553",
+      "name": "whatsapp2_delivery_save_contact"
+    },
+    {
+      "version": "20261007024556",
+      "name": "harden_advisor_rls_security"
+    },
+    {
+      "version": "20261007024600",
+      "name": "harden_tinder_sessions_and_identity_rpc"
+    },
+    {
+      "version": "20261007024723",
+      "name": "revoke_public_channel_identity_table_access"
+    },
+    {
+      "version": "20261007040014",
+      "name": "connection_window_video_assets"
+    },
+    {
+      "version": "20261007044734",
+      "name": "activate_autopilot_runtime_after_restart"
+    },
+    {
+      "version": "20261007112714",
+      "name": "whatsapp2_account_scoped_delivery"
+    },
+    {
+      "version": "20261007112720",
+      "name": "whatsapp2_account_scoped_inbound_queue"
+    },
+    {
+      "version": "20261007113946",
+      "name": "recover_confirmed_brain_delivery_actions"
+    },
+    {
+      "version": "20261008020018",
+      "name": "harden_whatsapp_delivery_and_scheduler"
+    },
+    {
+      "version": "20261008020021",
+      "name": "respect_automation_pause_in_outbox_claim"
+    },
+    {
+      "version": "20261008111042",
+      "name": "restart_clears_scheduling_and_stale_runtime"
+    }
+  ],
+  "siteUrl": "https://vendeo-e755e.web.app",
+  "siteAssets": [
+    {
+      "path": "/index.html",
+      "sha256": "f961c6eab19eb31bdfac3ee63a1b6373a5799d5af25c913fb6e65d5584e55eed"
+    },
+    {
+      "path": "/_next/static/chunks/87c73c54-b297d91a2f6dd85e.js",
+      "sha256": "303c260a1be7b481d1f7a68bd833852363d7673d4718dc90a9965226b7f26269"
+    },
+    {
+      "path": "/_next/static/chunks/730-cecfb59810c76d2c.js",
+      "sha256": "9f988390f95743839847ed40950885aa0e9ebe36a2e261ca860e91d0c29648fc"
+    },
+    {
+      "path": "/_next/static/chunks/main-app-3d969115ca392489.js",
+      "sha256": "5b357ab28e274669aa4c9f9a6d74d94a0cefecd22f0fccbead4882ffba4bb900"
+    },
+    {
+      "path": "/_next/static/chunks/app/layout-03afb257638c41cd.js",
+      "sha256": "2fa67d40d7cc929cde6699fb076f9b1cf955c781fe50aad347f4562c6b500b52"
+    },
+    {
+      "path": "/_next/static/chunks/75504863-e11073fc6cf364e3.js",
+      "sha256": "28bfbe83fc1a5134ff8e560c912250335e4c06c25d8db789f81e3454d513184d"
+    },
+    {
+      "path": "/_next/static/chunks/703-c5fa5e81cb2d6cb6.js",
+      "sha256": "035ba9a181ff9490395b7e86b4c0e7273c34b909ed5256fac6c615babf1fdd7e"
+    },
+    {
+      "path": "/_next/static/chunks/app/page-116445d51cf31c31.js",
+      "sha256": "fc47f4525f0e374363947d7ab2ff198ed248a9008d1f9d3699e6bd0917348ae7"
+    },
+    {
+      "path": "/_next/static/chunks/polyfills-42372ed130431b0a.js",
+      "sha256": "0973c1d64c88adc8e3c950410cb58b288f72118d5965b78049438deb8f2f9683"
+    },
+    {
+      "path": "/_next/static/chunks/webpack-c0c381ace6ae6966.js",
+      "sha256": "00dbf3834bb3861b7661b8bed3c1db88737cdd25911be943c1a1aea1617064e4"
+    }
+  ]
+}

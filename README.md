@@ -1,4 +1,8 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Vendeo
+
+Base de produção consolidada em 08/10/2026: frontend Firebase, API Supabase v526, MCP v33 e gateway WhatsApp. Veja [o registro de consolidação](docs/deployments/2026-10-08-production-unification.md) antes de recuperar alterações de branches antigas.
+
+Para conferir a base: `node scripts/verify-production-baseline.mjs --live`. Para validar a automação: `node scripts/test-automation-safety.mjs`. O registro documenta também as pendências da suíte histórica completa. O Jev permanece como trabalho futuro preservado em backup.
 
 ## Getting Started
 

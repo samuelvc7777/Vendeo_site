@@ -3,14 +3,11 @@ export function brainOperatorAllowedOrigin(request: Request): boolean {
   const apikey = request.headers.get("apikey");
   const expectedAnonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
 
-  // Se a requisição carrega a chave anônima oficial do Supabase enviada pelo app, autoriza imediatamente
-  if (apikey && (apikey === expectedAnonKey || apikey.length > 20)) {
-    return true;
-  }
-
-  // Se for uma requisição nativa sem header origin (ex: WebView / PWA standalone / fetch interno)
+  // A chave anon é pública e não deve liberar uma origem arbitrária.
+  // Para chamadas nativas que realmente omitem Origin, só aceitamos a chave
+  // oficial configurada; uma chave de tamanho plausível não é credencial.
   if (!origin) {
-    return true;
+    return Boolean(expectedAnonKey && apikey === expectedAnonKey);
   }
 
   const configuredOrigins = (Deno.env.get("BRAIN_OPERATOR_ALLOWED_ORIGINS") || "")
@@ -32,10 +29,9 @@ export function brainOperatorAllowedOrigin(request: Request): boolean {
   try {
     const url = new URL(origin);
     const host = url.hostname;
-    // Permite loopback, subdomínios do projeto no Firebase e túneis Cloudflare
+    // Permite loopback e redes privadas locais usadas pelo app.
     if (host === "localhost" || host === "127.0.0.1") return true;
-    if (host.endsWith(".web.app") || host.endsWith(".firebaseapp.com") || host.endsWith(".trycloudflare.com")) return true;
-    // Permite redes privadas locais e VPN (Tailscale 100.*, LAN 192.168.*, 10.*, 172.16-31.*)
+    // Redes privadas e VPN (Tailscale 100.*, LAN 192.168.*, 10.*, 172.16-31.*)
     if (/^100\.\d+\.\d+\.\d+$/.test(host)) return true;
     if (/^192\.168\.\d+\.\d+$/.test(host)) return true;
     if (/^10\.\d+\.\d+\.\d+$/.test(host)) return true;

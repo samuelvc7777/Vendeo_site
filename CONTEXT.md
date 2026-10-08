@@ -13,6 +13,15 @@ Não escreve fala, não escolhe objetivo, não escolhe áudio e não decide o ru
 **Session do Brain**
 Uma sessão persistente por conversa enquanto compatível com a versão atual. Uma session nova recebe bootstrap compacto de histórico recente e fatos manuais explicitamente salvos para sessões futuras.
 
+**Identidade canônica da conversa**
+Uma mesma relação com uma pessoa pode continuar por mais de um canal. Quando os canais forem vinculados, histórico e progresso pertencem à mesma identidade de conversa; IDs de match/chat são identidades externas do canal, não novas pessoas por si só. Coincidência de telefone, sozinha, não autoriza mesclar identidades.
+
+**Canal da mensagem e canal da ação**
+O canal de entrada é um fato sobre onde a mensagem chegou. O Brain decide o destino semântico das ações de resposta. O backend persiste e entrega cada ação pelo adaptador correspondente e retorna o resultado real do provider.
+
+**Transferência de canal**
+É a associação operacional de um novo canal à conversa existente. A tentativa, confirmação, falha ou incerteza pertencem ao estado durável da ação. Transferência para um canal de saída só é confirmada após evidência de entrega definida pelo provider; falha ou incerteza retornam ao Brain como dados e não como conclusão semântica.
+
 **Turno do Brain**
 Unidade canônica de decisão. Timeout local de espera não encerra o turno do provedor. Turnos tardios são recuperados pelo mesmo provider turn e nunca recriados semanticamente pelo backend.
 

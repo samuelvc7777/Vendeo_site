@@ -68,6 +68,27 @@ const gatewayPath = path.join(
 );
 const gateway = fs.readFileSync(gatewayPath, "utf8");
 
+const accountScopedMigrationPath = findMigration(
+  "whatsapp2_account_scoped_inbound_queue.sql",
+);
+const accountScopedSql = fs.readFileSync(accountScopedMigrationPath, "utf8");
+
+test("workers isolam a fila de entrada por conta sem perder os limites globais", () => {
+  assert.match(accountScopedSql, /gateway_account_id text not null default 'primary'/i);
+  assert.match(accountScopedSql, /primary key \(gateway_account_id, message_id\)/i);
+  assert.match(accountScopedSql, /on conflict \(gateway_account_id, message_id\)/i);
+  assert.match(accountScopedSql, /claim_whatsapp2_inbound_jobs_for_account/i);
+  assert.match(accountScopedSql, /j\.gateway_account_id = p_gateway_account_id/i);
+  assert.match(accountScopedSql, /whatsapp2_inbound_global_claim/i);
+  assert.match(accountScopedSql, /v_media_available := greatest\(0, 1 - v_media_inflight\)/i);
+  assert.match(accountScopedSql, /complete_whatsapp2_inbound_job_for_account/i);
+  assert.match(accountScopedSql, /reschedule_whatsapp2_inbound_job_for_account/i);
+
+  const accountClaimStart = gateway.indexOf('"claim_whatsapp2_inbound_attachment_jobs_for_account"');
+  assert.ok(accountClaimStart >= 0);
+  assert.match(gateway.slice(accountClaimStart, accountClaimStart + 300), /p_gateway_account_id: ACCOUNT_ID/);
+});
+
 test("WhatsApp 2 listener only enqueues inbound work", () => {
   const start = gateway.indexOf('next.on("message", (message) => {');
   const end = gateway.indexOf('next.on("message_create"', start);

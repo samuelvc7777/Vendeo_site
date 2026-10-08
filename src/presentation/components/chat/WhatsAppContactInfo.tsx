@@ -16,6 +16,7 @@ import {
   User,
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
+import { whatsappProviderIdFromConversationId } from "./whatsapp2-client";
 import type { ChatStage, StageObjective } from "@/domain/entities/ChatStage";
 import type { ChatStageDetail } from "@/application/use-cases/ManageChatProgressUseCase";
 
@@ -132,7 +133,9 @@ export function WhatsAppContactInfo({
     };
   }, [conversation.id]);
 
-  const phone = formatWhatsAppPhone(dbRow?.contact_id || conversation.username || conversation.id.replace(/^wa2?:/, ""));
+  const phone = formatWhatsAppPhone(
+    dbRow?.contact_id || conversation.username || whatsappProviderIdFromConversationId(conversation.id),
+  );
   const rawAvatar = String(conversation.avatar || "").trim();
   const hasRealAvatar = /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
   const contactName = String(conversation.fullName || "").trim();

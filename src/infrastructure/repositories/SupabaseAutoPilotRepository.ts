@@ -2,6 +2,7 @@ import { IAutoPilotRepository } from "@/domain/repositories/IAutoPilotRepository
 import { AutoPilotConfig, AutoPilotChatState } from "@/domain/entities/AutoPilot";
 import { getSupabaseBrowserClient } from "../supabase/client";
 import { getSupabaseServerClient } from "../supabase/server";
+import { autopilotApiFetch } from "../http/autopilotApiFetch";
 
 const DEFAULT_CONFIG: AutoPilotConfig = {
   isEnabledGlobally: true,
@@ -175,12 +176,19 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
 
     try {
       const item = { ...state } as AutoPilotChatState;
-      const { data, error } = await (client as any).rpc("patch_autopilot_projection_state_atomic", {
-        p_conversation_id: item.conversationId,
-        p_state_patch: item,
-        ...(expectedStateUpdatedAt ? { p_expected_state_updated_at: expectedStateUpdatedAt } : {}),
+      const response = await autopilotApiFetch("/api/autopilot/state-patch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: item.conversationId,
+          statePatch: item,
+          expectedStateUpdatedAt: expectedStateUpdatedAt || null,
+        }),
       });
-      if (error || data?.success === false) throw error || new Error(data?.reason || "autopilot_projection_patch_failed");
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.success !== true) {
+        throw new Error(data?.error || `autopilot_projection_patch_failed_http_${response.status}`);
+      }
       if (data?.state && typeof data.state === "object") {
         const canonical = {
           ...data.state,

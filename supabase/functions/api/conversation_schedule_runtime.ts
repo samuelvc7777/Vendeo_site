@@ -182,6 +182,7 @@ export function formatConversationScheduleRuntimeForBrain(
       `FASE_TEMPORAL=${schedule.temporalPhase?.label || "não definida"}`,
       `FASE_ORIENTACAO=${schedule.temporalPhase?.guidance || "manter naturalidade"}`,
       "ARSENAL_REGRA: arsenal é caixa de ferramentas opcional, nunca checklist. Não force recurso e não tente consumir tudo.",
+      "ARSENAL_TEMPO_E_VERDADE: fotos e áudios precisam de contexto temporal cadastrado e compatível; a rotina é apenas compatibilidade, não prova presença. Trate lembranças como passado. Afirmações de presença atual exigem evidência recente do mesmo dia/turno. Evento específico exige validade vigente e confirmação contextual.",
     );
   } else {
     lines.push(

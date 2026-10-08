@@ -1,23 +1,40 @@
-export type WhatsApp2DeliveryKind = "text" | "audio" | "image" | "sticker";
+export type WhatsApp2DeliveryKind = "text" | "audio" | "image" | "video" | "sticker";
 
 export interface WhatsApp2QueuedDeliveryParams {
   supabase: any;
   queueId: string;
   conversationId: string;
+  gatewayAccountId?: string;
   recipientId: string;
   kind: WhatsApp2DeliveryKind;
   text?: string;
   mediaUrl?: string;
   voiceNote?: boolean;
   replyToMessageId?: string | null;
+  saveRecipientContact?: boolean;
+  recipientContactName?: string;
   timeoutMs?: number;
 }
+
+export function whatsapp2AccountIdFromConversationId(conversationId: string): string {
+  const match = /^wa2:([^:]+):/.exec(String(conversationId || "").trim());
+  return match?.[1] || "primary";
+}
+
+export function whatsapp2ProviderIdFromConversationId(conversationId: string): string {
+  return String(conversationId || "").trim()
+    .replace(/^wa2:(?:account-\d{8,15}:)?/i, "");
+}
+
+export type WhatsApp2ContactSaveStatus = "not_requested" | "not_sent" | "pending" | "saved" | "failed";
 
 export interface WhatsApp2QueuedDeliveryResult {
   success: boolean;
   providerMessageId?: string;
   isUncertain?: boolean;
   error?: string;
+  contactSaveStatus?: WhatsApp2ContactSaveStatus;
+  contactSaveError?: string;
 }
 
 function sleep(ms: number) {
@@ -31,12 +48,15 @@ export async function enqueueAndWaitWhatsApp2Delivery(
     supabase,
     queueId,
     conversationId,
+    gatewayAccountId = whatsapp2AccountIdFromConversationId(conversationId),
     recipientId,
     kind,
     text,
     mediaUrl,
     voiceNote = false,
     replyToMessageId = null,
+    saveRecipientContact = false,
+    recipientContactName = "",
     timeoutMs = 18_000,
   } = params;
 
@@ -46,15 +66,23 @@ export async function enqueueAndWaitWhatsApp2Delivery(
 
   const { data: existing, error: existingError } = await supabase
     .from("whatsapp2_delivery_queue")
-    .select("id,status,provider_message_id,last_error")
+    .select("id,status,provider_message_id,last_error,recipient_contact_save_status,recipient_contact_save_error,gateway_account_id")
     .eq("id", queueId)
     .maybeSingle();
 
   if (existingError) {
     return { success: false, error: existingError.message || "whatsapp2_delivery_lookup_failed" };
   }
+  if (existing && String(existing.gateway_account_id || "primary") !== gatewayAccountId) {
+    return { success: false, error: "whatsapp2_delivery_account_mismatch" };
+  }
   if (existing?.status === "sent" && existing.provider_message_id) {
-    return { success: true, providerMessageId: existing.provider_message_id };
+    return {
+      success: true,
+      providerMessageId: existing.provider_message_id,
+      contactSaveStatus: existing.recipient_contact_save_status || "not_requested",
+      contactSaveError: existing.recipient_contact_save_error || undefined,
+    };
   }
   if (existing?.status === "uncertain") {
     return {
@@ -70,12 +98,16 @@ export async function enqueueAndWaitWhatsApp2Delivery(
       .insert({
         id: queueId,
         conversation_id: conversationId,
+        gateway_account_id: gatewayAccountId,
         recipient_id: recipientId,
         kind,
         text_content: text || null,
         media_url: mediaUrl || null,
         voice_note: voiceNote === true,
         reply_to_message_id: replyToMessageId || null,
+        save_recipient_contact: saveRecipientContact === true,
+        recipient_contact_name: recipientContactName || null,
+        recipient_contact_save_status: saveRecipientContact ? "pending" : "not_requested",
         status: "pending",
         attempts: 0,
         created_at: new Date().toISOString(),
@@ -92,12 +124,18 @@ export async function enqueueAndWaitWhatsApp2Delivery(
       .from("whatsapp2_delivery_queue")
       .update({
         status: "pending",
+        gateway_account_id: gatewayAccountId,
         recipient_id: recipientId,
         kind,
         text_content: text || null,
         media_url: mediaUrl || null,
         voice_note: voiceNote === true,
         reply_to_message_id: replyToMessageId || null,
+        save_recipient_contact: saveRecipientContact === true,
+        recipient_contact_name: recipientContactName || null,
+        recipient_contact_save_status: saveRecipientContact ? "pending" : "not_requested",
+        recipient_contact_save_error: null,
+        recipient_contact_saved_at: null,
         last_error: null,
         claimed_by: null,
         claimed_at: null,
@@ -115,19 +153,27 @@ export async function enqueueAndWaitWhatsApp2Delivery(
     await sleep(350);
     const { data: row, error } = await supabase
       .from("whatsapp2_delivery_queue")
-      .select("status,provider_message_id,last_error")
+      .select("status,provider_message_id,last_error,recipient_contact_save_status,recipient_contact_save_error,gateway_account_id")
       .eq("id", queueId)
       .maybeSingle();
 
     if (error) {
-      return { success: false, error: error.message || "whatsapp2_delivery_poll_failed" };
+      return { success: false, isUncertain: true, error: error.message || "whatsapp2_delivery_poll_failed" };
     }
     if (!row) continue;
+    if (String(row.gateway_account_id || "primary") !== gatewayAccountId) {
+      return { success: false, error: "whatsapp2_delivery_account_mismatch" };
+    }
     if (row.status === "sent") {
       if (!row.provider_message_id) {
         return { success: false, isUncertain: true, error: "whatsapp2_sent_without_provider_id" };
       }
-      return { success: true, providerMessageId: row.provider_message_id };
+      return {
+        success: true,
+        providerMessageId: row.provider_message_id,
+        contactSaveStatus: row.recipient_contact_save_status || "not_requested",
+        contactSaveError: row.recipient_contact_save_error || undefined,
+      };
     }
     if (row.status === "failed" || row.status === "cancelled") {
       return { success: false, error: row.last_error || `whatsapp2_delivery_${row.status}` };

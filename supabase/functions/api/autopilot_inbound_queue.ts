@@ -5,6 +5,11 @@ import { resolveInboundImageMessage } from "./image_analysis.ts";
 import { isActionableInboundMessage } from "./ConversationQualityGate.ts";
 import { enqueueOpenAiConversationMessageSync } from "./openai_conversation_runtime.ts";
 import { ensureConversationScheduleRuntime } from "./conversation_schedule_runtime.ts";
+import {
+  enqueuePendingTransferBrainReentries,
+  loadPendingTransferBrainEvents,
+  markTransferBrainEventsProcessed,
+} from "./channel_transfer_reentry.ts";
 
 interface ClaimedInboundJob {
   conversation_id: string;
@@ -293,6 +298,13 @@ async function processClaimedInboundJob(
 
     const canonicalStatus = state?.status || null;
     const hasMediaObservation = Boolean(String(message?.media_operator_observation || "").trim());
+    let transferReentryEvents;
+    try {
+      transferReentryEvents = await loadPendingTransferBrainEvents(supabase, job.conversation_id);
+    } catch (reentryLoadError) {
+      await rescheduleJob(supabase, workerToken, job, retryAt(30), reentryLoadError);
+      return;
+    }
     const isHardPaused =
       conversation?.ai_auto_respond !== true ||
       state?.is_enabled === false ||
@@ -300,8 +312,12 @@ async function processClaimedInboundJob(
       canonicalStatus === "paused_handoff" ||
       canonicalStatus === "paused_guardrail";
 
-    if (isHardPaused || message?.is_mine === true) {
-      await completeJob(supabase, workerToken, job);
+    if (isHardPaused || (message?.is_mine === true && transferReentryEvents.length === 0)) {
+      if (transferReentryEvents.length > 0) {
+        await rescheduleJob(supabase, workerToken, job, retryAt(60), "transfer_reentry_waiting_for_autopilot_enablement");
+      } else {
+        await completeJob(supabase, workerToken, job);
+      }
       return;
     }
 
@@ -310,6 +326,10 @@ async function processClaimedInboundJob(
     // uma única vez, mas NÃO alteramos o HUD e NÃO chamamos o Brain até o operador
     // encerrar o handoff existente.
     if (canonicalStatus === "waiting_human" && !hasMediaObservation) {
+      if (transferReentryEvents.length > 0) {
+        await rescheduleJob(supabase, workerToken, job, retryAt(60), "transfer_reentry_waiting_for_human_resolution");
+        return;
+      }
       let waitingMediaBatch: any[] = [];
       try {
         waitingMediaBatch = await loadCurrentInboundMediaBatch(
@@ -374,22 +394,24 @@ async function processClaimedInboundJob(
     let hasActionableMediaInBatch = false;
     let mediaBatch: any[] = [];
 
-    try {
-      mediaBatch = await loadCurrentInboundMediaBatch(
-        supabase,
-        job.conversation_id,
-        conversation?.ai_debounce_started_at || null,
-        message,
-      );
-    } catch (mediaBatchError) {
-      await rescheduleJob(
-        supabase,
-        workerToken,
-        job,
-        retryAt(15),
-        mediaBatchError,
-      );
-      return;
+    if (transferReentryEvents.length === 0) {
+      try {
+        mediaBatch = await loadCurrentInboundMediaBatch(
+          supabase,
+          job.conversation_id,
+          conversation?.ai_debounce_started_at || null,
+          message,
+        );
+      } catch (mediaBatchError) {
+        await rescheduleJob(
+          supabase,
+          workerToken,
+          job,
+          retryAt(15),
+          mediaBatchError,
+        );
+        return;
+      }
     }
 
     for (const pendingMedia of mediaBatch) {
@@ -491,7 +513,7 @@ async function processClaimedInboundJob(
       await enqueueInboundMediaSync(supabase, job.conversation_id, message);
     }
 
-    const actionable =
+    const actionable = transferReentryEvents.length > 0 ||
       hasActionableMediaInBatch ||
       isActionableInboundMessage({
         text: inputText,
@@ -593,6 +615,7 @@ async function processClaimedInboundJob(
           ? resolvedAudio.transcript || undefined
           : undefined,
       },
+      internalSystemEvents: transferReentryEvents,
     });
 
     const delayTrace = Array.isArray(result?.trace)
@@ -613,6 +636,14 @@ async function processClaimedInboundJob(
     }
 
     if (result?.handled === true) {
+      if (transferReentryEvents.length > 0) {
+        try {
+          await markTransferBrainEventsProcessed(supabase, transferReentryEvents);
+        } catch (reentryCompleteError) {
+          await rescheduleJob(supabase, workerToken, job, retryAt(15), reentryCompleteError);
+          return;
+        }
+      }
       await completeJob(supabase, workerToken, job);
       return;
     }
@@ -631,7 +662,11 @@ async function processClaimedInboundJob(
     }
 
     if (errorCode === "technical_retry_exhausted") {
-      await completeJob(supabase, workerToken, job);
+      if (transferReentryEvents.length > 0) {
+        await rescheduleJob(supabase, workerToken, job, retryAt(300), "transfer_reentry_brain_retry_exhausted");
+      } else {
+        await completeJob(supabase, workerToken, job);
+      }
       return;
     }
 
@@ -664,6 +699,13 @@ export async function processAutopilotInboundQueue(params: {
   limit?: number;
 }): Promise<{ claimed: number }> {
   const limit = Math.max(1, Math.min(6, Number(params.limit || 3)));
+
+  try {
+    const requeued = await enqueuePendingTransferBrainReentries(params.supabase, 50);
+    if (requeued > 0) console.log(`[TransferReentry] Eventos recuperados e enfileirados: ${requeued}`);
+  } catch (reentryQueueError) {
+    console.warn("[TransferReentry] Falha ao recuperar eventos pendentes:", reentryQueueError);
+  }
 
   try {
     const { data: transitionResult, error: transitionError } = await params.supabase.rpc(

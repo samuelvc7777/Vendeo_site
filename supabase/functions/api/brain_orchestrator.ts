@@ -4,7 +4,16 @@
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
 import { publishAutoPilotState, activity } from "./autopilot_state.ts";
-import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
+import {
+  enqueueAndWaitWhatsApp2Delivery,
+  whatsapp2ProviderIdFromConversationId,
+  type WhatsApp2QueuedDeliveryParams,
+  type WhatsApp2QueuedDeliveryResult,
+} from "./whatsapp2_gateway.ts";
+import { executeChannelTransfer } from "./channel_transfer_service.ts";
+import { queueTransferBrainReentry } from "./channel_transfer_reentry.ts";
+import { dispatchOutboundAction } from "./channel_dispatcher.ts";
+import { normalizePhoneNumber } from "./channel_identity.ts";
 import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
 import {
   detectGreetingRepeat,
@@ -12,7 +21,7 @@ import {
   shouldRequireGreetingReciprocity,
   type RecentGreetingState,
 } from "./greeting_repeat_guard.ts";
-import { resolveCurrentStageId } from "../_shared/stage_authority.ts";
+import { resolveCurrentStageId } from "./_shared/stage_authority.ts";
 import {
   ACTIVE_CYCLE_TTL_SECONDS,
   AGENT_LOCAL_WAIT_MS,
@@ -819,6 +828,7 @@ export interface CanonicalMessage {
   timestamp: string;
   type: "text" | "audio" | "image" | "video" | "file";
   text: string;
+  channel?: "instagram" | "whatsapp" | "whatsapp2" | "tinder" | null;
   replyToMessageId?: string | null;
   mediaUrl?: string | null;
   attachment?: CanonicalAttachment | null;
@@ -837,7 +847,8 @@ export interface OutboxEntry {
   conversationId: string;
   idempotencyKey: string;
   content: string;
-  messageType: "text" | "audio" | "image";
+  messageType: "text" | "audio" | "image" | "video" | "transfer_channel";
+  channel?: "instagram" | "whatsapp" | "whatsapp2" | "tinder" | null;
   status: OutboxStatus;
   attempts: number;
   maxAttempts: number;
@@ -854,7 +865,7 @@ export interface OutboxEntry {
   vaultAudioId?: string | null;
   replyToMessageId?: string | null;
   payload?: Record<string, unknown>;
-  actionType?: "text" | "audio" | "image";
+  actionType?: "text" | "audio" | "image" | "video" | "transfer_channel";
   claimedBy?: string | null;
 }
 
@@ -863,13 +874,45 @@ function outboxBrainActionId(entry: OutboxEntry): string | undefined {
   return typeof actionId === "string" && actionId.length > 0 ? actionId : undefined;
 }
 
+export function buildSentMessageMirrorPayload(
+  entry: OutboxEntry,
+  providerMessageId: string,
+  conversationChannel = "instagram",
+  timestamp = new Date().toISOString(),
+): Record<string, unknown> {
+  const actionType = entry.actionType || entry.payload?.actionType;
+  const channel = actionType === "transfer_channel"
+    ? String(entry.payload?.targetChannel || entry.channel || "whatsapp2")
+    : String(entry.channel || entry.payload?.channel || conversationChannel || "instagram");
+
+  const messageId = channel === "tinder" && !providerMessageId.startsWith("tinder_msg_")
+    ? `tinder_msg_${providerMessageId}`
+    : providerMessageId;
+
+  return {
+    id: messageId,
+    conversation_id: entry.conversationId,
+    sender_id: "me",
+    is_mine: true,
+    text: entry.content,
+    status: "sent",
+    channel,
+    reply_to_message_id: entry.replyToMessageId
+      || (typeof entry.payload?.replyToMessageId === "string" ? entry.payload.replyToMessageId : null),
+    created_at: timestamp,
+    timestamp,
+  };
+}
+
 export function createBrainOutboxBatch(params: {
   actions: OutboundAction[];
   conversationId: string;
   cycleId: string;
   idempotencyKey: string;
+  sourceChannel?: "instagram" | "whatsapp" | "whatsapp2" | "tinder" | null;
   resolvedAudio?: PersonaAudioAsset;
   arsenalCandidates?: ConversationScheduleRuntime["arsenalCandidates"];
+  sourceMessageIds?: string[];
   nowMs?: number;
 }): OutboxEntry[] {
   const { actions, conversationId, cycleId, idempotencyKey, resolvedAudio, arsenalCandidates = [] } = params;
@@ -878,6 +921,11 @@ export function createBrainOutboxBatch(params: {
   return actions.map((action, index) => {
     const isAudio = action.type === "audio";
     const isImage = action.type === "image";
+    const isVideo = action.type === "video";
+    const isTransfer = action.type === "transfer_channel";
+    const actionChannel = isTransfer
+      ? (action as any).channel || "whatsapp2"
+      : (action as any).channel || params.sourceChannel || null;
     const arsenalItemId = "arsenalItemId" in action ? String(action.arsenalItemId || "") : "";
     const arsenalCandidate = arsenalItemId
       ? arsenalCandidates.find((candidate) => candidate.itemId === arsenalItemId)
@@ -892,10 +940,15 @@ export function createBrainOutboxBatch(params: {
     const stepDelay = previousAudioDuration + humanDelay;
     accumulatedDelaySeconds += stepDelay;
     const imageUrl = isImage ? String(arsenalCandidate?.mediaUrl || "") : "";
+    const videoUrl = isVideo ? String(arsenalCandidate?.mediaUrl || "") : "";
     const content = isAudio
       ? resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${action.audioId}]`
       : isImage
       ? `[image:${imageUrl}]`
+      : isVideo
+      ? `[video:${videoUrl}]`
+      : isTransfer
+      ? (action as any).initialText
       : action.text;
 
     return {
@@ -904,24 +957,127 @@ export function createBrainOutboxBatch(params: {
       conversationId,
       idempotencyKey: actions.length === 1 ? idempotencyKey : `${idempotencyKey}_a${index}`,
       content,
-      messageType: isAudio ? "audio" : isImage ? "image" : "text",
+      messageType: isAudio ? "audio" : isImage ? "image" : isVideo ? "video" : isTransfer ? "transfer_channel" : "text",
+      actionType: action.type,
+      channel: actionChannel,
       status: "pending",
       attempts: 0,
       maxAttempts: 3,
       createdAt: new Date(nowMs).toISOString(),
       actionIndex: index,
       notBefore: new Date(nowMs + accumulatedDelaySeconds * 1000).toISOString(),
-      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : isImage ? (imageUrl || null) : null,
+      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : isImage ? (imageUrl || null) : isVideo ? (videoUrl || null) : null,
       audioDurationSeconds: isAudio && Number.isFinite(Number(resolvedAudio?.duration)) ? Number(resolvedAudio?.duration) : null,
-      vaultAudioId: isAudio ? (resolvedAudio?.id || action.audioId || null) : null,
-      replyToMessageId: action.replyToMessageId || null,
+      vaultAudioId: isAudio ? (resolvedAudio?.id || (action as any).audioId || null) : null,
+      replyToMessageId: (action as any).replyToMessageId || null,
       payload: {
         brainActionId: `brain_action_${cycleId}_${index}`,
         arsenalItemId: arsenalItemId || null,
-        replyToMessageId: action.replyToMessageId || null,
+        replyToMessageId: (action as any).replyToMessageId || null,
+        channel: actionChannel,
+        sourceChannel: params.sourceChannel || null,
+        actionType: action.type,
+        ...(isTransfer ? {
+          targetPhone: (action as any).targetPhone,
+          initialText: (action as any).initialText,
+          targetChannel: actionChannel,
+          sourceMessageIds: (params.sourceMessageIds || []).map(String).filter(Boolean),
+        } : {}),
       },
     };
   });
+}
+
+const OUTBOX_CHANNELS = new Set(["instagram", "whatsapp", "whatsapp2", "tinder"]);
+
+export function resolveOutboxDefaultChannel(
+  messages: Array<Pick<CanonicalMessage, "direction" | "channel" | "timestamp">>,
+  fallbackChannel?: string | null,
+): "instagram" | "whatsapp" | "whatsapp2" | "tinder" | null {
+  const latestInbound = messages
+    .filter((message) => message.direction === "inbound" && message.channel && OUTBOX_CHANNELS.has(message.channel))
+    .slice()
+    .sort((left, right) => Date.parse(String(right.timestamp || "")) - Date.parse(String(left.timestamp || "")))[0];
+  const candidate = latestInbound?.channel || fallbackChannel || null;
+  return candidate && OUTBOX_CHANNELS.has(candidate) ? candidate as "instagram" | "whatsapp" | "whatsapp2" | "tinder" : null;
+}
+
+async function resolveWhatsApp2OutboxRecipient(params: {
+  supabase: any;
+  conversationId: string;
+  recipientId: string;
+  conversation: any;
+}): Promise<string> {
+  const { data: identity, error } = await params.supabase
+    .from("conversation_channel_identities")
+    .select("external_identity_id, metadata")
+    .eq("conversation_id", params.conversationId)
+    .eq("channel", "whatsapp2")
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`whatsapp2_recipient_identity_lookup_failed: ${error.message || error}`);
+  }
+
+  const linkedIdentity = String(identity?.external_identity_id || "").trim();
+  const verifiedPhone = String(identity?.metadata?.verifiedPhone?.e164 || "").trim();
+  const normalizedVerifiedPhone = normalizePhoneNumber(verifiedPhone)?.e164;
+  if (normalizedVerifiedPhone) return normalizedVerifiedPhone;
+
+  const linkedPhone = normalizePhoneNumber(linkedIdentity)?.e164;
+  if (linkedPhone) return linkedPhone;
+
+  // WhatsApp may address a direct chat by its LID rather than a phone JID.
+  // The gateway accepts the provider JID as-is; do not reject a verified WA2
+  // identity just because it cannot be represented as E.164.
+  const linkedJid = normalizeWhatsApp2DirectJid(linkedIdentity);
+  if (linkedJid) return linkedJid;
+
+  // Legacy WhatsApp2 conversations keep their provider ID in contact_id and
+  // their canonical ID starts with wa2:. Never use that fallback for a Tinder
+  // or Instagram conversation: contact_id there belongs to the source channel.
+  if (params.conversation?.channel === "whatsapp2" || params.conversationId.startsWith("wa2:")) {
+    const legacyCandidate = String(
+      params.conversation?.contact_id || params.recipientId || whatsapp2ProviderIdFromConversationId(params.conversationId),
+    ).trim();
+    const legacyPhone = normalizePhoneNumber(legacyCandidate)?.e164;
+    if (legacyPhone) return legacyPhone;
+    const legacyJid = normalizeWhatsApp2DirectJid(legacyCandidate);
+    if (legacyJid) return legacyJid;
+  }
+
+  throw new Error("whatsapp2_recipient_identity_unresolved");
+}
+
+function normalizeWhatsApp2DirectJid(value: unknown): string | null {
+  const candidate = whatsapp2ProviderIdFromConversationId(String(value || ""));
+  if (!/^\d{3,32}@(lid|c\.us|s\.whatsapp\.net)$/i.test(candidate)) return null;
+  return candidate;
+}
+
+async function resolveLatestInboundOutboxChannel(params: {
+  supabase: any;
+  conversationId: string;
+  outboxCreatedAt?: string;
+}): Promise<string | null> {
+  let query = params.supabase
+    .from("instagram_messages")
+    .select("channel, created_at")
+    .eq("conversation_id", params.conversationId)
+    .eq("is_mine", false);
+  if (params.outboxCreatedAt && typeof query.lte === "function") {
+    query = query.lte("created_at", params.outboxCreatedAt);
+  }
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`outbox_source_channel_lookup_failed: ${error.message || error}`);
+  const channel = String(data?.channel || "").trim().toLowerCase();
+  return OUTBOX_CHANNELS.has(channel) ? channel : null;
 }
 
 export interface ProcessingCycle {
@@ -1041,6 +1197,7 @@ export interface StructuredConversationMessage {
   text: string;
   replyToId?: string | null;
   timestamp?: string;
+  channel?: string | null;
 }
 
 export interface ConversationContextPayload {
@@ -1360,6 +1517,9 @@ export function formatConversationContextForModel(
     lines.push("");
     const author = msg.sender === "larissa" ? "LARISSA" : "PRETENDENTE";
     const headerParts = [author, msg.id];
+    if (msg.channel) {
+      headerParts.push(`CANAL: ${msg.channel}`);
+    }
     if (msg.replyToId) {
       headerParts.push(`RESPONDENDO_A: ${msg.replyToId}`);
       usedReferenceIds.add(msg.replyToId);
@@ -1762,6 +1922,7 @@ export function normalizeToCanonicalMessage(raw: any, conversationId: string): C
     nativeMetadata: rawNativeMetadata,
     audioTranscript: rawAudioTranscript ? String(rawAudioTranscript).trim() : null,
     hasValidTranscript,
+    channel: raw.channel ? (String(raw.channel).toLowerCase() as any) : null,
     status: raw.status || "received",
   };
 }
@@ -1835,7 +1996,7 @@ export async function buildConversationContextForCycle(
     while (!stopTurnSearch) {
       const q = supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, channel")
         .eq("conversation_id", conversationId);
 
       let batch: any[] = [];
@@ -1948,7 +2109,7 @@ export async function buildConversationContextForCycle(
       if (regularReplyIds.length > 0) {
         const { data: refRows } = await supabase
           .from("instagram_messages")
-          .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp")
+          .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, channel")
           .in("id", regularReplyIds);
 
         for (const r of refRows || []) {
@@ -2008,6 +2169,7 @@ export async function buildConversationContextForCycle(
     text: m.text,
     replyToId: m.replyToMessageId,
     timestamp: m.timestamp,
+    channel: m.channel || null,
   }));
 
   const payload: ConversationContextPayload = {
@@ -3334,58 +3496,21 @@ export async function reconcileOutboxEntryAtomic(
   params: ReconcileOutboxEntryParams
 ): Promise<{ success: boolean; reason?: string; entry?: any }> {
   const { supabase, conversationId, outboxId, providerMessageId } = params;
-
-  if (typeof supabase?.rpc === "function") {
-    try {
-      const { data, error } = await supabase.rpc("reconcile_outbox_entry", {
-        p_conversation_id: conversationId,
-        p_outbox_id: outboxId,
-        p_provider_message_id: providerMessageId,
-      });
-
-      if (!error && data && typeof data === "object") {
-        return { success: Boolean(data.success), reason: data.reason, entry: data.entry };
-      }
-    } catch (rpcErr: any) {
-      console.warn(`[reconcileOutboxEntryAtomic] Erro RPC:`, rpcErr?.message || rpcErr);
-    }
+  if (!providerMessageId || typeof supabase?.rpc !== "function") {
+    return { success: false, reason: "reconciliation_contract_unavailable" };
   }
-
-  // Fallback
   try {
-    const { data: convRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-    const rules = convRow?.stage_completed_rules || {};
-    const orch = rules.orchestration || {};
-    const outbox = orch.outbox || {};
-    let targetKey = outboxId;
-    if (!outbox[targetKey]) {
-      for (const [k, v] of Object.entries(outbox)) {
-        if ((v as any)?.id === outboxId || (v as any)?.idempotencyKey === outboxId) {
-          targetKey = k;
-          break;
-        }
-      }
+    const { data, error } = await supabase.rpc("reconcile_outbox_entry", {
+      p_conversation_id: conversationId,
+      p_outbox_id: outboxId,
+      p_provider_message_id: providerMessageId,
+    });
+    if (error || !data || typeof data.success !== "boolean") {
+      return { success: false, reason: "reconciliation_persistence_failed" };
     }
-    if (outbox[targetKey]) {
-      outbox[targetKey] = {
-        ...outbox[targetKey],
-        status: "sent",
-        isUncertain: false,
-        providerMessageId,
-        sentAt: new Date().toISOString(),
-      };
-      orch.outbox = outbox;
-      rules.orchestration = orch;
-      await supabase.from("instagram_conversations").update({ stage_completed_rules: rules }).eq("id", conversationId);
-      return { success: true, reason: "reconciled_sent", entry: outbox[targetKey] };
-    }
-    return { success: false, reason: "outbox_entry_not_found" };
-  } catch (_e) {
-    return { success: false, reason: "infra_failure" };
+    return { success: data.success, reason: data.reason, entry: data.entry };
+  } catch {
+    return { success: false, reason: "reconciliation_persistence_failed" };
   }
 }
 
@@ -3405,88 +3530,17 @@ export async function finalizeOutboxEntryAtomic(
   params: FinalizeOutboxEntryParams
 ): Promise<{ success: boolean; reason?: string; entry?: any }> {
   const { supabase, conversationId, outboxId, status, providerMessageId = null, error = null } = params;
-
-  if (supabase?._store?.conversations?.[conversationId]) {
-    const conv = supabase._store.conversations[conversationId];
-    if (conv) {
-      conv.stage_completed_rules = conv.stage_completed_rules || {};
-      conv.stage_completed_rules.orchestration = conv.stage_completed_rules.orchestration || {};
-      conv.stage_completed_rules.orchestration.outbox = conv.stage_completed_rules.orchestration.outbox || {};
-      const target = conv.stage_completed_rules.orchestration.outbox[outboxId];
-      if (target) {
-        target.status = status;
-        if (status === "sent") {
-          target.isUncertain = false;
-          target.providerMessageId = providerMessageId;
-          target.sentAt = new Date().toISOString();
-        }
-      }
-    }
-  }
-
-  if (typeof supabase?.rpc === "function") {
-    try {
-      const { data, error: rpcErr } = await supabase.rpc("finalize_outbox_entry", {
-        p_conversation_id: conversationId,
-        p_outbox_id: outboxId,
-        p_status: status,
-        p_provider_message_id: providerMessageId,
-        p_error: error,
-      });
-
-      if (!rpcErr && data && typeof data === "object") {
-        return { success: Boolean(data.success), reason: data.reason, entry: data.entry };
-      }
-    } catch (rpcErr: any) {
-      console.warn(`[finalizeOutboxEntryAtomic] Erro RPC:`, rpcErr?.message || rpcErr);
-    }
-  }
-
-  // Fallback
+  if (typeof supabase?.rpc !== "function") return { success: false, reason: "atomic_finalization_unavailable" };
+  if (status === "sent" && !providerMessageId) return { success: false, reason: "provider_confirmation_missing" };
   try {
-    const { data: convRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-    const rules = convRow?.stage_completed_rules || {};
-    const orch = rules.orchestration || {};
-    const outbox = orch.outbox || {};
-    let targetKey = outboxId;
-    if (!outbox[targetKey]) {
-      for (const [k, v] of Object.entries(outbox)) {
-        if ((v as any)?.id === outboxId || (v as any)?.idempotencyKey === outboxId) {
-          targetKey = k;
-          break;
-        }
-      }
-    }
-    if (outbox[targetKey]) {
-      const existing = outbox[targetKey];
-      if (existing.status === "sent" && status !== "sent") {
-        return { success: true, reason: "already_sent_preserved", entry: existing };
-      }
-      const updated: any = {
-        ...existing,
-        status,
-        lastError: error,
-      };
-      if (status === "sent") {
-        updated.isUncertain = false;
-        updated.providerMessageId = providerMessageId || existing.providerMessageId;
-        updated.sentAt = new Date().toISOString();
-      } else if (status === "dispatch_uncertain") {
-        updated.isUncertain = true;
-      }
-      outbox[targetKey] = updated;
-      orch.outbox = outbox;
-      rules.orchestration = orch;
-      await supabase.from("instagram_conversations").update({ stage_completed_rules: rules }).eq("id", conversationId);
-      return { success: true, reason: "finalized", entry: updated };
-    }
-    return { success: false, reason: "outbox_entry_not_found" };
-  } catch (_e) {
-    return { success: false, reason: "infra_failure" };
+    const { data, error: rpcErr } = await supabase.rpc("finalize_outbox_entry", {
+      p_conversation_id: conversationId, p_outbox_id: outboxId, p_status: status,
+      p_provider_message_id: providerMessageId, p_error: error,
+    });
+    if (rpcErr || !data || typeof data.success !== "boolean") return { success: false, reason: "atomic_finalization_failed" };
+    return { success: data.success, reason: data.reason, entry: data.entry };
+  } catch (_error) {
+    return { success: false, reason: "atomic_finalization_failed" };
   }
 }
 
@@ -4219,6 +4273,12 @@ export interface DispatchOutboxParams {
       text: string,
       replyToMessageId?: string | null,
     ) => Promise<any>;
+    mockChannelTransferGateway?: (params: {
+      recipientId: string;
+      text: string;
+      idempotencyKey: string;
+    }) => Promise<{ success: boolean; isUncertain?: boolean; error?: string; providerMessageId?: string }>;
+    sendWhatsApp2Delivery?: (params: WhatsApp2QueuedDeliveryParams) => Promise<WhatsApp2QueuedDeliveryResult>;
   };
 }
 
@@ -4297,6 +4357,99 @@ export async function dispatchOutboxEntry(
   }
 
   try {
+    const conversationId = outboxEntry.conversationId || recipientId;
+
+    // 1. Se for ação de transferência de canal decidida pelo Brain, executa o serviço de transferência
+    // DEVE ser verificado antes de qualquer atalho de simulação ou runtime Meta.
+    if (
+      outboxEntry.actionType === "transfer_channel" ||
+      outboxEntry.messageType === "transfer_channel" ||
+      outboxEntry.payload?.actionType === "transfer_channel"
+    ) {
+      const { data: channelRow } = await supabase
+        .from("instagram_conversations")
+        .select("channel, contact_id, full_name, username")
+        .eq("id", conversationId)
+        .maybeSingle();
+
+      const sourceChannel = (
+        outboxEntry.payload?.sourceChannel ||
+        await resolveLatestInboundOutboxChannel({
+          supabase,
+          conversationId,
+          outboxCreatedAt: outboxEntry.createdAt,
+        }) ||
+        channelRow?.channel ||
+        (conversationId.startsWith("tinder:") ? "tinder" : conversationId.startsWith("wa2:") ? "whatsapp2" : "instagram")
+      ) as "instagram" | "whatsapp" | "whatsapp2" | "tinder";
+
+      const targetPhone = String(outboxEntry.payload?.targetPhone || "").trim();
+      const initialText = String(outboxEntry.payload?.initialText || outboxEntry.content || "").trim();
+      const targetChannel = (
+        outboxEntry.payload?.targetChannel ||
+        (outboxEntry.channel && outboxEntry.channel !== sourceChannel ? outboxEntry.channel : "whatsapp2")
+      ) as "instagram" | "whatsapp" | "whatsapp2" | "tinder";
+      outboxEntry.channel = targetChannel;
+
+      const transferResult = await executeChannelTransfer({
+        supabase,
+        conversationId,
+        sourceChannel,
+        targetChannel,
+        targetPhoneRaw: targetPhone,
+        initialMessageText: initialText,
+        recipientContactName: String(channelRow?.full_name || channelRow?.username || "").trim(),
+        idempotencyKey: outboxEntry.idempotencyKey,
+        mockGateway: (runtime as any)?.mockChannelTransferGateway,
+      });
+
+      if (!transferResult.success) {
+        try {
+          await queueTransferBrainReentry({
+            supabase,
+            conversationId,
+            sourceChannel,
+            targetChannel,
+            targetRecipient: targetPhone,
+            initialMessageText: initialText,
+            idempotencyKey: outboxEntry.idempotencyKey,
+            sourceMessageIds: Array.isArray(outboxEntry.payload?.sourceMessageIds)
+              ? outboxEntry.payload.sourceMessageIds.map(String).filter(Boolean)
+              : [],
+            status: transferResult.status === "uncertain" ? "uncertain" : "failed",
+            transferStatus: transferResult.brainFact.technicalCode === "channel_link_failed"
+              ? "confirmed"
+              : transferResult.status === "uncertain" ? "uncertain" : "failed",
+            providerMessageId: transferResult.providerMessageId || null,
+            technicalCode: transferResult.brainFact.technicalCode,
+            details: transferResult.brainFact.details,
+            rawInput: transferResult.brainFact.rawInput,
+          });
+        } catch (reentryError) {
+          console.error("[TransferReentry] Falha ao persistir ou enfileirar retorno técnico do Brain:", reentryError);
+        }
+      }
+
+      if (transferResult.success && transferResult.status === "confirmed") {
+        outboxEntry.status = "sent";
+        outboxEntry.sentAt = new Date().toISOString();
+        outboxEntry.providerMessageId = transferResult.providerMessageId || `transfer_ok_${Date.now()}`;
+        outboxEntry.isUncertain = false;
+        return { success: true, providerMessageId: outboxEntry.providerMessageId };
+      }
+
+      if (transferResult.status === "uncertain") {
+        outboxEntry.status = "dispatch_uncertain";
+        outboxEntry.isUncertain = true;
+        outboxEntry.lastError = transferResult.brainFact?.technicalCode || "transfer_uncertain";
+        return { success: false, isUncertain: true, error: outboxEntry.lastError };
+      }
+
+      outboxEntry.status = "failed";
+      outboxEntry.lastError = transferResult.brainFact?.technicalCode || "transfer_failed";
+      return { success: false, error: outboxEntry.lastError };
+    }
+
     if (runtime?.sendMetaTextMessage) {
       const replyToMessageId = outboxEntry.replyToMessageId
         || (typeof outboxEntry.payload?.replyToMessageId === "string" ? outboxEntry.payload.replyToMessageId : null);
@@ -4323,17 +4476,61 @@ export async function dispatchOutboxEntry(
       return { success: true, providerMessageId: providerId };
     }
 
-    const conversationId = outboxEntry.conversationId || recipientId;
     const { data: channelRow } = await supabase
       .from("instagram_conversations")
       .select("channel, contact_id")
       .eq("id", conversationId)
       .maybeSingle();
 
-    if (channelRow?.channel === "whatsapp2") {
+    const targetChannel =
+      (outboxEntry as any).channel ||
+      outboxEntry.payload?.channel ||
+      outboxEntry.payload?.sourceChannel ||
+      await resolveLatestInboundOutboxChannel({
+        supabase,
+        conversationId,
+        outboxCreatedAt: outboxEntry.createdAt,
+      }) ||
+      channelRow?.channel ||
+      "instagram";
+    outboxEntry.channel = targetChannel;
+
+    if (targetChannel === "tinder") {
+      if (outboxEntry.messageType === "video") {
+        outboxEntry.status = "failed";
+        outboxEntry.lastError = "tinder_video_unsupported";
+        return { success: false, error: outboxEntry.lastError };
+      }
+      const matchId = channelRow?.contact_id || recipientId || conversationId.replace(/^tinder:/, "");
+      const dispatchOutcome = await dispatchOutboundAction({
+        supabase,
+        outboxEntry: {
+          conversationId,
+          recipientId: matchId,
+          channel: "tinder",
+          messageType: outboxEntry.messageType as any,
+          content: outboxEntry.content,
+          idempotencyKey: outboxEntry.idempotencyKey,
+        },
+      });
+
+      if (dispatchOutcome.success) {
+        outboxEntry.status = "sent";
+        outboxEntry.sentAt = new Date().toISOString();
+        outboxEntry.providerMessageId = dispatchOutcome.providerMessageId || null;
+        outboxEntry.isUncertain = false;
+        return { success: true, providerMessageId: outboxEntry.providerMessageId };
+      }
+
+      outboxEntry.status = "failed";
+      outboxEntry.lastError = dispatchOutcome.error || "tinder_dispatch_failed";
+      return { success: false, error: outboxEntry.lastError };
+    }
+
+    if (targetChannel === "whatsapp2") {
       let mediaUrl: string | undefined;
       let voiceNote = false;
-      let kind: "text" | "audio" | "image" | "sticker" = "text";
+      let kind: "text" | "audio" | "image" | "video" | "sticker" = "text";
 
       if (outboxEntry.messageType === "audio") {
         kind = "audio";
@@ -4360,6 +4557,13 @@ export async function dispatchOutboxEntry(
             ? outboxEntry.payload.mediaUrl
             : undefined
         );
+      } else if (outboxEntry.messageType === "video") {
+        kind = "video";
+        mediaUrl = outboxEntry.mediaUrl || (
+          typeof outboxEntry.payload?.mediaUrl === "string"
+            ? outboxEntry.payload.mediaUrl
+            : undefined
+        );
       }
 
       const replyToMessageId = outboxEntry.replyToMessageId
@@ -4367,11 +4571,18 @@ export async function dispatchOutboxEntry(
           ? outboxEntry.payload.replyToMessageId
           : null);
 
-      const delivery = await enqueueAndWaitWhatsApp2Delivery({
+      const whatsapp2Recipient = await resolveWhatsApp2OutboxRecipient({
+        supabase,
+        conversationId,
+        recipientId,
+        conversation: channelRow,
+      });
+      const enqueueDelivery = runtime?.sendWhatsApp2Delivery || enqueueAndWaitWhatsApp2Delivery;
+      const delivery = await enqueueDelivery({
         supabase,
         queueId: outboxEntry.idempotencyKey || outboxEntry.id,
         conversationId,
-        recipientId: channelRow.contact_id || recipientId || conversationId.replace(/^wa2:/, ""),
+        recipientId: whatsapp2Recipient,
         kind,
         text: kind === "text" ? outboxEntry.content : undefined,
         mediaUrl,
@@ -4447,6 +4658,23 @@ export async function dispatchOutboxEntry(
           },
         },
       };
+    } else if (outboxEntry.messageType === "video") {
+      const videoUrl = String(
+        outboxEntry.mediaUrl ||
+        (typeof outboxEntry.payload?.mediaUrl === "string" ? outboxEntry.payload.mediaUrl : "")
+      ).trim();
+      if (!videoUrl) {
+        throw new Error("Vídeo autorizado sem URL pública para envio.");
+      }
+      bodyPayload = {
+        recipient: { id: recipientId },
+        message: {
+          attachment: {
+            type: "video",
+            payload: { url: videoUrl },
+          },
+        },
+      };
     } else {
       bodyPayload = {
         recipient: { id: recipientId },
@@ -4482,7 +4710,13 @@ export async function dispatchOutboxEntry(
     }
 
     const metaJson = await sendRes.json().catch(() => ({}));
-    const providerId = metaJson.message_id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const providerId = typeof metaJson.message_id === "string" ? metaJson.message_id.trim() : "";
+    if (!providerId) {
+      outboxEntry.status = "dispatch_uncertain";
+      outboxEntry.isUncertain = true;
+      outboxEntry.lastError = "provider_confirmation_missing";
+      return { success: false, isUncertain: true, error: outboxEntry.lastError };
+    }
 
     outboxEntry.status = "sent";
     outboxEntry.sentAt = new Date().toISOString();
@@ -4539,100 +4773,73 @@ export interface ReconcileUncertainOutboxResult {
 
 /**
  * Reconcilia de forma determinística uma ação que ficou em dispatch_uncertain.
- * Busca evidências seguras: se a mensagem já existe no histórico do Instagram/DB como enviada por 'me',
- * reconcilia atomicamente para 'sent' via RPC reconcile_outbox_entry.
+ * Exige confirmação da fila exata no WhatsApp ou o ID exato do provedor no histórico.
+ * Só confirma após a RPC reconcile_outbox_entry persistir o resultado.
  * FAIL-CLOSED: Se não houver certeza absoluta, mantém incerto para evitar duplicação.
  */
 export async function reconcileUncertainOutboxAction(
   params: ReconcileUncertainOutboxParams
 ): Promise<ReconcileUncertainOutboxResult> {
   const { supabase, conversationId, outboxEntry, runtime } = params;
-
   if (outboxEntry.status !== "dispatch_uncertain") {
     return {
       reconciled: outboxEntry.status === "sent",
       status: outboxEntry.status === "sent" ? "sent" : "not_delivered",
       providerMessageId: outboxEntry.providerMessageId || undefined,
-      reason: `status_not_uncertain:${outboxEntry.status}`,
+      reason: "status_not_uncertain:" + outboxEntry.status,
     };
   }
-
-  // 1. Checa se o runtime customizado (ex: ambiente de teste ou adapter) possui método de verificação
+  const unconfirmed = (reason: string): ReconcileUncertainOutboxResult => ({
+    reconciled: false, status: "uncertain", reason,
+  });
+  const confirm = async (providerMessageId: string, reason: string): Promise<ReconcileUncertainOutboxResult> => {
+    const saved = await reconcileOutboxEntryAtomic({
+      supabase, conversationId, outboxId: outboxEntry.id, providerMessageId,
+    });
+    if (!saved.success) return unconfirmed(saved.reason || "reconciliation_persistence_failed");
+    await syncBrainDecisionActionStatus({
+      supabase, actionId: outboxBrainActionId(outboxEntry), status: "sent", providerMessageId,
+    });
+    return { reconciled: true, status: "sent", providerMessageId, reason };
+  };
   if (typeof runtime?.checkMessageDelivered === "function") {
     try {
-      const checkRes = await runtime.checkMessageDelivered(supabase, conversationId, outboxEntry);
-      if (checkRes?.delivered && checkRes?.messageId) {
-        await reconcileOutboxEntryAtomic({
-          supabase,
-          conversationId,
-          outboxId: outboxEntry.id,
-          providerMessageId: checkRes.messageId,
-        });
-        return {
-          reconciled: true,
-          status: "sent",
-          providerMessageId: checkRes.messageId,
-          reason: "reconciled_via_runtime",
-        };
-      } else if (checkRes?.definitelyNotDelivered) {
-        return {
-          reconciled: false,
-          status: "not_delivered",
-          reason: "runtime_confirmed_not_delivered",
-        };
-      }
-    } catch (_checkErr) {}
-  }
-
-  // 2. Busca na tabela instagram_messages se há mensagem de saída registrada correspondente
-  try {
-    const { data: recentMsgs } = await supabase
-      .from("instagram_messages")
-      .select("id, text, is_mine, sender_id, created_at")
-      .eq("conversation_id", conversationId)
-      .eq("is_mine", true)
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    if (recentMsgs && recentMsgs.length > 0) {
-      // Normaliza texto para conferência
-      const isAudioType = outboxEntry.messageType === "audio" || outboxEntry.actionType === "audio";
-      const targetText = isAudioType ? "[audio:" : (outboxEntry.content || (typeof outboxEntry.payload?.text === "string" ? outboxEntry.payload.text : "")).trim();
-      const match = recentMsgs.find((m: any) => {
-        if (!m.text) return false;
-        if (isAudioType) {
-          return m.text.startsWith("[audio:") || (outboxEntry.mediaUrl && m.text.includes(outboxEntry.mediaUrl));
-        }
-        return m.text.trim() === targetText;
-      });
-
-      if (match) {
-        // Encontrou evidência concreta de que a mensagem foi gravada/entregue!
-        await reconcileOutboxEntryAtomic({
-          supabase,
-          conversationId,
-          outboxId: outboxEntry.id,
-          providerMessageId: match.id,
-        });
-        console.log(`[Reconciler] Ação ${outboxEntry.id} reconciliada para 'sent' com base na mensagem ${match.id}`);
-        return {
-          reconciled: true,
-          status: "sent",
-          providerMessageId: match.id,
-          reason: "reconciled_via_messages_table",
-        };
-      }
+      const checked = await runtime.checkMessageDelivered(supabase, conversationId, outboxEntry);
+      if (checked?.delivered && checked?.messageId) return await confirm(checked.messageId, "reconciled_via_runtime");
+      if (checked?.definitelyNotDelivered) return { reconciled: false, status: "not_delivered", reason: "runtime_confirmed_not_delivered" };
+    } catch {
+      return unconfirmed("runtime_delivery_check_failed");
     }
-  } catch (err: any) {
-    console.warn(`[Reconciler] Erro ao consultar mensagens para reconciliação:`, err?.message || err);
   }
-
-  // FAIL-CLOSED: Mantém incerto se não puder provar entrega
-  return {
-    reconciled: false,
-    status: "uncertain",
-    reason: "no_conclusive_evidence_fail_closed",
-  };
+  const channel = outboxEntry.channel || outboxEntry.payload?.channel;
+  if (channel === "whatsapp2" || (!channel && conversationId.startsWith("wa2:"))) {
+    try {
+      const queueId = outboxEntry.idempotencyKey || outboxEntry.id;
+      const { data: delivery, error } = await supabase.from("whatsapp2_delivery_queue")
+        .select("id,conversation_id,gateway_account_id,status,provider_message_id")
+        .eq("id", queueId).maybeSingle();
+      if (error) return unconfirmed("delivery_evidence_lookup_failed");
+      const accountId = /^wa2:(account-\d{8,15}):/.exec(conversationId)?.[1] || "primary";
+      if (delivery?.status === "sent" && delivery.provider_message_id &&
+          delivery.id === queueId && delivery.conversation_id === conversationId &&
+          String(delivery.gateway_account_id || "primary") === accountId) {
+        return await confirm(delivery.provider_message_id, "reconciled_via_delivery_queue");
+      }
+      return unconfirmed("no_exact_delivery_evidence");
+    } catch {
+      return unconfirmed("delivery_evidence_lookup_failed");
+    }
+  }
+  // Texto ou áudio parecido não é prova de entrega. Só um ID conhecido do provedor é aceito.
+  if (outboxEntry.providerMessageId) {
+    try {
+      const { data: message, error } = await supabase.from("instagram_messages")
+        .select("id").eq("conversation_id", conversationId)
+        .eq("id", outboxEntry.providerMessageId).eq("is_mine", true).maybeSingle();
+      if (!error && message?.id) return await confirm(message.id, "reconciled_via_provider_message_id");
+    } catch {}
+  }
+  return unconfirmed("no_conclusive_evidence_fail_closed");
 }
 
 // ----------------------------------------------------------------------------
@@ -4720,6 +4927,40 @@ export async function runDurableOutboxDispatcher(
     : allEntries;
   if (entries.length === 0) {
     return result;
+  }
+
+  // Recupera a projeção normalizada quando a outbox já foi confirmada,
+  // mas a atualização de brain_decision_actions falhou. Não despacha mensagens.
+  try {
+    const { data: unresolved, error: unresolvedError } = await supabase.from("brain_decision_actions")
+      .select("id, idempotency_key, status").eq("conversation_id", conversationId)
+      .in("status", ["dispatch_uncertain", "sending"]);
+    if (!unresolvedError && Array.isArray(unresolved)) {
+      for (const action of unresolved) {
+        const confirmed = allEntries.find((candidate) => candidate.status === "sent"
+          && candidate.providerMessageId && (candidate.idempotencyKey || candidate.id) === action.idempotency_key);
+        if (!confirmed) continue;
+        if (confirmed.channel === "whatsapp2" || conversationId.startsWith("wa2:")) {
+          const { data: delivery, error: deliveryError } = await supabase.from("whatsapp2_delivery_queue")
+            .select("id, conversation_id, gateway_account_id, status, provider_message_id")
+            .eq("id", action.idempotency_key).maybeSingle();
+          const expectedAccount = conversationId.match(/^wa2:(account-\d{8,15}):/)?.[1] || "primary";
+          if (deliveryError || delivery?.id !== action.idempotency_key
+            || delivery.conversation_id !== conversationId || delivery.gateway_account_id !== expectedAccount
+            || delivery.status !== "sent" || !String(delivery.provider_message_id || "").trim()) continue;
+          if (delivery.provider_message_id !== confirmed.providerMessageId) {
+            const correction = await reconcileOutboxEntryAtomic({ supabase, conversationId, outboxId: action.idempotency_key, providerMessageId: delivery.provider_message_id });
+            if (!correction.success) continue;
+            confirmed.providerMessageId = delivery.provider_message_id;
+          }
+        } else {
+          continue;
+        }
+        await syncBrainDecisionActionStatus({ supabase, actionId: action.id, status: "sent", providerMessageId: confirmed.providerMessageId });
+      }
+    }
+  } catch (_projectionRecoveryError) {
+    // A ação continua elegível para recuperação no próximo tick.
   }
 
   const cycleScopeKey = (entry: OutboxEntry): string =>
@@ -4963,14 +5204,24 @@ export async function runDurableOutboxDispatcher(
       if (dispatchRes.success && claimedEntry.status === "sent") {
         const providerId = dispatchRes.providerMessageId || claimedEntry.providerMessageId || `disp_${Date.now()}`;
 
-        // Finaliza atômico como sent
-        await finalizeOutboxEntryAtomic({
+        // Só libera a próxima ação depois de persistir a confirmação.
+        const finalization = await finalizeOutboxEntryAtomic({
           supabase,
           conversationId,
           outboxId: entryKey,
           status: "sent",
           providerMessageId: providerId,
         });
+        if (!finalization.success) {
+          entry.status = "dispatch_uncertain";
+          entry.isUncertain = true;
+          entry.providerMessageId = providerId;
+          await syncBrainDecisionActionStatus({ supabase, actionId: outboxBrainActionId(claimedEntry), status: "dispatch_uncertain", providerMessageId: providerId, providerError: "confirmation_persistence_failed" });
+          result.uncertainCount++;
+          result.errors.push("confirmation_persistence_failed");
+          blockedCycleKeys.add(entryCycleKey);
+          continue;
+        }
         entry.status = "sent";
         entry.providerMessageId = providerId;
         await syncBrainDecisionActionStatus({
@@ -4996,18 +5247,9 @@ export async function runDurableOutboxDispatcher(
         // Grava em instagram_messages para histórico e espelho
         const nowIso = new Date().toISOString();
         try {
-          await supabase.from("instagram_messages").upsert({
-            id: providerId,
-            conversation_id: conversationId,
-            sender_id: "me",
-            is_mine: true,
-            text: claimedEntry.content,
-            status: "sent",
-            reply_to_message_id: claimedEntry.replyToMessageId
-              || (typeof claimedEntry.payload?.replyToMessageId === "string" ? claimedEntry.payload.replyToMessageId : null),
-            created_at: nowIso,
-            timestamp: nowIso,
-          });
+          await supabase.from("instagram_messages").upsert(
+            buildSentMessageMirrorPayload(claimedEntry, providerId, String(claimedEntry.channel || "instagram"), nowIso),
+          );
         } catch (_upsertErr) {}
 
         try {
@@ -5085,7 +5327,7 @@ export async function runDurableOutboxDispatcher(
       cycleId: entry.cycleId || "",
       actionIndex: entry.actionIndex || 0,
       content: entry.content || entry.mediaUrl || "",
-      messageType: entry.messageType === "audio" ? "audio" : "text",
+      messageType: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : "text",
       mediaUrl: entry.mediaUrl || null,
       deliverAt: entry.notBefore || entry.createdAt || new Date().toISOString(),
       createdAt: entry.createdAt || new Date().toISOString(),
@@ -7301,6 +7543,9 @@ export interface RunOrchestrationParams {
     text: string;
     timestamp: string;
     sender: string;
+    mediaType?: string | null;
+    mediaUrl?: string | null;
+    audioTranscript?: string | null;
   };
   correlationId?: string;
   model?: string;
@@ -7310,6 +7555,7 @@ export interface RunOrchestrationParams {
   isManualRetry?: boolean;
   preClaimedCycleToken?: string;
   manualResolution?: { turnId: string; question: string; context?: string; answer: string };
+  internalSystemEvents?: NonNullable<Parameters<typeof runOpenAiBrainTurn>[0]["internalSystemEvents"]>;
   runtime?: {
     sendMetaTextMessage?: (
       supabase: any,
@@ -7947,7 +8193,7 @@ export async function runBrainOrchestration(
     while (hasMore) {
       const q = supabase
         .from("instagram_messages")
-        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, provider_type, attachment_metadata, message_metadata, direction, audio_transcript, image_description, media_operator_observation")
+        .select("id, sender_id, is_mine, text, reply_to_message_id, created_at, timestamp, media_type, media_url, provider_type, attachment_metadata, message_metadata, direction, audio_transcript, image_description, media_operator_observation, channel")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false });
 
@@ -8104,7 +8350,8 @@ export async function runBrainOrchestration(
       }
     }
 
-    if (pendingMessages.length === 0) {
+    const hasInternalSystemEvent = Boolean(params.internalSystemEvents?.length);
+    if (pendingMessages.length === 0 && !hasInternalSystemEvent) {
       console.log(`[Orchestrator] Nenhuma mensagem pendente para ${conversationId}. Abortando por idempotência.`);
       await releaseExperimentalCycleAtomic({
         supabase,
@@ -8127,7 +8374,7 @@ export async function runBrainOrchestration(
       })
     );
 
-    if (actionablePending.length === 0) {
+    if (actionablePending.length === 0 && !hasInternalSystemEvent) {
       console.log(
         `[Orchestrator] Todas as mensagens pendentes (${pendingMessages.length}) em ${conversationId} são não-acionáveis (apenas emojis isolados, fotos ou mídias sem áudio/texto). Marcando como processadas no ledger e finalizando sem disparar IA.`
       );
@@ -8155,6 +8402,10 @@ export async function runBrainOrchestration(
       claimedByCycleId: correlationId,
     }));
     const rawInbounds = (claimedMessages || []).filter((m: any) => m.sender === "pretendente" || m.direction === "inbound");
+    const inboundsText = (claimedMessages || [])
+      .map((m: any) => m.text || m.content || "")
+      .filter(Boolean)
+      .join(" ");
 
     // Um brain_late já possui snapshot imutável dos inbounds no próprio brain_turn.
     // Recovery nunca re-claim os mesmos IDs no ledger nem cria uma segunda inferência:
@@ -8455,7 +8706,7 @@ export async function runBrainOrchestration(
       try {
         const { data: recentDbRows } = await supabase
           .from("instagram_messages")
-          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, provider_type, attachment_metadata, message_metadata, audio_transcript, image_description, media_operator_observation")
+          .select("id, sender_id, is_mine, text, created_at, timestamp, direction, media_type, media_url, provider_type, attachment_metadata, message_metadata, audio_transcript, image_description, media_operator_observation, channel")
           .eq("conversation_id", conversationId)
           .order("created_at", { ascending: false })
           .limit(recentMessageLimit + (claimedMessageIds?.length || 0) + 5);
@@ -8540,10 +8791,6 @@ export async function runBrainOrchestration(
         .map(([k, v]) => `• ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
         .join("\n");
 
-      const inboundsText = (claimedMessages || [])
-        .map((m: any) => m.text || m.content || "")
-        .filter(Boolean)
-        .join(" ");
 
       try {
         const landmarkHits = await searchConversationEpisodicMemory({
@@ -8788,8 +9035,8 @@ export async function runBrainOrchestration(
         .map((entry: any) => ({
           actionId: String(entry.payload?.brainActionId || ""),
           actionIndex: Number.isInteger(entry.actionIndex) ? entry.actionIndex : 0,
-          type: entry.messageType === "audio" ? "audio" : "text",
-          preview: entry.messageType === "audio" ? "[áudio pendente]" : String(entry.content || entry.payload?.text || ""),
+          type: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : "text",
+          preview: entry.messageType === "audio" ? "[áudio pendente]" : entry.messageType === "image" ? "[foto pendente]" : entry.messageType === "video" ? "[vídeo pendente]" : String(entry.content || entry.payload?.text || ""),
         }))
         .filter((entry) => entry.actionId);
       await publishAutoPilotState(supabase, conversationId, {
@@ -9029,6 +9276,33 @@ export async function runBrainOrchestration(
           console.warn("[Brain] Falha ao carregar contexto de reações do Instagram.", reactionContextError);
         }
 
+        let recentChannelTransferEvents: NonNullable<Parameters<typeof runOpenAiBrainTurn>[0]["recentChannelTransferEvents"]> = [];
+        try {
+          const { data: transferRows, error: transferRowsError } = await supabase
+            .from("conversation_channel_transfers")
+            .select("source_channel, target_channel, target_recipient, status, failure_reason, idempotency_key, created_at, metadata")
+            .eq("conversation_id", conversationId)
+            .order("created_at", { ascending: false })
+            .limit(3);
+
+          if (!transferRowsError && transferRows && Array.isArray(transferRows)) {
+            recentChannelTransferEvents = transferRows.map((t: any) => ({
+              sourceChannel: String(t.source_channel || ""),
+              targetChannel: String(t.target_channel || ""),
+              targetPhone: t.target_recipient ? String(t.target_recipient) : undefined,
+              status: t.status as "confirmed" | "failed" | "uncertain",
+              technicalCode: String(t.failure_reason || (t.status === "confirmed" ? "delivery_confirmed" : "technical_failure")),
+              details: t.metadata?.rawInput ? `input: ${t.metadata.rawInput}` : undefined,
+              createdAt: t.created_at ? String(t.created_at) : undefined,
+            }));
+            if (recentChannelTransferEvents.length > 0) {
+              currentCycle.trace.push(`transfer_events_context_count=${recentChannelTransferEvents.length}`);
+            }
+          }
+        } catch (transferContextError) {
+          console.warn("[Brain] Falha ao carregar contexto de transferências de canal.", transferContextError);
+        }
+
         const agentTurnParams: Parameters<typeof runOpenAiBrainTurn>[0] = {
           supabase,
           conversationId,
@@ -9094,9 +9368,12 @@ export async function runBrainOrchestration(
               mediaType: m.type || m.mediaType || m.media_type || null,
               audioTranscript: m.audioTranscript || m.audio_transcript || null,
               replyToMessageId: m.reply_to_message_id || m.replyToMessageId || null,
+              channel: m.channel || null,
             }))
             .filter((m: any) => m.id && m.text),
           recentInstagramReactions,
+          recentChannelTransferEvents,
+          internalSystemEvents: params.internalSystemEvents,
           recentMessages: persistentAgentSessionEnabled
             ? []
             : finalRecentMessages.map((m) => ({
@@ -10585,7 +10862,10 @@ export async function runBrainOrchestration(
       }
     }
 
-    const idempotencyKey = `idemp_${conversationId}_${correlationId}`;
+    const internalEventIds = (params.internalSystemEvents || []).map((event) => String(event.id)).filter(Boolean).sort();
+    const idempotencyKey = internalEventIds.length > 0
+      ? `idemp_${conversationId}_reentry_${internalEventIds.join("_")}_in_${claimedMessageIds.slice().sort().join("_") || "none"}`
+      : `idemp_${conversationId}_${correlationId}`;
     const totalActions = canonicalOutboundActions.length;
     const isSingleAction = totalActions === 1;
 
@@ -10598,6 +10878,11 @@ export async function runBrainOrchestration(
         const candidate = (scheduleRuntime.arsenalCandidates || []).find((item) => item.itemId === act.arsenalItemId);
         return `[image:${candidate?.mediaUrl || ""}]`;
       }
+      if (act.type === "video") {
+        const candidate = (scheduleRuntime.arsenalCandidates || []).find((item) => item.itemId === act.arsenalItemId);
+        return `[video:${candidate?.mediaUrl || ""}]`;
+      }
+      if (act.type === "transfer_channel") return act.initialText;
       return act.text;
     });
 
@@ -10642,8 +10927,19 @@ export async function runBrainOrchestration(
         conversationId,
         cycleId: correlationId,
         idempotencyKey,
+        sourceChannel: resolveOutboxDefaultChannel(
+          canonicalClaimed,
+          conversationId.startsWith("tinder:")
+            ? "tinder"
+            : conversationId.startsWith("wa2:")
+            ? "whatsapp2"
+            : conversationId.startsWith("whatsapp:")
+            ? "whatsapp"
+            : "instagram",
+        ),
         resolvedAudio,
         arsenalCandidates: scheduleRuntime.arsenalCandidates || [],
+        sourceMessageIds: claimedMessageIds,
       });
       for (const entry of outboxBatch) {
         const actionKey = entry.idempotencyKey;
@@ -10730,7 +11026,7 @@ export async function runBrainOrchestration(
                 },
             semanticState: {
               cycleToken: correlationId,
-              expectedCurrentStageId: convRow?.current_stage_id || null,
+              expectedCurrentStageId: claimedConversation.current_stage_id || null,
               completedGoalIds: stageProgression.updatedCompletedGoals,
               objectiveProgress: stageProgression.updatedObjectiveProgress,
               currentPhase: stageProgression.nextPhase,
@@ -10800,6 +11096,20 @@ export async function runBrainOrchestration(
             cycleToken: correlationId,
             processingStatus: "failed",
             revertMessageIds: claimedMessageIds,
+            lastError: decisionPersisted.reason || "brain_decision_outbox_atomic_persist_failed",
+            cycleRecord: currentCycle,
+          });
+          await publishAutoPilotState(supabase, conversationId, {
+            cycleId: correlationId,
+            status: "failed",
+            activity: activity("failed", "Falha ao preparar envio", "A resposta foi gerada, mas não pôde ser gravada para entrega."),
+            cycleEvent: {
+              phase: "failed",
+              event: "brain_decision_persist_failed",
+              label: "Falha ao preparar envio",
+              detail: "A resposta foi gerada, mas não pôde ser gravada para entrega.",
+              metadata: { reason: decisionPersisted.reason || "brain_decision_outbox_atomic_persist_failed" },
+            },
           });
           return {
             handled: false,
@@ -10845,7 +11155,7 @@ export async function runBrainOrchestration(
           cycleId: entry.cycleId,
           actionIndex: entry.actionIndex || 0,
           content: entry.content,
-          messageType: entry.messageType === "audio" ? "audio" : "text",
+          messageType: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : "text",
           mediaUrl: entry.mediaUrl || null,
           deliverAt: entry.notBefore || entry.createdAt,
           createdAt: entry.createdAt,
@@ -10975,7 +11285,7 @@ export async function runBrainOrchestration(
                 : "Brain decidiu aguardar sem enviar mensagem.",
               semanticState: {
                 cycleToken: correlationId,
-                expectedCurrentStageId: convRow?.current_stage_id || null,
+                expectedCurrentStageId: claimedConversation.current_stage_id || null,
                 completedGoalIds: stageProgression.updatedCompletedGoals,
                 objectiveProgress: stageProgression.updatedObjectiveProgress,
                 currentPhase: stageProgression.nextPhase,
@@ -11908,4 +12218,3 @@ export async function runBrainOrchestration(
     }
   }
 }
-

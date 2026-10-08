@@ -1,3 +1,23 @@
+import {
+  whatsappAccountIdFromConversationId,
+  whatsappAccountIdFromWid,
+  whatsapp2ConversationIdForAccount,
+  whatsappProviderIdFromConversationId,
+  whatsappConversationBelongsToAccount,
+  isLatestWhatsAppAccountLoad,
+  resolveWhatsAppContactDisplayName,
+} from "@/domain/entities/whatsapp2-account-scope.cjs";
+
+export {
+  whatsappAccountIdFromConversationId,
+  whatsappAccountIdFromWid,
+  whatsapp2ConversationIdForAccount,
+  whatsappProviderIdFromConversationId,
+  whatsappConversationBelongsToAccount,
+  isLatestWhatsAppAccountLoad,
+  resolveWhatsAppContactDisplayName,
+};
+
 export const WHATSAPP2_GATEWAY_URL =
   process.env.NEXT_PUBLIC_WHATSAPP2_GATEWAY_URL || "http://127.0.0.1:8788";
 
@@ -184,6 +204,7 @@ export function normalizeWhatsApp2Attachment(
 export interface WhatsApp2GatewayChat {
   id: string;
   name: string;
+  savedContactName?: string | null;
   avatarUrl?: string | null;
   isGroup: boolean;
   unreadCount: number;
@@ -381,6 +402,30 @@ export async function getWhatsApp2Messages(chatId: string, limit = 120) {
   return (data.messages || []).filter(
     (message) => !isWhatsApp2InternalSystemMessage(message),
   );
+}
+
+export async function syncWhatsApp2LatestInbound(chatId: string, conversationId: string) {
+  try {
+    const result = await request<{
+      ok: true;
+      latestInbound: boolean;
+      conversationId?: string;
+      persisted: boolean;
+      alreadyPersisted?: boolean;
+      queued?: boolean;
+      reason?: string | null;
+    }>("/chat/sync-latest-inbound", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId, conversationId }),
+    });
+    return { ...result, endpointAvailable: true };
+  } catch (error) {
+    if (error instanceof Error && /route_not_found|HTTP 404/i.test(error.message)) {
+      throw new Error("O gateway do WhatsApp precisa ser atualizado para responder à mensagem pendente. Você ainda pode escolher aguardar a próxima mensagem.");
+    }
+    throw error;
+  }
 }
 
 export async function getWhatsApp2Presence(chatId: string) {

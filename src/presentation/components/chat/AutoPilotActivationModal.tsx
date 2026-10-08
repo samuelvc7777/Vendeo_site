@@ -29,8 +29,9 @@ export function AutoPilotActivationModal({
     try {
       await onConfirm(mode);
       onClose();
-    } catch {
-      setErrorMessage("A IA não foi ativada. Verifique sua conexão e tente novamente.");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "";
+      setErrorMessage(detail || "A IA não foi ativada. Verifique sua conexão e tente novamente.");
     } finally {
       setIsLoading(false);
       setSelectedMode(null);

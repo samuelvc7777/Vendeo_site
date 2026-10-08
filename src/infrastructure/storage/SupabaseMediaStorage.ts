@@ -76,7 +76,7 @@ export class SupabaseMediaStorage {
 
       const contentType =
         res.headers.get("content-type") ||
-        (prefix === "audio" ? "audio/m4a" : "image/jpeg");
+        (prefix === "audio" ? "audio/m4a" : prefix === "video" ? "video/mp4" : "image/jpeg");
       const buffer = await res.arrayBuffer();
 
       let ext = "m4a";
@@ -88,6 +88,7 @@ export class SupabaseMediaStorage {
       else if (contentType.includes("webp")) ext = "webp";
       else if (contentType.includes("jpeg") || contentType.includes("jpg")) ext = "jpg";
       else if (contentType.includes("mp4")) ext = "mp4";
+      else if (contentType.includes("quicktime")) ext = "mov";
 
       const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
 

@@ -234,6 +234,51 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
 
   }, [refreshState]);
 
+  const restartAutoPilotForChat = useCallback(async (conversationId: string) => {
+    const response = await autopilotApiFetch("/api/autopilot/restart-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId }),
+    });
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok || result?.success !== true) {
+      const error = new Error(result?.detail || result?.error || `HTTP ${response.status}`) as Error & {
+        code?: string;
+      };
+      error.code = result?.error;
+      throw error;
+    }
+
+    await refreshState(true);
+    const confirmedAt = result.stateUpdatedAt || new Date().toISOString();
+    setChatStates((previous) => ({
+      ...previous,
+      [conversationId]: {
+        ...(previous[conversationId] || { conversationId }),
+        conversationId,
+        isEnabled: true,
+        status: result.status === "starting" ? "processing" : "idle",
+        pauseReason: undefined,
+        pausedAt: undefined,
+        enabledAt: previous[conversationId]?.enabledAt || confirmedAt,
+        activity: result.retryMessageId
+          ? {
+              phase: "starting",
+              label: "Reiniciando IA",
+              detail: "Runtime reconstruído e mensagem pendente recolocada no fluxo.",
+              updatedAt: confirmedAt,
+            }
+          : undefined,
+        scheduledResponseAt: undefined,
+        pendingAction: undefined,
+        stateUpdatedAt: confirmedAt,
+      },
+    }));
+
+    return result;
+  }, [refreshState]);
+
   const registerClientMessage = useCallback(async (conversationId: string, timestamp?: string) => {
     if (!chatStatesRef.current[conversationId]?.isEnabled) return;
     const updated = await autoPilotRepo.resetChatDebounce(conversationId, timestamp);
@@ -299,5 +344,5 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, restartAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }

@@ -2,6 +2,13 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const { limitChatSnapshot } = require("./chat-snapshot-policy.cjs");
+const { latestInboundProviderMessage } = require("./latest-provider-message.cjs");
+const {
+  whatsappAccountIdFromWid,
+  whatsapp2ConversationIdForAccount,
+  whatsappProviderIdFromConversationId,
+} = require("../../src/domain/entities/whatsapp2-account-scope.cjs");
 const { createClient } = require("@supabase/supabase-js");
 const WA_JS_BUNDLE = require.resolve("@wppconnect/wa-js");
 
@@ -27,6 +34,8 @@ const {
   extractPdfDocument,
   isPdfAttachment,
 } = require("./pdf-document.cjs");
+const { saveWhatsApp2AddressBookContact } = require("./contact-address-book.cjs");
+const { resolveWhatsApp2CanonicalConversationId: resolveWhatsApp2CanonicalIdentity } = require("./canonical-identity.cjs");
 const {
   extractOfficeDocument,
   detectDocumentKind,
@@ -64,7 +73,7 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 function normalizeEvergreenRecipientKey(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const withoutPrefix = raw.replace(/^wa2:/i, "");
+  const withoutPrefix = whatsappProviderIdFromConversationId(raw);
   const base = withoutPrefix.replace(/@.*$/, "");
   const digits = base.replace(/\D+/g, "");
   return digits || base.toLowerCase();
@@ -437,14 +446,14 @@ async function getRecentChatSnapshot({ force = false } = {}) {
         if (!id) return null;
 
         const visibleLastMessage = await resolveVisibleLastMessage(chat);
-        if (chat.lastMessage && isInternalWhatsApp2Message(chat.lastMessage) && !visibleLastMessage) {
+        if (chat.lastMessage && isInternalWhatsApp2Message(chat.lastMessage) && !visibleLastMessage && !chat.archived && !chat.isLocked) {
           return null;
         }
 
         const timestamp = Number(
           visibleLastMessage?.timestamp || chat.timestamp || 0,
         );
-        if (timestamp < oneWeekAgoSeconds) return null;
+        if (timestamp < oneWeekAgoSeconds && !chat.archived && !chat.isLocked) return null;
         return {
           id,
           name: String(chat.name || chat.id?.user || id),
@@ -460,14 +469,14 @@ async function getRecentChatSnapshot({ force = false } = {}) {
       }),
     ))
       .filter(Boolean)
-      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
-      .slice(0, MAX_CHAT_SNAPSHOT_ROWS);
+      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    const limitedRows = limitChatSnapshot(rows, MAX_CHAT_SNAPSHOT_ROWS);
 
     if (generation === chatSnapshotGeneration) {
-      chatSnapshotCache = rows;
+      chatSnapshotCache = limitedRows;
       chatSnapshotCacheAt = Date.now();
     }
-    return rows;
+    return limitedRows;
   })();
 
   chatSnapshotPending = pending;
@@ -478,6 +487,64 @@ async function getRecentChatSnapshot({ force = false } = {}) {
       chatSnapshotPending = null;
     }
   }
+}
+
+const chatControlSyncPending = new Map();
+
+function syncChatControlState(payload) {
+  if (!supabase || !payload?.chatId) return Promise.resolve();
+  const previous = chatControlSyncPending.get(payload.chatId) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    const id = await resolveCanonicalConversationId(payload.chatId);
+    const status = payload.isLocked ? "locked" : payload.archived ? "archived" : "active";
+    let query = supabase.from("instagram_conversations").update({ status }).eq("id", id);
+    // Desarquivar/destrancar não deve apagar uma restrição independente.
+    if (status === "active") query = query.in("status", ["archived", "locked"]);
+    const { error } = await query;
+    if (error) throw new Error(error.message);
+  });
+  chatControlSyncPending.set(payload.chatId, pending);
+  void pending.finally(() => {
+    if (chatControlSyncPending.get(payload.chatId) === pending) chatControlSyncPending.delete(payload.chatId);
+  }).catch(() => {});
+  return pending;
+}
+
+async function ensureChatControlBridge(active = ensureReady()) {
+  const page = active.pupPage;
+  if (!page) throw new Error("Página do WhatsApp Web indisponível");
+  const callbackName = "__vendeoWa2ChatControlEvent";
+  if (!await page.evaluate((name) => typeof globalThis[name] === "function", callbackName)) {
+    await page.exposeFunction(callbackName, (payload) => {
+      if (client !== active || !payload?.chatId) return;
+      invalidateChatSnapshot();
+      void emitEvent("chat_state_changed", payload);
+      void syncChatControlState(payload).catch((error) =>
+        console.warn("[whatsapp2] sincronização de controle falhou:", error?.message || error));
+    });
+  }
+  await page.evaluate(() => {
+    const chats = window.require("WAWebCollections")?.Chat;
+    if (!chats?.on) throw new Error("Eventos de conversa indisponíveis no WhatsApp Web");
+    if (globalThis.__vendeoWa2ChatControlStore === chats) return;
+    const previous = globalThis.__vendeoWa2ChatControlStore;
+    const previousListener = globalThis.__vendeoWa2ChatControlListener;
+    if (previous && previousListener) {
+      previous.off("change:archive change:isLocked", previousListener);
+    }
+    const listener = (chat) => {
+      const chatId = chat?.id?._serialized || chat?.id?.toString?.();
+      if (!chatId) return;
+      void globalThis.__vendeoWa2ChatControlEvent({
+        chatId,
+        archived: Boolean(chat.archive),
+        isLocked: Boolean(chat.isLocked),
+      }).catch(() => {});
+    };
+    chats.on("change:archive change:isLocked", listener);
+    globalThis.__vendeoWa2ChatControlStore = chats;
+    globalThis.__vendeoWa2ChatControlListener = listener;
+  });
 }
 
 async function setWhatsApp2ChatLockState(chatId, locked) {
@@ -579,7 +646,8 @@ function normalizeResolvedPhoneNumber(value) {
 }
 
 function getCachedContactPhone(chatId) {
-  const key = String(chatId || "").trim();
+  const accountId = currentWhatsApp2AccountId() || "account-unknown";
+  const key = `${accountId}:${String(chatId || "").trim()}`;
   if (!key) return null;
   const cached = contactPhoneCache.get(key);
   if (!cached) return null;
@@ -593,7 +661,8 @@ function getCachedContactPhone(chatId) {
 }
 
 function cacheContactPhone(chatId, phoneNumber) {
-  const key = String(chatId || "").trim();
+  const accountId = currentWhatsApp2AccountId() || "account-unknown";
+  const key = `${accountId}:${String(chatId || "").trim()}`;
   const normalized = normalizeResolvedPhoneNumber(phoneNumber);
   if (!key || !normalized) return;
   if (contactPhoneCache.has(key)) contactPhoneCache.delete(key);
@@ -610,6 +679,7 @@ function cacheContactPhone(chatId, phoneNumber) {
 
 async function getSavedContactNamesByPhone(active, phoneNumbers) {
   const now = Date.now();
+  const accountId = currentWhatsApp2AccountId() || "account-unknown";
   const requested = Array.from(
     new Set(
       (Array.isArray(phoneNumbers) ? phoneNumbers : [])
@@ -621,7 +691,8 @@ async function getSavedContactNamesByPhone(active, phoneNumbers) {
   const missing = [];
 
   for (const phone of requested) {
-    const cached = savedContactNamesByPhoneCache.get(phone);
+    const cacheKey = `${accountId}:${phone}`;
+    const cached = savedContactNamesByPhoneCache.get(cacheKey);
     if (
       cached &&
       now - cached.updatedAt <= SAVED_CONTACT_NAMES_CACHE_TTL_MS
@@ -664,9 +735,9 @@ async function getSavedContactNamesByPhone(active, phoneNumbers) {
 
           const savedName = String(
             contact.name ||
-            contact.pushname ||
             contact.shortName ||
             contact.formattedTitle ||
+            contact.pushname ||
             contact.notifyName ||
             "",
           ).trim();
@@ -691,8 +762,8 @@ async function getSavedContactNamesByPhone(active, phoneNumbers) {
             const contact = await active.getContactById(`${phone}@c.us`);
             const savedName = String(
               contact?.name ||
-              contact?.pushname ||
               contact?.shortName ||
+              contact?.pushname ||
               "",
             ).trim();
             return [phone, savedName || null];
@@ -708,7 +779,7 @@ async function getSavedContactNamesByPhone(active, phoneNumbers) {
 
     for (const phone of missing) {
       const savedName = String(batch?.[phone] || "").trim() || null;
-      savedContactNamesByPhoneCache.set(phone, {
+      savedContactNamesByPhoneCache.set(`${accountId}:${phone}`, {
         savedName,
         updatedAt: now,
       });
@@ -719,11 +790,20 @@ async function getSavedContactNamesByPhone(active, phoneNumbers) {
   return names;
 }
 
+async function getSavedContactNameForChat(chatId) {
+  try {
+    const identities = await resolveWhatsApp2PhoneNumbers([chatId]);
+    return String(identities.find((identity) => identity.chatId === chatId)?.savedName || "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveWhatsApp2PhoneNumbers(chatIds) {
   const requested = Array.from(
     new Set(
       (Array.isArray(chatIds) ? chatIds : [])
-        .map((value) => String(value || "").trim().replace(/^wa2:/i, ""))
+        .map((value) => whatsappProviderIdFromConversationId(value))
         .filter(Boolean),
     ),
   ).slice(0, 500);
@@ -805,7 +885,7 @@ async function resolveWhatsApp2PhoneNumbers(chatIds) {
 }
 
 async function getWhatsApp2ExternalChatLink(chatId) {
-  const normalizedChatId = String(chatId || "").trim().replace(/^wa2:/i, "");
+  const normalizedChatId = whatsappProviderIdFromConversationId(chatId);
   if (!normalizedChatId) throw new Error("chatId obrigatório");
 
   const active = ensureReady();
@@ -1024,7 +1104,45 @@ async function ensureWaJsReady() {
 }
 
 function whatsapp2ConversationId(chatId) {
-  return "wa2:" + String(chatId || "").trim();
+  return whatsapp2ConversationIdForAccount(chatId, currentWhatsApp2AccountId());
+}
+
+function currentWhatsApp2AccountId() {
+  return whatsappAccountIdFromWid(state.me?.wid);
+}
+
+async function resolveCanonicalConversationId(chatId) {
+  const defaultId = whatsapp2ConversationId(chatId);
+  if (!supabase || !chatId) return defaultId;
+  const accountId = currentWhatsApp2AccountId();
+  if (!accountId) return defaultId;
+  const resolvedId = await resolveWhatsApp2CanonicalIdentity({
+    chatId,
+    resolvePhoneForLid: async (lid) => {
+      const resolvedPhones = await resolveWhatsApp2PhoneNumbers([lid]);
+      return resolvedPhones.find((row) => row.chatId === lid)?.phoneNumber || null;
+    },
+    lookupIdentity: async (externalIdentityIds) => {
+      const { data, error } = await supabase
+        .from("conversation_channel_identities")
+        .select("conversation_id")
+        .in("channel", ["whatsapp2", "whatsapp"])
+        .in("external_identity_id", externalIdentityIds)
+        .eq("status", "active")
+        .like("conversation_id", `wa2:${accountId}:%`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data?.conversation_id || null;
+    },
+  });
+  return resolvedId
+    ? whatsapp2ConversationIdForAccount(
+        whatsappProviderIdFromConversationId(resolvedId),
+        accountId,
+      )
+    : defaultId;
 }
 
 function mimeExtension(mimeType, fallback = "bin") {
@@ -1634,15 +1752,21 @@ async function enqueueWhatsApp2Inbound(message) {
   const preview = kind
     ? mediaPreview(kind, attachment)
     : nativePreview || text || "Mensagem";
+  const accountId = currentWhatsApp2AccountId();
+  if (!accountId) throw new Error("whatsapp2_account_identity_unavailable");
   const contactName = String(
+    await getSavedContactNameForChat(chatId) ||
     message?._data?.notifyName ||
     message?._data?.sender?.pushname ||
     chatId,
   ).trim() || chatId;
 
-  const { data, error } = await supabase.rpc("enqueue_whatsapp2_inbound_attachment_job", {
+  const canonicalConversationId = await resolveCanonicalConversationId(chatId);
+
+  const { data, error } = await supabase.rpc("enqueue_whatsapp2_inbound_attachment_job_for_account", {
+    p_gateway_account_id: accountId,
     p_message_id: messageId,
-    p_conversation_id: whatsapp2ConversationId(chatId),
+    p_conversation_id: canonicalConversationId,
     p_raw_contact_id: chatId,
     p_sender_id: String(message.from || chatId),
     p_contact_name: contactName,
@@ -1663,6 +1787,26 @@ async function enqueueWhatsApp2Inbound(message) {
   }
 
   if (state.status === "ready") void processInboundQueue();
+  return data;
+}
+
+async function waitForCanonicalWhatsApp2Message(conversationId, messageId, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+
+  do {
+    const { data, error } = await supabase
+      .from("instagram_messages")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("id", messageId)
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.id) return true;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  } while (Date.now() < deadline);
+
+  return false;
 }
 
 async function syncWhatsApp2Message(message) {
@@ -1679,6 +1823,7 @@ async function syncWhatsApp2Message(message) {
     const chat = await message.getChat();
     chatName = String(chat?.name || chatId);
   } catch {}
+  chatName = (await getSavedContactNameForChat(chatId)) || chatName;
   const avatarUrl = await resolveProfilePic(chatId).catch(() => null);
   const timestamp = new Date(Number(message.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString();
   const replyToMessageId = await resolveQuotedMessageId(message);
@@ -1752,6 +1897,9 @@ async function syncWhatsApp2Ack(message, ack) {
   if (!supabase || !message) return;
   const messageId = message.id?._serialized || message.id?.$1 || null;
   if (!messageId) return;
+  const chatId = String(message.to || "").trim();
+  if (!chatId) return;
+  const conversationId = whatsapp2ConversationId(chatId);
   const numericAck = Number(ack ?? message.ack ?? 0);
   const status = numericAck >= 3 ? "seen" : numericAck >= 2 ? "delivered" : "sent";
   const seenAt = numericAck >= 3 ? new Date().toISOString() : null;
@@ -1763,20 +1911,18 @@ async function syncWhatsApp2Ack(message, ack) {
       ...(seenAt ? { seen_at: seenAt } : {}),
     })
     .eq("id", messageId)
+    .eq("conversation_id", conversationId)
     .eq("channel", "whatsapp2");
 
-  const chatId = String(message.to || "").trim();
-  if (chatId) {
-    await supabase
-      .from("instagram_conversations")
-      .update({
-        last_status: status,
-        ...(seenAt ? { seen_at: seenAt } : {}),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", whatsapp2ConversationId(chatId))
-      .eq("channel", "whatsapp2");
-  }
+  await supabase
+    .from("instagram_conversations")
+    .update({
+      last_status: status,
+      ...(seenAt ? { seen_at: seenAt } : {}),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", conversationId)
+    .eq("channel", "whatsapp2");
 }
 
 async function syncWhatsApp2Reaction(reaction) {
@@ -1850,6 +1996,10 @@ async function syncWhatsApp2Revoke(after, before) {
     after?.protocolMessageKey?.$1 ||
     null;
   if (!target) return;
+  const chatId = String(
+    before?.fromMe ? before?.to : before?.from || after?.from || after?.to || "",
+  ).trim();
+  if (!chatId) return;
   try {
     await supabase
       .from("instagram_messages")
@@ -1863,6 +2013,7 @@ async function syncWhatsApp2Revoke(after, before) {
         audio_transcript: null,
       })
       .eq("id", target)
+      .eq("conversation_id", whatsapp2ConversationId(chatId))
       .eq("channel", "whatsapp2");
   } catch {}
 }
@@ -1878,9 +2029,7 @@ async function syncChatSnapshots() {
     return;
   }
 
-  const recentChats = snapshot
-    .filter((chat) => chat && !chat.isGroup)
-    .slice(0, 500);
+  const recentChats = limitChatSnapshot(snapshot.filter((chat) => chat && !chat.isGroup), 500);
   if (!recentChats.length) return;
 
   let identityByChatId = new Map();
@@ -1947,8 +2096,9 @@ async function syncChatSnapshots() {
     const gatewayTimestampMs = gatewayTimestamp > 0
       ? gatewayTimestamp * 1000
       : 0;
-    const gatewayIsNewer = gatewayTimestampMs > existingTimestamp;
+    const gatewayIsNewer = Boolean(last) && gatewayTimestampMs > existingTimestamp;
     const sameMessageTime =
+      Boolean(last) &&
       gatewayTimestampMs > 0 &&
       Math.abs(gatewayTimestampMs - existingTimestamp) < 1000;
     const gatewayStatus = last?.fromMe
@@ -2121,10 +2271,17 @@ async function sendMediaInternalUnlocked({
       }
     }
 
-    const downloaded = await downloadHttpMediaBounded(String(mediaUrl), {
-      maxBytes: MAX_MEDIA_BYTES,
-      fileName: inferredFilename,
-    });
+    let downloaded;
+    try {
+      downloaded = await downloadHttpMediaBounded(String(mediaUrl), {
+        maxBytes: MAX_MEDIA_BYTES,
+        fileName: inferredFilename,
+      });
+    } catch (error) {
+      const downloadError = error instanceof Error ? error : new Error(String(error));
+      downloadError.deliveryPhase = "before_send";
+      throw downloadError;
+    }
     sourceBytes = downloaded.size;
     media = new MessageMedia(
       downloaded.contentType,
@@ -2266,7 +2423,7 @@ async function sendMediaInternal(args) {
   );
 }
 
-async function processWhatsApp2InboundJob(job, workerToken) {
+async function processWhatsApp2InboundJob(job, workerToken, accountId) {
   const messageId = String(job?.message_id || "").trim();
   const chatId = String(job?.raw_contact_id || "").trim();
   if (!messageId || !chatId) throw new Error("whatsapp2_inbound_job_invalid");
@@ -2302,7 +2459,9 @@ async function processWhatsApp2InboundJob(job, workerToken) {
   let text = String(job?.message_text || providerMessage?.body || "").trim();
   let preview = String(job?.preview_text || "").trim() ||
     (kind ? mediaPreview(kind, attachment) : nativeMessagePreview(messageMetadata) || text || "Mensagem");
-  let chatName = String(job?.contact_name || chatId).trim() || chatId;
+  let chatName = String(
+    await getSavedContactNameForChat(chatId) || job?.contact_name || chatId,
+  ).trim() || chatId;
   let replyToMessageId = job?.reply_to_message_id || null;
 
   if (providerMessage) {
@@ -2362,7 +2521,7 @@ async function processWhatsApp2InboundJob(job, workerToken) {
     else if (!text) text = attachment?.fileName || preview;
   }
 
-  const conversationId = String(job.conversation_id || whatsapp2ConversationId(chatId));
+  const conversationId = String(job.conversation_id || await resolveCanonicalConversationId(chatId));
 
   if (kind === "audio") {
     const { data: staged, error: stageError } = await supabase.rpc(
@@ -2391,8 +2550,9 @@ async function processWhatsApp2InboundJob(job, workerToken) {
     }
 
     const { data: completed, error: completeError } = await supabase.rpc(
-      "complete_whatsapp2_inbound_job",
+      "complete_whatsapp2_inbound_job_for_account",
       {
+        p_gateway_account_id: accountId,
         p_message_id: messageId,
         p_worker_token: workerToken,
       },
@@ -2431,8 +2591,9 @@ async function processWhatsApp2InboundJob(job, workerToken) {
   }
 
   const { data: completed, error: completeError } = await supabase.rpc(
-    "complete_whatsapp2_inbound_job",
+    "complete_whatsapp2_inbound_job_for_account",
     {
+      p_gateway_account_id: accountId,
       p_message_id: messageId,
       p_worker_token: workerToken,
     },
@@ -2444,6 +2605,8 @@ async function processWhatsApp2InboundJob(job, workerToken) {
 
 async function processInboundQueue() {
   if (!supabase || inboundWorkerRunning || state.status !== "ready") return;
+  const accountId = currentWhatsApp2AccountId();
+  if (!accountId) return;
 
   const availableSlots = Math.max(
     0,
@@ -2456,7 +2619,8 @@ async function processInboundQueue() {
   let claimedCount = 0;
 
   try {
-    const { data: jobs, error } = await supabase.rpc("claim_whatsapp2_inbound_attachment_jobs", {
+    const { data: jobs, error } = await supabase.rpc("claim_whatsapp2_inbound_attachment_jobs_for_account", {
+      p_gateway_account_id: accountId,
       p_worker_token: workerToken,
       p_limit: availableSlots,
       p_lease_seconds: 300,
@@ -2469,13 +2633,14 @@ async function processInboundQueue() {
       inboundJobsInFlight += 1;
       void (async () => {
         try {
-          await processWhatsApp2InboundJob(job, workerToken);
+          await processWhatsApp2InboundJob(job, workerToken, accountId);
         } catch (error) {
           const attempts = Math.max(1, Number(job?.attempt_count || 1));
           const backoffSeconds = Math.min(300, 5 * Math.pow(2, Math.min(attempts - 1, 5)));
           const { data: retry, error: retryError } = await supabase.rpc(
-            "reschedule_whatsapp2_inbound_job",
+            "reschedule_whatsapp2_inbound_job_for_account",
             {
+              p_gateway_account_id: accountId,
               p_message_id: job.message_id,
               p_worker_token: workerToken,
               p_due_at: new Date(Date.now() + backoffSeconds * 1000).toISOString(),
@@ -2648,7 +2813,7 @@ async function finalizeDeliveryJob({
     completionPayload,
   );
 
-  if (!error && data?.success !== false) {
+  if (!error && data?.success === true) {
     return data;
   }
 
@@ -2667,6 +2832,7 @@ async function finalizeDeliveryJob({
     .update(patch)
     .eq("id", job.id)
     .eq("claimed_by", WORKER_ID)
+    .in("status", ["sending", "uncertain"])
     .select("id")
     .maybeSingle();
 
@@ -2686,6 +2852,8 @@ async function finalizeDeliveryJob({
 
 async function processDeliveryQueue() {
   if (!supabase || deliveryWorkerRunning || state.status !== "ready") return;
+  const accountId = currentWhatsApp2AccountId();
+  if (!accountId) return;
   deliveryWorkerRunning = true;
   let claimedCount = 0;
   try {
@@ -2693,11 +2861,13 @@ async function processDeliveryQueue() {
       p_worker_id: WORKER_ID,
       p_limit: WHATSAPP2_DELIVERY_BATCH_LIMIT,
       p_stale_after_seconds: 90,
+      p_gateway_account_id: accountId,
     });
     if (error) throw error;
     claimedCount = Array.isArray(jobs) ? jobs.length : 0;
 
     for (const job of jobs || []) {
+      let confirmedProviderMessageId = null;
       try {
         if (Number(job.attempts || 0) > WHATSAPP2_DELIVERY_MAX_ATTEMPTS) {
           await finalizeDeliveryJob({
@@ -2727,21 +2897,36 @@ async function processDeliveryQueue() {
           });
         }
 
-        const providerMessageId = sent?.id || null;
+        const providerMessageId = typeof sent?.id === "string" ? sent.id.trim() : null;
+        if (!providerMessageId) throw new Error("whatsapp2_send_without_provider_id");
+        confirmedProviderMessageId = providerMessageId;
         await finalizeDeliveryJob({
           job,
           success: true,
           providerMessageId,
         });
+        if (job.save_recipient_contact === true) {
+          try {
+            await saveRecipientContactForDeliveryJob(job);
+          } catch (contactSaveError) {
+            console.error(
+              "[whatsapp2] falha não bloqueante ao salvar contato após entrega confirmada:",
+              job.id,
+              contactSaveError?.message || contactSaveError,
+            );
+          }
+        }
       } catch (error) {
         const errorMessage = String(error?.message || error);
-        const uncertain = /timeout|timed out|connection|socket/i.test(errorMessage);
+        const safeBeforeSend = /^whatsapp2_media_url_/.test(errorMessage) || error?.deliveryPhase === "before_send";
+        const uncertain = !safeBeforeSend;
         try {
           await finalizeDeliveryJob({
             job,
-            success: false,
-            errorMessage,
-            uncertain,
+            success: Boolean(confirmedProviderMessageId),
+            providerMessageId: confirmedProviderMessageId,
+            errorMessage: confirmedProviderMessageId ? null : errorMessage,
+            uncertain: confirmedProviderMessageId ? false : uncertain,
           });
         } catch (finalizeError) {
           console.warn(
@@ -2759,6 +2944,40 @@ async function processDeliveryQueue() {
     if (claimedCount > 0 && state.status === "ready") {
       setImmediate(() => void processDeliveryQueue());
     }
+  }
+}
+
+async function saveRecipientContactForDeliveryJob(job) {
+  if (!supabase || !job?.id || !job.recipient_id) return;
+
+  let status = "saved";
+  let errorMessage = null;
+  try {
+    await saveWhatsApp2AddressBookContact({
+      client,
+      phoneNumber: job.recipient_id,
+      contactName: job.recipient_contact_name,
+    });
+  } catch (error) {
+    status = "failed";
+    errorMessage = String(error?.message || error).slice(0, 600);
+  }
+
+  const { error } = await supabase
+    .from("whatsapp2_delivery_queue")
+    .update({
+      recipient_contact_save_status: status,
+      recipient_contact_save_error: errorMessage,
+      recipient_contact_saved_at: status === "saved" ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  if (error) {
+    console.error("[whatsapp2] não foi possível persistir o resultado ao salvar contato:", job.id, error.message || error);
+  }
+  if (status === "failed") {
+    console.warn("[whatsapp2] falha ao salvar contato após entrega confirmada:", job.id, errorMessage);
   }
 }
 
@@ -2919,6 +3138,7 @@ async function startClient() {
         pushname: next.info.pushname || null,
         platform: next.info.platform || null,
       } : null;
+      invalidateChatSnapshot();
       setState({
         status: "ready",
         readyAt: new Date().toISOString(),
@@ -2930,6 +3150,8 @@ async function startClient() {
         me,
       });
       await emitEvent("ready", { me });
+      void ensureChatControlBridge(next).catch((error) =>
+        console.warn("[whatsapp2] eventos de controle indisponíveis:", error?.message || error));
       console.log("[whatsapp2] pronto", me || "");
       void ensureWaJsReady()
         .then(() => console.log("[whatsapp2] WA-JS pronto para mídia"))
@@ -3878,11 +4100,19 @@ const server = http.createServer(async (req, res) => {
       );
       const includeGroups = url.searchParams.get("includeGroups") === "true";
       const snapshot = await getRecentChatSnapshot();
-      const rows = snapshot
-        .filter((chat) => includeGroups || !chat.isGroup)
-        .slice(0, limit)
-        .map((chat) => ({
+      const chatRows = limitChatSnapshot(snapshot.filter((chat) => includeGroups || !chat.isGroup), limit);
+      let savedNamesByChatId = new Map();
+      try {
+        const identities = await resolveWhatsApp2PhoneNumbers(chatRows.map((chat) => chat.id));
+        savedNamesByChatId = new Map(
+          identities.map((identity) => [String(identity.chatId), identity.savedName || null]),
+        );
+      } catch (error) {
+        console.warn("[whatsapp2] nomes de contatos não foram hidratados na lista:", error?.message || error);
+      }
+      const rows = chatRows.map((chat) => ({
           ...chat,
+          savedContactName: savedNamesByChatId.get(String(chat.id)) || null,
           avatarUrl: chat.id ? getCachedProfilePic(chat.id) : null,
         }));
       warmProfilePics(rows.map((chat) => chat.id).filter(Boolean));
@@ -3990,6 +4220,67 @@ const server = http.createServer(async (req, res) => {
         .filter(Boolean)
         .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
       json(res, 200, { ok: true, chat: { id: chatId, name: chat.name || chatId }, messages: rows }); return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat/sync-latest-inbound") {
+      const active = ensureReady();
+      const body = await readJson(req, 64 * 1024);
+      const chatId = String(body?.chatId || "").trim();
+      const expectedConversationId = String(body?.conversationId || "").trim();
+      if (!chatId) throw new Error("chatId obrigatório");
+      if (chatId === "status@broadcast" || chatId.endsWith("@g.us")) {
+        throw new Error("A sincronização imediata só está disponível em conversas individuais.");
+      }
+
+      const chat = await active.getChatById(chatId);
+      if (!chat) throw new Error("Conversa não encontrada");
+      const conversationId = await resolveCanonicalConversationId(chatId);
+      let matchesExpectedConversation = !expectedConversationId
+        || expectedConversationId === conversationId
+        || expectedConversationId === whatsapp2ConversationId(chatId);
+      const accountId = currentWhatsApp2AccountId();
+      if (!matchesExpectedConversation && accountId && expectedConversationId.startsWith(`wa2:${accountId}:`)) {
+        // A lista pode manter um LID antigo enquanto o provider já usa PN.
+        // Só aceita essa diferença quando o próprio WhatsApp confirma o mesmo telefone.
+        const expectedChatId = whatsappProviderIdFromConversationId(expectedConversationId);
+        const identities = await resolveWhatsApp2PhoneNumbers([chatId, expectedChatId]);
+        const currentPhone = identities.find((identity) => identity.chatId === chatId)?.phoneNumber;
+        const expectedPhone = identities.find((identity) => identity.chatId === expectedChatId)?.phoneNumber;
+        matchesExpectedConversation = Boolean(currentPhone && expectedPhone && currentPhone === expectedPhone);
+      }
+      if (!matchesExpectedConversation) {
+        json(res, 409, {
+          ok: false,
+          error: "A identidade desta conversa mudou. Atualize a lista do WhatsApp e abra o chat novamente.",
+        });
+        return;
+      }
+
+      const providerMessages = await chat.fetchMessages({ limit: 20 });
+      const latestInbound = latestInboundProviderMessage(providerMessages);
+      if (!latestInbound) {
+        json(res, 200, { ok: true, conversationId, latestInbound: false, persisted: false, reason: "latest_not_inbound" });
+        return;
+      }
+
+      const messageId = latestInbound.id?._serialized || latestInbound.id?.$1 || null;
+      if (!messageId) throw new Error("A mensagem mais recente não tem um identificador válido.");
+      const alreadyPersisted = await waitForCanonicalWhatsApp2Message(conversationId, messageId, 0);
+      if (alreadyPersisted) {
+        json(res, 200, { ok: true, conversationId, latestInbound: true, persisted: true, alreadyPersisted: true });
+        return;
+      }
+
+      const queueResult = await enqueueWhatsApp2Inbound(latestInbound);
+      const persisted = await waitForCanonicalWhatsApp2Message(conversationId, messageId);
+      json(res, 200, {
+        ok: true,
+        conversationId,
+        latestInbound: true,
+        persisted,
+        queued: queueResult?.queued === true,
+        reason: persisted ? null : "inbound_sync_pending",
+      });
+      return;
     }
     if (req.method === "GET" && url.pathname === "/message/media") {
       const messageId = String(url.searchParams.get("messageId") || "");

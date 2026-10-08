@@ -1,4 +1,13 @@
-export type ConnectionWindowCandidateType = "topic" | "question" | "story" | "audio" | "photo";
+export type ConnectionWindowCandidateType = "topic" | "question" | "story" | "audio" | "photo" | "video";
+export type ArsenalRoutineContext =
+  | "memory"
+  | "weekday_home_morning"
+  | "internship"
+  | "college"
+  | "weekday_home_evening"
+  | "weekend_home"
+  | "weekend_outing"
+  | "specific_moment";
 
 export interface ConnectionWindowArsenalCandidate {
   itemId: string;
@@ -13,6 +22,7 @@ export interface ConnectionWindowArsenalCandidate {
   whatsappMediaUrl?: string | null;
   transcript?: string | null;
   visualDescription?: string | null;
+  routineContext?: ArsenalRoutineContext | null;
   validityType: "evergreen" | "recurring" | "moment";
   priority: number;
   maxUsesPerConversation?: number | null;
@@ -158,12 +168,41 @@ function recurringRuleAllowsNow(rules: any, now: Date): boolean {
   return local.time >= start || local.time <= end;
 }
 
+function routineContextAllowsNow(context: unknown, now: Date): boolean {
+  const value = String(context || "");
+  if (!value || value === "memory") return true;
+  if (value === "specific_moment") return true; // a validade moment já restringe a data e o horário.
+
+  const local = localDateParts(now, "America/Sao_Paulo");
+  const weekdays = new Set([1, 2, 3, 4, 5]);
+  const weekdayRoutine = weekdays.has(local.weekday);
+  const inRange = (start: string, end: string) => local.time >= start && local.time < end;
+
+  switch (value) {
+    case "weekday_home_morning":
+      return weekdayRoutine && inRange("06:00", "11:00");
+    case "internship":
+      return weekdayRoutine && inRange("12:00", "17:00");
+    case "college":
+      return weekdayRoutine && inRange("19:00", "22:00");
+    case "weekday_home_evening":
+      return weekdayRoutine && inRange("22:00", "24:00");
+    case "weekend_home":
+      return local.weekday === 0 || local.weekday === 6;
+    case "weekend_outing":
+      return local.weekday === 0 || local.weekday === 6;
+    default:
+      return false;
+  }
+}
+
 function validityAllowsNow(item: any, now: Date): boolean {
   const validity = String(item.validity_type || "evergreen");
   if (validity === "moment") {
     const nowMs = now.getTime();
     const fromMs = item.valid_from ? new Date(item.valid_from).getTime() : NaN;
     const untilMs = item.valid_until ? new Date(item.valid_until).getTime() : NaN;
+    if (!Number.isFinite(fromMs) || !Number.isFinite(untilMs) || untilMs <= fromMs) return false;
     if (Number.isFinite(fromMs) && nowMs < fromMs) return false;
     if (Number.isFinite(untilMs) && nowMs > untilMs) return false;
     return true;
@@ -211,6 +250,14 @@ export async function loadConnectionWindowArsenal(params: {
 
   return items.flatMap((item: any) => {
     if (!validityAllowsNow(item, now)) return [];
+    const rules = item.recurring_rules && typeof item.recurring_rules === "object"
+      ? item.recurring_rules
+      : {};
+    const routineContext = String(rules.routineContext || "");
+    if ((item.item_type === "audio" || item.item_type === "photo" || item.item_type === "video") && !routineContext) return [];
+    if (item.item_type === "video" && !String(item.visual_description || "").trim()) return [];
+    if (routineContext === "specific_moment" && item.validity_type !== "moment") return [];
+    if (!routineContextAllowsNow(routineContext, now)) return [];
 
     const sent = usage.filter((row: any) =>
       String(row.arsenal_item_id) === String(item.id) &&
@@ -247,6 +294,7 @@ export async function loadConnectionWindowArsenal(params: {
       whatsappMediaUrl: item.whatsapp_media_url || null,
       transcript: item.transcript || null,
       visualDescription: item.visual_description || null,
+      routineContext: (routineContext || null) as ArsenalRoutineContext | null,
       validityType: String(item.validity_type || "evergreen") as "evergreen" | "recurring" | "moment",
       priority: Number(item.priority ?? 50),
       maxUsesPerConversation: maxUses,

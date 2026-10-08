@@ -70,6 +70,8 @@ import {
 } from "./audio-converter";
 import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
 import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
+import { activateWhatsApp2Autopilot } from "./whatsapp2-autopilot-activation";
+import { selectWhatsApp2StateOwner } from "@/domain/entities/whatsapp2-state-owner.cjs";
 import { InstagramChatComposer, InstagramChatComposerRef } from "./InstagramChatComposer";
 import { InstagramReplyGesture } from "./InstagramReplyGesture";
 import { WhatsAppContactInfo } from "./WhatsAppContactInfo";
@@ -105,13 +107,23 @@ import { useMobileNotifications } from "@/presentation/hooks/useMobileNotificati
 import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { hasNewConversationMessage, runDeduplicatedConversationFetch } from "./instagram-message-loading";
 import {
+  resolveWhatsAppChatIdForIdentity,
+} from "@/domain/entities/ChannelIdentity";
+import {
+  groupWhatsAppConversationRows,
+  getWhatsAppConversationIdentityKey,
+  reconcileWhatsAppControlState,
+} from "@/domain/entities/WhatsAppConversationIdentity";
+import {
   getWhatsApp2Chats,
   getWhatsApp2ChatState,
   getWhatsApp2ExternalChatLink,
   getWhatsApp2MediaUrl,
   getWhatsApp2Messages,
+  syncWhatsApp2LatestInbound,
   getWhatsApp2Presence,
   getWhatsApp2Status,
+  resolveWhatsApp2PhoneNumbers,
   normalizeWhatsApp2Attachment,
   IS_WHATSAPP2_REMOTE_BUILD,
   openWhatsApp2EventStream,
@@ -121,6 +133,12 @@ import {
   setWhatsApp2ChatLocked,
   subscribeWhatsApp2Presence,
   unsubscribeWhatsApp2Presence,
+  whatsappAccountIdFromWid,
+  whatsapp2ConversationIdForAccount,
+  whatsappProviderIdFromConversationId,
+  whatsappConversationBelongsToAccount,
+  isLatestWhatsAppAccountLoad,
+  resolveWhatsAppContactDisplayName,
   type WhatsApp2GatewayChat,
   type WhatsApp2Attachment,
   type WhatsApp2MessageMetadata,
@@ -234,6 +252,8 @@ export interface DirectConversation {
   archived?: boolean;
   isLocked?: boolean;
   isBlocked?: boolean;
+  whatsappIdentityKey?: string;
+  savedContactName?: string | null;
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
@@ -342,13 +362,19 @@ function formatWhatsApp2PresenceLabel(
   return `visto por último em ${date} às ${time}`;
 }
 
-function mapWhatsApp2Chat(chat: WhatsApp2GatewayChat): DirectConversation {
+function mapWhatsApp2Chat(chat: WhatsApp2GatewayChat, accountId: string): DirectConversation {
   const timestampMs = Number(chat.lastMessage?.timestamp || chat.timestamp || 0) * 1000;
-  const name = String(chat.name || chat.id || "Contato");
+  const name = resolveWhatsAppContactDisplayName({
+    savedContactName: chat.savedContactName,
+    profileName: chat.name,
+    fallbackName: chat.id,
+    providerId: chat.id,
+  });
   const preview = formatWhatsApp2Preview(chat.lastMessage);
   return {
-    id: `wa2:${chat.id}`,
+    id: whatsapp2ConversationIdForAccount(chat.id, accountId),
     providerId: chat.id,
+    savedContactName: chat.savedContactName || null,
     username: chat.id.replace(/@.*$/, ""),
     fullName: name,
     avatar: chat.avatarUrl || "/images/default-avatar.svg",
@@ -490,6 +516,8 @@ function requestAvatarRefresh(conversationId?: string) {
 
 interface InstagramDirectProps {
   onChatOpenChange?: (isOpen: boolean) => void;
+  initialWhatsAppIdentityId?: string | null;
+  onInitialConversationHandled?: () => void;
 }
 
 /**
@@ -1077,74 +1105,152 @@ function getStoredRestrictedChatIds(): Set<string> {
   return new Set();
 }
 
-export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
+export function InstagramDirect({
+  onChatOpenChange,
+  initialWhatsAppIdentityId,
+  onInitialConversationHandled,
+}: InstagramDirectProps) {
   const [conversations, setConversations] = useState<DirectConversation[]>([]);
   const [whatsapp2Conversations, setWhatsApp2Conversations] = useState<DirectConversation[]>([]);
+  const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
+  const whatsapp2ConversationsRef = useRef<DirectConversation[]>([]);
+  const activeWhatsAppAccountIdRef = useRef<string | null>(null);
+  const whatsappAccountLoadRequestIdRef = useRef(0);
   const [whatsapp2GatewayStatus, setWhatsapp2GatewayStatus] = useState("idle");
   const [whatsapp2GatewayError, setWhatsapp2GatewayError] = useState<string | null>(null);
   const whatsapp2InboxLastReconcileAtRef = useRef(0);
   const isRealtimeConnectedRef = useRef<boolean>(true);
 
   const loadWhatsApp2Conversations = useCallback(async () => {
+    const requestId = ++whatsappAccountLoadRequestIdRef.current;
+    const isLatestRequest = () => isLatestWhatsAppAccountLoad(
+      requestId,
+      whatsappAccountLoadRequestIdRef.current,
+    );
     setWhatsapp2GatewayStatus("loading");
 
     const supabase = getSupabaseBrowserClient();
     const oneWeekAgoIso = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
     let gatewayRows: DirectConversation[] = [];
     let gatewayError: Error | null = null;
+    let accountId: string | null = null;
+    const resolvedPhonesByChatId = new Map<string, string>();
 
     try {
       const gatewayStatus = await getWhatsApp2Status();
+      if (!isLatestRequest()) return;
       setWhatsapp2GatewayStatus(gatewayStatus.status || "idle");
       setWhatsapp2GatewayError(null);
 
       if (gatewayStatus.status === "ready") {
+        const connectedAccountId = whatsappAccountIdFromWid(gatewayStatus.me?.wid);
+        if (!connectedAccountId) {
+          throw new Error("O WhatsApp conectado não informou um número válido para separar o histórico.");
+        }
+        const accountChanged = activeWhatsAppAccountIdRef.current !== connectedAccountId;
+        accountId = connectedAccountId;
+        activeWhatsAppAccountIdRef.current = accountId;
+        if (accountChanged) {
+          setWhatsApp2Conversations((current) => current.filter((conversation) =>
+            whatsappConversationBelongsToAccount(conversation.id, accountId),
+          ));
+          setActiveChat((current) => current?.type === "whatsapp2" &&
+            !whatsappConversationBelongsToAccount(current.id, accountId) ? null : current);
+        }
         const rows = await getWhatsApp2Chats(500);
-        gatewayRows = rows.map(mapWhatsApp2Chat);
+        if (!isLatestRequest() || activeWhatsAppAccountIdRef.current !== accountId) return;
+        gatewayRows = rows
+          .map((row) => mapWhatsApp2Chat(row, accountId!))
+          .filter((conversation) => whatsappConversationBelongsToAccount(conversation.id, accountId));
+      } else {
+        activeWhatsAppAccountIdRef.current = null;
+        setWhatsApp2Conversations([]);
+        setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
       }
     } catch (error) {
+      if (!isLatestRequest()) return;
       gatewayError = error as Error;
       setWhatsapp2GatewayStatus("offline");
       setWhatsapp2GatewayError(gatewayError.message || "Gateway indisponível");
+      if (!accountId) {
+        activeWhatsAppAccountIdRef.current = null;
+        setWhatsApp2Conversations([]);
+        setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
+      }
     }
 
     let canonicalRows: any[] = [];
-    if (supabase) {
+    if (supabase && accountId) {
       const { data, error } = await supabase
         .from("instagram_conversations")
         .select(
-          "id, contact_id, username, full_name, avatar, avatar_url, last_message, last_message_at, last_direction, last_status, seen_at, unread, unread_count, status, current_stage_id, is_converted, raffle_status, ai_auto_respond"
+          "id, contact_id, username, full_name, avatar, avatar_url, last_message, last_message_at, last_direction, last_status, seen_at, unread, unread_count, status, current_stage_id, is_converted, raffle_status, ai_auto_respond, autopilot_status:stage_completed_rules->>status"
         )
         .eq("channel", "whatsapp2")
+        .like("id", `wa2:${accountId}:%`)
         .neq("status", "vault")
         .neq("status", "system")
-        .gte("last_message_at", oneWeekAgoIso)
+        .or(`last_message_at.gte.${oneWeekAgoIso},status.in.(archived,locked)`)
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(500);
 
       if (error) {
         console.warn("[WhatsApp 2] Falha ao carregar projeção canônica:", error.message);
       } else {
-        canonicalRows = data || [];
+        canonicalRows = (data || []).filter((row: { id?: string | null }) =>
+          whatsappConversationBelongsToAccount(row.id, accountId),
+        );
       }
     }
 
-    const canonicalById = new Map<string, any>(
-      canonicalRows.map((row: any) => [String(row.id), row])
-    );
-    const gatewayById = new Map<string, DirectConversation>(
-      gatewayRows.map((row) => [row.id, row])
-    );
-    const allIds = new Set<string>([
-      ...canonicalRows.map((row: any) => String(row.id)),
-      ...gatewayRows.map((row) => row.id),
-    ]);
+    if (!isLatestRequest() || (accountId && activeWhatsAppAccountIdRef.current !== accountId)) return;
 
-    const merged = Array.from(allIds).map((id) => {
-      const canonical = canonicalById.get(id);
-      const gateway = gatewayById.get(id);
-      const canonicalMessageAt = canonical?.last_message_at
-        ? getMessageTimestampMs(canonical.last_message_at)
+    const lidChatIds = Array.from(new Set([
+      ...gatewayRows.map((row) => String(row.providerId || whatsappProviderIdFromConversationId(row.id)).trim()),
+      ...canonicalRows.map((row: any) => String(row.contact_id || whatsappProviderIdFromConversationId(row.id) || "").trim()),
+      ...whatsapp2ConversationsRef.current
+        .filter((row) => whatsappConversationBelongsToAccount(row.id, accountId))
+        .map((row) => String(row.providerId || whatsappProviderIdFromConversationId(row.id)).trim()),
+    ].filter((chatId) => chatId.toLowerCase().endsWith("@lid"))));
+    if (lidChatIds.length > 0) {
+      try {
+        const { contacts } = await resolveWhatsApp2PhoneNumbers(lidChatIds);
+        for (const contact of contacts) {
+          if (contact.phoneNumber) {
+            resolvedPhonesByChatId.set(contact.chatId, contact.phoneNumber);
+          }
+        }
+      } catch (error) {
+        console.warn("[WhatsApp 2] Falha ao agrupar aliases LID por telefone:", error);
+      }
+    }
+
+    if (!isLatestRequest() || (accountId && activeWhatsAppAccountIdRef.current !== accountId)) return;
+
+    const identityGroups = groupWhatsAppConversationRows(
+      gatewayRows,
+      canonicalRows,
+      resolvedPhonesByChatId,
+    );
+    const merged = identityGroups.map((group) => {
+      const gatewayCandidates = group.gatewayRows;
+      const canonicalCandidates = group.canonicalRows;
+      const gateway = [...gatewayCandidates].sort((a, b) => {
+        const aId = String(a.providerId || a.id);
+        const bId = String(b.providerId || b.id);
+        const aIsLid = aId.toLowerCase().endsWith("@lid");
+        const bIsLid = bId.toLowerCase().endsWith("@lid");
+        if (aIsLid !== bIsLid) return aIsLid ? 1 : -1;
+        return getMessageTimestampMs(b.lastMessageAt || b.lastActive)
+          - getMessageTimestampMs(a.lastMessageAt || a.lastActive);
+      })[0];
+      const canonical = selectWhatsApp2StateOwner(canonicalCandidates);
+      const messageProjection = [...canonicalCandidates].sort((a: any, b: any) =>
+        getMessageTimestampMs(b.last_message_at) - getMessageTimestampMs(a.last_message_at)
+      )[0];
+      const id = String(canonical?.id || gateway?.id || "");
+      const canonicalMessageAt = messageProjection?.last_message_at
+        ? getMessageTimestampMs(messageProjection.last_message_at)
         : 0;
       const gatewayMessageAt = gateway?.lastMessageAt
         ? getMessageTimestampMs(gateway.lastMessageAt)
@@ -1152,10 +1258,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const useCanonicalMessage =
         Boolean(canonical) && canonicalMessageAt >= gatewayMessageAt;
       const lastDirection = useCanonicalMessage
-        ? String(canonical?.last_direction || "")
+        ? String(messageProjection?.last_direction || "")
         : (gateway?.lastSender === "me" ? "out" : "in");
       const lastStatus = useCanonicalMessage
-        ? (canonical?.last_status ? String(canonical.last_status) : undefined)
+        ? (messageProjection?.last_status ? String(messageProjection.last_status) : undefined)
         : gateway?.lastStatus;
       const gatewayAvatar =
         gateway?.avatar && /^https?:\/\//i.test(String(gateway.avatar))
@@ -1181,28 +1287,32 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       const contactId =
         canonical?.contact_id ||
         gateway?.providerId ||
-        id.replace(/^wa2:/, "");
-      // Para o WhatsApp 2, o nome vindo do gateway representa o nome
-      // que o WhatsApp Web conectado está exibindo (incluindo o nome salvo na agenda).
-      // Ele deve ganhar do nome canônico antigo para evitar rótulos desatualizados.
-      const fullName =
-        gateway?.fullName ||
-        canonical?.full_name ||
-        gateway?.username ||
-        canonical?.username ||
-        contactId;
+        whatsappProviderIdFromConversationId(id);
+      const gatewayName = String(gateway?.fullName || "").trim();
+      const canonicalName = String(canonical?.full_name || "").trim();
+      const fullName = resolveWhatsAppContactDisplayName({
+        savedContactName: gateway?.savedContactName,
+        profileName: gatewayName || canonicalName,
+        fallbackName: canonicalName || gateway?.username || canonical?.username || contactId,
+        providerId: gateway?.providerId || contactId,
+      });
       const username =
         canonical?.username ||
         gateway?.username ||
         contactId;
       const lastMessageAt = useCanonicalMessage
-        ? (canonical?.last_message_at || gateway?.lastMessageAt || null)
-        : (gateway?.lastMessageAt || canonical?.last_message_at || null);
+        ? (messageProjection?.last_message_at || gateway?.lastMessageAt || null)
+        : (gateway?.lastMessageAt || messageProjection?.last_message_at || null);
       const rawLastMessage = useCanonicalMessage
-        ? (canonical?.last_message ?? gateway?.lastMessage ?? "")
-        : (gateway?.lastMessage ?? canonical?.last_message ?? "");
+        ? (messageProjection?.last_message ?? gateway?.lastMessage ?? "")
+        : (gateway?.lastMessage ?? messageProjection?.last_message ?? "");
       const isOutbound =
         lastDirection === "out" || lastDirection === "outbound";
+      const controls = reconcileWhatsAppControlState(
+        gatewayCandidates,
+        canonicalCandidates.map((row: any) => String(row.status || "")),
+        canonical?.status || gateway?.status || "active",
+      );
 
       const conversation: DirectConversation = {
         ...(gateway || {
@@ -1218,7 +1328,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           type: "whatsapp2" as const,
         }),
         id,
-        providerId: contactId,
+        providerId: gateway?.providerId || contactId,
+        savedContactName: gateway?.savedContactName || null,
+        whatsappIdentityKey: group.identityKey,
         username,
         fullName,
         avatar,
@@ -1233,19 +1345,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           ? ((lastStatus as DirectMessage["status"] | undefined) || "sent")
           : undefined,
         seenAt: canonical?.seen_at || gateway?.seenAt,
-        unread: canonical ? Boolean(canonical.unread) : Boolean(gateway?.unread),
-        status: (gateway?.isLocked || canonical?.status === "locked")
-          ? "locked"
-          : (gateway?.archived || canonical?.status === "archived")
-          ? "archived"
-          : (canonical?.status || gateway?.status || "active"),
+        unread: Boolean(canonical?.unread) || gatewayCandidates.some((row) => row.unread),
+        status: controls.status as DirectConversation["status"],
         currentStageId: canonical?.current_stage_id || null,
         isConverted: Boolean(canonical?.is_converted),
         raffleStatus: normalizeRaffleCommercialStatus(canonical?.raffle_status),
         aiAutoRespond: Boolean(canonical?.ai_auto_respond),
-        archived: Boolean(gateway?.archived || canonical?.status === "archived"),
-        isLocked: Boolean(gateway?.isLocked || canonical?.status === "locked"),
-        isBlocked: Boolean(gateway?.isBlocked),
+        archived: controls.archived,
+        isLocked: controls.isLocked,
+        isBlocked: gatewayCandidates.some((row) => row.isBlocked === true),
       };
       return conversation;
     });
@@ -1255,12 +1363,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         getMessageTimestampMs(b.lastMessageAt || b.lastActive) -
         getMessageTimestampMs(a.lastMessageAt || a.lastActive)
     );
+    const mergedByIdentity = new Map(
+      merged.map((conversation) => [conversation.whatsappIdentityKey || conversation.id, conversation]),
+    );
+    const mergedIdentityKeys = new Set(mergedByIdentity.keys());
     setWhatsApp2Conversations((currentRows) => {
       const reconciledById = new Map(merged.map((conversation) => [conversation.id, conversation]));
 
-      for (const current of currentRows) {
-        const reconciled = reconciledById.get(current.id);
+      const currentRowsForAccount = accountId
+        ? currentRows.filter((current) => whatsappConversationBelongsToAccount(current.id, accountId))
+        : [];
+      for (const current of currentRowsForAccount) {
+        const currentIdentityKey = getWhatsAppConversationIdentityKey(
+          current.providerId || current.id,
+          resolvedPhonesByChatId.get(whatsappProviderIdFromConversationId(current.providerId || current.id)),
+        );
+        const reconciled = reconciledById.get(current.id) || mergedByIdentity.get(currentIdentityKey);
         if (!reconciled) {
+          if (mergedIdentityKeys.has(currentIdentityKey)) continue;
           const currentAt = getMessageTimestampMs(current.lastMessageAt || current.lastActive);
           const oneWeekAgoMs = Date.now() - (7 * 24 * 60 * 60 * 1000);
           if (currentAt >= oneWeekAgoMs) reconciledById.set(current.id, current);
@@ -1272,11 +1392,20 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           reconciled.lastMessageAt || reconciled.lastActive
         );
         if (currentAt > reconciledAt) {
-          reconciledById.set(current.id, {
-            ...current,
+          reconciledById.set(reconciled.id, {
+            ...reconciled,
+            lastMessage: current.lastMessage,
+            lastMessageAt: current.lastMessageAt,
+            lastActive: current.lastActive,
+            lastSender: current.lastSender,
+            lastStatus: current.lastStatus,
+            unread: current.unread,
+            id: reconciled.id,
+            whatsappIdentityKey: reconciled.whatsappIdentityKey,
             // Mesmo quando a mensagem local é mais nova, identidade/perfil devem
             // acompanhar o snapshot atual do WhatsApp e não ficar presos em cache.
             fullName: reconciled.fullName,
+            savedContactName: reconciled.savedContactName,
             username: reconciled.username,
             providerId: reconciled.providerId,
             avatar: reconciled.avatar,
@@ -1294,9 +1423,34 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           getMessageTimestampMs(a.lastMessageAt || a.lastActive)
       );
     });
+    // Transfere o histórico apenas entre aliases confirmados da mesma conta.
+    setMessages((previous) => {
+      const next = { ...previous };
+      for (const group of identityGroups) {
+        const target = mergedByIdentity.get(group.identityKey);
+        if (!target) continue;
+        const ids = [...group.gatewayRows, ...group.canonicalRows].map((row) => row.id);
+        for (const id of Object.keys(previous)) {
+          if (!whatsappConversationBelongsToAccount(id, accountId)) continue;
+          const provider = whatsappProviderIdFromConversationId(id);
+          if (getWhatsAppConversationIdentityKey(provider, resolvedPhonesByChatId.get(provider)) === group.identityKey) ids.push(id);
+        }
+        const cached = ids.filter((id) => whatsappConversationBelongsToAccount(id, accountId))
+          .flatMap((id) => previous[id] || []);
+        if (cached.length) next[target.id] = deduplicateMessages([...(previous[target.id] || []), ...cached])
+          .sort((a, b) => getMessageTimestampMs(a.sentDate || a.timestamp) - getMessageTimestampMs(b.sentDate || b.timestamp));
+      }
+      return next;
+    });
     setActiveChat((current) => {
       if (!current || current.type !== "whatsapp2") return current;
-      const reconciled = merged.find((conversation) => conversation.id === current.id);
+      if (!whatsappConversationBelongsToAccount(current.id, accountId)) return null;
+      const currentIdentityKey = getWhatsAppConversationIdentityKey(
+        current.providerId || current.id,
+        resolvedPhonesByChatId.get(whatsappProviderIdFromConversationId(current.providerId || current.id)),
+      );
+      const reconciled = mergedByIdentity.get(currentIdentityKey)
+        || merged.find((conversation) => conversation.id === current.id);
       if (!reconciled) return current;
       const currentAt = getMessageTimestampMs(current.lastMessageAt || current.lastActive);
       const reconciledAt = getMessageTimestampMs(
@@ -1306,10 +1460,13 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         ? reconciled
         : {
             ...current,
+            id: reconciled.id,
             fullName: reconciled.fullName,
+            savedContactName: reconciled.savedContactName,
             username: reconciled.username,
             providerId: reconciled.providerId,
             avatar: reconciled.avatar,
+            whatsappIdentityKey: reconciled.whatsappIdentityKey,
             status: reconciled.status,
             archived: reconciled.archived,
             isLocked: reconciled.isLocked,
@@ -1327,11 +1484,15 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
   const conversationsRef = useRef<DirectConversation[]>([]);
   useEffect(() => {
+    whatsapp2ConversationsRef.current = whatsapp2Conversations;
+  }, [whatsapp2Conversations]);
+
+  useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
   const prefersReducedMotion = useReducedMotion();
-  const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
   const [whatsapp2Presence, setWhatsApp2Presence] = useState<WhatsApp2PresencePayload | null>(null);
+  const initialWhatsAppLookupRef = useRef<string | null>(null);
   const [whatsapp2ExternalChatUrl, setWhatsApp2ExternalChatUrl] = useState<string | null>(null);
   const whatsapp2PresenceClientIdRef = useRef(
     `wa2-ui-${Math.random().toString(36).slice(2, 10)}`,
@@ -1388,6 +1549,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const [isPersonaAudioModalOpen, setIsPersonaAudioModalOpen] = useState(false);
   const [isAutoPilotActivationModalOpen, setIsAutoPilotActivationModalOpen] = useState(false);
   const [isGlobalAutoPilotDisabledModalOpen, setIsGlobalAutoPilotDisabledModalOpen] = useState(false);
+  const [isRestartingActiveChatAi, setIsRestartingActiveChatAi] = useState(false);
   const [isInstagramConnected, setIsInstagramConnected] = useState<boolean | null>(null);
   const [showFilterBar, setShowFilterBar] = useState(false);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
@@ -1604,7 +1766,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       };
     }
 
-    const providerId = activeChat.providerId || activeChat.id.replace(/^wa2:/, "");
+    const providerId = activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id);
     if (!providerId) {
       return () => {
         cancelled = true;
@@ -1669,7 +1831,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     const audioUrl = isAudioMsg ? text.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1] : undefined;
     const tempId = `temp_auto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const nowIso = new Date().toISOString();
-    const timeFormatted = formatMessageTime(new Date());
+    const timeFormatted = formatMessageTime(new Date());
     const optimisticMsg: DirectMessage = {
       id: tempId,
       senderId: "me",
@@ -2049,6 +2211,41 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     }
   }, [activeChat, autoPilot]);
 
+  const handleRestartActiveChatAi = useCallback(async () => {
+    if (!activeChat || isRestartingActiveChatAi) return;
+
+    const globalEnabled = autoPilot.config?.isEnabledGlobally === false
+      ? false
+      : await autoPilot.isGlobalAutoPilotEnabled();
+    if (!globalEnabled) {
+      setIsGlobalAutoPilotDisabledModalOpen(true);
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Reiniciar a IA desta conversa?\n\n" +
+      "Isso limpa ciclos, filas, erros e a sessão técnica da OpenAI, mas preserva mensagens, memória, cronograma, etapa e checkpoints. " +
+      "Se houver uma última mensagem sem resposta, ela será processada novamente."
+    );
+    if (!confirmed) return;
+
+    setIsRestartingActiveChatAi(true);
+    try {
+      const result = await autoPilot.restartAutoPilotForChat(activeChat.id);
+      toast.success(
+        result?.retryMessageId
+          ? "IA reiniciada. A mensagem pendente voltou para processamento."
+          : "IA reiniciada. Não havia mensagem pendente."
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível reiniciar a IA.";
+      console.error("[Autopilot Restart] Falha ao reiniciar conversa:", error);
+      toast.error(message);
+    } finally {
+      setIsRestartingActiveChatAi(false);
+    }
+  }, [activeChat, autoPilot, isRestartingActiveChatAi]);
+
   const submitMediaObservation = useCallback(async (
     media: { kind: "video" | "image"; messageId: string },
   ) => {
@@ -2324,10 +2521,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     setWhatsApp2Conversations((current) => current.map(apply));
     setConversations((current) => current.map(apply));
     setActiveChat((current) =>
-      current?.id === conversationId ? { ...current, ...patch } : current
+      current ? apply(current) : current
     );
     setSelectedChatForActionSheet((current) =>
-      current?.id === conversationId ? { ...current, ...patch } : current
+      current ? apply(current) : current
     );
   }, []);
 
@@ -2335,18 +2532,21 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     selectedChatForActionSheet?.type === "whatsapp2"
       ? selectedChatForActionSheet.id
       : null;
+  const selectedWhatsApp2ControlProviderId =
+    selectedChatForActionSheet?.type === "whatsapp2"
+      ? selectedChatForActionSheet.providerId || whatsappProviderIdFromConversationId(selectedChatForActionSheet.id)
+      : null;
 
   useEffect(() => {
-    if (!selectedWhatsApp2ControlChatId) {
+    if (!selectedWhatsApp2ControlChatId || !selectedWhatsApp2ControlProviderId) {
       setWhatsapp2ControlBusy(null);
       return;
     }
 
     const requestId = ++whatsapp2ControlRequestIdRef.current;
-    const providerId = selectedWhatsApp2ControlChatId.replace(/^wa2:/, "");
     setWhatsapp2ControlBusy("loading");
 
-    void getWhatsApp2ChatState(providerId)
+    void getWhatsApp2ChatState(selectedWhatsApp2ControlProviderId)
       .then((state) => {
         if (whatsapp2ControlRequestIdRef.current !== requestId) return;
         patchWhatsApp2ControlState(selectedWhatsApp2ControlChatId, {
@@ -2371,12 +2571,12 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
         whatsapp2ControlRequestIdRef.current += 1;
       }
     };
-  }, [selectedWhatsApp2ControlChatId, patchWhatsApp2ControlState]);
+  }, [selectedWhatsApp2ControlChatId, selectedWhatsApp2ControlProviderId, patchWhatsApp2ControlState]);
 
   const handleToggleWhatsApp2Block = useCallback(async (chat: DirectConversation) => {
     if (chat.type !== "whatsapp2" || whatsapp2ControlBusy) return;
 
-    const providerId = chat.providerId || chat.id.replace(/^wa2:/, "");
+    const providerId = chat.providerId || whatsappProviderIdFromConversationId(chat.id);
     const nextBlocked = !Boolean(chat.isBlocked);
     setWhatsapp2ControlBusy("block");
 
@@ -2400,7 +2600,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const handleToggleWhatsApp2Lock = useCallback(async (chat: DirectConversation) => {
     if (chat.type !== "whatsapp2" || whatsapp2ControlBusy) return;
 
-    const providerId = chat.providerId || chat.id.replace(/^wa2:/, "");
+    const providerId = chat.providerId || whatsappProviderIdFromConversationId(chat.id);
     const nextLocked = !Boolean(chat.isLocked);
     setWhatsapp2ControlBusy("lock");
 
@@ -2638,13 +2838,61 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     };
   }, [activeChannel, loadWhatsApp2Conversations]);
 
+  // Os controles pertencem à inbox inteira, inclusive sem chat selecionado.
+  useEffect(() => {
+    if (activeChannel !== "whatsapp2") return;
+    let refreshTimer: number | null = null;
+    let refreshing = false;
+    let refreshQueued = false;
+    let cancelled = false;
+    const refresh = async () => {
+      if (cancelled) return;
+      if (refreshing) { refreshQueued = true; return; }
+      refreshing = true;
+      try { await loadWhatsApp2Conversations(); }
+      finally {
+        refreshing = false;
+        if (refreshQueued && !cancelled) {
+          refreshQueued = false;
+          scheduleRefresh();
+        }
+      }
+    };
+    const scheduleRefresh = () => {
+      if (cancelled || refreshTimer !== null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refresh();
+      }, 150);
+    };
+    const close = openWhatsApp2EventStream((event) => {
+      if (cancelled || !["chat_state_changed", "chat_lock_changed", "chat_archived"].includes(event.type)) return;
+      const payload = event.payload as { chatId?: string; archived?: boolean; isLocked?: boolean } | undefined;
+      if (!payload?.chatId) return;
+      const patch: Pick<DirectConversation, "archived" | "isLocked" | "isBlocked"> = {};
+      if (typeof payload.archived === "boolean") patch.archived = payload.archived;
+      if (typeof payload.isLocked === "boolean") patch.isLocked = payload.isLocked;
+      for (const conversation of whatsapp2ConversationsRef.current) {
+        if ((conversation.providerId || whatsappProviderIdFromConversationId(conversation.id)) === payload.chatId) {
+          patchWhatsApp2ControlState(conversation.id, patch);
+        }
+      }
+      scheduleRefresh();
+    }, { onOpen: scheduleRefresh });
+    return () => {
+      cancelled = true;
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      close();
+    };
+  }, [activeChannel, loadWhatsApp2Conversations, patchWhatsApp2ControlState]);
+
   useEffect(() => {
     if (activeChat?.type !== "whatsapp2") {
       setWhatsApp2Presence(null);
       return;
     }
 
-    const providerId = activeChat.providerId || activeChat.id.replace(/^wa2:/, "");
+    const providerId = activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id);
     const subscriptionId = whatsapp2PresenceClientIdRef.current;
     const ACTIVITY_SHOW_DEBOUNCE_MS = 120;
     const ACTIVITY_CLEAR_DEBOUNCE_MS = 320;
@@ -2934,7 +3182,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     if (activeChat?.type !== "whatsapp2") return;
 
     const conversationId = activeChat.id;
-    const providerId = activeChat.providerId || activeChat.id.replace(/^wa2:/, "");
+    const providerId = activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id);
     const supabase = getSupabaseBrowserClient();
     let cancelled = false;
     let canonicalRealtimeHealthy = false;
@@ -3541,6 +3789,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     (conv: RealtimeConversationUpdatePayload) => {
       const id = String(conv.id || "");
       if (!id || (conv.channel !== "whatsapp2" && !id.startsWith("wa2:"))) return;
+      if (!whatsappConversationBelongsToAccount(id, activeWhatsAppAccountIdRef.current)) return;
 
       const incomingAtMs = conv.lastMessageAt
         ? getMessageTimestampMs(conv.lastMessageAt)
@@ -3549,15 +3798,29 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
 
       setWhatsApp2Conversations((previous) => {
         const index = previous.findIndex((item) => item.id === id);
+        const current = index >= 0 ? previous[index] : undefined;
+        const nextArchived = conv.archived ?? (conv.status !== undefined
+          ? conv.status === "archived" : Boolean(current?.archived));
+        const nextLocked = conv.isLocked ?? (conv.status !== undefined
+          ? conv.status === "locked" || conv.status === "vault" : Boolean(current?.isLocked));
+        const nextStatus = nextLocked ? "locked" : nextArchived ? "archived"
+          : (conv.status && !["archived", "locked", "vault"].includes(conv.status)
+              ? conv.status : current?.status && !["archived", "locked", "vault"].includes(current.status)
+                ? current.status : "active");
 
-        if (incomingAtMs > 0 && incomingAtMs < oneWeekAgoMs) {
+        if (incomingAtMs > 0 && incomingAtMs < oneWeekAgoMs && !nextArchived && !nextLocked) {
           return index === -1
             ? previous
             : previous.filter((item) => item.id !== id);
         }
 
-        const current = index >= 0 ? previous[index] : undefined;
-        const providerId = current?.providerId || id.replace(/^wa2:/, "");
+        const providerId = current?.providerId || whatsappProviderIdFromConversationId(id);
+        const fullName = resolveWhatsAppContactDisplayName({
+          savedContactName: current?.savedContactName,
+          profileName: conv.fullName || current?.fullName || conv.username,
+          fallbackName: conv.username || providerId,
+          providerId,
+        });
         const hasDirection =
           conv.lastDirection === "out" ||
           conv.lastDirection === "outbound" ||
@@ -3582,7 +3845,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           ...(current || {
             id,
             username: conv.username || providerId.replace(/@.*$/, ""),
-            fullName: conv.fullName || conv.username || providerId,
+            fullName,
             avatar: conv.avatar || "/images/default-avatar.svg",
             isOnline: false,
             lastActive: lastMessageAt ? formatMessageTime(lastMessageAt) : "",
@@ -3596,7 +3859,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           providerId,
           type: "whatsapp2",
           username: conv.username || current?.username || providerId.replace(/@.*$/, ""),
-          fullName: conv.fullName || current?.fullName || conv.username || providerId,
+          fullName,
           avatar: conv.avatar || current?.avatar || "/images/default-avatar.svg",
           lastMessage: nextPreview,
           lastMessageAt,
@@ -3620,9 +3883,9 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
             conv.raffleStatus !== undefined ? conv.raffleStatus : current?.raffleStatus,
           aiAutoRespond:
             conv.aiAutoRespond !== undefined ? conv.aiAutoRespond : Boolean(current?.aiAutoRespond),
-          status: (current?.status || (conv.status as DirectConversation["status"]) || "active"),
-          archived: current?.archived !== undefined ? current.archived : (conv.archived ?? conv.status === "archived"),
-          isLocked: current?.isLocked !== undefined ? current.isLocked : (conv.isLocked ?? (conv.status === "locked" || conv.status === "vault")),
+          status: nextStatus as DirectConversation["status"],
+          archived: nextArchived,
+          isLocked: nextLocked,
           isBlocked: current?.isBlocked !== undefined ? current.isBlocked : false,
         };
 
@@ -4697,7 +4960,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       return;
     }
 
-    // Auto-check do item na barra de etapas se pertencer à etapa ativa.
+    // Auto-check do item na barra de etapas se pertencer à etapa ativa.
     const now = new Date();
     const nowIso = now.toISOString();
     const timeFormatted = formatMessageTime(now);
@@ -5003,7 +5266,7 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       setTimeout(() => scrollToBottom("auto"), 40);
 
       try {
-        const providerId = activeChat.providerId || activeChat.id.replace(/^wa2:/, "");
+        const providerId = activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id);
         let whatsapp2AudioUrl = audioUrl;
 
         if (audioUrl) {
@@ -5511,10 +5774,10 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       setWhatsApp2Conversations((prev) => prev.map((item) => item.id === conv.id ? { ...item, unread: false } : item));
       setLoadingConversationId(conv.id);
       try {
-        const providerId = conv.providerId || conv.id.replace(/^wa2:/, "");
+        const providerId = conv.providerId || whatsappProviderIdFromConversationId(conv.id);
         const rows = await getWhatsApp2Messages(providerId, 140);
         const formatted = rows.map(mapWhatsApp2Message);
-        setMessages((previous) => ({ ...previous, [conv.id]: formatted }));
+        setMessages((previous) => ({ ...previous, [conv.id]: deduplicateMessages([...(previous[conv.id] || []), ...formatted]).sort((a, b) => getMessageTimestampMs(a.sentDate || a.timestamp) - getMessageTimestampMs(b.sentDate || b.timestamp)) }));
       } catch (error) {
         console.error("Erro ao carregar mensagens do WhatsApp:", error);
         toast.error("Não consegui carregar o histórico do WhatsApp.");
@@ -5611,8 +5874,16 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
       if (typeof window === "undefined") return;
       const hash = window.location.hash;
       if (hash.startsWith("#chat=")) {
-        const convId = hash.replace("#chat=", "");
-        const target = conversations.find((c) => c.id === convId);
+        let convId = hash.replace("#chat=", "");
+        try {
+          convId = decodeURIComponent(convId);
+        } catch {
+          // Mantém compatibilidade com hashes antigos que não eram percent-encoded.
+        }
+        const target = conversations.find((c) => c.id === convId)
+          || whatsapp2Conversations.find((c) =>
+            c.id === convId || c.providerId === whatsappProviderIdFromConversationId(convId)
+          );
         if (target) {
           handleOpenConversation(target);
           history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -5623,7 +5894,72 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
     handleHashCheck();
     window.addEventListener("hashchange", handleHashCheck);
     return () => window.removeEventListener("hashchange", handleHashCheck);
-  }, [conversations, handleOpenConversation]);
+  }, [conversations, whatsapp2Conversations, handleOpenConversation]);
+
+  useEffect(() => {
+    if (!initialWhatsAppIdentityId) {
+      initialWhatsAppLookupRef.current = null;
+      return;
+    }
+    if (initialWhatsAppLookupRef.current === initialWhatsAppIdentityId) return;
+
+    const getGatewayChatId = (conversation: DirectConversation) =>
+      conversation.providerId || whatsappProviderIdFromConversationId(conversation.id);
+    const chatIds = whatsapp2Conversations.map(getGatewayChatId);
+    const openTarget = (chatId: string) => {
+      const target = whatsapp2ConversationsRef.current.find((conversation) => getGatewayChatId(conversation) === chatId);
+      if (!target) return false;
+      initialWhatsAppLookupRef.current = initialWhatsAppIdentityId;
+      const targetHash = `#chat=${encodeURIComponent(target.id)}`;
+      if (window.location.hash === targetHash) {
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+      } else {
+        window.location.hash = targetHash;
+      }
+      onInitialConversationHandled?.();
+      return true;
+    };
+
+    const directChatId = resolveWhatsAppChatIdForIdentity(initialWhatsAppIdentityId, chatIds);
+    if (directChatId && openTarget(directChatId)) return;
+    if (whatsapp2GatewayStatus === "loading" || whatsapp2GatewayStatus === "idle") return;
+    if (whatsapp2GatewayStatus !== "ready") {
+      initialWhatsAppLookupRef.current = initialWhatsAppIdentityId;
+      toast.error("O WhatsApp está desconectado; não consegui abrir esta conversa.");
+      onInitialConversationHandled?.();
+      return;
+    }
+
+    const lidChatIds = chatIds.filter((chatId) => chatId.endsWith("@lid"));
+    if (lidChatIds.length === 0) {
+      initialWhatsAppLookupRef.current = initialWhatsAppIdentityId;
+      toast.error("Não encontrei o contato vinculado na lista atual do WhatsApp.");
+      onInitialConversationHandled?.();
+      return;
+    }
+
+    initialWhatsAppLookupRef.current = initialWhatsAppIdentityId;
+    void resolveWhatsApp2PhoneNumbers(lidChatIds)
+      .then(({ contacts }) => {
+        if (initialWhatsAppLookupRef.current !== initialWhatsAppIdentityId) return;
+        const currentChatIds = whatsapp2ConversationsRef.current.map(getGatewayChatId);
+        const resolvedChatId = resolveWhatsAppChatIdForIdentity(
+          initialWhatsAppIdentityId,
+          currentChatIds,
+          contacts,
+        );
+        if (resolvedChatId && openTarget(resolvedChatId)) return;
+        toast.error("Não consegui confirmar qual chat do WhatsApp corresponde a este número.");
+        onInitialConversationHandled?.();
+      })
+      .catch((error) => {
+        if (initialWhatsAppLookupRef.current !== initialWhatsAppIdentityId) return;
+        console.error("Falha ao resolver identidade LID do WhatsApp:", error);
+        toast.error("Não consegui localizar este contato no WhatsApp.");
+        onInitialConversationHandled?.();
+      });
+
+  }, [initialWhatsAppIdentityId, whatsapp2Conversations, whatsapp2GatewayStatus, onInitialConversationHandled]);
 
   // FILTRAGEM DE CONVERSAS DO INSTAGRAM
   const isFilterActive =
@@ -5799,15 +6135,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
   const chatMessages = useMemo(() => {
     if (!activeChat) return [];
     const pendingPreviews: DirectMessage[] = (activeAutoPilotState?.pendingOutboundMessages || []).map((preview) => {
-      const audioMatch = preview.content.match(/^\[audio:(https?:\/\/[^\]]+)\]$/);
-      const audioUrl = preview.mediaUrl || audioMatch?.[1];
+      const mediaMatch = preview.content.match(/^\[(audio|image|video):(https?:\/\/[^\]]+)\]$/);
+      const mediaType = preview.messageType !== "text" ? preview.messageType : mediaMatch?.[1] as "audio" | "image" | "video" | undefined;
+      const mediaUrl = preview.mediaUrl || mediaMatch?.[2];
+      const mediaLabel = mediaType === "audio" ? "🎙️ Mensagem de voz" : mediaType === "video" ? "🎥 Vídeo" : mediaType === "image" ? "📷 Foto" : preview.content;
       return {
         id: `autopilot-preview:${preview.id}`,
         senderId: "me",
-        text: audioUrl ? "🎙️ Mensagem de voz" : preview.content,
-        mediaUrl: audioUrl,
-        mediaType: audioUrl ? "audio" : undefined,
-        audioTranscript: audioUrl ? "🎙️ Mensagem de voz" : undefined,
+        text: mediaUrl ? mediaLabel : preview.content,
+        mediaUrl,
+        mediaType: mediaUrl ? mediaType : undefined,
+        audioTranscript: mediaUrl && mediaType === "audio" ? "🎙️ Mensagem de voz" : undefined,
         createdAt: formatMessageTime(preview.createdAt),
         timestamp: Date.parse(preview.createdAt) || 0,
         sentDate: preview.createdAt,
@@ -5976,6 +6314,17 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
                 <WhatsAppIcon className="h-[19px] w-[19px]" />
               </a>
             ) : null}
+
+            <button
+              type="button"
+              onClick={() => void handleRestartActiveChatAi()}
+              disabled={isRestartingActiveChatAi}
+              className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#af52de] transition-all active:scale-90 wa-ios-glass hover:opacity-80 disabled:cursor-wait disabled:opacity-55 disabled:active:scale-100"
+              title={isRestartingActiveChatAi ? "Reiniciando IA..." : "Reiniciar IA desta conversa"}
+              aria-label={isRestartingActiveChatAi ? "Reiniciando IA desta conversa" : "Reiniciar IA desta conversa"}
+            >
+              <RefreshCw className={`h-[18px] w-[18px] ${isRestartingActiveChatAi ? "animate-spin" : ""}`} />
+            </button>
 
             <button
               type="button"
@@ -7053,6 +7402,24 @@ export function InstagramDirect({ onChatOpenChange }: InstagramDirectProps) {
           onClose={() => setIsAutoPilotActivationModalOpen(false)}
           chatName={activeChat.fullName || activeChat.username}
           onConfirm={async (mode) => {
+            if (activeChat.type === "whatsapp2") {
+              const providerId = activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id);
+              await activateWhatsApp2Autopilot(
+                mode,
+                () => syncWhatsApp2LatestInbound(providerId, activeChat.id),
+                async (resolvedMode, canonicalId) => {
+                  const conversationId = canonicalId || activeChat.id;
+                  await autoPilot.activateAutoPilotWithChoice(conversationId, resolvedMode);
+                  if (conversationId !== activeChat.id) {
+                    setMessages((previous) => ({ ...previous, [conversationId]: deduplicateMessages([...(previous[activeChat.id] || []), ...(previous[conversationId] || [])]).sort((a, b) => getMessageTimestampMs(a.sentDate || a.timestamp) - getMessageTimestampMs(b.sentDate || b.timestamp)) }));
+                    setActiveChat((current) => current?.id === activeChat.id
+                      ? { ...current, id: conversationId }
+                      : current);
+                  }
+                },
+              );
+              return;
+            }
             await autoPilot.activateAutoPilotWithChoice(activeChat.id, mode);
           }}
         />

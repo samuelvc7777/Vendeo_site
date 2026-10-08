@@ -10,6 +10,7 @@ import {
   resolveConfiguredOpenAiModel,
 } from "./brain_orchestrator.ts";
 import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
+import { handleAutoPilotProjectionPatchRoute } from "./autopilot_projection_route.ts";
 import { enrichBrainDecisionActionRows, enrichBrainTurnEventRows } from "./brain_event_enrichment.ts";
 import {
   getGroqApiKey,
@@ -36,9 +37,13 @@ import {
   processInstagramProfileQueue,
 } from "./instagram_profile_queue.ts";
 import { parseInstagramReactionEvent } from "./instagram_reactions.ts";
-import { enqueueAndWaitWhatsApp2Delivery } from "./whatsapp2_gateway.ts";
+import {
+  enqueueAndWaitWhatsApp2Delivery,
+  whatsapp2ProviderIdFromConversationId,
+} from "./whatsapp2_gateway.ts";
 import { readConversationScheduleRuntimeSnapshot } from "./conversation_schedule_runtime.ts";
-import { handleTinderMatchRoutes } from "./tinder_match_routes.ts";
+import { createTinderBackgroundMessageReader, handleTinderMatchRoutes } from "./tinder_match_routes.ts";
+import { processTinderBackgroundSync } from "./tinder_sync_service.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -955,6 +960,29 @@ serve(async (req: Request) => {
           });
         }
 
+        if (mediaType === "video") {
+          const lowerName = String(file.name || "").toLowerCase();
+          const videoType = file.type === "video/mp4" || file.type === "video/quicktime"
+            ? file.type
+            : lowerName.endsWith(".mp4")
+            ? "video/mp4"
+            : lowerName.endsWith(".mov")
+            ? "video/quicktime"
+            : "";
+          if (!videoType) {
+            return new Response(JSON.stringify({ error: "Formato inválido. Envie um vídeo MP4 ou MOV." }), {
+              status: 415,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          if (file.size > 10 * 1024 * 1024) {
+            return new Response(JSON.stringify({ error: "O vídeo deve ter no máximo 10 MB." }), {
+              status: 413,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        }
+
         const arrayBuffer = await file.arrayBuffer();
         let ext = "wav";
         let contentType = file.type || "audio/wav";
@@ -984,6 +1012,11 @@ serve(async (req: Request) => {
             ext = "jpg";
             contentType = "image/jpeg";
           }
+        } else if (mediaType === "video") {
+          const lowerName = String(file.name || "").toLowerCase();
+          const isMov = file.type === "video/quicktime" || (file.type !== "video/mp4" && lowerName.endsWith(".mov"));
+          ext = isMov ? "mov" : "mp4";
+          contentType = isMov ? "video/quicktime" : "video/mp4";
         }
 
         const safeBase = file.name
@@ -2414,7 +2447,7 @@ serve(async (req: Request) => {
 
         // 2. Resolve o destinatário oficial do provedor.
         let targetRecipientId = conversationChannel === "whatsapp" || conversationChannel === "whatsapp2"
-          ? (conversationRow?.contact_id || conversationId.replace(/^wa2:/, ""))
+          ? (conversationRow?.contact_id || whatsapp2ProviderIdFromConversationId(conversationId))
           : conversationId;
         if (conversationChannel === "instagram" && !/^\d+$/.test(conversationId)) {
           const { data: senderRows } = await supabase
@@ -3252,6 +3285,35 @@ serve(async (req: Request) => {
           }
         }
 
+        // Sincronização em background do Tinder (sem UI aberta)
+        let runTinderSync = false;
+        try {
+          const { data: tinderLane, error: tinderLaneError } = await supabase.rpc(
+            "claim_autopilot_scheduler_lane",
+            { p_lane: "tinder_background_sync", p_min_interval_seconds: 30 },
+          );
+          if (!tinderLaneError && tinderLane) {
+            runTinderSync = tinderLane.acquired === true || tinderLane.claimed === true;
+          }
+        } catch (_err) {
+          runTinderSync = false;
+        }
+
+        if (runTinderSync) {
+          const readTinderMessages = createTinderBackgroundMessageReader(supabase);
+          const tinderSyncPromise = processTinderBackgroundSync({
+            supabase,
+            fetchMatchMessages: readTinderMessages,
+          }).catch((syncErr) => {
+            console.warn("[Tinder Sync Queue] cron:tick falhou:", syncErr);
+          });
+          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+            (globalThis as any).EdgeRuntime.waitUntil(tinderSyncPromise);
+          } else {
+            void tinderSyncPromise;
+          }
+        }
+
         // Enriquecimento de perfil é best-effort e de baixa prioridade.
         // Nunca compete com cada tick do inbound/Brain.
         let runProfileEnrichment = true;
@@ -3923,6 +3985,170 @@ serve(async (req: Request) => {
       }
     }
 
+    // Reinicia somente o runtime operacional da IA, preservando histórico,
+    // memória, cronograma, etapa e checkpoints canônicos.
+    if ((path === "/autopilot/restart-chat" || path === "/api/autopilot/restart-chat") && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = String(body?.conversationId || "").trim();
+        if (!conversationId) {
+          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: globalConfigRow, error: globalConfigError } = await supabase
+          .from("autopilot_settings")
+          .select("config")
+          .eq("id", "global")
+          .maybeSingle();
+        if (globalConfigError) throw globalConfigError;
+        if (globalConfigRow?.config?.isEnabledGlobally === false) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: "global_autopilot_disabled",
+            detail: "Ative a IA globalmente antes de reiniciar esta conversa.",
+          }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: restartResult, error: restartError } = await supabase.rpc(
+          "restart_autopilot_runtime_atomic",
+          { p_conversation_id: conversationId },
+        );
+        if (restartError) throw restartError;
+
+        if (restartResult?.success !== true) {
+          const reason = String(restartResult?.reason || "restart_failed");
+          const status = [
+            "delivery_in_flight",
+            "whatsapp_delivery_uncertain",
+            "outbox_delivery_uncertain",
+            "schedule_completed_waiting_manual",
+          ].includes(reason) ? 409 : reason === "conversation_not_found" ? 404 : 500;
+          return new Response(JSON.stringify({
+            success: false,
+            error: reason,
+            detail:
+              reason === "schedule_completed_waiting_manual"
+                ? "O cronograma terminou e aguarda troca manual. Escolha o próximo cronograma antes de reiniciar a IA."
+                : reason.includes("uncertain") || reason === "delivery_in_flight"
+                ? "Existe uma entrega em andamento ou ambígua. O reset foi bloqueado para evitar mensagem duplicada."
+                : "Não foi possível reiniciar a IA desta conversa.",
+          }), {
+            status,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // The restart RPC reopens the last unanswered inbound and deliberately
+        // preserves its activation watermark. Restore only the operational
+        // status here; calling arm_autopilot_with_watermark_atomic would move
+        // that watermark forward and make the queued inbound ineligible again.
+        const { data: runtimeResumeResult, error: runtimeResumeError } = await supabase.rpc(
+          "activate_autopilot_runtime_after_restart_atomic",
+          { p_conversation_id: conversationId },
+        );
+        if (runtimeResumeError || runtimeResumeResult?.success !== true) {
+          console.error("[Autopilot Restart] Falha ao reativar status do runtime:", runtimeResumeError || runtimeResumeResult);
+          return new Response(JSON.stringify({
+            success: false,
+            error: runtimeResumeError?.message || runtimeResumeResult?.reason || "restart_activation_failed",
+            detail: "O runtime não foi reativado; nenhuma mensagem foi enfileirada.",
+          }), {
+            status: runtimeResumeResult?.reason === "autopilot_disabled" ? 409 : 503,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const retryMessageId = String(restartResult?.retryMessageId || "").trim();
+        let queued = false;
+        let queueReason: string | null = null;
+
+        if (retryMessageId) {
+          const { data: queueResult, error: queueError } = await supabase.rpc(
+            "enqueue_autopilot_inbound_job",
+            {
+              p_conversation_id: conversationId,
+              p_message_id: retryMessageId,
+              p_due_at: new Date().toISOString(),
+            },
+          );
+          if (queueError || queueResult?.success !== true) {
+            queueReason = queueError?.message || queueResult?.reason || "restart_queue_failed";
+          } else {
+            queued = true;
+            const wakePromise = processAutopilotInboundQueue({ supabase, limit: 6 }).catch((error) => {
+              console.warn("[Autopilot Restart] Falha ao acordar worker imediatamente:", error);
+            });
+            if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+              (globalThis as any).EdgeRuntime.waitUntil(wakePromise);
+            } else {
+              void wakePromise;
+            }
+          }
+        }
+
+        const nowIso = new Date().toISOString();
+        await publishAutoPilotState(supabase, conversationId, {
+          isEnabled: true,
+          status: retryMessageId ? "starting" : "idle",
+          activity: retryMessageId
+            ? activity(
+                "starting",
+                "Reiniciando IA",
+                "Runtime limpo e última mensagem pendente recolocada no fluxo.",
+                { event: "operator_ai_restart", messageId: retryMessageId },
+              )
+            : activity(
+                "completed",
+                "IA reiniciada",
+                "Runtime reconstruído. Não há mensagem pendente para responder.",
+                { event: "operator_ai_restart_idle" },
+              ),
+          scheduledResponseAt: null,
+          pendingAction: null,
+        });
+
+        return new Response(JSON.stringify({
+          success: true,
+          conversationId,
+          isEnabled: true,
+          status: retryMessageId ? "starting" : "idle",
+          retryMessageId: retryMessageId || null,
+          queued,
+          queueReason,
+          stateUpdatedAt: nowIso,
+          detail: retryMessageId
+            ? "IA reiniciada e mensagem pendente recolocada para processamento."
+            : "IA reiniciada. Nenhuma mensagem pendente precisava ser reprocessada.",
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: unknown) {
+        console.error("[Autopilot Restart] Falha:", err);
+        return new Response(JSON.stringify({
+          success: false,
+          error: err instanceof Error ? err.message : "restart_failed",
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if ((path === "/autopilot/state-patch" || path === "/api/autopilot/state-patch") && req.method === "POST") {
+      return await handleAutoPilotProjectionPatchRoute(req, {
+        supabase,
+        corsHeaders,
+        originAllowed: brainOperatorAllowedOrigin(req),
+        patchProjection: patchAutoPilotProjectionState,
+      });
+    }
+
     // Rota atômica para ATIVAR OU DESATIVAR o Piloto Automático em um chat específico
     if ((path === "/autopilot/toggle-chat" || path === "/api/autopilot/toggle-chat") && req.method === "POST") {
       try {
@@ -3956,6 +4182,26 @@ serve(async (req: Request) => {
               isEnabled: false,
               error: "global_autopilot_disabled",
               detail: "Ative o Piloto Automático globalmente antes de ativar a IA neste chat.",
+            }), {
+              status: 409,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          const { data: activationSchedule, error: activationScheduleError } = await supabase
+            .from("instagram_conversations")
+            .select("stage_completed_rules")
+            .eq("id", conversationId)
+            .maybeSingle();
+          if (activationScheduleError) throw activationScheduleError;
+          if (["ready_for_transition", "completed_waiting_manual"].includes(
+            String(activationSchedule?.stage_completed_rules?.schedule_status || ""),
+          )) {
+            return new Response(JSON.stringify({
+              success: false,
+              isEnabled: false,
+              code: "schedule_completed_waiting_manual",
+              error: "Cronograma concluído. Escolha o próximo cronograma no chat antes de ativar a IA.",
             }), {
               status: 409,
               headers: { ...corsHeaders, "Content-Type": "application/json" },
