@@ -42,7 +42,7 @@ import {
   whatsapp2ProviderIdFromConversationId,
 } from "./whatsapp2_gateway.ts";
 import { readConversationScheduleRuntimeSnapshot } from "./conversation_schedule_runtime.ts";
-import { createTinderBackgroundMessageReader, handleTinderMatchRoutes } from "./tinder_match_routes.ts";
+import { createTinderBackgroundMessageReader, handleTinderMatchRoutes, requireTinderMatchSession, tinderAutomationReadiness } from "./tinder_match_routes.ts";
 import { processTinderBackgroundSync } from "./tinder_sync_service.ts";
 
 const corsHeaders = {
@@ -4161,6 +4161,34 @@ serve(async (req: Request) => {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
+        }
+
+        // Tinder só pode alternar a IA com uma sessão Match válida. O canal
+        // é obtido no servidor; nunca confiar na indicação do cliente.
+        const { data: targetConversation, error: targetError } = await supabase
+          .from("instagram_conversations")
+          .select("channel")
+          .eq("id", conversationId)
+          .maybeSingle();
+        if (targetError) throw targetError;
+        if (targetConversation?.channel === "tinder" || String(conversationId).startsWith("tinder:")) {
+          if (!brainOperatorAllowedOrigin(req)) {
+            return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
+              status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          try {
+            await requireTinderMatchSession(req, supabase);
+          } catch {
+            return new Response(JSON.stringify({ success: false, error: "Sessão Tinder obrigatória.", code: "MATCH_SESSION_REQUIRED" }), {
+              status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          if (isEnabled && !tinderAutomationReadiness().enabled) {
+            return new Response(JSON.stringify({ success: false, error: "Automação do Tinder indisponível enquanto leitura ou envio estiver desabilitado.", code: "TINDER_AUTOMATION_DISABLED" }), {
+              status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
         }
 
         let immediateResult: { started: boolean; reason?: string; cycleId?: string } | null = null;

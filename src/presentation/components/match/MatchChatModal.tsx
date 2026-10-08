@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { ArrowLeft, Loader2, Send, UserRound, AlertCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Loader2, Send, UserRound, AlertCircle, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useVisualViewport } from "@/presentation/hooks/useVisualViewport";
+import { TinderAiControl } from "./TinderAiControl";
 import {
   getTinderMessages,
   sendTinderMessage,
@@ -38,7 +39,12 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [inputMessage, setInputMessage] = useState("");
   const [sending, setSending] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const activeMatchIdRef = useRef<string | null>(null);
+  const inFlightMatchesRef = useRef(new Set<string>());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const { isKeyboardOpen } = useVisualViewport();
 
@@ -59,31 +65,70 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
     };
   }, [onClose]);
 
-  const loadMessages = async () => {
-    if (!match?.id) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await getTinderMessages(match.id);
-      setMessages(data);
-      setTimeout(() => scrollToBottom("auto"), 50);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro ao carregar mensagens.";
-      setError(msg);
-    } finally {
-      setLoading(false);
+  const loadMessages = useCallback(async (quiet = false) => {
+    const id = match?.id;
+    if (!id || inFlightMatchesRef.current.has(id)) return;
+    inFlightMatchesRef.current.add(id);
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
     }
-  };
-
-  useEffect(() => {
-    if (match) {
-      void loadMessages();
-      inputRef.current?.focus();
+    try {
+      const data = await getTinderMessages(id);
+      if (activeMatchIdRef.current !== id) return;
+      setMessages((previous) => {
+        if (!quiet) return data;
+        // Polling nunca elimina uma mensagem recém-enviada que ainda não
+        // apareceu no retorno paginado do Tinder.
+        const merged = new Map(previous.map((message) => [message.id, message]));
+        for (const message of data) merged.set(message.id, message);
+        return Array.from(merged.values()).sort((a, b) =>
+          String(a.sentAt || "").localeCompare(String(b.sentAt || "")),
+        );
+      });
+      if (!quiet) window.setTimeout(() => scrollToBottom("auto"), 50);
+    } catch (err) {
+      if (!quiet && activeMatchIdRef.current === id) {
+        setError(err instanceof Error ? err.message : "Erro ao carregar mensagens.");
+      }
+    } finally {
+      inFlightMatchesRef.current.delete(id);
+      if (!quiet && activeMatchIdRef.current === id) setLoading(false);
     }
   }, [match?.id]);
 
   useEffect(() => {
-    scrollToBottom();
+    activeMatchIdRef.current = match?.id || null;
+    setMessages([]);
+    nearBottomRef.current = true;
+    setLoading(true);
+    setError(null);
+    if (match?.id) {
+      void loadMessages();
+      inputRef.current?.focus();
+    }
+    return () => {
+      activeMatchIdRef.current = null;
+    };
+  }, [match?.id, loadMessages]);
+
+  useEffect(() => {
+    if (!match?.id) return;
+    const poll = () => {
+      if (document.visibilityState === "visible" && !sending) void loadMessages(true);
+    };
+    const timer = window.setInterval(poll, 20000);
+    window.addEventListener("focus", poll);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", poll);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [match?.id, loadMessages, sending]);
+
+  useEffect(() => {
+    if (nearBottomRef.current) scrollToBottom("auto");
   }, [messages.length]);
 
   if (!match) return null;
@@ -95,8 +140,11 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
     setSending(true);
     try {
       const sentMsg = await sendTinderMessage(match.id, text);
-      setMessages((prev) => [...prev, sentMsg]);
+      setMessages((prev) => prev.some((msg) => msg.id === sentMsg.id)
+        ? prev.map((msg) => msg.id === sentMsg.id ? sentMsg : msg)
+        : [...prev, sentMsg]);
       setInputMessage("");
+      nearBottomRef.current = true;
       scrollToBottom();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Não foi possível enviar a mensagem.");
@@ -157,6 +205,15 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
           </div>
         </div>
 
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            aria-expanded={aiPanelOpen}
+            onClick={() => setAiPanelOpen((value) => !value)}
+            className="flex min-h-9 items-center gap-1 rounded-full px-2 text-[11px] font-bold text-[#fd5068] hover:bg-pink-50 dark:hover:bg-white/5"
+          >
+            <Sparkles className="h-4 w-4" /> IA
+          </button>
         <button
           type="button"
           onClick={() => void loadMessages()}
@@ -166,10 +223,20 @@ export function MatchChatModal({ match, onClose }: MatchChatModalProps) {
         >
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </button>
+        </div>
       </header>
 
+      {aiPanelOpen && <TinderAiControl match={match} />}
+
       {/* Área de Mensagens com scroll */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+      <div
+        ref={scrollContainerRef}
+        onScroll={() => {
+          const el = scrollContainerRef.current;
+          if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+        }}
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-3"
+      >
         {loading && messages.length === 0 ? (
           <div className="flex h-full min-h-[220px] flex-col items-center justify-center gap-2 text-zinc-400">
             <Loader2 className="h-6 w-6 animate-spin text-[#fd5068]" />

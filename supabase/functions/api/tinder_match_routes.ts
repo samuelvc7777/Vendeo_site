@@ -37,7 +37,7 @@ function isTinderLiveDispatchConfigured(): boolean {
   return false;
 }
 
-function tinderAutomationReadiness() {
+export function tinderAutomationReadiness() {
   const syncEnabled = isTinderLiveSyncEnabled();
   const dispatchEnabled = isTinderLiveDispatchConfigured();
   return {
@@ -761,6 +761,11 @@ async function startBoost(token: string) {
     method: "POST",
     body: JSON.stringify({ amount: 1 }),
   });
+  if (payload?.success === false || payload?.error) {
+    const error: any = new Error("O Tinder não confirmou a ativação do Boost.");
+    error.status = 409;
+    throw error;
+  }
 
   return {
     boostId: payload?.boost_id || payload?.data?.boost_id || null,
@@ -810,6 +815,11 @@ async function requireSession(
   }
 
   return { config, token: String(config.auth_token) };
+}
+
+/** O toggle compartilhado exige a mesma sessão do Match que as rotas privadas. */
+export async function requireTinderMatchSession(request: Request, supabase: any): Promise<void> {
+  await requireSession(request, supabase);
 }
 
 /** Leitor reutilizado exclusivamente pelo worker server-side de sync. */
@@ -1375,6 +1385,15 @@ export async function handleTinderMatchRoutes({
 
     if (path === "/match/tinder/boost" && request.method === "POST") {
       const { token } = await requireSession(request, supabase);
+      const body = await request.json().catch(() => ({}));
+      if (body?.confirm !== true) {
+        return json({ success: false, code: "TINDER_BOOST_CONFIRM_REQUIRED", error: "Confirme o consumo de um Boost." }, 400, corsHeaders);
+      }
+      const account = await fetchAccountState(token);
+      const remaining = Number(account?.boost?.remaining);
+      if (account?.boost?.isBoosting || !Number.isFinite(remaining) || remaining <= 0) {
+        return json({ success: false, code: "TINDER_BOOST_UNAVAILABLE", error: "Boost indisponível ou já ativo nesta conta." }, 409, corsHeaders);
+      }
       const boost = await startBoost(token);
       return json({ success: true, ...boost }, 200, corsHeaders);
     }

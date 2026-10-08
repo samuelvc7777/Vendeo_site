@@ -258,22 +258,41 @@ export async function swipeTinder(
   );
 }
 
-export async function rewindTinder(): Promise<{
-  profile: TinderPublicProfile;
-  action?: TinderSwipeAction | null;
-  pendingServerUndo?: boolean;
+export interface TinderAiState {
+  success: boolean;
+  found: boolean;
+  conversationId: string | null;
+  isEnabled: boolean;
+  automation: { enabled: boolean; syncEnabled: boolean; dispatchEnabled: boolean };
+}
+
+export function getTinderAiState(matchId: string): Promise<TinderAiState> {
+  return request<TinderAiState>("/api/match/tinder/ai/" + encodeURIComponent(matchId), {}, { requireSession: true });
+}
+
+export function prepareTinderAi(match: TinderMatchItem): Promise<{
+  success: boolean;
+  conversationId: string;
+  importedMessages: number;
 }> {
-  return request(
-    "/api/match/tinder/rewind",
-    { method: "POST" },
-    { requireSession: true },
-  );
+  return request("/api/match/tinder/ai/" + encodeURIComponent(match.id) + "/prepare", {
+    method: "POST",
+    body: JSON.stringify({ name: match.person.name, avatar: match.person.photos?.[0]?.url || null }),
+  }, { requireSession: true });
+}
+
+export function toggleTinderAi(conversationId: string, isEnabled: boolean): Promise<{ success: boolean; isEnabled: boolean }> {
+  return request("/api/autopilot/toggle-chat", {
+    method: "POST",
+    // Não dispara respostas antigas no instante da ativação.
+    body: JSON.stringify({ conversationId, isEnabled, triggerImmediate: false }),
+  }, { requireSession: true });
 }
 
 export async function activateTinderBoost(): Promise<any> {
   return request(
     "/api/match/tinder/boost",
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({ confirm: true }) },
     { requireSession: true },
   );
 }

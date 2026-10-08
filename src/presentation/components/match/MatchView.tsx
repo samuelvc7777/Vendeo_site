@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { AnimatePresence, motion, useMotionValue, useTransform } from "framer-motion";
 import {
@@ -28,6 +28,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
+  activateTinderBoost,
   disconnectTinder,
   getTinderAccountState,
   getTinderLikesYou,
@@ -329,6 +330,30 @@ function DiscoverView({
   const [busy, setBusy] = useState(false);
   const [matchedProfile, setMatchedProfile] = useState<TinderPublicProfile | null>(null);
 
+  const activateBoost = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const account = await getTinderAccountState();
+      if (account.boost?.isBoosting) {
+        toast.info("Já existe um Boost ativo nesta conta.");
+        return;
+      }
+      const remaining = Number(account.boost?.remaining);
+      if (!Number.isFinite(remaining) || remaining <= 0) {
+        toast.info("Nenhum Boost disponível para consumo. Confira sua conta no Tinder.");
+        return;
+      }
+      if (!window.confirm(`Ativar 1 Boost no Tinder? Você tem ${remaining} disponível(is). Esta ação consumirá uma unidade.`)) return;
+      await activateTinderBoost();
+      toast.success("Solicitação de Boost enviada ao Tinder.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível ativar o Boost.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     setIndex(0);
   }, [profiles]);
@@ -403,8 +428,8 @@ function DiscoverView({
 
       <div className="mx-auto flex w-full max-w-[430px] shrink-0 items-center justify-center gap-3 px-4 pb-3 pt-3">
         <ActionButton
-          label="Rewind"
-          onClick={() => toast.info("Rewind é um recurso que reverte o último passe no Tinder.")}
+          label="Rewind no Tinder"
+          onClick={() => window.open("https://tinder.com/app/recs", "_blank", "noopener,noreferrer")}
           size="sm"
           disabled={busy}
           className="border-amber-300/60 text-amber-500"
@@ -444,7 +469,7 @@ function DiscoverView({
 
         <ActionButton
           label="Boost"
-          onClick={() => toast.info("O Boost destaca seu perfil no topo da sua região.")}
+          onClick={() => void activateBoost()}
           size="sm"
           disabled={busy}
           className="border-violet-400/50 text-violet-500"
@@ -862,10 +887,14 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
 
   const [matches, setMatches] = useState<TinderMatchItem[]>([]);
   const [matchesLoading, setMatchesLoading] = useState(false);
+  const [matchesLoaded, setMatchesLoaded] = useState(false);
+  const matchesFetchingRef = useRef(false);
   const [matchesError, setMatchesError] = useState<string | null>(null);
 
   const [likesData, setLikesData] = useState<TinderLikesYouResult | null>(null);
   const [likesLoading, setLikesLoading] = useState(false);
+  const [likesLoaded, setLikesLoaded] = useState(false);
+  const [accountLoaded, setAccountLoaded] = useState(false);
   const [likesError, setLikesError] = useState<string | null>(null);
 
   const [selectedMatch, setSelectedMatch] = useState<TinderMatchItem | null>(null);
@@ -911,6 +940,8 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
   }, []);
 
   const loadMatches = useCallback(async () => {
+    if (matchesFetchingRef.current) return;
+    matchesFetchingRef.current = true;
     setMatchesLoading(true);
     setMatchesError(null);
     try {
@@ -920,11 +951,14 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
       const message = error instanceof Error ? error.message : "Não foi possível carregar os matches.";
       setMatchesError(message);
     } finally {
+      matchesFetchingRef.current = false;
+      setMatchesLoaded(true);
       setMatchesLoading(false);
     }
   }, []);
 
   const loadLikes = useCallback(async () => {
+    setLikesLoaded(true);
     setLikesLoading(true);
     setLikesError(null);
     try {
@@ -939,11 +973,12 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
   }, []);
 
   const loadAccount = useCallback(async () => {
+    setAccountLoaded(true);
     try {
       const state = await getTinderAccountState();
       setAccountState(state);
-    } catch {
-      // Ignora erro silencioso de perfil
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível carregar o perfil Tinder.");
     }
   }, []);
 
@@ -959,14 +994,14 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
   useEffect(() => {
     if (!connected) return;
 
-    if (section === "matches" && matches.length === 0 && !matchesLoading) {
+    if (section === "matches" && !matchesLoaded && !matchesLoading && !matchesError) {
       void loadMatches();
-    } else if (section === "likes" && !likesData && !likesLoading) {
+    } else if (section === "likes" && !likesLoaded && !likesLoading) {
       void loadLikes();
-    } else if (section === "profile" && !accountState) {
+    } else if (section === "profile" && !accountLoaded) {
       void loadAccount();
     }
-  }, [connected, section, matches.length, matchesLoading, likesData, likesLoading, accountState, loadMatches, loadLikes, loadAccount]);
+  }, [connected, section, matchesLoaded, matchesLoading, matchesError, likesLoaded, likesLoading, accountLoaded, loadMatches, loadLikes, loadAccount]);
 
   const handleDisconnect = async () => {
     try {
@@ -975,6 +1010,11 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
       setProfile(null);
       setTokenExpired(false);
       setMatches([]);
+      setMatchesLoaded(false);
+      setLikesLoaded(false);
+      setAccountLoaded(false);
+      setLikesData(null);
+      setAccountState(null);
       setRecommendations([]);
       toast.success("Tinder desconectado.");
     } catch {
@@ -986,6 +1026,11 @@ export function MatchView({ onChatOpenChange }: MatchViewProps = {}) {
     setConnected(true);
     setTokenExpired(false);
     setProfile(newProfile);
+    setMatchesLoaded(false);
+    setLikesLoaded(false);
+    setAccountLoaded(false);
+    setLikesData(null);
+    setAccountState(null);
     void loadRecommendations();
     void loadMatches();
   };
