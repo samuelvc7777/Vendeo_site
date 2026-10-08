@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createBrainOutboxBatch, buildSentMessageMirrorPayload } from "../supabase/functions/api/brain_orchestrator.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const brain = readFileSync(join(root, "supabase/functions/api/openai_brain.ts"), "utf8");
@@ -39,9 +40,12 @@ test("validator converte alias curto em MID real e descarta alvo inválido sem r
 });
 
 test("outbox preserva o reply escolhido pelo Brain", () => {
-  assert.match(orchestrator, /replyToMessageId: action\.replyToMessageId \|\| null/);
-  assert.match(orchestrator, /payload: \{[\s\S]*?replyToMessageId: action\.replyToMessageId \|\| null/);
-  assert.match(orchestrator, /replyToMessageId\?: string \| null/);
+  const [entry] = createBrainOutboxBatch({
+    actions: [{ type: "text", text: "entendi", replyToMessageId: "inbound-1" }],
+    conversationId: "conv-1", cycleId: "cycle-1", idempotencyKey: "reply-1", sourceChannel: "instagram",
+  });
+  assert.equal(entry.replyToMessageId, "inbound-1");
+  assert.equal(entry.payload.replyToMessageId, "inbound-1");
 });
 
 test("dispatcher do Brain envia reply_to nativo para a Meta", () => {
@@ -54,7 +58,12 @@ test("dispatcher do Brain envia reply_to nativo para a Meta", () => {
 });
 
 test("persistência e preview mantêm a citação antes e depois do envio", () => {
-  assert.match(orchestrator, /reply_to_message_id: claimedEntry\.replyToMessageId/);
+  const [entry] = createBrainOutboxBatch({
+    actions: [{ type: "text", text: "entendi", replyToMessageId: "inbound-1" }],
+    conversationId: "conv-1", cycleId: "cycle-1", idempotencyKey: "reply-1", sourceChannel: "instagram",
+  });
+  assert.equal(buildSentMessageMirrorPayload(entry, "provider-1").reply_to_message_id, "inbound-1");
+  assert.equal(buildSentMessageMirrorPayload({ ...entry, replyToMessageId: null }, "provider-1").reply_to_message_id, "inbound-1");
   assert.match(orchestrator, /pendingOutboundMessages[\s\S]*?replyToMessageId: entry\.replyToMessageId/);
   assert.match(autoPilot, /replyToMessageId\?: string \| null/);
   assert.match(direct, /replyToMessageId: preview\.replyToMessageId \|\| undefined/);

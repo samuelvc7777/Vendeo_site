@@ -11,7 +11,7 @@ const runtime = read("../supabase/functions/api/connection_window_runtime.ts");
 const sdkBrain = read("../supabase/functions/api/openai_sdk_brain.ts");
 const orchestrator = read("../supabase/functions/api/brain_orchestrator.ts");
 const dispatcher = read("../supabase/functions/api/channel_dispatcher.ts");
-const migration = read("../supabase/migrations/20261007035521_connection_window_video_assets.sql");
+const migration = read("../supabase/migrations/20261007040014_connection_window_video_assets.sql");
 
 test("vídeo entra no arsenal com upload, limite de arquivo e contexto temporal", () => {
   assert.match(entity, /"photo" \| "video"/);

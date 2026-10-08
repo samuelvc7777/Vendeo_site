@@ -20,6 +20,6 @@ test("manual resolution preserves audio candidates from the original stage", () 
 test("normal turns keep using the existing stage objectives", () => {
   assert.match(
     source,
-    /\.\.\.\(stageChecklistForRouter\.goals \|\| \[\]\)[\s\S]*?\.\.\.manualResolutionOriginObjectiveIds/,
+    /\.\.\.\(stageObjectivesForRouter\.goals \|\| \[\]\)[\s\S]*?\.\.\.manualResolutionOriginObjectiveIds/,
   );
 });

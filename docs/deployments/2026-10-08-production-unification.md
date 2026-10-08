@@ -25,6 +25,14 @@ O inventário com hashes está em `production-baseline-manifest.json`; `node scr
 
 O build estático isolado passou com Next.js 16.3.4 e verificação TypeScript. Os 87 testes da suíte de segurança passaram. O site e gateway local/público responderam; o gateway estava `ready`, sem último erro. As chamadas de corpo vazio às rotas de automação retornaram os erros de validação esperados, sem ativar atendimento.
 
-A suíte histórica completa teve **426/437 testes aprovados e 11 falhas**. Elas foram preservadas e não foram escondidas nem tratadas alterando o código publicado. Há referências antigas a arquivos de migração, ao módulo Tinder de ativação ausente no release, comparações textuais de versões anteriores e expectativas de ciclo de etapas/autorizações divergentes do pacote publicado. Relatório completo local: `.firebase/production-unification-20261008/all-tests.log`.
+A primeira execução da suíte completa teve **426/437 testes aprovados e 11 falhas**. A comparação posterior com o snapshot anterior reproduziu dez dessas falhas; uma foi introduzida pela consolidação ao retirar um módulo experimental do Tinder e deixar seu teste no conjunto principal. Relatório inicial local: `.firebase/production-unification-20261008/all-tests.log`; comparação: `before-failing-tests.log`.
+
+### Correção das verificações, sem alteração do código publicado
+
+Depois da autorização do usuário, os testes foram alinhados aos nomes reais de migrações, às variáveis atuais e ao bloco de manutenção da recuperação de ciclos. As verificações de citações passaram a executar as funções reais que criam a outbox e o espelho da mensagem enviada, incluindo recuperação da citação pelo payload. O teste de etapas agora confirma tanto o bloqueio com objetivo obrigatório pendente quanto o avanço após todos os obrigatórios serem concluídos e a solicitação válida do Brain. O teste de autorização verifica o contrato real de origem permitida, com HTTP 403 para origem inválida, sem alegar testar uma sessão de login inexistente nesse endpoint.
+
+O teste experimental do Tinder foi preservado junto de seu módulo em `tests/experimental`; seus quatro cenários são executáveis separadamente e não representam o frontend publicado. Nenhum teste foi marcado como ignorado. Os testes de vídeo, antes interrompidos por caminho de migração inexistente, passaram a ser executados integralmente.
+
+Resultado final: **439 testes da base aprovados, zero falhas**, mais quatro testes do protótipo preservado aprovados separadamente. Comando da base: `node scripts/test-production-baseline.mjs`. Relatório local: `.firebase/production-unification-20261008/all-tests-fixed.log`. Os hashes das 246 fontes de produção permaneceram iguais ao manifesto; não houve deploy, alteração de schema, mudança de prompt ou reinício do gateway nessa correção.
 
 Esta consolidação comprova a correspondência da fonte recuperada com os artefatos inspecionados; não representa garantia de ausência de bugs já existentes na produção. O build novo foi apenas validado e não substituiu o site publicado.

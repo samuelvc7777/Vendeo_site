@@ -48,8 +48,8 @@ test("o Brain recebe objetivos pendentes e concluídos com valor e evidência", 
     currentObjectiveId: resolved.currentObjective.id, currentObjectiveLabel: resolved.currentObjective.label,
     inboundMessages: [], recentMessages: [], stageObjectives: resolved.goals,
   });
-  assert.match(agentContext, /goal_city \| CONCLUÍDO — NÃO PERGUNTAR NOVAMENTE \| valor: "Barbacena" \| evidenceMessageId: msg-city/);
-  assert.match(agentContext, /goal_job \| PENDENTE — NÃO É OBRIGATÓRIO/);
+  assert.match(agentContext, /goal_city \| CONCLUÍDO \| valor: "Barbacena" \| evidenceMessageId: msg-city/);
+  assert.match(agentContext, /goal_job \| PENDENTE — OBRIGATÓRIO/);
 });
 
 test("conclusão exige objetivo habilitado e evidência existente; próxima etapa só avança se o Brain pedir", async () => {
@@ -76,7 +76,19 @@ test("conclusão exige objetivo habilitado e evidência existente; próxima etap
   assert.equal(result.updatedObjectiveProgress.goal_city.status, "completed");
   assert.equal(result.updatedObjectiveProgress.goal_city.value, "Barbacena");
   assert.equal(result.updatedObjectiveProgress.goal_city.evidenceMessageId, "msg-city");
-  assert.equal(result.nextStageId, "stage_2_descoberta");
+  // Cidade concluída não libera a etapa enquanto Trabalho obrigatório estiver pendente.
+  assert.equal(result.nextStageId, "stage_1_conexao");
+  assert.equal(result.stageAdvanced, false);
+  const allRequiredCompleted = await validateAndApplyBrainStageDecision({
+    supabase, conversationId: "conv-1", currentPhase: "stage_1_conexao", currentStageId: "stage_1_conexao",
+    orchState: { completedGoalIds: ["goal_job"] },
+    decision: { objectiveCompletion: {
+      objectiveId: "goal_city", value: "Barbacena", evidenceMessageId: "msg-city",
+      evidence: { type: "message", id: "msg-city" },
+    }, nextPhase: "stage_2_descoberta" },
+  });
+  assert.equal(allRequiredCompleted.nextStageId, "stage_2_descoberta");
+  assert.equal(allRequiredCompleted.stageAdvanced, true);
 
   const noBrainAdvance = await validateAndApplyBrainStageDecision({
     supabase, conversationId: "conv-1", currentPhase: "stage_1_conexao", currentStageId: "stage_1_conexao",
@@ -132,7 +144,7 @@ test("ação sem confirmação não é projetada para memória", () => {
   ]), []);
 });
 
-test("endpoint de progresso exige sessão e chama a RPC privilegiada após validar", async () => {
+test("endpoint de progresso recusa origem inválida e chama a RPC privilegiada após validar", async () => {
   let rpcCalled = false;
   const supabase = {
     from(table) {
@@ -149,7 +161,7 @@ test("endpoint de progresso exige sessão e chama a RPC privilegiada após valid
     } }),
   });
   const unauthorized = await handleOperatorChatProgress(request(), supabase, false, {});
-  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.status, 403);
   assert.equal(rpcCalled, false);
   const authorized = await handleOperatorChatProgress(request(), supabase, true, {});
   assert.equal(authorized.status, 200);

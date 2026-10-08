@@ -79,7 +79,7 @@ test("regressão Luan: foto seguida de texto continua acionando o Brain pelo lot
   const source = read("supabase/functions/api/autopilot_inbound_queue.ts");
   assert.match(source, /conversation\?\.ai_debounce_started_at \|\| null/);
   assert.match(source, /hasActionableMediaInBatch = true/);
-  assert.match(source, /const actionable =\s*hasActionableMediaInBatch \|\|/);
+  assert.match(source, /const actionable =\s*transferReentryEvents\.length > 0 \|\|\s*hasActionableMediaInBatch \|\|/);
   assert.match(source, /await enqueueInboundMediaSync\(supabase, job\.conversation_id, preparedMedia\)/);
 });
 

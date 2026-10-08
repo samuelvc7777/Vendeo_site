@@ -2,7 +2,7 @@
 
 Base de produção consolidada em 08/10/2026: frontend Firebase, API Supabase v526, MCP v33 e gateway WhatsApp. Veja [o registro de consolidação](docs/deployments/2026-10-08-production-unification.md) antes de recuperar alterações de branches antigas.
 
-Para conferir a base: `node scripts/verify-production-baseline.mjs --live`. Para validar a automação: `node scripts/test-automation-safety.mjs`. O registro documenta também as pendências da suíte histórica completa. O Jev permanece como trabalho futuro preservado em backup.
+Para conferir a base: `node scripts/verify-production-baseline.mjs --live`. Para executar a suíte completa da base: `node scripts/test-production-baseline.mjs`. Para validar a automação: `node scripts/test-automation-safety.mjs`. O registro documenta a correção das verificações antigas e a separação dos testes de protótipos. O Jev permanece como trabalho futuro preservado em backup.
 
 ## Getting Started
 
