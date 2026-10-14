@@ -296,6 +296,14 @@ async function processClaimedInboundJob(
       return;
     }
 
+    // Durable Flex capacity cooldown. Incoming revisions can wake a job early,
+    // but may not bypass the provider backoff or create duplicate Brain cycles.
+    const flexUntil = String(conversation.stage_completed_rules?.orchestration?.flexCapacityRetryUntil || "");
+    if (flexUntil && Date.parse(flexUntil) > Date.now()) {
+      await rescheduleJob(supabase, workerToken, job, flexUntil, "flex_capacity_waiting");
+      return;
+    }
+
     const canonicalStatus = state?.status || null;
     const hasMediaObservation = Boolean(String(message?.media_operator_observation || "").trim());
     let transferReentryEvents;
@@ -649,6 +657,15 @@ async function processClaimedInboundJob(
     }
 
     const errorCode = String(result?.error || "brain_not_handled");
+    if (errorCode.startsWith("flex_capacity_retry_scheduled:")) {
+      const scheduledAt = errorCode.slice("flex_capacity_retry_scheduled:".length);
+      await rescheduleJob(
+        supabase, workerToken, job,
+        Number.isFinite(Date.parse(scheduledAt)) ? scheduledAt : retryAt(60),
+        "flex_capacity_waiting",
+      );
+      return;
+    }
     if (
       errorCode === "Lock ativo concorrente" ||
       errorCode === "global_capacity_busy" ||

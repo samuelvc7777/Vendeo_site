@@ -3907,6 +3907,7 @@ export interface ReleaseExperimentalCycleParams {
   cycleRecord?: any;
   outboxMap?: any;
   clearCancelFlag?: boolean;
+  flexCapacityFailure?: boolean;
 }
 
 export interface ReleaseExperimentalCycleResult {
@@ -3916,6 +3917,9 @@ export interface ReleaseExperimentalCycleResult {
   possibleSend?: boolean;
   retryCount?: number;
   retryExhausted?: boolean;
+  flexRetryScheduled?: boolean;
+  flexRetryAt?: string | null;
+  flexAttempt?: number;
 }
 
 /**
@@ -3938,22 +3942,31 @@ export async function releaseExperimentalCycleAtomic(
     cycleRecord = null,
     outboxMap = null,
     clearCancelFlag = false,
+    flexCapacityFailure = false,
   } = params;
 
   if (typeof supabase?.rpc === "function") {
     try {
-      const { data, error } = await supabase.rpc("release_experimental_cycle_if_owned", {
+      const releaseArgs: Record<string, unknown> = {
         p_conversation_id: conversationId,
         p_cycle_token: cycleToken,
-        p_processing_status: processingStatus,
         p_debounce_until: debounceUntil || null,
         p_revert_message_ids: revertMessageIds && revertMessageIds.length > 0 ? revertMessageIds : null,
         p_mark_processed_ids: markProcessedIds && markProcessedIds.length > 0 ? markProcessedIds : null,
         p_last_error: lastError !== undefined ? lastError : null,
         p_cycle_record: cycleRecord || null,
         p_outbox_map: outboxMap || null,
-        p_clear_cancel_flag: clearCancelFlag === true,
-      });
+      };
+      if (!flexCapacityFailure) {
+        releaseArgs.p_processing_status = processingStatus;
+        releaseArgs.p_clear_cancel_flag = clearCancelFlag === true;
+      }
+      const { data, error } = await supabase.rpc(
+        flexCapacityFailure
+          ? "release_flex_capacity_cycle_if_owned"
+          : "release_experimental_cycle_if_owned",
+        releaseArgs,
+      );
 
       if (!error && data && typeof data === "object") {
         if (data.released === true) {
@@ -3963,6 +3976,9 @@ export async function releaseExperimentalCycleAtomic(
             possibleSend: data.possibleSend === true,
             retryCount: Number(data.retryCount || 0),
             retryExhausted: data.retryExhausted === true,
+            flexRetryScheduled: data.flexRetryScheduled === true,
+            flexRetryAt: typeof data.flexRetryAt === "string" ? data.flexRetryAt : null,
+            flexAttempt: Number(data.flexAttempt || 0),
           };
         }
         return {
@@ -12136,6 +12152,10 @@ export async function runBrainOrchestration(
       outbox: outboxMap,
     };
 
+    const flexCapacityFailure = !params.isManualRetry
+      && !possibleSend
+      && retryAllowed
+      && /429[^\n]*Flex processing is temporarily unavailable/i.test(String(err?.message || ""));
     const releaseRes = await releaseExperimentalCycleAtomic({
       supabase,
       conversationId,
@@ -12146,6 +12166,7 @@ export async function runBrainOrchestration(
       outboxMap: fallbackState.outbox || outboxMap,
       revertMessageIds: possibleSend ? null : claimedMessageIds,
       markProcessedIds: possibleSend ? claimedMessageIds : null,
+      flexCapacityFailure,
       debounceUntil: !possibleSend && retryAllowed ? new Date(Date.now() + 60_000).toISOString() : null,
     });
 
@@ -12160,6 +12181,29 @@ export async function runBrainOrchestration(
 
         error: err.message || "Ciclo preemptado",
       };
+    }
+
+    if (releaseRes.flexRetryScheduled && releaseRes.flexRetryAt) {
+      const scheduledAt = releaseRes.flexRetryAt;
+      await publishAutoPilotState(supabase, conversationId, {
+        cycleId: correlationId,
+        status: "scheduled",
+        activity: activity(
+          "scheduled",
+          "Aguardando disponibilidade do Flex",
+          "A capacidade Flex da OpenAI está temporariamente indisponível. Nova tentativa automática agendada, sem custo Standard.",
+          { scheduledAt, flexAttempt: releaseRes.flexAttempt, event: "flex_capacity_retry_scheduled" },
+        ),
+        scheduledResponseAt: scheduledAt,
+        cycleEvent: {
+          phase: "scheduled",
+          event: "flex_capacity_retry_scheduled",
+          label: "Nova tentativa Flex programada",
+          detail: "O lote permanece pendente, com proteção contra envios duplicados.",
+          metadata: { scheduledAt, attempt: releaseRes.flexAttempt },
+        },
+      });
+      return { handled: false, sentToMeta: false, error: `flex_capacity_retry_scheduled:${scheduledAt}` };
     }
 
     if (releaseRes.retryExhausted || params.isManualRetry) {
@@ -12211,7 +12255,7 @@ export async function runBrainOrchestration(
       handled: false,
       sentToMeta: possibleSend,
 
-      error: err.message || "Erro na orquestração do Brain",
+      error: releaseRes.retryExhausted ? "technical_retry_exhausted" : (err.message || "Erro na orquestração do Brain"),
     };
   } finally {
     await revokeCurrentMemoryScope();
