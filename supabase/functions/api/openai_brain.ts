@@ -1742,8 +1742,6 @@ export interface RunOpenAiBrainParams {
   schemaRetryCount?: number;
   technicalRepairCount?: number;
   providerBusyRetryCount?: number;
-  /** Uma segunda tentativa tecnica Standard so apos 429 Flex sem capacidade. */
-  flexCapacityFallbackAttempted?: boolean;
   schemaFeedback?: string;
   recoveredAudioToolState?: RecoveredAudioToolState;
   prefetchedAudioCandidateGroups?: Array<{
@@ -1904,8 +1902,6 @@ export interface OpenAiBrainTurnResult {
     agentSessionReasoningActual?: string | null;
     serviceTierRequested?: "auto" | "default" | "flex";
     serviceTierActual?: string | null;
-    flexCapacityFallbackTriggered?: boolean;
-    flexCapacityFallbackReason?: string;
     sessionFallbackUsed?: boolean;
     sessionFallbackTriggered?: boolean;
     agentSessionRecoveryTriggered?: boolean;

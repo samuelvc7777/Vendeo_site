@@ -1,28 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { shouldRetryFlexCapacityOnStandard } from "../supabase/functions/api/flex_capacity_policy.ts";
+import { existsSync, readFileSync } from "node:fs";
 
-test("429 Flex sem capacidade habilita UMA segunda tentativa Standard", () => {
-  const error = "429 Flex processing is temporarily unavailable. Please try again later or use standard processing.";
-  assert.equal(shouldRetryFlexCapacityOnStandard(error, "flex", false), true);
-  assert.equal(shouldRetryFlexCapacityOnStandard(error, "flex", true), false);
-  assert.equal(shouldRetryFlexCapacityOnStandard(error, "default", false), false);
-  assert.equal(shouldRetryFlexCapacityOnStandard(error, "auto", false), false);
+const sdkUrl = new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url);
+const sdk = readFileSync(sdkUrl, "utf8");
+const orchestrator = readFileSync(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
+const brainTypes = readFileSync(new URL("../supabase/functions/api/openai_brain.ts", import.meta.url), "utf8");
+
+test("Brain não troca Flex para Standard ao receber 429 do provider", () => {
+  assert.doesNotMatch(sdk, /shouldRetryFlexCapacityOnStandard|flex_capacity_unavailable_retry_standard/);
+  assert.doesNotMatch(sdk, /flexCapacityFallbackAttempted|flexCapacityFallbackTriggered|flexCapacityFallbackReason/);
+  assert.doesNotMatch(sdk, /serviceTier:\s*["']default["']/);
+  assert.doesNotMatch(brainTypes, /flexCapacityFallbackAttempted|flexCapacityFallbackTriggered|flexCapacityFallbackReason/);
+  assert.equal(existsSync(new URL("../supabase/functions/api/flex_capacity_policy.ts", import.meta.url)), false);
 });
 
-test("outros erros nao geram trocas de tier nem retries indevidos", () => {
-  assert.equal(shouldRetryFlexCapacityOnStandard("429 You exceeded your current quota", "flex", false), false);
-  assert.equal(shouldRetryFlexCapacityOnStandard("429 Rate limit reached", "flex", false), false);
-  assert.equal(shouldRetryFlexCapacityOnStandard("400 Another process is currently operating on this conversation", "flex", false), false);
-  assert.equal(shouldRetryFlexCapacityOnStandard("500 Flex processing is temporarily unavailable", "flex", false), false);
+test("preserva o tier configurado no provider e falha sem fallback de preço", () => {
+  assert.match(orchestrator, /\.in\("id", \["openai_brain_reasoning_effort", "openai_brain_verbosity", "openai_brain_service_tier"\]\)/);
+  assert.match(orchestrator, /serviceTier:\s*configuredServiceTier/);
+  assert.match(sdk, /service_tier:\s*serviceTier/);
+  assert.match(sdk, /error:\s*errorMessage,\s*telemetry,/);
 });
 
-test("fallback exclusivo de infraestrutura, nunca semantica", () => {
-  const sdk = readFileSync(new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url), "utf8");
-  assert.match(sdk, /shouldRetryFlexCapacityOnStandard\(/);
-  assert.match(sdk, /flexCapacityFallbackAttempted: true/);
-  assert.match(sdk, /serviceTier: "default"/);
-  assert.match(sdk, /flexCapacityFallbackTriggered = true/);
-  assert.match(sdk, /service_tier: serviceTier/);
+test("não interfere em recuperação técnica que preserva o mesmo tier", () => {
+  assert.match(sdk, /technicalRepairCount:\s*\(params\.technicalRepairCount \|\| 0\) \+ 1/);
+  assert.match(sdk, /const serviceTier: "auto" \| "default" \| "flex" = params\.serviceTier \|\| "auto";/);
 });

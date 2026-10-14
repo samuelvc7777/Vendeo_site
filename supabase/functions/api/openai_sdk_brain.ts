@@ -2,7 +2,6 @@ import { Agent, getDefaultOpenAIClient, run, setDefaultOpenAIKey, system, tool, 
 import { z } from "npm:zod@4.6.5";
 import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
 import { validateObjectiveAudioDeadline } from "./objective_audio_deadline.ts";
-import { shouldRetryFlexCapacityOnStandard } from "./flex_capacity_policy.ts";
 import { readJevMemoryConfig } from "./jev_memory_selector.ts";
 import { prepareBrainMemoryContext, formatSelectedBrainMemories } from "./brain_memory_context.ts";
 import {
@@ -1774,28 +1773,6 @@ export async function runOpenAiSdkBrainTurn(
         repaired.telemetry.executionRecovered = true;
       }
       return repaired;
-    }
-
-    // Somente quando o provider recusa capacidade Flex (429), tenta uma vez
-    // no processamento Standard. E uma troca tecnica de capacidade, nao uma
-    // decisao sobre o conteudo do Brian. Preserva executionKey, Conversation,
-    // checkpoint e deduplicacao existentes e registra a excecao de custo.
-    if (shouldRetryFlexCapacityOnStandard(
-      errorMessage,
-      params.serviceTier || "auto",
-      params.flexCapacityFallbackAttempted === true,
-    )) {
-      console.warn(
-        `[OpenAI SDK] flex_capacity_unavailable_retry_standard conversationId=${params.conversationId} executionKey=${executionKey}`,
-      );
-      const standardRetry = await runOpenAiSdkBrainTurn({
-        ...params,
-        serviceTier: "default",
-        flexCapacityFallbackAttempted: true,
-      });
-      standardRetry.telemetry.flexCapacityFallbackTriggered = true;
-      standardRetry.telemetry.flexCapacityFallbackReason = "provider_flex_capacity_429";
-      return standardRetry;
     }
 
     return {
