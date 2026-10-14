@@ -15,7 +15,6 @@ import {
   validateQuestionIntentsInvariant,
   validateResponseGenerationInvariant,
   validateStageProgressionInvariant,
-  validateWebSearchOutputPrivacy,
   type OpenAiBrainTurnResult,
   type RunOpenAiBrainParams,
 } from "./openai_brain.ts";
@@ -510,10 +509,6 @@ function validateAndNormalizeSdkPlan(
     (params.currentInboundMessages || []).slice(-4).map((message) => message.id),
   );
   const response = validateResponseGenerationInvariant(parsedPlan);
-  const webSearchPrivacy = validateWebSearchOutputPrivacy(
-    parsedPlan,
-    Number(telemetry.webSearchCallCount || 0) > 0 || telemetry.sourcesUsed.includes("web_search"),
-  );
   const progression = validateObjectiveProgressionInvariant(parsedPlan, {
     currentObjectiveId: params.currentObjectiveId,
     currentObjectiveRequired: params.currentObjectiveRequired,
@@ -603,8 +598,6 @@ function validateAndNormalizeSdkPlan(
     ? basic.error || "invalid_brain_plan"
     : !response.valid
     ? response.error || "invalid_response_generation"
-    : !webSearchPrivacy.valid
-    ? webSearchPrivacy.error || "web_search_output_leak"
     : !progression.valid
     ? progression.error || "invalid_objective_progression"
     : !stageProgression.valid
@@ -623,7 +616,6 @@ function validateAndNormalizeSdkPlan(
 
   if (!parsedPlan || validationError) {
     const hardContractViolation =
-      !webSearchPrivacy.valid ||
       !progression.valid ||
       !stageProgression.valid ||
       (isObjectivePursuit && !questionValidation.valid) ||

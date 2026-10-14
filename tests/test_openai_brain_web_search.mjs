@@ -3,11 +3,9 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
   buildOpenAiAgentToolsForSession,
-  containsResearchArtifactInCustomerText,
   extractWebSearchAudit,
   isWebSearchSessionConfigurationReady,
   runOpenAiBrainTurn,
-  validateWebSearchOutputPrivacy,
 } from "../supabase/functions/api/openai_brain.ts";
 
 const AUDIO_ID = "audio_approved_profession";
@@ -32,7 +30,7 @@ function plan(text = "Não consegui confirmar isso com segurança agora.", inclu
   };
 }
 
-async function runRuntimeTurn({ persistent = false, message = "oii, tudo bem?", webSearchItems = [], recoveredAudioToolState } = {}) {
+async function runRuntimeTurn({ persistent = false, message = "oii, tudo bem?", webSearchItems = [], recoveredAudioToolState, responseText } = {}) {
   let captured;
   const result = await runOpenAiBrainTurn({
     conversationId: "conversation-public-search-test",
@@ -50,7 +48,7 @@ async function runRuntimeTurn({ persistent = false, message = "oii, tudo bem?", 
         captured = input;
         return {
           success: true,
-          plan: plan(),
+          plan: plan(responseText),
           webSearchItems,
           sessionId: "session-test",
           turnId: "turn-test",
@@ -106,8 +104,8 @@ test("ferramenta web_search repetida é normalizada para uma única chamada live
 });
 
 test("configuração de sessão antiga precisa ser recriada para receber ferramenta e política", () => {
-  assert.equal(isWebSearchSessionConfigurationReady({ tools: [{ type: "web_search", mode: "live" }], instructions: "brain_web_search_policy_v1" }), true);
-  assert.equal(isWebSearchSessionConfigurationReady({ tools: [{ type: "web_search", mode: "cached" }], instructions: "brain_web_search_policy_v1" }), false);
+  assert.equal(isWebSearchSessionConfigurationReady({ tools: [{ type: "web_search", mode: "live" }], instructions: "brain_web_search_policy_v2" }), true);
+  assert.equal(isWebSearchSessionConfigurationReady({ tools: [{ type: "web_search", mode: "cached" }], instructions: "brain_web_search_policy_v2" }), false);
   assert.equal(isWebSearchSessionConfigurationReady({ tools: [{ type: "web_search", mode: "live" }], instructions: "instruções antigas" }), false);
 });
 
@@ -161,57 +159,26 @@ test("pergunta atual pode gerar busca e as fontes reais entram na telemetria sem
   assert.doesNotMatch(JSON.stringify(result.telemetry), /Samuel Vitor|samuel_private|cotação atual/);
 });
 
-test("Agents SDK aplica a mesma política e bloqueio de vazamento do web_search", () => {
-  const sdkSource = readFileSync(
-    new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(sdkSource, /BRAIN_WEB_SEARCH_POLICY/);
-  assert.match(sdkSource, /validateWebSearchOutputPrivacy/);
-  assert.match(sdkSource, /!webSearchPrivacy\.valid/);
-  assert.match(sdkSource, /accepted_plan_rejected_by_current_contracts/);
-});
-
-test("web_search vira conhecimento interno e nunca pode vazar citação ou URL na fala", async () => {
-  const natural = plan("fica pertinho daqui kkk, eu conheço sim");
-  assert.equal(validateWebSearchOutputPrivacy(natural, true).valid, true);
-
-  const markdownLeak = plan("fica pertinho daqui ([gov.br](https://www.gov.br/exemplo?utm_source=openai))");
-  const markdownResult = validateWebSearchOutputPrivacy(markdownLeak, true);
-  assert.equal(markdownResult.valid, false);
-  assert.match(markdownResult.error || "", /web_search_output_leak/);
-  // Mesmo quando a telemetria do provider falhar, links não podem ir ao cliente.
-  assert.equal(validateWebSearchOutputPrivacy(plan("[site](https://example.com)"), false).valid, false);
-
-  const rawUrl = plan("olha https://example.com/info");
-  assert.equal(validateWebSearchOutputPrivacy(rawUrl, true).valid, false);
-  assert.equal(validateWebSearchOutputPrivacy(rawUrl, false).valid, false);
-
-  const nhsLeak = plan("nossa, foi forte a ponto de te derrubar 🥺 ([nhs.uk](https://www.nhs.uk/conditions/broken-or-bruised-ribs/))");
-  assert.equal(validateWebSearchOutputPrivacy(nhsLeak, false).valid, false);
-  assert.equal(containsResearchArtifactInCustomerText("se a dor piorar procura atendimento, viu?"), false);
-  assert.equal(containsResearchArtifactInCustomerText("olha nhs.uk e www.nhs.uk"), true);
-  assert.equal(containsResearchArtifactInCustomerText("segundo o NHS, repouso ajuda"), true);
-  assert.equal(containsResearchArtifactInCustomerText("resumo citeturn0search0"), true);
-
-  const suggestedLeak = { ...plan("tá tudo bem"), suggestedResponse: "fonte: NHS" };
-  assert.equal(validateWebSearchOutputPrivacy(suggestedLeak, false).valid, false);
-  const transferLeak = {
-    ...plan("tá tudo bem"),
-    outboundActions: [{ type: "transfer_channel", initialText: "olha www.nhs.uk" }],
-  };
-  assert.equal(validateWebSearchOutputPrivacy(transferLeak, false).valid, false);
-
+test("Brain mantém pesquisa interna sem backend decidir o conteúdo", async () => {
+  const sdkSource = readFileSync(new URL("../supabase/functions/api/openai_sdk_brain.ts", import.meta.url), "utf8");
+  const legacySource = readFileSync(new URL("../supabase/functions/api/openai_brain.ts", import.meta.url), "utf8");
   const dispatchSource = readFileSync(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
-  assert.match(dispatchSource, /web_search_output_leak_dispatch_blocked/);
-  assert.match(dispatchSource, /BRAIN_WEB_SEARCH_OUTPUT_LEAK_DISPATCH_BLOCKED/);
-
-  const { result, captured } = await runRuntimeTurn({ message: "vc sabe onde fica essa cidade?" });
+  assert.match(sdkSource, /BRAIN_WEB_SEARCH_POLICY/);
+  assert.match(legacySource, /ANTES de concluir o turno, revise você mesmo cada balão/);
+  assert.doesNotMatch(sdkSource, /validateWebSearchOutputPrivacy|webSearchPrivacy/);
+  assert.doesNotMatch(legacySource, /validateWebSearchOutputPrivacy|web_search_output_leak/);
+  assert.doesNotMatch(dispatchSource, /containsResearchArtifactInCustomerText|BRAIN_WEB_SEARCH_OUTPUT_LEAK_DISPATCH_BLOCKED/);
+  const modelOutput = "segundo [nhs.uk](https://www.nhs.uk/conditions/broken-or-bruised-ribs/)";
+  const { result, captured } = await runRuntimeTurn({
+    message: "o que sabe disso?",
+    responseText: modelOutput,
+    webSearchItems: [{ id: "search-test", type: "web_search_call", status: "completed", sources: [{ url: "https://www.nhs.uk" }] }],
+  });
   assert.equal(result.success, true, result.error);
+  assert.deepEqual(result.plan.outboundActions.filter((action) => action.type === "text").map((action) => action.text), [modelOutput]);
   assert.match(captured.context, /grounding INTERNO/i);
   assert.match(captured.context, /NUNCA exponha em outboundActions URL/i);
-  assert.match(captured.context, /o pretendente não deve perceber que houve busca/i);
+  assert.match(captured.context, /ANTES de concluir o turno, revise você mesmo/);
 });
 
 test("busca falha ou sem fontes não trava o Brain nem cria fontes", async () => {
