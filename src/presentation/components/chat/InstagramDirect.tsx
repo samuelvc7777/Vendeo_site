@@ -6078,8 +6078,6 @@ export function InstagramDirect({
     (c) => isChatRestricted(c)
   ).length;
 
-  const aiEnabledCount = platformConversations.filter((c) => c.aiAutoRespond === true).length;
-  const aiDisabledCount = platformConversations.filter((c) => c.aiAutoRespond !== true).length;
   const whatsappArchivedCount = platformConversations.filter(
     (c) => !isWhatsAppConversationBlocked(c) && isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
   ).length;
@@ -6103,43 +6101,38 @@ export function InstagramDirect({
     (c) => c.lastSender === "me"
   ).length;
 
+  // A categoria ativa define o universo dos contadores IA e da lista.
+  // O filtro rápido (Com/Sem IA) é aplicado depois, inclusive nas categorias especiais.
+  const matchesSelectedWhatsAppCategory = (c: DirectConversation): boolean => {
+    if (!matchesWhatsAppBlockFilter(c, effectiveWhatsAppResponseFilter)) return false;
+    if (effectiveWhatsAppResponseFilter === "bloqueados") return true;
+    if (effectiveWhatsAppResponseFilter === "trancadas") {
+      return activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c);
+    }
+    if (effectiveWhatsAppResponseFilter === "arquivados") {
+      return isWhatsAppConversationArchived(c) &&
+        (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c));
+    }
+    if (isWhatsAppConversationArchived(c)) return false;
+    if (activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c)) return false;
+    if (isChatRestricted(c) || c.status === "pending") return false;
+    if (effectiveWhatsAppResponseFilter === "respondidos" && c.lastSender !== "me") return false;
+    if (effectiveWhatsAppResponseFilter === "nao_respondidos" &&
+        !(c.lastSender === "them" || isConversationUnread(c))) return false;
+    return true;
+  };
+  const whatsappCategoryConversations = platformConversations.filter(matchesSelectedWhatsAppCategory);
+  const aiEnabledCount = whatsappCategoryConversations.filter((c) => c.aiAutoRespond === true).length;
+  const aiDisabledCount = whatsappCategoryConversations.filter((c) => c.aiAutoRespond !== true).length;
+
   const effectiveStageFilter = isWhatsAppInboxChannel ? whatsappStageFilter : stageFilter;
 
   const filteredConversations = platformConversations
     .filter((c) => {
+      if (isWhatsAppInboxChannel) return matchesSelectedWhatsAppCategory(c);
+
       const isRestr = isChatRestricted(c);
       const isRestrictedOrPending = Boolean(isRestr || c.status === "pending");
-
-      if (isWhatsAppInboxChannel) {
-        if (!matchesWhatsAppBlockFilter(c, effectiveWhatsAppResponseFilter)) return false;
-        if (effectiveWhatsAppResponseFilter === "bloqueados") return true;
-
-        if (effectiveWhatsAppResponseFilter === "trancadas") {
-          return activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c);
-        }
-
-        if (effectiveWhatsAppResponseFilter === "arquivados") {
-          return isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c));
-        }
-
-        // Conversas arquivadas e trancadas ficam fora da caixa principal.
-        if (isWhatsAppConversationArchived(c)) return false;
-        if (activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c)) return false;
-
-        if (isRestrictedOrPending) return false;
-
-        if (effectiveWhatsAppResponseFilter === "respondidos" && c.lastSender !== "me") return false;
-        if (
-          effectiveWhatsAppResponseFilter === "nao_respondidos" &&
-          !(c.lastSender === "them" || isConversationUnread(c))
-        ) {
-          return false;
-        }
-
-        if (whatsappQuickFilter === "com_ia") return c.aiAutoRespond === true;
-        if (whatsappQuickFilter === "sem_ia") return c.aiAutoRespond !== true;
-        return true;
-      }
 
       // Aba PEDIDOS: reúne pedidos de novas mensagens e contas restringidas no Instagram.
       if (instaFilter === "pedidos") {
@@ -6167,7 +6160,11 @@ export function InstagramDirect({
       return true;
     })
     .filter((c) => {
-      if (isWhatsAppInboxChannel) return true;
+      if (isWhatsAppInboxChannel) {
+        if (whatsappQuickFilter === "com_ia") return c.aiAutoRespond === true;
+        if (whatsappQuickFilter === "sem_ia") return c.aiAutoRespond !== true;
+        return true;
+      }
       if (aiFilter === "todas") return true;
       if (aiFilter === "com_ia") return c.aiAutoRespond === true;
       return c.aiAutoRespond !== true;
