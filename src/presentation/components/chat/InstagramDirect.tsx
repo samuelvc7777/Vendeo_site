@@ -116,6 +116,7 @@ import {
 } from "@/domain/entities/WhatsAppConversationIdentity";
 import {
   getWhatsApp2Chats,
+  refreshWhatsApp2ProfilePhoto,
   getWhatsApp2ChatState,
   getWhatsApp2ExternalChatLink,
   getWhatsApp2MediaUrl,
@@ -461,6 +462,42 @@ function mapWhatsApp2Message(message: WhatsApp2GatewayMessage): DirectMessage {
 }
 
 const avatarRefreshRequests = new Set<string>();
+const pendingWhatsAppAvatarRefreshes = new Map<string, Promise<string | null>>();
+const attemptedWhatsAppAvatarRefreshes = new Map<string, number>();
+
+function isWhatsAppProfilePhotoUrl(value: unknown): boolean {
+  try {
+    return new URL(String(value || "")).hostname === "pps.whatsapp.net";
+  } catch {
+    return false;
+  }
+}
+
+function refreshBrokenWhatsAppAvatar(conversationId: string, rejectedUrl: string): Promise<string | null> {
+  const chatId = whatsappProviderIdFromConversationId(conversationId);
+  if (!/^\d+@(c\.us|lid)$/.test(chatId) || !isWhatsAppProfilePhotoUrl(rejectedUrl)) {
+    return Promise.resolve(null);
+  }
+  const pending = pendingWhatsAppAvatarRefreshes.get(chatId);
+  if (pending) return pending;
+  const key = `${chatId}:${rejectedUrl}`;
+  const now = Date.now();
+  if (now - (attemptedWhatsAppAvatarRefreshes.get(key) || 0) < 10 * 60 * 1000) {
+    return Promise.resolve(null);
+  }
+  attemptedWhatsAppAvatarRefreshes.set(key, now);
+  while (attemptedWhatsAppAvatarRefreshes.size > 600) {
+    const oldestKey = attemptedWhatsAppAvatarRefreshes.keys().next().value;
+    if (!oldestKey) break;
+    attemptedWhatsAppAvatarRefreshes.delete(oldestKey);
+  }
+  const request = refreshWhatsApp2ProfilePhoto(chatId, rejectedUrl)
+    .then((result) => result.avatarUrl && result.avatarUrl !== rejectedUrl ? result.avatarUrl : null)
+    .catch(() => null)
+    .finally(() => pendingWhatsAppAvatarRefreshes.delete(chatId));
+  pendingWhatsAppAvatarRefreshes.set(chatId, request);
+  return request;
+}
 
 function isMetaCdnAvatarUrl(value: unknown): boolean {
   const source = String(value || "");
@@ -541,6 +578,10 @@ function AvatarWithFallback({
   ringClassName = "",
 }: AvatarWithFallbackProps) {
   const [hasError, setHasError] = useState(false);
+  const [replacementAvatar, setReplacementAvatar] = useState<string | null | undefined>(undefined);
+  const [alreadyRetried, setAlreadyRetried] = useState(false);
+  const originalSourceRef = useRef(src);
+  originalSourceRef.current = src;
   const expiredMetaAvatar = isExpiredMetaCdnAvatar(src);
   const isWhatsApp = Boolean(conversationId?.startsWith("wa2:"));
   const cleanName = String(alt || "").trim();
@@ -552,7 +593,7 @@ function AvatarWithFallback({
     ? `${nameParts[0][0] || ""}${nameParts[nameParts.length - 1][0] || ""}`.toUpperCase()
     : (nameParts[0]?.slice(0, 2) || "").toUpperCase();
   const numericOnlyName = /^\+?\d[\d\s()+-]*$/.test(cleanName);
-  const rawSrc = String(src || "").trim();
+  const rawSrc = String(isWhatsApp && replacementAvatar !== undefined ? replacementAvatar : src || "").trim();
   const hasRealPhoto =
     !hasError &&
     !expiredMetaAvatar &&
@@ -561,6 +602,8 @@ function AvatarWithFallback({
 
   useEffect(() => {
     setHasError(false);
+    setReplacementAvatar(undefined);
+    setAlreadyRetried(false);
     if (!isWhatsApp && expiredMetaAvatar) requestAvatarRefresh(conversationId);
   }, [src, conversationId, expiredMetaAvatar, isWhatsApp]);
 
@@ -598,7 +641,17 @@ function AvatarWithFallback({
         className="object-cover"
         onError={() => {
           setHasError(true);
-          if (!isWhatsApp && isMetaCdnAvatarUrl(src)) requestAvatarRefresh(conversationId);
+          if (isWhatsApp && conversationId && !alreadyRetried && isWhatsAppProfilePhotoUrl(rawSrc)) {
+            setAlreadyRetried(true);
+            void refreshBrokenWhatsAppAvatar(conversationId, rawSrc).then((updatedUrl) => {
+              if (updatedUrl && originalSourceRef.current === src) {
+                setReplacementAvatar(updatedUrl);
+                setHasError(false);
+              }
+            });
+          } else if (!isWhatsApp && isMetaCdnAvatarUrl(src)) {
+            requestAvatarRefresh(conversationId);
+          }
         }}
       />
     </div>

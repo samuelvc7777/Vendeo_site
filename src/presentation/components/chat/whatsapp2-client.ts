@@ -287,6 +287,17 @@ export async function disconnectWhatsApp2() {
   });
 }
 
+export async function refreshWhatsApp2ProfilePhoto(chatId: string, rejectedUrl: string) {
+  return request<{ ok: true; chatId: string; avatarUrl: string | null }>(
+    "/chat/profile/refresh",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId, rejectedUrl }),
+    },
+  );
+}
+
 export async function getWhatsApp2Chats(limit = 160) {
   const data = await request<{ ok: true; chats: WhatsApp2GatewayChat[] }>(
     `/chats?limit=${Math.max(1, Math.min(limit, 500))}`,

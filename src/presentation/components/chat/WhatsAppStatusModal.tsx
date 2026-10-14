@@ -43,6 +43,23 @@ import { WhatsAppStoryMediaRepository } from "@/infrastructure/repositories/What
 import type { WhatsAppStatusItem } from "@/domain/entities/WhatsAppStatus";
 import type { WhatsAppStoryMedia } from "@/domain/entities/WhatsAppStoryMedia";
 
+function StatusContactAvatar({ contact }: { contact: WhatsAppStatusContact }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const source = String(contact.avatarUrl || "").trim();
+  return source && source !== failedUrl ? (
+    <img
+      src={source}
+      alt={contact.name}
+      onError={() => setFailedUrl(source)}
+      className="w-8 h-8 rounded-full object-cover shrink-0 border border-white/10"
+    />
+  ) : (
+    <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center font-bold text-xs text-white shrink-0">
+      {contact.name.charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
 interface WhatsAppStatusModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -1665,17 +1682,7 @@ export function WhatsAppStatusModal({
                             }`}
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              {contact.avatarUrl ? (
-                                <img
-                                  src={contact.avatarUrl}
-                                  alt={contact.name}
-                                  className="w-8 h-8 rounded-full object-cover shrink-0 border border-white/10"
-                                />
-                              ) : (
-                                <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center font-bold text-xs text-white shrink-0">
-                                  {contact.name.charAt(0).toUpperCase()}
-                                </div>
-                              )}
+                              <StatusContactAvatar contact={contact} />
                               <div className="min-w-0">
                                 <p className="text-xs font-semibold text-white truncate">
                                   {contact.name}

@@ -115,6 +115,9 @@ export function WhatsAppContactInfo({
   const prefersReducedMotion = useReducedMotion();
   const mediaRef = useRef<HTMLDivElement | null>(null);
   const [dbRow, setDbRow] = useState<any>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+
+  useEffect(() => setAvatarFailed(false), [conversation.id, conversation.avatar]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,7 +140,7 @@ export function WhatsAppContactInfo({
     dbRow?.contact_id || conversation.username || whatsappProviderIdFromConversationId(conversation.id),
   );
   const rawAvatar = String(conversation.avatar || "").trim();
-  const hasRealAvatar = /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
+  const hasRealAvatar = !avatarFailed && /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
   const contactName = String(conversation.fullName || "").trim();
   const contactNameParts = contactName
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -255,6 +258,7 @@ export function WhatsAppContactInfo({
               <img
                 src={rawAvatar}
                 alt={conversation.fullName}
+                onError={() => setAvatarFailed(true)}
                 className="h-full w-full object-cover"
               />
             ) : contactInitials && !numericOnlyContactName ? (

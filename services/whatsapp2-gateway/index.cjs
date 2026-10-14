@@ -1002,7 +1002,7 @@ function getCachedProfilePic(chatId) {
 }
 
 async function persistProfilePic(chatId, url) {
-  if (!supabase || !chatId || !url) return;
+  if (!supabase || !chatId) return;
   try {
     await supabase
       .from("instagram_conversations")
@@ -1018,9 +1018,12 @@ async function persistProfilePic(chatId, url) {
   }
 }
 
-async function resolveProfilePic(chatId) {
+async function resolveProfilePic(chatId, { rejectedUrl = null } = {}) {
   const cached = profilePicCache.get(chatId);
-  if (cached && Date.now() - cached.updatedAt <= PROFILE_PIC_TTL_MS) {
+  const cacheFresh = cached && Date.now() - cached.updatedAt <= PROFILE_PIC_TTL_MS;
+  // A falha no navegador invalida apenas a URL rejeitada. Uma URL já renovada
+  // por outra aba pode ser reutilizada sem outra chamada ao WhatsApp.
+  if (cacheFresh && (!rejectedUrl || cached.url !== rejectedUrl)) {
     return cached.url || null;
   }
   if (profilePicPending.has(chatId)) return profilePicPending.get(chatId);
@@ -1028,13 +1031,16 @@ async function resolveProfilePic(chatId) {
   const pending = (async () => {
     try {
       const active = ensureReady();
-      const url = await active.getProfilePicUrl(chatId);
-      setProfilePicCacheEntry(chatId, url || null);
-      if (url) void persistProfilePic(chatId, url);
-      return url || null;
+      const fetchedUrl = await active.getProfilePicUrl(chatId);
+      const url = fetchedUrl && fetchedUrl !== rejectedUrl ? fetchedUrl : null;
+      setProfilePicCacheEntry(chatId, url);
+      // Não manter no Supabase uma URL que o navegador já confirmou quebrada.
+      if (url || rejectedUrl) void persistProfilePic(chatId, url);
+      return url;
     } catch (error) {
       console.warn("[whatsapp2] foto de perfil indisponível para", chatId, error?.message || error);
       setProfilePicCacheEntry(chatId, null);
+      if (rejectedUrl) void persistProfilePic(chatId, null);
       return null;
     } finally {
       profilePicPending.delete(chatId);
@@ -1047,7 +1053,8 @@ async function resolveProfilePic(chatId) {
 
 function warmProfilePics(chatIds) {
   const queue = chatIds
-    .filter((id) => id && !getCachedProfilePic(id) && !profilePicPending.has(id))
+    .filter((id) => id && !profilePicPending.has(id) &&
+      (!profilePicCache.has(id) || Date.now() - profilePicCache.get(id).updatedAt > PROFILE_PIC_TTL_MS))
     .slice(0, MAX_PROFILE_PIC_WARM_BATCH);
   const workers = Array.from(
     { length: Math.min(PROFILE_PIC_WARM_CONCURRENCY, queue.length) },
@@ -2081,9 +2088,7 @@ async function syncChatSnapshots() {
     const id = whatsapp2ConversationId(chatId);
     const existing = canonicalById.get(id) || null;
     const canonicalAvatar = existing?.avatar_url || existing?.avatar || null;
-    if (!getCachedProfilePic(chatId) && canonicalAvatar) {
-      setProfilePicCacheEntry(chatId, canonicalAvatar);
-    }
+    // URLs persistidas são apenas fallback, nunca fonte do cache vivo do WhatsApp.
     const avatar = getCachedProfilePic(chatId) || canonicalAvatar;
     const last = chat.lastMessage || null;
     const gatewayTimestamp = Number(last?.timestamp || chat.timestamp || 0);
@@ -4177,6 +4182,20 @@ const server = http.createServer(async (req, res) => {
       if (!chatId) throw new Error("chatId obrigatório");
       const avatarUrl = await resolveProfilePic(chatId);
       json(res, 200, { ok: true, chatId, avatarUrl }); return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat/profile/refresh") {
+      const body = await readJson(req, 8 * 1024);
+      const chatId = String(body.chatId || "").trim();
+      const rejectedUrl = String(body.rejectedUrl || "").trim();
+      if (!/^\d+(@c\.us|@lid)$/.test(chatId) ||
+          rejectedUrl.length > 2048 ||
+          !/^https:\/\/pps\.whatsapp\.net\//i.test(rejectedUrl)) {
+        json(res, 400, { ok: false, error: "Contato ou foto inválidos" });
+        return;
+      }
+      const avatarUrl = await resolveProfilePic(chatId, { rejectedUrl });
+      json(res, 200, { ok: true, chatId, avatarUrl });
+      return;
     }
     if (req.method === "GET" && url.pathname === "/chat/presence") {
       const chatId = String(url.searchParams.get("chatId") || "");
