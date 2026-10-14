@@ -3,7 +3,8 @@
 // Motor Oficial e Único de Orquestração da Conversa — BRAIN (Clean Architecture)
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
-import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
+import { outboxActivityLabel } from "./outbox_activity_label.ts";
 import { loadObjectiveAudioDeadline } from "./objective_audio_deadline.ts";
 import {
   enqueueAndWaitWhatsApp2Delivery,
@@ -4931,6 +4932,38 @@ export async function runDurableOutboxDispatcher(
     return result;
   }
 
+  // Atualiza exclusivamente o rótulo OPERACIONAL do ciclo que ainda aparece na
+  // projeção. O CAS evita que um dispatch antigo sobrescreva o estado de um
+  // ciclo novo ou os controles de pausa/ativação.
+  const syncOutboxActivity = async (sendingActionId?: string): Promise<void> => {
+    try {
+      const { data: projection, error: projectionError } = await supabase
+        .from("autopilot_chat_states")
+        .select("status, state, state_updated_at")
+        .eq("conversation_id", conversationId)
+        .maybeSingle();
+      if (projectionError || projection?.status !== "idle") return;
+      const projectedCycleId = String(projection.state?.cycleId || "");
+      if (!projectedCycleId) return;
+      const cycleEntries = allEntries.filter((entry) => entry.cycleId === projectedCycleId);
+      if (!cycleEntries.length) return;
+      const statuses = cycleEntries.map((entry) =>
+        sendingActionId && entry.id === sendingActionId ? "sending" : entry.status
+      );
+      const label = outboxActivityLabel(statuses);
+      if (projection.state?.activity?.label === label) return;
+      const isComplete = ["Brain respondeu", "Entrega incerta", "Falha no envio", "Envio cancelado"].includes(label);
+      await patchAutoPilotProjectionState(
+        supabase,
+        conversationId,
+        { activity: activity(isComplete ? "completed" : "sending", label, projection.state?.activity?.detail || "Estado do envio atualizado.") },
+        projection.state_updated_at,
+      );
+    } catch (err: any) {
+      console.warn("[Outbox] Não foi possível atualizar o indicador do envio:", err?.message || err);
+    }
+  };
+
   // Recupera a projeção normalizada quando a outbox já foi confirmada,
   // mas a atualização de brain_decision_actions falhou. Não despacha mensagens.
   try {
@@ -5184,6 +5217,7 @@ export async function runDurableOutboxDispatcher(
         actionId: outboxBrainActionId(claimedEntry),
         status: "sending",
       });
+      await syncOutboxActivity(claimedEntry.id);
 
       if (!claimedEntry.content) {
         if (claimedEntry.actionType === "audio" || claimedEntry.messageType === "audio") {
@@ -5340,6 +5374,7 @@ export async function runDurableOutboxDispatcher(
     }))
     .filter((entry) => Boolean(entry.content));
   await publishAutoPilotState(supabase, conversationId, { pendingOutboundMessages });
+  await syncOutboxActivity();
 
   // GAP 5: Se restam ações pendentes com notBefore agendado, agenda o disparo durável preciso em background
   if (result.pendingCount > 0) {
@@ -11824,11 +11859,7 @@ export async function runBrainOrchestration(
             "completed",
             needsHumanReview
               ? "Aguardando sua resposta"
-              : hasConfirmedDelivery
-              ? "Brain respondeu"
-              : deliveryStatus === "dispatch_uncertain"
-              ? "Entrega incerta"
-              : "Brain avaliou",
+              : outboxActivityLabel(decisionOutboxStatuses),
             needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
             needsHumanReview
               ? { brainThought: "Brain solicitou uma informação factual ao operador." }
