@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
   buildOpenAiAgentToolsForSession,
+  containsResearchArtifactInCustomerText,
   extractWebSearchAudit,
   isWebSearchSessionConfigurationReady,
   runOpenAiBrainTurn,
@@ -180,11 +181,31 @@ test("web_search vira conhecimento interno e nunca pode vazar citação ou URL n
   const markdownResult = validateWebSearchOutputPrivacy(markdownLeak, true);
   assert.equal(markdownResult.valid, false);
   assert.match(markdownResult.error || "", /web_search_output_leak/);
-  assert.equal(validateWebSearchOutputPrivacy(plan("[site](https://example.com)"), false).valid, true);
+  // Mesmo quando a telemetria do provider falhar, links não podem ir ao cliente.
+  assert.equal(validateWebSearchOutputPrivacy(plan("[site](https://example.com)"), false).valid, false);
 
   const rawUrl = plan("olha https://example.com/info");
   assert.equal(validateWebSearchOutputPrivacy(rawUrl, true).valid, false);
-  assert.equal(validateWebSearchOutputPrivacy(rawUrl, false).valid, true);
+  assert.equal(validateWebSearchOutputPrivacy(rawUrl, false).valid, false);
+
+  const nhsLeak = plan("nossa, foi forte a ponto de te derrubar 🥺 ([nhs.uk](https://www.nhs.uk/conditions/broken-or-bruised-ribs/))");
+  assert.equal(validateWebSearchOutputPrivacy(nhsLeak, false).valid, false);
+  assert.equal(containsResearchArtifactInCustomerText("se a dor piorar procura atendimento, viu?"), false);
+  assert.equal(containsResearchArtifactInCustomerText("olha nhs.uk e www.nhs.uk"), true);
+  assert.equal(containsResearchArtifactInCustomerText("segundo o NHS, repouso ajuda"), true);
+  assert.equal(containsResearchArtifactInCustomerText("resumo citeturn0search0"), true);
+
+  const suggestedLeak = { ...plan("tá tudo bem"), suggestedResponse: "fonte: NHS" };
+  assert.equal(validateWebSearchOutputPrivacy(suggestedLeak, false).valid, false);
+  const transferLeak = {
+    ...plan("tá tudo bem"),
+    outboundActions: [{ type: "transfer_channel", initialText: "olha www.nhs.uk" }],
+  };
+  assert.equal(validateWebSearchOutputPrivacy(transferLeak, false).valid, false);
+
+  const dispatchSource = readFileSync(new URL("../supabase/functions/api/brain_orchestrator.ts", import.meta.url), "utf8");
+  assert.match(dispatchSource, /web_search_output_leak_dispatch_blocked/);
+  assert.match(dispatchSource, /BRAIN_WEB_SEARCH_OUTPUT_LEAK_DISPATCH_BLOCKED/);
 
   const { result, captured } = await runRuntimeTurn({ message: "vc sabe onde fica essa cidade?" });
   assert.equal(result.success, true, result.error);

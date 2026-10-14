@@ -819,6 +819,20 @@ export interface PlanValidationResult {
   error?: string;
 }
 
+/**
+ * Safety gate independent of search telemetry: hosted search tools may omit their
+ * audit event, and a later model step can copy the source into the final message.
+ * Only apply this to AI-authored customer text, not inbound/operator messages.
+ */
+export function containsResearchArtifactInCustomerText(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const text = value.trim();
+  const urlOrDomain = /(?:https?:\/\/|www\.|\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b)/i;
+  const providerCitation = /(?:utm_source=openai|trk=article-ssr-frontend-pulse_little-text-block|cite|【[^】]*†[^】]*】|\[\^?\d{1,3}\])/i;
+  const explicitAttribution = /\b(?:fontes?|refer[eê]ncias?|sources?)\s*:\s*\S|\b(?:segundo|conforme|de acordo com)\s+(?:(?:o|a|os|as)\s+)?(?:site|portal|artigo|nhs|wikip[eé]dia|bbc|reuters)\b/i;
+  return urlOrDomain.test(text) || providerCitation.test(text) || explicitAttribution.test(text);
+}
+
 export function validateWebSearchOutputPrivacy(
   plan: any,
   webSearchPerformed: boolean,
@@ -826,19 +840,20 @@ export function validateWebSearchOutputPrivacy(
   if (!plan || typeof plan !== "object") return { valid: true };
   const texts = [
     ...(Array.isArray(plan.responses) ? plan.responses : []),
+    plan.suggestedResponse,
     ...(Array.isArray(plan.outboundActions)
       ? plan.outboundActions
-          .filter((action: any) => action?.type === "text")
-          .map((action: any) => action?.text)
+          .filter((action: any) => action?.type === "text" || action?.type === "transfer_channel")
+          .map((action: any) => action?.type === "transfer_channel" ? action.initialText : action.text)
       : []),
-  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  ];
 
-  const joined = texts.join("\n");
-  const unmistakableSearchArtifact =
-    /utm_source=openai|trk=article-ssr-frontend-pulse_little-text-block|cite|【[^】]*†[^】]*】/i;
-  const linkOrUrl = /\[[^\]\n]{1,160}\]\(\s*https?:\/\/[^)\s]+\)|(?:https?:\/\/|\bwww\.)/i;
-
-  if (unmistakableSearchArtifact.test(joined) || (webSearchPerformed && linkOrUrl.test(joined))) {
+  // Reject visible artifacts even when the provider did not report web_search.
+  // Retry once for a natural answer; never dispatch the leaky version.
+  const leak = texts.some(containsResearchArtifactInCustomerText)
+    || (webSearchPerformed && texts.some((value) =>
+      typeof value === "string" && /\b(?:pesquisei|achei (?:na|no) (?:internet|google)|encontrei (?:na|no) (?:pesquisa|site))\b/i.test(value)));
+  if (leak) {
     return {
       valid: false,
       error: "web_search_output_leak: pesquisa é conhecimento interno; regenere outboundActions sem URL, link Markdown, citação, referência ou vestígio da fonte, mantendo apenas a resposta natural da Larissa",

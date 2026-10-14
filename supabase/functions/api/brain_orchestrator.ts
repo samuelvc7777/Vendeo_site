@@ -122,6 +122,7 @@ import { searchPersonaMemory } from "./persona_memory.ts";
 
 import {
   runOpenAiBrainTurn,
+  containsResearchArtifactInCustomerText,
   executePersonaMemoryTool,
   PERSONA_MEMORY_TOOL_DEFINITION,
   buildOpenAiBrainContextMessage,
@@ -10726,6 +10727,21 @@ export async function runBrainOrchestration(
         ? decision.responses
         : (decision.suggestedResponse ? splitIntoBalloons(decision.suggestedResponse) : []);
       canonicalOutboundActions = texts.map((t: string) => ({ type: "text" as const, text: t }));
+    }
+
+    // Last line of defense before outbox creation: model output must never
+    // expose research URLs, source links or citation markup, even if the
+    // provider's web_search telemetry was incomplete or a later step rewrote it.
+    const leakedResearchArtifact = canonicalOutboundActions.some((action) =>
+      action.type === "text"
+        ? containsResearchArtifactInCustomerText(action.text)
+        : action.type === "transfer_channel"
+          ? containsResearchArtifactInCustomerText(action.initialText)
+          : false
+    );
+    if (leakedResearchArtifact) {
+      currentCycle.trace.push("web_search_output_leak_dispatch_blocked");
+      throw new Error("BRAIN_WEB_SEARCH_OUTPUT_LEAK_DISPATCH_BLOCKED");
     }
 
     const dispatchGreetingRepeat = useSdkConversationRuntime
