@@ -1172,6 +1172,8 @@ export function InstagramDirect({
   const [whatsapp2GatewayStatus, setWhatsapp2GatewayStatus] = useState("idle");
   const [whatsapp2GatewayError, setWhatsapp2GatewayError] = useState<string | null>(null);
   const whatsapp2InboxLastReconcileAtRef = useRef(0);
+  const whatsapp2ProviderSnapshotReadyRef = useRef(false);
+  const whatsapp2UnknownRealtimeCheckAtRef = useRef(0);
   const isRealtimeConnectedRef = useRef<boolean>(true);
 
   const loadWhatsApp2Conversations = useCallback(async () => {
@@ -1186,6 +1188,8 @@ export function InstagramDirect({
     const oneWeekAgoIso = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
     let gatewayRows: DirectConversation[] = [];
     let gatewayError: Error | null = null;
+    // Só um snapshot recebido com sucesso pode confirmar que um chat sumiu do WhatsApp.
+    let hasAuthoritativeGatewaySnapshot = false;
     let accountId: string | null = null;
     const resolvedPhonesByChatId = new Map<string, string>();
 
@@ -1204,6 +1208,7 @@ export function InstagramDirect({
         accountId = connectedAccountId;
         activeWhatsAppAccountIdRef.current = accountId;
         if (accountChanged) {
+          whatsapp2ProviderSnapshotReadyRef.current = false;
           setWhatsApp2Conversations((current) => current.filter((conversation) =>
             whatsappConversationBelongsToAccount(conversation.id, accountId),
           ));
@@ -1212,11 +1217,14 @@ export function InstagramDirect({
         }
         const rows = await getWhatsApp2Chats(500);
         if (!isLatestRequest() || activeWhatsAppAccountIdRef.current !== accountId) return;
+        hasAuthoritativeGatewaySnapshot = true;
+        whatsapp2ProviderSnapshotReadyRef.current = true;
         gatewayRows = rows
           .map((row) => mapWhatsApp2Chat(row, accountId!))
           .filter((conversation) => whatsappConversationBelongsToAccount(conversation.id, accountId));
       } else {
         activeWhatsAppAccountIdRef.current = null;
+        whatsapp2ProviderSnapshotReadyRef.current = false;
         setWhatsApp2Conversations([]);
         setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
       }
@@ -1227,6 +1235,7 @@ export function InstagramDirect({
       setWhatsapp2GatewayError(gatewayError.message || "Gateway indisponível");
       if (!accountId) {
         activeWhatsAppAccountIdRef.current = null;
+        whatsapp2ProviderSnapshotReadyRef.current = false;
         setWhatsApp2Conversations([]);
         setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
       }
@@ -1285,7 +1294,13 @@ export function InstagramDirect({
       canonicalRows,
       resolvedPhonesByChatId,
     );
-    const merged = identityGroups.map((group) => {
+    // O banco guarda histórico, mas não pode ressuscitar na caixa de entrada
+    // conversas já excluídas do WhatsApp. Aliases de telefone/LID continuam
+    // agrupados com os registros canônicos enquanto existir um chat no gateway.
+    const visibleIdentityGroups = hasAuthoritativeGatewaySnapshot
+      ? identityGroups.filter((group) => group.gatewayRows.length > 0)
+      : identityGroups;
+    const merged = visibleIdentityGroups.map((group) => {
       const gatewayCandidates = group.gatewayRows;
       const canonicalCandidates = group.canonicalRows;
       const gateway = [...gatewayCandidates].sort((a, b) => {
@@ -1436,7 +1451,11 @@ export function InstagramDirect({
           if (mergedIdentityKeys.has(currentIdentityKey)) continue;
           const currentAt = getMessageTimestampMs(current.lastMessageAt || current.lastActive);
           const oneWeekAgoMs = Date.now() - (7 * 24 * 60 * 60 * 1000);
-          if (currentAt >= oneWeekAgoMs) reconciledById.set(current.id, current);
+          // Uma conversa sem correspondência no snapshot do WhatsApp não
+          // pode reaparecer apenas por estar no estado local da interface.
+          if (!hasAuthoritativeGatewaySnapshot && currentAt >= oneWeekAgoMs) {
+            reconciledById.set(current.id, current);
+          }
           continue;
         }
 
@@ -1479,7 +1498,7 @@ export function InstagramDirect({
     // Transfere o histórico apenas entre aliases confirmados da mesma conta.
     setMessages((previous) => {
       const next = { ...previous };
-      for (const group of identityGroups) {
+      for (const group of visibleIdentityGroups) {
         const target = mergedByIdentity.get(group.identityKey);
         if (!target) continue;
         const ids = [...group.gatewayRows, ...group.canonicalRows].map((row) => row.id);
@@ -1504,7 +1523,7 @@ export function InstagramDirect({
       );
       const reconciled = mergedByIdentity.get(currentIdentityKey)
         || merged.find((conversation) => conversation.id === current.id);
-      if (!reconciled) return current;
+      if (!reconciled) return hasAuthoritativeGatewaySnapshot ? null : current;
       const currentAt = getMessageTimestampMs(current.lastMessageAt || current.lastActive);
       const reconciledAt = getMessageTimestampMs(
         reconciled.lastMessageAt || reconciled.lastActive
@@ -2858,7 +2877,7 @@ export function InstagramDirect({
 
     const scheduleNext = () => {
       if (cancelled) return;
-      const delayMs = isRealtimeConnectedRef.current ? 120_000 : 30_000;
+      const delayMs = isRealtimeConnectedRef.current ? 45_000 : 30_000;
       timerId = window.setTimeout(async () => {
         if (document.visibilityState === "visible") {
           await reconcileInbox();
@@ -3844,6 +3863,19 @@ export function InstagramDirect({
       if (!id || (conv.channel !== "whatsapp2" && !id.startsWith("wa2:"))) return;
       if (!whatsappConversationBelongsToAccount(id, activeWhatsAppAccountIdRef.current)) return;
 
+      // Eventos do Supabase não provam que a conversa ainda existe no WhatsApp.
+      // Para um ID novo, revalide no gateway antes de exibir; isso também impede
+      // que atualizações de histórico ressuscitem conversas excluídas.
+      if (whatsapp2ProviderSnapshotReadyRef.current &&
+          !whatsapp2ConversationsRef.current.some((item) => item.id === id)) {
+        const now = Date.now();
+        if (now - whatsapp2UnknownRealtimeCheckAtRef.current > 5_000) {
+          whatsapp2UnknownRealtimeCheckAtRef.current = now;
+          void loadWhatsApp2Conversations();
+        }
+        return;
+      }
+
       const incomingAtMs = conv.lastMessageAt
         ? getMessageTimestampMs(conv.lastMessageAt)
         : 0;
@@ -3954,7 +3986,7 @@ export function InstagramDirect({
         return nextList;
       });
     },
-    []
+    [loadWhatsApp2Conversations]
   );
 
   // -------------------------------------------------------------

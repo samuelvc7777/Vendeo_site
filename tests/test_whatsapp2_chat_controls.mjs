@@ -19,7 +19,10 @@ function realtimeUpdate(current, update) {
   let rows = [current];
   const context = {
     useCallback: (fn) => fn,
+    loadWhatsApp2Conversations: async () => {},
     activeWhatsAppAccountIdRef: { current: activeAccountId },
+    whatsapp2ProviderSnapshotReadyRef: { current: false },
+    whatsapp2ConversationsRef: { current: rows },
     whatsappConversationBelongsToAccount: accountScope.whatsappConversationBelongsToAccount,
     resolveWhatsAppContactDisplayName: accountScope.resolveWhatsAppContactDisplayName,
     whatsappProviderIdFromConversationId: accountScope.whatsappProviderIdFromConversationId,

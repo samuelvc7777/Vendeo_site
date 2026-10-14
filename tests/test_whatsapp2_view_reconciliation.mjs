@@ -20,7 +20,7 @@ for(const fixture of cases){
  let output;
  const currentRows=[{id:`wa2:${accountId}:${lid}`,providerId:lid,whatsappIdentityKey:fixture.oldKey,lastMessageAt:fixture.lastMessageAt,aiAutoRespond:false,isLocked:false,status:'active',lastMessage:'mensagem local'}];
  vm.runInNewContext(reconcile,{
-  setWhatsApp2Conversations:fn=>{output=fn(currentRows);},setMessages:()=>{},identityGroups:[],accountId,
+  setWhatsApp2Conversations:fn=>{output=fn(currentRows);},setMessages:()=>{},visibleIdentityGroups:[],hasAuthoritativeGatewaySnapshot:true,accountId,
   merged:[canonical],mergedByIdentity:new Map([[canonical.whatsappIdentityKey,canonical]]),mergedIdentityKeys:new Set([canonical.whatsappIdentityKey]),
   resolvedPhonesByChatId:new Map([[lid,phone]]),
   getWhatsAppConversationIdentityKey,
