@@ -258,7 +258,7 @@ export interface DirectConversation {
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
-type WhatsAppResponseFilter = "todos" | "nao_respondidos" | "respondidos" | "arquivados" | "trancadas";
+type WhatsAppResponseFilter = "todos" | "nao_respondidos" | "respondidos" | "arquivados" | "trancadas" | "bloqueados";
 type WhatsAppQuickFilter = "todas" | "com_ia" | "sem_ia";
 type InboxChannel = "instagram" | "whatsapp2";
 
@@ -272,6 +272,18 @@ function isWhatsAppConversationArchived(c: DirectConversation): boolean {
 
 function isWhatsAppConversationLocked(c: DirectConversation): boolean {
   return c.isLocked === true || c.status === "locked" || c.status === "vault";
+}
+
+// O WhatsApp Web pode manter o chat na lista após sua exclusão no celular.
+// Contatos efetivamente bloqueados ficam acessíveis apenas no filtro próprio.
+function isWhatsAppConversationBlocked(c: DirectConversation): boolean {
+  return c.isBlocked === true;
+}
+
+function matchesWhatsAppBlockFilter(c: DirectConversation, filter: WhatsAppResponseFilter): boolean {
+  return filter === "bloqueados"
+    ? isWhatsAppConversationBlocked(c)
+    : !isWhatsAppConversationBlocked(c);
 }
 
 function formatWhatsApp2Preview(message: WhatsApp2GatewayMessage | null): string {
@@ -6069,16 +6081,18 @@ export function InstagramDirect({
   const aiEnabledCount = platformConversations.filter((c) => c.aiAutoRespond === true).length;
   const aiDisabledCount = platformConversations.filter((c) => c.aiAutoRespond !== true).length;
   const whatsappArchivedCount = platformConversations.filter(
-    (c) => isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
+    (c) => !isWhatsAppConversationBlocked(c) && isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
   ).length;
   const whatsappLockedCount = activeChannel === "whatsapp2"
-    ? platformConversations.filter(isWhatsAppConversationLocked).length
+    ? platformConversations.filter((c) => !isWhatsAppConversationBlocked(c) && isWhatsAppConversationLocked(c)).length
     : 0;
+  const whatsappBlockedCount = platformConversations.filter(isWhatsAppConversationBlocked).length;
   const effectiveWhatsAppResponseFilter = whatsappResponseFilter;
   const whatsappInboxPrimaryConversations = platformConversations.filter(
     (c) =>
       !isChatRestricted(c) &&
       c.status !== "pending" &&
+      !isWhatsAppConversationBlocked(c) &&
       !isWhatsAppConversationArchived(c) &&
       (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
   );
@@ -6097,6 +6111,9 @@ export function InstagramDirect({
       const isRestrictedOrPending = Boolean(isRestr || c.status === "pending");
 
       if (isWhatsAppInboxChannel) {
+        if (!matchesWhatsAppBlockFilter(c, effectiveWhatsAppResponseFilter)) return false;
+        if (effectiveWhatsAppResponseFilter === "bloqueados") return true;
+
         if (effectiveWhatsAppResponseFilter === "trancadas") {
           return activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c);
         }
@@ -7760,7 +7777,10 @@ export function InstagramDirect({
                 { id: "respondidos", label: "Respondidos", count: whatsappAnsweredCount, dotClass: "bg-[#8e8e93]" },
                 { id: "arquivados", label: "Arquivados", count: whatsappArchivedCount, dotClass: "bg-[#ff9f0a]" },
                 ...(activeChannel === "whatsapp2"
-                  ? [{ id: "trancadas" as WhatsAppResponseFilter, label: "Trancadas", count: whatsappLockedCount, dotClass: "bg-[#af52de]" }]
+                  ? [
+                      { id: "trancadas" as WhatsAppResponseFilter, label: "Trancadas", count: whatsappLockedCount, dotClass: "bg-[#af52de]" },
+                      { id: "bloqueados" as WhatsAppResponseFilter, label: "Bloqueados", count: whatsappBlockedCount, dotClass: "bg-[#ff3b30]" },
+                    ]
                   : []),
               ] as Array<{ id: WhatsAppResponseFilter; label: string; count: number; dotClass: string }>).map((filter) => {
                 const active = effectiveWhatsAppResponseFilter === filter.id;
@@ -7773,7 +7793,7 @@ export function InstagramDirect({
                       setWhatsappResponseFilter(filter.id);
                       if (
                         activeChannel === "whatsapp2" &&
-                        (filter.id === "arquivados" || filter.id === "trancadas")
+                        (filter.id === "arquivados" || filter.id === "trancadas" || filter.id === "bloqueados")
                       ) {
                         void loadWhatsApp2Conversations();
                       }
@@ -7788,7 +7808,7 @@ export function InstagramDirect({
                   >
                     <span className={`h-[6px] w-[6px] shrink-0 rounded-full ${filter.dotClass}`} />
                     <span>{filter.label}</span>
-                    {(filter.id === "arquivados" || filter.id === "trancadas") && filter.count > 0 && (
+                    {(filter.id === "arquivados" || filter.id === "trancadas" || filter.id === "bloqueados") && filter.count > 0 && (
                       <span className="text-[12px] font-normal tabular-nums opacity-55">
                         {filter.count > 99 ? "99+" : filter.count}
                       </span>
