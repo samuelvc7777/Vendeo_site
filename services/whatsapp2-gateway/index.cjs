@@ -4696,9 +4696,32 @@ const server = http.createServer(async (req, res) => {
       if (!accountId || whatsappAccountIdFromConversationId(conversationId) !== accountId) {
         json(res, 409, { ok: false, error: "Conversa de outra conta do WhatsApp." }); return;
       }
-      const canonical = await resolveCanonicalConversationId(recipient);
-      if (canonical !== conversationId) {
-        json(res, 409, { ok: false, error: "Não foi possível confirmar a identidade deste contato. Atualize a conversa." }); return;
+      // A view pode estar vinculada ao telefone, enquanto o WhatsApp Web usa
+      // um @lid para o mesmo contato. Aceite apenas o par comprovado na linha
+      // da conversa (contato vinculado ou destinatário no ID da conversa).
+      // Não aceite outros contatos nem aliases de outra conta.
+      const { data: storedConversation, error: lookupError } = await supabase
+        .from("instagram_conversations")
+        .select("id,contact_id,channel,status")
+        .eq("id", conversationId)
+        .maybeSingle();
+      if (lookupError) {
+        json(res, 503, { ok: false, error: "Não foi possível conferir a conversa no banco." }); return;
+      }
+      if (!storedConversation || storedConversation.channel !== "whatsapp2") {
+        json(res, 409, { ok: false, error: "Esta conversa não está registrada no WhatsApp conectado. Atualize a lista." }); return;
+      }
+      if (!["active", "archived", "locked"].includes(storedConversation.status)) {
+        json(res, 409, { ok: false, error: "Conversa indisponível para finalização." }); return;
+      }
+      const storedContactId = String(storedConversation.contact_id || "").trim();
+      const conversationProviderId = whatsappProviderIdFromConversationId(conversationId);
+      const sameStoredRecipient = storedContactId === recipient || conversationProviderId === recipient;
+      if (!sameStoredRecipient) {
+        const canonical = await resolveCanonicalConversationId(recipient);
+        if (canonical !== conversationId) {
+          json(res, 409, { ok: false, error: "Destinatário diferente do contato desta conversa. Atualize o chat." }); return;
+        }
       }
       const chat = await active.getChatById(recipient).catch(() => null);
       if (!chat || chat.isGroup) {
