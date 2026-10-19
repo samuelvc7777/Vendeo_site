@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, FileAudio2, FolderOpen, Image as ImageIcon, Loader2, Plus, Send, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, FileAudio2, FolderOpen, Image as ImageIcon, Loader2, Plus, Send, Ticket, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { convertToWhatsAppVoiceNote } from "./audio-converter";
 import { queueWhatsApp2Finalization } from "./whatsapp2-client";
 
-type FinalizationKind = "text" | "audio" | "image";
+type FinalizationKind = "text" | "audio" | "image" | "raffle_numbers";
 type FinalizationItem = {
   id: string;
   position: number;
@@ -22,8 +22,8 @@ type FinalizationItem = {
 
 const TABLE = "whatsapp_finalization_vault_items";
 const MAX_ITEMS = 30;
-const label: Record<FinalizationKind, string> = { text: "Texto", audio: "Áudio", image: "Foto" };
-const delay: Record<FinalizationKind, number> = { text: 10, audio: 10, image: 3 };
+const label: Record<FinalizationKind, string> = { text: "Texto", audio: "Áudio", image: "Foto", raffle_numbers: "10 números livres da rifa" };
+const delay: Record<FinalizationKind, number> = { text: 10, audio: 10, image: 3, raffle_numbers: 10 };
 
 function client() {
   const supabase = getSupabaseBrowserClient();
@@ -102,6 +102,31 @@ export function WhatsAppFinalizationActions({
       toast.success(editingId ? "Texto atualizado." : "Texto salvo no cofre.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Erro ao salvar texto.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addRaffleNumbers = async () => {
+    if (items.some((item) => item.kind === "raffle_numbers")) {
+      toast.info("Os 10 números livres já estão no cofre.");
+      return;
+    }
+    if (items.length >= MAX_ITEMS) return toast.error("Limite de 30 itens no cofre.");
+    setBusy(true);
+    try {
+      const { error } = await client().from(TABLE).insert({
+        kind: "raffle_numbers",
+        body: null,
+        media_url: null,
+        file_name: null,
+        position: items.length ? Math.max(...items.map((item) => item.position)) + 1 : 0,
+      });
+      if (error) throw error;
+      await reload();
+      toast.success("10 números livres adicionados. Os números serão sorteados na hora de enviar.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível adicionar os números da rifa.");
     } finally {
       setBusy(false);
     }
@@ -242,11 +267,13 @@ export function WhatsAppFinalizationActions({
               <button type="button" aria-label="Fechar cofre" onClick={() => setOpen(false)} className="rounded-full p-2 hover:bg-white/10"><X size={20} /></button>
             </header>
             <div className="flex-1 overflow-y-auto px-4 py-3">
-              <div className="mb-3 flex gap-2">
+              <div className="mb-3 flex flex-wrap gap-2">
                 <button disabled={busy} type="button" onClick={() => startUpload("audio")}
                   className="flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs"><FileAudio2 size={16} /> Adicionar áudio</button>
                 <button disabled={busy} type="button" onClick={() => startUpload("image")}
                   className="flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs"><ImageIcon size={16} /> Adicionar foto</button>
+                <button disabled={busy || items.some((item) => item.kind === "raffle_numbers")} type="button" onClick={() => void addRaffleNumbers()}
+                  className="flex items-center gap-1.5 rounded-lg border border-[#2c6d56] px-3 py-2 text-xs text-[#8ee4c2] disabled:opacity-40"><Ticket size={16} /> 10 números livres</button>
               </div>
               <input ref={fileInput} type="file" className="hidden" onChange={(event) => {
                 const file = event.target.files?.[0] || null;
@@ -267,7 +294,7 @@ export function WhatsAppFinalizationActions({
                 </div>
               </div>
               <h3 className="mb-2 text-sm font-bold">Ordem de envio</h3>
-              <p className="mb-3 text-xs text-[#99aeb4]">Cada texto e áudio aguarda 10s; cada foto, 3s. Áudios serão enviados como voz gravada.</p>
+              <p className="mb-3 text-xs text-[#99aeb4]">Cada texto, áudio e lista de números aguarda 10s; cada foto, 3s. Áudios saem como voz gravada. Os 10 números livres são escolhidos da rifa ativa somente ao confirmar o envio.</p>
               {loading && <p className="text-xs text-[#99aeb4]">Carregando...</p>}
               {!loading && items.length === 0 && <p className="rounded-xl border border-dashed border-white/20 p-5 text-center text-xs text-[#99aeb4]">Cofre vazio. Adicione o primeiro item acima.</p>}
               <ol className="space-y-2">
@@ -278,6 +305,8 @@ export function WhatsAppFinalizationActions({
                       <strong className="text-xs">{label[item.kind]} · {delay[item.kind]}s</strong>
                       {item.kind === "text"
                         ? <p className="mt-1 break-words text-xs text-[#cad5d8]">{item.body}</p>
+                        : item.kind === "raffle_numbers"
+                        ? <p className="mt-1 text-xs text-[#8ee4c2]">Exemplo: 05, 15, 19, 29, 53, 56, 73, 87, 92, 99. Os números reais serão selecionados entre os disponíveis no envio.</p>
                         : <div className="mt-1">
                             {item.kind === "image" && item.media_url
                               // eslint-disable-next-line @next/next/no-img-element

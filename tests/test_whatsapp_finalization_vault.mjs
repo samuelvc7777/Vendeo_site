@@ -25,7 +25,7 @@ test("texto, áudio de voz gravada e fotos em ordem mutável, armazenados no Sup
   assert.match(ui, /await client\(\)\.from\(TABLE\)\.delete\(\)/);
   assert.match(ui, /const move = async/);
   assert.match(ui, /setEditingId\(item\.id\)/);
-  assert.match(ui, /const delay: Record<FinalizationKind, number> = \{ text: 10, audio: 10, image: 3 \}/);
+  assert.match(ui, /const delay: Record<FinalizationKind, number> = \{ text: 10, audio: 10, image: 3, raffle_numbers: 10 \}/);
 });
 
 test("fila durável ordenada e idempotente; nenhuma duplicação em recarga", () => {

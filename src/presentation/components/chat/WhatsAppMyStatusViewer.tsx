@@ -60,19 +60,24 @@ export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
   const canAdvance = selectedIndex < items.length - 1;
   const paused = !playing || sheetOpen || menuOpen;
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const refresh = useCallback(async (quiet = false) => {
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const response = await getWhatsApp2ActiveStatuses();
       const next = response.items || [];
-      setItems(next);
+      setItems((previous) => {
+        const same = previous.length === next.length && previous.every((item, i) => item.id === next[i].id);
+        return same ? previous : next;
+      });
       setSelectedId((current) => next.some((item) => item.id === current) ? current : (next[0]?.id || ""));
-      setViewsRevision((value) => value + 1);
+      if (!quiet) setViewsRevision((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Não foi possível carregar seus status.");
+      if (!quiet) setError(cause instanceof Error ? cause.message : "Não foi possível carregar seus status.");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
@@ -83,6 +88,16 @@ export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
     const oldOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => { cancelled = true; document.body.style.overflow = oldOverflow; };
+  }, [open, refresh]);
+
+  // WhatsApp Web can receive a status from the phone after a short sync delay.
+  // Refresh quietly while the viewer is open, without restarting playback.
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh(true);
+    }, 20_000);
+    return () => window.clearInterval(timer);
   }, [open, refresh]);
 
   useEffect(() => {
