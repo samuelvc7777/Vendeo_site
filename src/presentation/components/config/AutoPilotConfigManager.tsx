@@ -10,7 +10,8 @@ import {
   Info,
 } from "lucide-react";
 import { toast } from "sonner";
-import { AutoPilotConfig } from "@/domain/entities/AutoPilot";
+import { AutoPilotConfig, AutoPilotDailySchedule } from "@/domain/entities/AutoPilot";
+import { AutoPilotScheduleCard } from "./AutoPilotScheduleCard";
 import { SupabaseAutoPilotRepository } from "@/infrastructure/repositories/SupabaseAutoPilotRepository";
 import { useMobileNotifications } from "@/presentation/hooks/useMobileNotifications";
 
@@ -92,10 +93,15 @@ export function AutoPilotConfigManager() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadConfig();
     void loadOpenAiConfig();
+    const interval = setInterval(() => {
+      void autoPilotRepo.getConfig(true).then(setConfig).catch((err) => console.warn("Falha ao atualizar estado da IA:", err));
+    }, 30_000);
+    return () => clearInterval(interval);
   }, [loadConfig, loadOpenAiConfig]);
 
   const handleToggleGlobal = async (checked: boolean) => {
-    if (!config) return;
+    if (!config || config.autoSchedule?.enabled) return;
+    const previous = config;
     const next = { ...config, isEnabledGlobally: checked };
     setConfig(next);
     setIsSaving(true);
@@ -107,9 +113,23 @@ export function AutoPilotConfigManager() {
         toast.info("Piloto Automático DESLIGADO. Chats parados desligam na hora; os que já estão com o Brain trabalhando terminam o ciclo e desligam em seguida.");
       }
     } catch {
+      setConfig(previous);
       toast.error("Erro ao alternar Piloto Automático.");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSaveSchedule = async (schedule: AutoPilotDailySchedule): Promise<void> => {
+    try {
+      const saved = await autoPilotRepo.saveConfig({ autoSchedule: schedule });
+      setConfig(saved);
+      toast.success(schedule.enabled
+        ? "Programação salva! O Brain seguirá os horários definidos automaticamente."
+        : "Programação desativada. O controle manual da IA voltou a ficar disponível.");
+    } catch (error) {
+      toast.error("Falha ao salvar programação da IA.");
+      throw error;
     }
   };
 
@@ -176,10 +196,11 @@ export function AutoPilotConfigManager() {
               {config.isEnabledGlobally ? "Piloto ligado" : "Piloto desligado"}
             </span>
 
-            <label className="relative inline-flex items-center cursor-pointer" title="Ligar ou desligar o Piloto Automático globalmente">
+            <label className={`relative inline-flex items-center ${config.autoSchedule?.enabled ? "cursor-not-allowed opacity-55" : "cursor-pointer"}`} title={config.autoSchedule?.enabled ? "Desative a programação para usar o controle manual" : "Ligar ou desligar o Piloto Automático globalmente"}>
               <input
                 type="checkbox"
                 checked={config.isEnabledGlobally}
+                disabled={isSaving || config.autoSchedule?.enabled === true}
                 onChange={(e) => handleToggleGlobal(e.target.checked)}
                 className="sr-only peer"
               />
@@ -197,10 +218,14 @@ export function AutoPilotConfigManager() {
         <div className="flex items-start gap-2">
           <Info className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${config.isEnabledGlobally ? "text-emerald-400" : "text-amber-400"}`} />
           <p>
-            Ao desligar, chats parados são interrompidos na hora. Um ciclo que já estiver processando termina com segurança e desliga em seguida.
+            {config.autoSchedule?.enabled
+              ? "Fora do horário, o Brain não inicia novas respostas. Ciclos em andamento terminam com segurança; quando o horário voltar, apenas chats já ativados poderão continuar."
+              : "Ao desligar manualmente, chats parados são interrompidos na hora. Um ciclo que já estiver processando termina com segurança e desliga em seguida."}
           </p>
         </div>
       </div>
+
+      <AutoPilotScheduleCard config={config} onSave={handleSaveSchedule} />
 
       {/* Card: OpenAI — Brain da Larissa */}
       <div className="rounded-[20px] border border-purple-200/80 dark:border-purple-500/15 bg-white/90 dark:bg-white/[0.035] p-4 space-y-3 shadow-sm">

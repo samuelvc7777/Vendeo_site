@@ -132,7 +132,10 @@ export class SupabaseAutoPilotRepository implements IAutoPilotRepository {
           }
         }
       } catch (err) {
-        console.warn("Aviso ao persistir config do Piloto Automático no Supabase:", err);
+        this.cachedConfig = null;
+        this.lastFetchConfigTime = 0;
+        console.error("Erro ao persistir config do Piloto Automático no Supabase:", err);
+        throw err;
       }
     }
 

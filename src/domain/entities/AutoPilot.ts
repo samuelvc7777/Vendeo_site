@@ -1,5 +1,14 @@
+export interface AutoPilotDailySchedule {
+  enabled: boolean;
+  days: number[]; // 0 = domingo, 6 = sábado, no horário de início
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm (pode atravessar a meia-noite)
+  timeZone: "America/Sao_Paulo";
+}
+
 export interface AutoPilotConfig {
   isEnabledGlobally: boolean;
+  autoSchedule?: AutoPilotDailySchedule;
   mode?: "automatic"; // 100% Automático direto (semiautomático removido)
   activationWaitMinutes: number; // Tempo de espera após ativar antes de começar (padrão: 1 min)
   pauseOnPhotoReceived: boolean; // Pausar se o cliente enviar foto
