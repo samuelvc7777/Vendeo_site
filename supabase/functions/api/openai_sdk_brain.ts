@@ -1691,6 +1691,28 @@ export async function runOpenAiSdkBrainTurn(
   } catch (error) {
     const errorMessage = String((error as Error)?.message || error);
     const missingToolOutput = /No tool output found for function call/i.test(errorMessage);
+    const flexCapacityUnavailable =
+      params.serviceTier === "flex" &&
+      /429.*flex processing is temporarily unavailable/i.test(errorMessage);
+
+    // Flex é best-effort: quando a capacidade não está disponível, repita o MESMO
+    // turno com processamento padrão. O erro 429 acontece antes de uma resposta
+    // ser aceita; manter executionKey/turnId preserva a idempotência e o histórico.
+    // Como o tier passa a "default", essa recuperação só pode acontecer uma vez.
+    if (flexCapacityUnavailable) {
+      console.warn(
+        `[OpenAI SDK] flex_capacity_fallback_to_default conversationId=${params.conversationId}`,
+      );
+      const retried = await runOpenAiSdkBrainTurn({
+        ...params,
+        serviceTier: "default",
+      });
+      retried.telemetry.serviceTierFallbackUsed = true;
+      retried.telemetry.serviceTierFallbackFrom = "flex";
+      if (retried.success) retried.telemetry.executionRecovered = true;
+      return retried;
+    }
+
     const providerConversationBusy = OPENAI_CONVERSATION_BUSY_RE.test(errorMessage);
     const providerBusyRetryCount = Number(params.providerBusyRetryCount || 0);
 

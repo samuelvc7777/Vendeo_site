@@ -1928,6 +1928,8 @@ export interface OpenAiBrainTurnResult {
     agentSessionReasoningActual?: string | null;
     serviceTierRequested?: "auto" | "default" | "flex";
     serviceTierActual?: string | null;
+    serviceTierFallbackUsed?: boolean;
+    serviceTierFallbackFrom?: "flex";
     sessionFallbackUsed?: boolean;
     sessionFallbackTriggered?: boolean;
     agentSessionRecoveryTriggered?: boolean;
