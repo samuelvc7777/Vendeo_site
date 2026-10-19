@@ -79,6 +79,7 @@ import { WhatsAppDocumentMessage } from "./WhatsAppDocumentMessage";
 import { WhatsAppForwardedLabel, WhatsAppNativeMessage } from "./WhatsAppNativeMessage";
 import { WhatsAppStickerTray, type WhatsAppSavedSticker } from "./WhatsAppStickerTray";
 import { WhatsAppStatusModal } from "./WhatsAppStatusModal";
+import { WhatsAppFinalizationActions } from "./WhatsAppFinalizationActions";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
 import {
@@ -7427,6 +7428,14 @@ export function InstagramDirect({
                 onClose={() => setIsWhatsAppStickerTrayOpen(false)}
                 onSend={sendWhatsAppSticker}
                 onDelete={deleteWhatsAppSticker}
+              />
+            )}
+
+            {activeChat.type === "whatsapp2" && (
+              <WhatsAppFinalizationActions
+                conversationId={activeChat.id}
+                providerId={activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id)}
+                contactName={activeChat.fullName || activeChat.username || "este contato"}
               />
             )}
 

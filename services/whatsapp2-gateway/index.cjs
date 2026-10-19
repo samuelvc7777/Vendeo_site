@@ -4671,6 +4671,50 @@ const server = http.createServer(async (req, res) => {
 
 
 
+    if (req.method === "POST" && url.pathname === "/messages/finalization/queue") {
+      // Operator action only: never accept recipient media/text from the request.
+      // The database reads the approved vault and snapshots the whole batch.
+      const origin = String(req.headers.origin || "");
+      if (origin !== "https://vendeo-e755e.web.app" &&
+          !/^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/.test(origin)) {
+        json(res, 403, { ok: false, error: "Origem não autorizada para finalização." }); return;
+      }
+      const active = ensureReady();
+      if (!supabase) {
+        json(res, 503, { ok: false, error: "Fila de finalização indisponível." }); return;
+      }
+      const body = await readJson(req, 4 * 1024);
+      const recipient = String(body?.to || "").trim();
+      const conversationId = String(body?.conversationId || "").trim();
+      const requestId = String(body?.requestId || "").trim();
+      if (!/^\d{8,20}@(lid|c\.us)$/.test(recipient) ||
+          !/^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(requestId) ||
+          !conversationId.startsWith("wa2:") || conversationId.length > 150) {
+        json(res, 400, { ok: false, error: "Dados de finalização inválidos." }); return;
+      }
+      const accountId = currentWhatsApp2AccountId();
+      if (!accountId || whatsappAccountIdFromConversationId(conversationId) !== accountId) {
+        json(res, 409, { ok: false, error: "Conversa de outra conta do WhatsApp." }); return;
+      }
+      const canonical = await resolveCanonicalConversationId(recipient);
+      if (canonical !== conversationId) {
+        json(res, 409, { ok: false, error: "Não foi possível confirmar a identidade deste contato. Atualize a conversa." }); return;
+      }
+      const chat = await active.getChatById(recipient).catch(() => null);
+      if (!chat || chat.isGroup) {
+        json(res, 404, { ok: false, error: "Este contato não está disponível no WhatsApp conectado." }); return;
+      }
+      const { data, error } = await supabase.rpc("enqueue_whatsapp_finalization_batch", {
+        p_conversation_id: conversationId,
+        p_recipient_id: recipient,
+        p_gateway_account_id: accountId,
+        p_request_id: requestId,
+      });
+      if (error) {
+        json(res, 409, { ok: false, error: error.message || "Não foi possível programar a finalização." }); return;
+      }
+      json(res, 200, { ok: true, ...data }); return;
+    }
     if (req.method === "POST" && url.pathname === "/messages/send") {
       const body = await readJson(req);
       const sent = await sendTextInternal({

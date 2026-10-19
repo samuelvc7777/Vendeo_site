@@ -565,6 +565,25 @@ export async function sendWhatsApp2Media(params: {
   });
 }
 
+export async function queueWhatsApp2Finalization(params: {
+  to: string;
+  conversationId: string;
+  requestId: string;
+}) {
+  return request<{
+    ok: true;
+    queued: true;
+    alreadyQueued: boolean;
+    count: number;
+    batchId: string;
+    lastScheduledAt: string;
+  }>("/messages/finalization/queue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+
 export type WhatsAppStatusPrivacyType = "contact" | "deny-list" | "allow-list";
 
 export interface WhatsAppStatusPrivacyConfig {
