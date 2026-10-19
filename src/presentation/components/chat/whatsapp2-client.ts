@@ -287,6 +287,12 @@ export async function disconnectWhatsApp2() {
   });
 }
 
+export async function getWhatsApp2ProfilePhoto(chatId: string) {
+  return request<{ ok: true; chatId: string; avatarUrl: string | null }>(
+    `/chat/profile?chatId=${encodeURIComponent(chatId)}`,
+  );
+}
+
 export async function refreshWhatsApp2ProfilePhoto(chatId: string, rejectedUrl: string) {
   return request<{ ok: true; chatId: string; avatarUrl: string | null }>(
     "/chat/profile/refresh",

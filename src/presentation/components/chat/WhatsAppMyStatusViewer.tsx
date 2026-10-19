@@ -8,10 +8,11 @@ import {
   Volume2, VolumeX, X,
 } from "lucide-react";
 import {
-  getWhatsApp2ActiveStatuses, getWhatsApp2MediaUrl, getWhatsApp2StatusViews,
+  getWhatsApp2ActiveStatuses, getWhatsApp2MediaUrl, getWhatsApp2Status, getWhatsApp2StatusViews,
   type WhatsApp2ActiveStatus, type WhatsApp2StatusViews,
 } from "./whatsapp2-client";
 import styles from "./WhatsAppMyStatusViewer.module.css";
+import { WhatsAppStatusAvatar } from "./WhatsAppStatusAvatar";
 
 type Props = { open: boolean; onClose: () => void; onPublish: () => void };
 
@@ -42,6 +43,7 @@ export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
   const [views, setViews] = useState<WhatsApp2StatusViews | null>(null);
   const [loadingViews, setLoadingViews] = useState(false);
   const [viewsRevision, setViewsRevision] = useState(0);
+  const [myWhatsAppWid, setMyWhatsAppWid] = useState<string | null>(null);
   const [mediaFailedId, setMediaFailedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -82,6 +84,15 @@ export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
     document.body.style.overflow = "hidden";
     return () => { cancelled = true; document.body.style.overflow = oldOverflow; };
   }, [open, refresh]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getWhatsApp2Status()
+      .then((status) => { if (!cancelled) setMyWhatsAppWid(status.me?.wid || null); })
+      .catch(() => { if (!cancelled) setMyWhatsAppWid(null); });
+    return () => { cancelled = true; };
+  }, [open]);
 
   useEffect(() => {
     if (!open || !selected?.id) return;
@@ -240,7 +251,7 @@ export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
               </nav>
               <div className={styles.identity}>
                 <button className={styles.roundButton} type="button" onClick={onClose} aria-label="Fechar status"><X size={24} /></button>
-                <div className={styles.avatar}><UserRound size={22} /></div>
+                <WhatsAppStatusAvatar wid={myWhatsAppWid} className={styles.avatar} label="Foto do perfil da Larissa" fallback={<UserRound size={22} />} eager />
                 <div className={styles.identityText}><strong>Meu status</strong><span>{relativeDate(selected.createdAt)}</span></div>
                 <button type="button" className={styles.roundButton} onClick={() => setPlaying((value) => !value)}
                   aria-label={paused ? "Reproduzir status" : "Pausar status"}>{paused ? <Play size={21} /> : <Pause size={21} />}</button>
@@ -303,7 +314,7 @@ export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
                     <ul className={styles.viewers}>
                       {views.viewers.map((person) => (
                         <li key={person.id}>
-                          <span className={styles.viewerAvatar}>{person.name?.charAt(0).toLocaleUpperCase("pt-BR") || <UserRound size={18} />}</span>
+                          <WhatsAppStatusAvatar key={person.id} wid={person.id} className={styles.viewerAvatar} label={`Foto de ${person.name || "contato"}`} fallback={person.name?.charAt(0).toLocaleUpperCase("pt-BR") || <UserRound size={18} />} />
                           <span className={styles.viewerName}>{person.name || "Contato"}</span>
                           <span className={styles.viewerTime}>{clockLabel(person.viewedAt)}</span>
                         </li>
