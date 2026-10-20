@@ -1630,7 +1630,7 @@ export function InstagramDirect({
       try {
         const supabase = getSupabaseBrowserClient();
         if (!supabase || cancelled) return;
-        const { data } = supabase.storage.from("whatsapp_wallpapers").getPublicUrl("global/wallpaper.jpg");
+        const { data } = supabase.storage.from("instagram_media").getPublicUrl("wallpapers/global_wallpaper.jpg");
         const publicUrl = data.publicUrl;
         const response = await fetch(`${publicUrl}?t=${Date.now()}`, { method: "HEAD" });
         if (cancelled) return;

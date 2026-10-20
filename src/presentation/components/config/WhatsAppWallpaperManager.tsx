@@ -5,8 +5,8 @@ import { Image as ImageIcon, Trash2, Upload, Cloud, CloudOff } from "lucide-reac
 import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 
-const BUCKET_NAME = "whatsapp_wallpapers";
-const WALLPAPER_PATH = "global/wallpaper.jpg";
+const BUCKET_NAME = "instagram_media";
+const WALLPAPER_PATH = "wallpapers/global_wallpaper.jpg";
 const WALLPAPER_CACHE_KEY = "vendeo_whatsapp_wallpaper_url";
 
 export function getWhatsAppWallpaper(): string | null {
@@ -32,21 +32,6 @@ function setLocalWallpaper(url: string | null): void {
   }
 }
 
-async function ensureBucket(supabase: any): Promise<void> {
-  try {
-    const { data: buckets } = await supabase.storage.listBuckets();
-    const exists = buckets?.some((b: any) => b.name === BUCKET_NAME);
-    if (!exists) {
-      await supabase.storage.createBucket(BUCKET_NAME, {
-        public: true,
-        fileSizeLimit: 10485760,
-        allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
-      });
-    }
-  } catch (err) {
-    console.warn("Aviso ao verificar bucket wallpaper:", err);
-  }
-}
 
 export function WhatsAppWallpaperManager() {
   const [wallpaper, setWallpaper] = useState<string | null>(null);
@@ -162,8 +147,6 @@ export function WhatsAppWallpaperManager() {
 
       const supabase = getSupabaseBrowserClient();
       if (!supabase) throw new Error("Supabase não configurado");
-
-      await ensureBucket(supabase);
 
       // Remove o antigo
       await supabase.storage.from(BUCKET_NAME).remove([WALLPAPER_PATH]);
