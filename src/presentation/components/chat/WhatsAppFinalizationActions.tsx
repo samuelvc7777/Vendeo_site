@@ -386,7 +386,7 @@ export function WhatsAppFinalizationActions({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-white/5 bg-[#111b21] dark:bg-[#111b21]">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-white/5 bg-transparent dark:bg-transparent backdrop-blur-sm">
         <button type="button" onClick={() => setOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-xl border border-[#3b5355] bg-[#172a2c] px-3 py-1.5 text-xs font-semibold text-[#c0e7dc] hover:bg-[#23393a]"
           aria-label="Abrir cofre de finalização"><FolderOpen size={16} /> Cofre de finalização</button>
