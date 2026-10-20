@@ -1088,123 +1088,118 @@ export function WhatsAppStatusModal({
         if (e.target === e.currentTarget && !isSubmitting) onClose();
       }}
     >
-      <div className="relative flex flex-col w-full max-w-none h-[100dvh] max-h-none bg-[#111b21] rounded-none overflow-hidden shadow-2xl border-0 text-white sm:max-w-[480px] sm:h-[92vh] sm:max-h-[820px] sm:rounded-3xl sm:border sm:border-white/10">
-        {/* Cabeçalho */}
-        <div className="flex items-center justify-between px-4 py-3 pt-[calc(0.75rem+env(safe-area-inset-top,0px))] sm:pt-3 bg-[#202c33] border-b border-white/5 shrink-0 z-10">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-[#00a884] flex items-center justify-center text-white">
-              <span className="text-xs font-bold">WA</span>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold tracking-tight text-zinc-100">
-                Meu Status do WhatsApp
+      <div className="relative flex flex-col w-full max-w-none h-[100dvh] max-h-none bg-[#0b141a] rounded-none overflow-hidden shadow-2xl border-0 text-white sm:max-w-[480px] sm:h-[92vh] sm:max-h-[820px] sm:rounded-3xl sm:border sm:border-white/10">
+          {/* Cabeçalho — estilo WhatsApp Status */}
+          <div className="flex items-center justify-between px-3 py-2.5 pt-[calc(0.625rem+env(safe-area-inset-top,0px))] sm:pt-2.5 bg-[#1f2c34] shrink-0 z-10">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={onClose}
+                className="w-10 h-10 min-h-[40px] min-w-[40px] -ml-1 rounded-full flex items-center justify-center text-zinc-300 hover:text-white hover:bg-white/10 transition-all cursor-pointer active:scale-90 disabled:opacity-50"
+                aria-label="Voltar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h3 className="text-[19px] font-semibold tracking-tight text-white">
+                Status
               </h3>
-              <p className="text-[11px] text-zinc-400">
-                Visível para seus contatos por 24 horas
-              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-zinc-400 hidden sm:inline">24h</span>
+              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#00a884] to-[#008069] flex items-center justify-center shadow-md ring-2 ring-[#00a884]/20">
+                <Send className="w-4 h-4 text-white" />
+              </div>
             </div>
           </div>
 
-          <button
-            type="button"
-            disabled={isSubmitting}
-            onClick={onClose}
-            className="w-11 h-11 min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer active:scale-95 disabled:opacity-50"
-            aria-label="Fechar"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+          {/* Barra de Abas — pills elegantes com scroll horizontal */}
+          <div className="flex items-center gap-1.5 bg-[#111b21] px-3 py-2.5 border-b border-white/[0.04] shrink-0 overflow-x-auto scrollbar-none">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("text");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "text"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <Type className="w-3.5 h-3.5" />
+              <span>Texto</span>
+            </button>
 
-        {/* Barra de Abas */}
-        <div className="flex items-center justify-around bg-[#111b21] px-2 py-2 border-b border-white/5 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("text");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "text"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <Type className="w-3.5 h-3.5" />
-            <span>Texto</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("image");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "image"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+              <span>Foto</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("image");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "image"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <ImageIcon className="w-3.5 h-3.5" />
-            <span>Foto</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("video");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "video"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <VideoIcon className="w-3.5 h-3.5" />
+              <span>Vídeo</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("video");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "video"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <VideoIcon className="w-3.5 h-3.5" />
-            <span>Vídeo</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("library");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "library"
+                  ? "bg-violet-500/20 text-violet-300 ring-1 ring-violet-500/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Biblioteca</span>
+              {libraryStories.length > 0 && (
+                <span className="ml-0.5 text-[10px] min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-violet-500/30 text-violet-200 font-bold px-1">
+                  {libraryStories.length}
+                </span>
+              )}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("library");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "library"
-                ? "bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-violet-300" />
-            <span>Biblioteca</span>
-            {libraryStories.length > 0 && (
-              <span className="ml-0.5 text-[9px] px-1.5 py-0.2 rounded-full bg-white/20 font-bold">
-                {libraryStories.length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("history");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "history"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <History className="w-3.5 h-3.5" />
-            <span>Histórico</span>
-          </button>
-
-        </div>
-
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("history");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "history"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Histórico</span>
+            </button>
+          </div>
         {/* Feedback Banner */}
         {submissionFeedback && (
           <div
