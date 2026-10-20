@@ -6742,26 +6742,22 @@ export function InstagramDirect({
             const isScrolledUp = distanceFromBottom > 280;
             setShowScrollToBottom((prev) => (prev !== isScrolledUp ? isScrolledUp : prev));
           }}
-          className={`flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full px-4 pt-3 pb-6 scrollbar-none overscroll-contain [overflow-anchor:none] ${
+          className={`relative flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full px-4 pt-3 pb-6 scrollbar-none overscroll-contain [overflow-anchor:none] ${
             chatViewportReadyId === activeChat.id ? "" : "invisible pointer-events-none"
           } ${
             isWhatsAppLikeType(activeChat.type) ? "whatsapp-chat-wallpaper" : ""
           }`}
-          style={
-            isWhatsAppLikeType(activeChat.type) && whatsappWallpaper
-              ? {
-                  backgroundImage: `url(${whatsappWallpaper})`,
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                  backgroundRepeat: "no-repeat",
-                  backgroundAttachment: "local",
-                }
-              : undefined
-          }
-        >
+          >
+          {isWhatsAppLikeType(activeChat.type) && whatsappWallpaper && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none sticky top-0 left-0 h-[calc(100vh)] w-full -mt-3 -mx-4 mb-[-100vh] z-0 bg-cover bg-center bg-no-repeat"
+              style={{ backgroundImage: `url(${whatsappWallpaper})` }}
+            />
+          )}
           <div
             ref={messagesContentRef}
-            className={isWhatsAppLikeType(activeChat.type) ? "space-y-0" : "space-y-2.5"}
+            className={`relative z-10 ${isWhatsAppLikeType(activeChat.type) ? "space-y-0" : "space-y-2.5"}`}
           >
           {/* Banner de Conversa Restrita */}
           {activeChat.isRestricted && (
