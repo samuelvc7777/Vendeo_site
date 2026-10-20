@@ -11392,10 +11392,8 @@ export async function runBrainOrchestration(
         Array.isArray(decisionActionRows) ? decisionActionRows : [],
         decisionOutbox,
       );
-      // O dispatch síncrono confirma o envio antes da confirmação assíncrona do provedor chegar ao banco.
-      // Considerar dispatchedCount evita que o status mostre "Brain avaliou" quando a mensagem já foi despachada.
-      const hasConfirmedDelivery = confirmedActions.length > 0 || dispatchResult.dispatchedCount > 0;
-      sentBalloonsCount = Math.max(confirmedActions.length, dispatchResult.dispatchedCount);
+      const hasConfirmedDelivery = confirmedActions.length > 0;
+      sentBalloonsCount = confirmedActions.length;
 
       if (!decisionPersisted) {
         currentCycle.trace.push("semantic_commit_skipped_decision_not_persisted");
