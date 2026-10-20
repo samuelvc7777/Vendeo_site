@@ -1,5 +1,4 @@
 "use client";
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Image as ImageIcon, Trash2, Upload, Cloud, CloudOff } from "lucide-react";
 import { toast } from "sonner";
@@ -32,7 +31,6 @@ function setLocalWallpaper(url: string | null): void {
   }
 }
 
-
 export function WhatsAppWallpaperManager() {
   const [wallpaper, setWallpaper] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -42,7 +40,6 @@ export function WhatsAppWallpaperManager() {
 
   useEffect(() => {
     let cancelled = false;
-
     const loadFromCloud = async () => {
       try {
         const cached = getWhatsAppWallpaper();
@@ -50,14 +47,10 @@ export function WhatsAppWallpaperManager() {
           setWallpaper(cached);
           setIsLoading(false);
         }
-
         const supabase = getSupabaseBrowserClient();
         if (!supabase) throw new Error("Supabase não configurado");
-
         const { data } = supabase.storage.from(BUCKET_NAME).getPublicUrl(WALLPAPER_PATH);
         const publicUrl = data.publicUrl;
-
-        // Verifica se existe
         const response = await fetch(`${publicUrl}?t=${Date.now()}`, { method: "HEAD" });
         if (!cancelled) {
           if (response.ok) {
@@ -81,9 +74,7 @@ export function WhatsAppWallpaperManager() {
         if (!cancelled) setIsLoading(false);
       }
     };
-
     loadFromCloud();
-
     const handleChange = () => {
       setWallpaper(getWhatsAppWallpaper());
     };
@@ -97,7 +88,6 @@ export function WhatsAppWallpaperManager() {
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (!file.type.startsWith("image/")) {
       toast.error("Selecione apenas arquivos de imagem");
       return;
@@ -106,7 +96,6 @@ export function WhatsAppWallpaperManager() {
       toast.error("A imagem deve ter no máximo 5MB");
       return;
     }
-
     setIsUploading(true);
     try {
       const resizedBlob = await new Promise<Blob>((resolve, reject) => {
@@ -144,26 +133,18 @@ export function WhatsAppWallpaperManager() {
         reader.onerror = () => reject(new Error("Erro ao ler arquivo"));
         reader.readAsDataURL(file);
       });
-
       const supabase = getSupabaseBrowserClient();
       if (!supabase) throw new Error("Supabase não configurado");
-
-      // Remove o antigo
       await supabase.storage.from(BUCKET_NAME).remove([WALLPAPER_PATH]);
-
-      // Upload do novo
       const { error: uploadError } = await supabase.storage
         .from(BUCKET_NAME)
         .upload(WALLPAPER_PATH, resizedBlob, {
           contentType: "image/jpeg",
           upsert: true,
         });
-
       if (uploadError) throw new Error(uploadError.message || "Erro ao salvar na nuvem");
-
       const { data: publicUrlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(WALLPAPER_PATH);
       const urlWithCache = `${publicUrlData.publicUrl}?t=${Date.now()}`;
-
       setWallpaper(urlWithCache);
       setLocalWallpaper(urlWithCache);
       setIsSynced(true);
@@ -181,10 +162,8 @@ export function WhatsAppWallpaperManager() {
     try {
       const supabase = getSupabaseBrowserClient();
       if (!supabase) throw new Error("Supabase não configurado");
-
       const { error } = await supabase.storage.from(BUCKET_NAME).remove([WALLPAPER_PATH]);
       if (error && error.message !== "Not found") throw new Error(error.message);
-
       setWallpaper(null);
       setLocalWallpaper(null);
       setIsSynced(true);
