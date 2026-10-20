@@ -6600,7 +6600,7 @@ export function InstagramDirect({
           />
         )}
         {/* Header do Chat */}
-        <div className={`border-b flex items-center justify-between shrink-0 z-10 pt-[env(safe-area-inset-top,0px)] md:pt-0 h-[calc(68px+env(safe-area-inset-top,0px))] md:h-[68px] px-2.5 shadow-[0_1px_0_rgba(0,0,0,0.035)] ${isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? "border-transparent bg-transparent backdrop-blur-none" : "border-black/[0.08] bg-white/62 backdrop-blur-3xl dark:border-white/[0.06] dark:bg-[#1c1c1e]/62"}`}>
+        <div className="border-b flex items-center justify-between shrink-0 z-10 pt-[env(safe-area-inset-top,0px)] md:pt-0 h-[calc(68px+env(safe-area-inset-top,0px))] md:h-[68px] px-2.5 border-black/[0.08] bg-white/62 backdrop-blur-3xl shadow-[0_1px_0_rgba(0,0,0,0.035)] dark:border-white/[0.06] dark:bg-[#1c1c1e]/62">
           <div className="flex items-center gap-2 md:gap-3 min-w-0">
             <button
               onClick={handleCloseChat}
