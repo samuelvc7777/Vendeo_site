@@ -1624,7 +1624,34 @@ export function InstagramDirect({
       setWhatsappWallpaper(getWhatsAppWallpaper());
     };
     window.addEventListener("vendeo-wallpaper-change", handleWallpaperChange);
-    return () => window.removeEventListener("vendeo-wallpaper-change", handleWallpaperChange);
+    // Busca o wallpaper da nuvem ao montar para sincronizar entre aparelhos
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/wallpaper");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.url) {
+          const urlWithCache = `${data.url}?t=${Date.now()}`;
+          setWhatsappWallpaper(urlWithCache);
+          try {
+            localStorage.setItem("vendeo_whatsapp_wallpaper_url", urlWithCache);
+          } catch {}
+        } else {
+          setWhatsappWallpaper(null);
+          try {
+            localStorage.removeItem("vendeo_whatsapp_wallpaper_url");
+          } catch {}
+        }
+      } catch (err) {
+        console.warn("Não foi possível carregar wallpaper da nuvem, usando cache local:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vendeo-wallpaper-change", handleWallpaperChange);
+    };
   }, []);
   const initialWhatsAppLookupRef = useRef<string | null>(null);
   const [whatsapp2ExternalChatUrl, setWhatsApp2ExternalChatUrl] = useState<string | null>(null);

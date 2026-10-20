@@ -1,57 +1,97 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Image as ImageIcon, Trash2, Upload, CheckCircle2 } from "lucide-react";
+import { Image as ImageIcon, Trash2, Upload, Cloud, CloudOff } from "lucide-react";
 import { toast } from "sonner";
 
-const WALLPAPER_STORAGE_KEY = "vendeo_whatsapp_wallpaper";
+const WALLPAPER_CACHE_KEY = "vendeo_whatsapp_wallpaper_url";
 
 export function getWhatsAppWallpaper(): string | null {
   if (typeof window === "undefined") return null;
   try {
-    return localStorage.getItem(WALLPAPER_STORAGE_KEY);
+    return localStorage.getItem(WALLPAPER_CACHE_KEY);
   } catch {
     return null;
   }
 }
 
-export function setWhatsAppWallpaper(dataUrl: string | null): void {
+function setLocalWallpaper(url: string | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (dataUrl) {
-      localStorage.setItem(WALLPAPER_STORAGE_KEY, dataUrl);
+    if (url) {
+      localStorage.setItem(WALLPAPER_CACHE_KEY, url);
     } else {
-      localStorage.removeItem(WALLPAPER_STORAGE_KEY);
+      localStorage.removeItem(WALLPAPER_CACHE_KEY);
     }
-    // Dispara evento para componentes ouvintes atualizarem
     window.dispatchEvent(new CustomEvent("vendeo-wallpaper-change"));
   } catch (err) {
-    console.error("Erro ao salvar wallpaper:", err);
-    toast.error("Erro ao salvar imagem. Tente uma imagem menor.");
+    console.error("Erro ao salvar wallpaper local:", err);
   }
 }
 
 export function WhatsAppWallpaperManager() {
   const [wallpaper, setWallpaper] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSynced, setIsSynced] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Carrega o wallpaper da nuvem ao montar
   useEffect(() => {
-    setWallpaper(getWhatsAppWallpaper());
+    let cancelled = false;
+
+    const loadFromCloud = async () => {
+      try {
+        // Primeiro mostra o cache local imediatamente
+        const cached = getWhatsAppWallpaper();
+        if (cached && !cancelled) {
+          setWallpaper(cached);
+          setIsLoading(false);
+        }
+
+        // Depois busca da nuvem
+        const res = await fetch("/api/wallpaper");
+        if (!res.ok) throw new Error("Falha ao buscar wallpaper");
+
+        const data = await res.json();
+        if (!cancelled) {
+          if (data.url) {
+            setWallpaper(data.url);
+            setLocalWallpaper(data.url);
+            setIsSynced(true);
+          } else {
+            setWallpaper(null);
+            setLocalWallpaper(null);
+            setIsSynced(true);
+          }
+        }
+      } catch (err) {
+        console.warn("Não foi possível carregar wallpaper da nuvem, usando cache local:", err);
+        if (!cancelled) {
+          const cached = getWhatsAppWallpaper();
+          if (cached) setWallpaper(cached);
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+
+    loadFromCloud();
 
     const handleChange = () => {
       setWallpaper(getWhatsAppWallpaper());
     };
-
     window.addEventListener("vendeo-wallpaper-change", handleChange);
-    return () => window.removeEventListener("vendeo-wallpaper-change", handleChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vendeo-wallpaper-change", handleChange);
+    };
   }, []);
 
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validações
     if (!file.type.startsWith("image/")) {
       toast.error("Selecione apenas arquivos de imagem");
       return;
@@ -65,13 +105,12 @@ export function WhatsAppWallpaperManager() {
     setIsUploading(true);
 
     try {
-      // Converte para base64 e redimensiona se necessário
-      const dataUrl = await new Promise<string>((resolve, reject) => {
+      // Redimensiona localmente antes de enviar
+      const resizedBlob = await new Promise<Blob>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
           const img = new Image();
           img.onload = () => {
-            // Redimensiona se for muito grande (max 1920px)
             const maxSize = 1920;
             let width = img.width;
             let height = img.height;
@@ -95,7 +134,14 @@ export function WhatsAppWallpaperManager() {
               return;
             }
             ctx.drawImage(img, 0, 0, width, height);
-            resolve(canvas.toDataURL("image/jpeg", 0.85));
+            canvas.toBlob(
+              (blob) => {
+                if (blob) resolve(blob);
+                else reject(new Error("Erro ao converter imagem"));
+              },
+              "image/jpeg",
+              0.85
+            );
           };
           img.onerror = () => reject(new Error("Erro ao carregar imagem"));
           img.src = reader.result as string;
@@ -104,12 +150,32 @@ export function WhatsAppWallpaperManager() {
         reader.readAsDataURL(file);
       });
 
-      setWhatsAppWallpaper(dataUrl);
-      setWallpaper(dataUrl);
-      toast.success("Foto de fundo atualizada com sucesso!");
-    } catch (err) {
-      console.error("Erro ao processar imagem:", err);
-      toast.error("Erro ao processar imagem. Tente outra.");
+      // Envia para a nuvem
+      const formData = new FormData();
+      formData.append("file", resizedBlob, "wallpaper.jpg");
+
+      const res = await fetch("/api/wallpaper", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Erro ao salvar na nuvem");
+      }
+
+      const data = await res.json();
+      if (data.url) {
+        // Adiciona timestamp para evitar cache do navegador
+        const urlWithCache = `${data.url}?t=${Date.now()}`;
+        setWallpaper(urlWithCache);
+        setLocalWallpaper(urlWithCache);
+        setIsSynced(true);
+        toast.success("Foto de fundo salva na nuvem! Sincronizada em todos os aparelhos.");
+      }
+    } catch (err: any) {
+      console.error("Erro ao fazer upload do wallpaper:", err);
+      toast.error(err.message || "Erro ao salvar imagem. Tente novamente.");
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -118,10 +184,22 @@ export function WhatsAppWallpaperManager() {
     }
   }, []);
 
-  const handleRemove = useCallback(() => {
-    setWhatsAppWallpaper(null);
-    setWallpaper(null);
-    toast.success("Foto de fundo removida");
+  const handleRemove = useCallback(async () => {
+    try {
+      const res = await fetch("/api/wallpaper", { method: "DELETE" });
+      if (!res.ok) throw new Error("Erro ao remover da nuvem");
+
+      setWallpaper(null);
+      setLocalWallpaper(null);
+      setIsSynced(true);
+      toast.success("Foto de fundo removida de todos os aparelhos");
+    } catch (err: any) {
+      console.error("Erro ao remover wallpaper:", err);
+      // Remove localmente mesmo se falhar na nuvem
+      setWallpaper(null);
+      setLocalWallpaper(null);
+      toast.warning("Removido localmente. Pode não ter sido removido da nuvem.");
+    }
   }, []);
 
   return (
@@ -136,21 +214,44 @@ export function WhatsAppWallpaperManager() {
           <div className="min-w-0">
             <h3 className="truncate text-sm font-bold text-zinc-950 dark:text-white">Foto de Fundo do Chat</h3>
             <p className="mt-0.5 text-[11px] text-zinc-500">
-              Personalize o fundo das conversas do WhatsApp
+              Sincronizada na nuvem para todos os aparelhos
             </p>
           </div>
         </div>
-        {wallpaper && (
-          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200 dark:border-emerald-500/25 bg-white/80 dark:bg-emerald-500/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-emerald-700 dark:text-emerald-300 shadow-sm">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Ativo
-          </span>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {isSynced ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 dark:border-emerald-500/25 bg-white/80 dark:bg-emerald-500/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-emerald-700 dark:text-emerald-300 shadow-sm">
+              <Cloud className="h-3 w-3" />
+              Nuvem
+            </span>
+          ) : isLoading ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white/80 dark:bg-zinc-800/50 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-zinc-500 dark:text-zinc-400 shadow-sm">
+              <div className="h-2.5 w-2.5 animate-spin rounded-full border border-zinc-400 border-t-transparent" />
+              Carregando
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 dark:border-amber-500/25 bg-white/80 dark:bg-amber-500/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-amber-700 dark:text-amber-300 shadow-sm">
+              <CloudOff className="h-3 w-3" />
+              Local
+            </span>
+          )}
+          {wallpaper && (
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200 dark:border-emerald-500/25 bg-white/80 dark:bg-emerald-500/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-emerald-700 dark:text-emerald-300 shadow-sm">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Ativo
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800/80 pt-4 space-y-4">
         {/* Preview */}
-        {wallpaper ? (
+        {isLoading && !wallpaper ? (
+          <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-2xl border border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-white/[0.03] text-zinc-400">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-emerald-500" />
+            <p className="text-xs">Carregando da nuvem...</p>
+          </div>
+        ) : wallpaper ? (
           <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-zinc-900">
             <img
               src={wallpaper}
@@ -165,8 +266,9 @@ export function WhatsAppWallpaperManager() {
               <button
                 type="button"
                 onClick={handleRemove}
-                className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500/90 text-white shadow-lg transition hover:bg-red-600 active:scale-95"
-                title="Remover foto de fundo"
+                disabled={isUploading}
+                className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500/90 text-white shadow-lg transition hover:bg-red-600 active:scale-95 disabled:opacity-50"
+                title="Remover foto de fundo de todos os aparelhos"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -191,13 +293,13 @@ export function WhatsAppWallpaperManager() {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading}
+          disabled={isUploading || isLoading}
           className="flex min-h-11 w-full items-center justify-center gap-2 rounded-2xl border border-emerald-200 dark:border-emerald-500/20 bg-emerald-500 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-600 active:scale-[0.98] disabled:opacity-50"
         >
           {isUploading ? (
             <>
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              Processando...
+              Enviando para a nuvem...
             </>
           ) : (
             <>
@@ -208,7 +310,7 @@ export function WhatsAppWallpaperManager() {
         </button>
 
         <p className="text-center text-[10px] text-zinc-400 dark:text-zinc-500">
-          Formatos: JPG, PNG, WebP · Máximo: 5MB · Recomendado: 1920x1080px
+          Formatos: JPG, PNG, WebP · Máximo: 5MB · Sincronizado em todos os aparelhos
         </p>
       </div>
     </article>
