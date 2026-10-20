@@ -1624,25 +1624,23 @@ export function InstagramDirect({
       setWhatsappWallpaper(getWhatsAppWallpaper());
     };
     window.addEventListener("vendeo-wallpaper-change", handleWallpaperChange);
-    // Busca o wallpaper da nuvem ao montar para sincronizar entre aparelhos
+    // Busca o wallpaper da nuvem (Supabase Storage) ao montar para sincronizar entre aparelhos
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/wallpaper");
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase || cancelled) return;
+        const { data } = supabase.storage.from("whatsapp_wallpapers").getPublicUrl("global/wallpaper.jpg");
+        const publicUrl = data.publicUrl;
+        const response = await fetch(`${publicUrl}?t=${Date.now()}`, { method: "HEAD" });
         if (cancelled) return;
-        if (data.url) {
-          const urlWithCache = `${data.url}?t=${Date.now()}`;
+        if (response.ok) {
+          const urlWithCache = `${publicUrl}?t=${Date.now()}`;
           setWhatsappWallpaper(urlWithCache);
-          try {
-            localStorage.setItem("vendeo_whatsapp_wallpaper_url", urlWithCache);
-          } catch {}
+          try { localStorage.setItem("vendeo_whatsapp_wallpaper_url", urlWithCache); } catch {}
         } else {
           setWhatsappWallpaper(null);
-          try {
-            localStorage.removeItem("vendeo_whatsapp_wallpaper_url");
-          } catch {}
+          try { localStorage.removeItem("vendeo_whatsapp_wallpaper_url"); } catch {}
         }
       } catch (err) {
         console.warn("Não foi possível carregar wallpaper da nuvem, usando cache local:", err);
