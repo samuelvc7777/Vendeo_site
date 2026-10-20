@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import {
   Bot,
   CheckCircle2,
+  ContactRound,
   ChevronLeft,
   ChevronRight,
   FileText,
@@ -16,7 +17,7 @@ import {
   User,
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
-import { whatsappProviderIdFromConversationId } from "./whatsapp2-client";
+import { resolveWhatsApp2PhoneNumbers, saveWhatsApp2Contact, whatsappProviderIdFromConversationId } from "./whatsapp2-client";
 import type { ChatStage, StageObjective } from "@/domain/entities/ChatStage";
 import type { ChatStageDetail } from "@/application/use-cases/ManageChatProgressUseCase";
 
@@ -24,6 +25,7 @@ type ContactConversation = {
   id: string;
   fullName: string;
   username: string;
+  providerId?: string;
   avatar: string;
   type: "instagram" | "whatsapp" | "whatsapp2";
   isConverted?: boolean;
@@ -56,6 +58,7 @@ interface WhatsAppContactInfoProps {
   globalAiEnabled: boolean;
   onClose: () => void;
   onToggleAi: () => void | Promise<void>;
+  onContactSaved?: (savedName: string) => void;
 }
 
 function formatWhatsAppPhone(raw: string): string {
@@ -111,10 +114,25 @@ export function WhatsAppContactInfo({
   globalAiEnabled,
   onClose,
   onToggleAi,
+  onContactSaved,
 }: WhatsAppContactInfoProps) {
   const prefersReducedMotion = useReducedMotion();
   const mediaRef = useRef<HTMLDivElement | null>(null);
   const [dbRow, setDbRow] = useState<any>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const isConnectedWhatsApp = conversation.id.startsWith("wa2:account-");
+  const providerChatId = whatsappProviderIdFromConversationId(conversation.providerId || conversation.id);
+  const [confirmedPhone, setConfirmedPhone] = useState<string | null>(null);
+  const [savedContactName, setSavedContactName] = useState<string | null>(null);
+  const [loadingPhone, setLoadingPhone] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [showSaveContact, setShowSaveContact] = useState(false);
+  const [editingContactName, setEditingContactName] = useState("");
+  const [syncAddressBook, setSyncAddressBook] = useState(false);
+  const [savingContact, setSavingContact] = useState(false);
+  const [saveContactError, setSaveContactError] = useState<string | null>(null);
+
+  useEffect(() => setAvatarFailed(false), [conversation.id, conversation.avatar]);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,11 +151,57 @@ export function WhatsAppContactInfo({
     };
   }, [conversation.id]);
 
-  const phone = formatWhatsAppPhone(
+  const phone = isConnectedWhatsApp
+    ? (confirmedPhone ? formatWhatsAppPhone(confirmedPhone) : "")
+    : formatWhatsAppPhone(
     dbRow?.contact_id || conversation.username || whatsappProviderIdFromConversationId(conversation.id),
   );
+  useEffect(() => {
+    if (!isConnectedWhatsApp) return;
+    let cancelled = false;
+    setLoadingPhone(true);
+    setConfirmedPhone(null);
+    setSavedContactName(null);
+    setPhoneError(null);
+    void resolveWhatsApp2PhoneNumbers([providerChatId])
+      .then(({ contacts }) => {
+        if (cancelled) return;
+        const identity = contacts.find((row) => row.chatId === providerChatId);
+        setConfirmedPhone(identity?.phoneNumber || null);
+        setSavedContactName(identity?.savedName || null);
+        if (!identity?.phoneNumber) setPhoneError("Número ainda não confirmado pelo WhatsApp.");
+      })
+      .catch((error) => {
+        if (!cancelled) setPhoneError(error instanceof Error ? error.message : "Não foi possível consultar este contato.");
+      })
+      .finally(() => { if (!cancelled) setLoadingPhone(false); });
+    return () => { cancelled = true; };
+  }, [conversation.id, isConnectedWhatsApp, providerChatId]);
+
+  const saveContact = async () => {
+    if (!confirmedPhone || savingContact) return;
+    setSavingContact(true);
+    setSaveContactError(null);
+    try {
+      const saved = await saveWhatsApp2Contact({
+        chatId: providerChatId,
+        conversationId: conversation.id,
+        contactName: editingContactName.trim(),
+        syncAddressBook,
+      });
+      setSavedContactName(saved.savedName);
+      onContactSaved?.(saved.savedName);
+      setShowSaveContact(false);
+      setSyncAddressBook(false);
+    } catch (error) {
+      setSaveContactError(error instanceof Error ? error.message : "Não foi possível salvar o contato.");
+    } finally {
+      setSavingContact(false);
+    }
+  };
+
   const rawAvatar = String(conversation.avatar || "").trim();
-  const hasRealAvatar = /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
+  const hasRealAvatar = !avatarFailed && /^https?:\/\//i.test(rawAvatar) && !rawAvatar.includes("images.unsplash.com");
   const contactName = String(conversation.fullName || "").trim();
   const contactNameParts = contactName
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -255,6 +319,7 @@ export function WhatsAppContactInfo({
               <img
                 src={rawAvatar}
                 alt={conversation.fullName}
+                onError={() => setAvatarFailed(true)}
                 className="h-full w-full object-cover"
               />
             ) : contactInitials && !numericOnlyContactName ? (
@@ -269,6 +334,7 @@ export function WhatsAppContactInfo({
             {conversation.fullName}
           </h2>
           {phone && <p className="mt-0.5 text-[14px] text-[#8e8e93]">{phone}</p>}
+          {isConnectedWhatsApp && loadingPhone && <p className="mt-1 text-xs text-[#8e8e93]">Verificando telefone...</p>}
         </section>
 
         <div className="mx-auto mb-4 grid max-w-md grid-cols-3 gap-2">
@@ -299,6 +365,30 @@ export function WhatsAppContactInfo({
             <span className="text-[11px] font-medium">{aiEnabled ? "IA ativa" : "IA"}</span>
           </button>
         </div>
+
+        {isConnectedWhatsApp && (
+          <section className="mx-auto mb-4 max-w-md overflow-hidden rounded-[16px] bg-white dark:bg-[#1c1c1e]">
+            <button
+              type="button"
+              disabled={!confirmedPhone || loadingPhone}
+              onClick={() => {
+                setEditingContactName(savedContactName || conversation.fullName || "");
+                setSaveContactError(null);
+                setShowSaveContact(true);
+              }}
+              className="flex min-h-[54px] w-full items-center gap-3 px-4 py-3 text-left text-[#007aff] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <ContactRound className="h-5 w-5 shrink-0" />
+              <span className="flex-1 text-[15px] font-semibold">{savedContactName ? "Editar contato" : "Salvar contato"}</span>
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            {phoneError && (
+              <p className="border-t border-black/[0.07] px-4 py-3 text-xs text-[#8e8e93] dark:border-white/[0.07]">
+                {phoneError}
+              </p>
+            )}
+          </section>
+        )}
 
         <div className="mx-auto max-w-md space-y-4">
           <section className="overflow-hidden rounded-[16px] bg-white shadow-[0_0.5px_0_rgba(0,0,0,0.06)] dark:bg-[#1c1c1e]">
@@ -403,6 +493,51 @@ export function WhatsAppContactInfo({
           </section>
         </div>
       </div>
+
+      {showSaveContact && (
+        <div className="absolute inset-0 z-[110] flex items-end justify-center bg-black/45 p-3 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:items-center">
+          <form
+            onSubmit={(event) => { event.preventDefault(); void saveContact(); }}
+            className="w-full max-w-md space-y-4 rounded-[22px] bg-white p-5 text-[#111b21] shadow-2xl dark:bg-[#242428] dark:text-white"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold">{savedContactName ? "Editar contato" : "Salvar contato"}</h3>
+              <button type="button" onClick={() => setShowSaveContact(false)} disabled={savingContact} className="text-sm font-medium text-[#007aff]">Cancelar</button>
+            </div>
+            <div>
+              <label htmlFor="wa2-contact-name" className="mb-1 block text-xs text-[#8e8e93]">Nome do contato</label>
+              <input
+                id="wa2-contact-name"
+                value={editingContactName}
+                onChange={(event) => setEditingContactName(event.target.value)}
+                maxLength={100}
+                required
+                autoFocus
+                className="min-h-11 w-full rounded-xl border border-black/10 bg-[#f2f2f7] px-3 text-base outline-none focus:border-[#007aff] dark:border-white/10 dark:bg-[#333338]"
+              />
+            </div>
+            <div className="text-sm">
+              <p className="text-xs text-[#8e8e93]">Número confirmado</p>
+              <p className="font-medium">{phone}</p>
+            </div>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-[#f2f2f7] p-3 text-sm dark:bg-[#333338]">
+              <input type="checkbox" checked={syncAddressBook} onChange={(event) => setSyncAddressBook(event.target.checked)} className="mt-1 h-4 w-4 accent-[#007aff]" />
+              <span>
+                <span className="block font-medium">Sincronizar com a agenda do celular</span>
+                <span className="mt-1 block text-xs text-[#8e8e93]">Solicita a sincronização pelo WhatsApp. A aparição na agenda do aparelho depende do aplicativo e das permissões do telefone.</span>
+              </span>
+            </label>
+            {saveContactError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{saveContactError}</p>}
+            <button
+              type="submit"
+              disabled={savingContact || !editingContactName.trim() || !confirmedPhone}
+              className="min-h-11 w-full rounded-xl bg-[#007aff] px-4 font-semibold text-white disabled:opacity-50"
+            >
+              {savingContact ? "Salvando..." : "Salvar no WhatsApp"}
+            </button>
+          </form>
+        </div>
+      )}
     </motion.div>
   );
 }

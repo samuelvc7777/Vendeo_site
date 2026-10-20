@@ -28,10 +28,15 @@ import {
   publishWhatsAppStatusText,
   publishWhatsAppStatusImage,
   publishWhatsAppStatusVideo,
+  getWhatsApp2ActiveStatuses,
+  type WhatsApp2ActiveStatus,
   getWhatsApp2StatusPrivacy,
   setWhatsApp2StatusPrivacy,
   getWhatsApp2StatusContacts,
+  getWhatsApp2Chats,
   getWhatsApp2EvergreenRecipients,
+  getWhatsApp2LibraryRecipients,
+  publishWhatsAppLibraryStory,
   recordWhatsApp2EvergreenRecipients,
   whatsappProviderIdFromConversationId,
   type WhatsAppStatusPrivacyType,
@@ -39,9 +44,28 @@ import {
   type WhatsAppStatusContact,
 } from "./whatsapp2-client";
 import { WhatsAppStatusRepository } from "@/infrastructure/repositories/WhatsAppStatusRepository";
+import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
+import { isNamedSavedStatusContact, normalizeStatusContactName } from "./status-contact-eligibility";
 import { WhatsAppStoryMediaRepository } from "@/infrastructure/repositories/WhatsAppStoryMediaRepository";
 import type { WhatsAppStatusItem } from "@/domain/entities/WhatsAppStatus";
 import type { WhatsAppStoryMedia } from "@/domain/entities/WhatsAppStoryMedia";
+
+function StatusContactAvatar({ contact }: { contact: WhatsAppStatusContact }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const source = String(contact.avatarUrl || "").trim();
+  return source && source !== failedUrl ? (
+    <img
+      src={source}
+      alt={contact.name}
+      onError={() => setFailedUrl(source)}
+      className="w-8 h-8 rounded-full object-cover shrink-0 border border-white/10"
+    />
+  ) : (
+    <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center font-bold text-xs text-white shrink-0">
+      {contact.name.charAt(0).toUpperCase()}
+    </div>
+  );
+}
 
 interface WhatsAppStatusModalProps {
   isOpen: boolean;
@@ -81,7 +105,47 @@ function normalizeEvergreenContactAlias(value?: string | null): string {
   return digits || base.toLowerCase();
 }
 
+async function loadStatusAudienceExclusions(): Promise<Set<string>> {
+  const db = getSupabaseBrowserClient();
+  if (!db) throw new Error("Supabase indisponível para conferir contatos trancados e arquivados.");
+
+  const [chats, savedStates] = await Promise.all([
+    getWhatsApp2Chats(500),
+    (async () => {
+      const rows: Array<{ id: string; contact_id?: string | null }> = [];
+      const pageSize = 1000;
+      for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await db.from("instagram_conversations")
+          .select("id,contact_id")
+          .like("id", "wa2:%")
+          .in("status", ["archived", "locked"])
+          .range(offset, offset + pageSize - 1);
+        if (error) throw new Error("Não foi possível conferir contatos arquivados e trancados.");
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+      }
+      return rows;
+    })(),
+  ]);
+
+  const excluded = new Set<string>();
+  const add = (value?: string | null) => {
+    const alias = normalizeEvergreenContactAlias(value);
+    if (alias) excluded.add(alias);
+  };
+  for (const chat of chats) {
+    if (!chat.archived && !chat.isLocked && !chat.isBlocked) continue;
+    add(chat.id);
+  }
+  for (const row of savedStates) {
+    add(row.id);
+    add(row.contact_id);
+  }
+  return excluded;
+}
+
 async function buildEvergreenStoryKey(story: WhatsAppStoryMedia): Promise<string> {
+  if (story.storyKey) return story.storyKey;
   const media = String(story.mediaUrl || "");
   const sampleSize = 64 * 1024;
   const sampledMedia =
@@ -140,28 +204,50 @@ export function WhatsAppStatusModal({
   // Estado de Envio e Feedback
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionFeedback, setSubmissionFeedback] = useState<{
-    type: "success" | "error";
+    type: "success" | "pending" | "error";
     message: string;
   } | null>(null);
 
   // Histórico
   const [historyItems, setHistoryItems] = useState<WhatsAppStatusItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [activeStatuses, setActiveStatuses] = useState<WhatsApp2ActiveStatus[]>([]);
+  const [isLoadingActiveStatuses, setIsLoadingActiveStatuses] = useState(false);
+  const [activeStatusError, setActiveStatusError] = useState<string | null>(null);
 
   // Privacidade de Status / Público
   const [privacyType, setPrivacyType] = useState<WhatsAppStatusPrivacyType>("contact");
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState(false);
+  const isPrivacyModalOpenRef = useRef(false);
   const [contactsList, setContactsList] = useState<WhatsAppStatusContact[]>([]);
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
+  const [isLoadingMoreContacts, setIsLoadingMoreContacts] = useState(false);
+  const [contactTotal, setContactTotal] = useState(0);
+  const [contactLoadError, setContactLoadError] = useState<string | null>(null);
+  const [contactRetryCounter, setContactRetryCounter] = useState(0);
+  const [contactNextOffset, setContactNextOffset] = useState(0);
+  const [hasMoreContacts, setHasMoreContacts] = useState(false);
+  const [audienceExclusions, setAudienceExclusions] = useState<Set<string> | null>(null);
+  const [audienceExclusionsError, setAudienceExclusionsError] = useState<string | null>(null);
   const [contactSearchQuery, setContactSearchQuery] = useState("");
+  const [tinderOnly, setTinderOnly] = useState(true);
+  const contactSearchRef = useRef("");
+  useEffect(() => {
+    contactSearchRef.current = contactSearchQuery;
+  }, [contactSearchQuery]);
   const [isLoadingPrivacy, setIsLoadingPrivacy] = useState(false);
+  const [isPrivacyVerified, setIsPrivacyVerified] = useState(false);
+  const [privacyReadError, setPrivacyReadError] = useState<string | null>(null);
+  const savedPrivacyRef = useRef<{ type: WhatsAppStatusPrivacyType; list: string[] } | null>(null);
 
   // Biblioteca de Stories Evergreen
   const [libraryStories, setLibraryStories] = useState<WhatsAppStoryMedia[]>([]);
   const [selectedLibraryStory, setSelectedLibraryStory] = useState<WhatsAppStoryMedia | null>(null);
   const [selectedStoryKey, setSelectedStoryKey] = useState<string | null>(null);
   const [persistedRecipientAliases, setPersistedRecipientAliases] = useState<string[]>([]);
+  const [lockedRecipientAliases, setLockedRecipientAliases] = useState<string[]>([]);
+  const [contactNumbersById, setContactNumbersById] = useState<Record<string, string>>({});
   const [isLoadingEvergreenRecipients, setIsLoadingEvergreenRecipients] = useState(false);
   const [evergreenLedgerError, setEvergreenLedgerError] = useState<string | null>(null);
 
@@ -170,10 +256,35 @@ export function WhatsAppStatusModal({
   const isPendingRef = useRef(false);
 
 
+  const refreshActiveStatuses = React.useCallback(async () => {
+    setIsLoadingActiveStatuses(true);
+    setActiveStatusError(null);
+    try {
+      const result = await getWhatsApp2ActiveStatuses();
+      setActiveStatuses(result.items || []);
+    } catch (err) {
+      setActiveStatusError(
+        err instanceof Error ? err.message : "Não foi possível consultar os Status ativos.",
+      );
+    } finally {
+      setIsLoadingActiveStatuses(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "history") return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void refreshActiveStatuses();
+    });
+    return () => { cancelled = true; };
+  }, [isOpen, activeTab, refreshActiveStatuses]);
+
   // Carregar histórico e privacidade atual ao abrir o modal
   useEffect(() => {
     if (!isOpen) {
       setSubmissionFeedback(null);
+      isPrivacyModalOpenRef.current = false;
       setIsPrivacyModalOpen(false);
       return;
     }
@@ -182,18 +293,23 @@ export function WhatsAppStatusModal({
     const loadCurrentPrivacy = async () => {
       try {
         setIsLoadingPrivacy(true);
+        setIsPrivacyVerified(false);
         const res = await getWhatsApp2StatusPrivacy();
-        if (res?.ok && res.type) {
-          if (selectedLibraryStory) {
-            setPrivacyType("allow-list");
-          } else {
-            setPrivacyType(res.type);
-            if (Array.isArray(res.list)) {
-              setSelectedContactIds(res.list);
-            }
-          }
+        if (!res?.ok || res.verified !== true || !res.type) {
+          throw new Error("Não foi possível confirmar a privacidade real no WhatsApp.");
+        }
+        savedPrivacyRef.current = { type: res.type, list: res.list || [] };
+        setIsPrivacyVerified(true);
+        setPrivacyReadError(null);
+        if (selectedLibraryStory) {
+          setPrivacyType("allow-list");
+        } else if (!isPrivacyModalOpenRef.current) {
+          setPrivacyType(res.type);
+          setSelectedContactIds(res.list || []);
         }
       } catch (err) {
+        setIsPrivacyVerified(false);
+        setPrivacyReadError(err instanceof Error ? err.message : "Não foi possível consultar a privacidade no WhatsApp.");
         console.warn("[WhatsApp Status] Não foi possível carregar privacidade prévia:", err);
       } finally {
         setIsLoadingPrivacy(false);
@@ -216,8 +332,25 @@ export function WhatsAppStatusModal({
 
     loadHistory();
     setLibraryStories(WhatsAppStoryMediaRepository.getAll());
+    void WhatsAppStoryMediaRepository.loadAll().then(setLibraryStories).catch(console.warn);
   }, [isOpen, activeTab, selectedLibraryStory?.id]);
 
+
+  // Exclui estados de WhatsApp e Supabase, independentemente do texto pesquisado.
+  useEffect(() => {
+    if (!isPrivacyModalOpen) return;
+    let alive = true;
+    setAudienceExclusions(null);
+    setAudienceExclusionsError(null);
+    void loadStatusAudienceExclusions()
+      .then(keys => { if (alive) setAudienceExclusions(keys); })
+      .catch(error => {
+        if (alive) setAudienceExclusionsError(
+          error instanceof Error ? error.message : "Não foi possível validar a lista de contatos.",
+        );
+      });
+    return () => { alive = false; };
+  }, [isPrivacyModalOpen, contactRetryCounter]);
 
   // Carrega lista de contatos ao abrir o seletor de privacidade ou buscar
   useEffect(() => {
@@ -227,11 +360,22 @@ export function WhatsAppStatusModal({
     const loadContacts = async () => {
       try {
         setIsLoadingContacts(true);
-        const res = await getWhatsApp2StatusContacts(contactSearchQuery, 200);
+        setContactsList([]);
+        setContactLoadError(null);
+        setContactTotal(0);
+        setContactNextOffset(0);
+        setHasMoreContacts(false);
+        const res = await getWhatsApp2StatusContacts(contactSearchQuery, 200, 0, selectedLibraryStory?.id || "", tinderOnly);
         if (isMounted && res?.ok && Array.isArray(res.contacts)) {
           setContactsList(res.contacts);
+          setContactTotal(res.total);
+          setContactNextOffset(res.contacts.length);
+          setHasMoreContacts(Boolean(res.hasMore));
         }
       } catch (err) {
+        if (isMounted) {
+          setContactLoadError(err instanceof Error ? err.message : "Não foi possível carregar os contatos.");
+        }
         console.warn("[WhatsApp Status] Falha ao carregar contatos:", err);
       } finally {
         if (isMounted) setIsLoadingContacts(false);
@@ -243,32 +387,73 @@ export function WhatsAppStatusModal({
       isMounted = false;
       clearTimeout(timer);
     };
-  }, [isPrivacyModalOpen, contactSearchQuery]);
+  }, [isPrivacyModalOpen, contactSearchQuery, contactRetryCounter, selectedLibraryStory?.id, tinderOnly]);
+
+  const loadMoreStatusContacts = async () => {
+    if (isLoadingContacts || isLoadingMoreContacts || !hasMoreContacts) return;
+    const query = contactSearchQuery;
+    const offset = contactNextOffset;
+    setIsLoadingMoreContacts(true);
+    try {
+      const result = await getWhatsApp2StatusContacts(query, 200, offset, selectedLibraryStory?.id || "", tinderOnly);
+      if (query !== contactSearchRef.current) return;
+      if (result?.ok && Array.isArray(result.contacts)) {
+        setContactsList((prev) => {
+          const found = new Set(prev.map((c) => c.id));
+          return [...prev, ...result.contacts.filter((c) => !found.has(c.id))];
+        });
+        setContactTotal(result.total);
+        setContactNextOffset(offset + result.contacts.length);
+        setHasMoreContacts(Boolean(result.hasMore));
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erro ao carregar mais contatos.");
+    } finally {
+      setIsLoadingMoreContacts(false);
+    }
+  };
 
   const evergreenSeenAliases = new Set(
     [
-      ...(selectedLibraryStory?.seenContactIds || []),
+      ...(!selectedLibraryStory?.storyKey ? (selectedLibraryStory?.seenContactIds || []) : []),
       ...persistedRecipientAliases,
     ]
       .map(normalizeEvergreenContactAlias)
       .filter(Boolean),
   );
 
-  // Evergreen: quem já recebeu este conteúdo desaparece totalmente da seleção.
-  // Compara número e ID para sobreviver a variações @lid / @c.us do WhatsApp.
-  const eligibleContactsList = contactsList.filter((contact) => {
-    if (!selectedLibraryStory) return true;
-    const contactNumber = normalizeEvergreenContactAlias(contact.number);
-    const contactId = normalizeEvergreenContactAlias(contact.id);
-    return !evergreenSeenAliases.has(contactNumber) && !evergreenSeenAliases.has(contactId);
-  });
+  // Mostra quem já recebeu, mas nunca permite nova seleção do mesmo conteúdo.
+  const isStoryContactBlocked = (contact: WhatsAppStatusContact) => {
+    if (!selectedLibraryStory) return false;
+    const number = normalizeEvergreenContactAlias(contact.number);
+    const id = normalizeEvergreenContactAlias(contact.id);
+    const locks = new Set(lockedRecipientAliases.map(normalizeEvergreenContactAlias));
+    return evergreenSeenAliases.has(number) || evergreenSeenAliases.has(id) ||
+      locks.has(number) || locks.has(id);
+  };
+  const filteredContactsList = contactsList.filter(contact =>
+    isNamedSavedStatusContact(contact) &&
+    (!tinderOnly || normalizeStatusContactName(contact.name).toLocaleLowerCase("pt-BR").includes("tinder")) &&
+    audienceExclusions !== null &&
+    !audienceExclusions.has(normalizeEvergreenContactAlias(contact.id)) &&
+    !audienceExclusions.has(normalizeEvergreenContactAlias(contact.number))
+  );
+  const eligibleContactsList = filteredContactsList.filter(contact => !isStoryContactBlocked(contact));
 
   const hiddenContactsCount = selectedLibraryStory
-    ? contactsList.length - eligibleContactsList.length
+    ? filteredContactsList.length - eligibleContactsList.length
     : 0;
 
   const toggleContactSelection = (contactId: string) => {
-    if (selectedLibraryStory && isLoadingEvergreenRecipients) return;
+    if (!audienceExclusions || audienceExclusionsError) return;
+    if (selectedLibraryStory && (isLoadingEvergreenRecipients || evergreenLedgerError)) return;
+    const contact = filteredContactsList.find(item => item.id === contactId);
+    if (contact && isStoryContactBlocked(contact)) return;
+    if (!selectedContactIds.includes(contactId) && selectedContactIds.length >= 40 && selectedLibraryStory) {
+      toast.error("Selecione até 40 contatos por publicação.");
+      return;
+    }
+    if (contact) setContactNumbersById(prev => ({ ...prev, [contactId]: contact.number }));
     setSelectedContactIds((prev) =>
       prev.includes(contactId) ? prev.filter((id) => id !== contactId) : [...prev, contactId],
     );
@@ -279,9 +464,18 @@ export function WhatsAppStatusModal({
   };
 
   const handleSelectAllFilteredContacts = () => {
-    if (selectedLibraryStory && isLoadingEvergreenRecipients) return;
-    const idsToAdd = eligibleContactsList.map((c) => c.id);
-    setSelectedContactIds((prev) => Array.from(new Set([...prev, ...idsToAdd])));
+    if (!audienceExclusions || audienceExclusionsError) return;
+    if (selectedLibraryStory && (isLoadingEvergreenRecipients || evergreenLedgerError)) return;
+    const remaining = selectedLibraryStory ? Math.max(0, 40 - selectedContactIds.length) : eligibleContactsList.length;
+    const toAdd = eligibleContactsList.filter(c => !selectedContactIds.includes(c.id)).slice(0, remaining);
+    if (selectedLibraryStory && toAdd.length < eligibleContactsList.length) {
+      toast.info("Limite de 40 contatos por publicação. Os demais poderão ser incluídos em outra postagem.");
+    }
+    setContactNumbersById(prev => ({
+      ...prev,
+      ...Object.fromEntries(toAdd.map(c => [c.id, c.number])),
+    }));
+    setSelectedContactIds(prev => Array.from(new Set([...prev, ...toAdd.map(c => c.id)])));
   };
 
 
@@ -357,8 +551,10 @@ export function WhatsAppStatusModal({
     setSelectedLibraryStory(story);
     setPrivacyType("allow-list");
     setSelectedContactIds([]);
+    setContactNumbersById({});
     setSelectedStoryKey(null);
     setPersistedRecipientAliases([]);
+    setLockedRecipientAliases([]);
     setEvergreenLedgerError(null);
     setIsLoadingEvergreenRecipients(true);
 
@@ -376,25 +572,30 @@ export function WhatsAppStatusModal({
       const storyKey = await buildEvergreenStoryKey(story);
       setSelectedStoryKey(storyKey);
 
-      // Migra automaticamente o histórico legado do localStorage para o ledger permanente.
-      if ((story.seenContactIds || []).length > 0) {
+      // Apenas arquivos legados sem chave de nuvem precisam migrar contatos locais.
+      // Para Stories já sincronizados, o ledger do gateway é a fonte de verdade:
+      // reenviar o cache poderia recolocar destinatários de publicações falhas.
+      if (!story.storyKey && (story.seenContactIds || []).length > 0) {
         await recordWhatsApp2EvergreenRecipients({
           storyKey,
           recipients: (story.seenContactIds || []).map((id) => ({ id })),
         });
       }
 
-      const result = await getWhatsApp2EvergreenRecipients(storyKey);
-      const aliases = (result.recipients || []).flatMap((recipient) => [
-        recipient.contactKey,
-        recipient.contactId || "",
-        recipient.contactNumber || "",
+      const result = story.storyKey
+        ? await getWhatsApp2LibraryRecipients(story.id)
+        : await getWhatsApp2EvergreenRecipients(storyKey);
+      const aliases = (result.recipients || []).flatMap(recipient => [
+        recipient.contactKey, recipient.contactId || "", recipient.contactNumber || "",
       ]);
       setPersistedRecipientAliases(aliases);
+      setLockedRecipientAliases("locks" in result
+        ? result.locks.map(lock => lock.contact_key)
+        : []);
       toast.info(
-        result.count > 0
-          ? `Story "${story.title}" selecionado. ${result.count} contato(s) já receberam e foram ocultados.`
-          : `Story "${story.title}" selecionado. Nenhum contato recebeu este Story ainda.`,
+        aliases.length > 0
+          ? `Story "${story.title}" selecionado. Contatos anteriores aparecem bloqueados na lista.`
+          : `Story "${story.title}" selecionado. Escolha os contatos para publicar.`,
       );
     } catch (err) {
       const message =
@@ -411,6 +612,8 @@ export function WhatsAppStatusModal({
     setSelectedLibraryStory(null);
     setSelectedStoryKey(null);
     setPersistedRecipientAliases([]);
+    setLockedRecipientAliases([]);
+    setContactNumbersById({});
     setEvergreenLedgerError(null);
     setIsLoadingEvergreenRecipients(false);
     setImageBase64(null);
@@ -419,13 +622,52 @@ export function WhatsAppStatusModal({
     setVideoFile(null);
     setImageCaption("");
     setVideoCaption("");
-    setPrivacyType("contact");
-    setSelectedContactIds([]);
-    toast.info("Modo tradicional ativado (todos os contatos visíveis).");
+    // Ao sair do modo Evergreen, restaurar o público real da conta,
+    // sem trocar silenciosamente a configuração para todos os contatos.
+    setPrivacyType(savedPrivacyRef.current?.type || "contact");
+    setSelectedContactIds(savedPrivacyRef.current?.list || []);
+    toast.info("Modo tradicional ativado. A privacidade da conta não foi alterada.");
   };
 
-  // Persiste imediatamente a privacidade real no WhatsApp.
-  // O modal só fecha quando o gateway lê de volta e confirma a configuração.
+  // Não confundir escolhas ainda não salvas com as preferências da conta WhatsApp.
+  const closePrivacySettings = () => {
+    if (isLoadingPrivacy) return;
+    if (!selectedLibraryStory && savedPrivacyRef.current) {
+      setPrivacyType(savedPrivacyRef.current.type);
+      setSelectedContactIds(savedPrivacyRef.current.list);
+    }
+    isPrivacyModalOpenRef.current = false;
+    setIsPrivacyModalOpen(false);
+  };
+
+  const openPrivacySettings = async () => {
+    isPrivacyModalOpenRef.current = true;
+    setIsPrivacyModalOpen(true);
+    if (selectedLibraryStory) return;
+    setIsLoadingPrivacy(true);
+    setIsPrivacyVerified(false);
+    try {
+      const res = await getWhatsApp2StatusPrivacy();
+      if (!res?.ok || res.verified !== true || !res.type) {
+        throw new Error("O WhatsApp não confirmou a privacidade atual.");
+      }
+      savedPrivacyRef.current = { type: res.type, list: res.list || [] };
+      setPrivacyType(res.type);
+      setSelectedContactIds(res.list || []);
+      setIsPrivacyVerified(true);
+      setPrivacyReadError(null);
+    } catch (err) {
+      setIsPrivacyVerified(false);
+      const message = err instanceof Error ? err.message : "Falha ao consultar a conta WhatsApp.";
+      setPrivacyReadError(message);
+      toast.error(message);
+    } finally {
+      setIsLoadingPrivacy(false);
+    }
+  };
+
+  // Persiste o público usado por Status enviados pela sessão Web do gateway.
+  // Uma leitura da mesma sessão não confirma sincronização com o celular.
   const handleApplyPrivacy = async () => {
     const effectivePrivacyType: WhatsAppStatusPrivacyType =
       selectedLibraryStory ? "allow-list" : privacyType;
@@ -446,6 +688,15 @@ export function WhatsAppStatusModal({
       return;
     }
 
+    // Biblioteca: esta escolha vale só para a próxima publicação, sem
+    // modificar a privacidade permanente configurada no WhatsApp.
+    if (selectedLibraryStory) {
+      isPrivacyModalOpenRef.current = false;
+      setIsPrivacyModalOpen(false);
+      toast.success(`${selectedContactIds.length} contato(s) selecionado(s) para este Story.`);
+      return;
+    }
+
     try {
       setIsLoadingPrivacy(true);
       if (selectedLibraryStory && privacyType !== "allow-list") {
@@ -456,14 +707,34 @@ export function WhatsAppStatusModal({
         list: selectedContactIds,
       });
 
-      if (!result?.ok) {
+      if (!result?.ok || !result.type) {
         throw new Error("O WhatsApp não confirmou a configuração de privacidade.");
       }
 
-      toast.success("Privacidade atualizada no WhatsApp.");
+      // Conferência separada, antes de anunciar sucesso ao operador.
+      const confirmed = await getWhatsApp2StatusPrivacy();
+      const serializeList = (list?: string[]) => [...new Set(list || [])].sort().join("|");
+      if (
+        !confirmed?.ok || confirmed.verified !== true || confirmed.type !== effectivePrivacyType ||
+        serializeList(confirmed.list) !== serializeList(result.list)
+      ) {
+        throw new Error("A alteração foi solicitada, mas ainda não foi confirmada pelo WhatsApp. Confira a privacidade no aplicativo.");
+      }
+
+      savedPrivacyRef.current = { type: confirmed.type, list: confirmed.list || [] };
+      setIsPrivacyVerified(true);
+      setPrivacyReadError(null);
+      if (!selectedLibraryStory) {
+        setPrivacyType(confirmed.type);
+        setSelectedContactIds(confirmed.list || []);
+      }
+      toast.info("Público salvo para Status enviados pelo Vendeo. O WhatsApp do celular não é atualizado automaticamente.", { duration: 8500 });
+      isPrivacyModalOpenRef.current = false;
       setIsPrivacyModalOpen(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Não foi possível atualizar a privacidade.";
+      setIsPrivacyVerified(false);
+      setPrivacyReadError(message);
       toast.error(message);
     } finally {
       setIsLoadingPrivacy(false);
@@ -523,6 +794,11 @@ export function WhatsAppStatusModal({
       recipient.contactNumber || "",
     ]);
     setPersistedRecipientAliases(aliases);
+    try {
+      await WhatsAppStoryMediaRepository.markCloudPosted(selectedLibraryStory.id);
+    } catch (err) {
+      console.warn("[WhatsApp Status] Contagem da biblioteca não sincronizada:", err);
+    }
   };
 
   // Publicar Status
@@ -554,6 +830,63 @@ export function WhatsAppStatusModal({
     const idempotencyKey = `vendeo_status_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     try {
+      if (selectedLibraryStory) {
+        if (!audienceExclusions || audienceExclusionsError) {
+          throw new Error("A elegibilidade dos contatos ainda não foi confirmada.");
+        }
+        // Os bloqueios/arquivamentos podem mudar depois de abrir o seletor.
+        // Faça nova leitura antes de enviar, além da proteção do gateway.
+        const newestExclusions = await loadStatusAudienceExclusions();
+        const story = selectedLibraryStory;
+        const chosen = selectedContactIds.map(id => ({
+          id, number: contactNumbersById[id] || contactsList.find(c => c.id === id)?.number || null,
+        }));
+        const alreadyBlocked = chosen.some(c => {
+          const key = normalizeEvergreenContactAlias(c.number || c.id);
+          return newestExclusions.has(key) ||
+            newestExclusions.has(normalizeEvergreenContactAlias(c.id)) ||
+            evergreenSeenAliases.has(key) ||
+            lockedRecipientAliases.some(alias => normalizeEvergreenContactAlias(alias) === key);
+        });
+        if (alreadyBlocked) throw new Error("Um contato está trancado, arquivado, bloqueado ou já recebeu este Story. Atualize a lista.");
+
+        const postedCaption = story.type === "image" ? imageCaption.trim() : videoCaption.trim();
+        const res = await publishWhatsAppLibraryStory({
+          storyId: story.id, recipients: chosen, caption: postedCaption, idempotencyKey,
+        });
+        const statusItem: WhatsAppStatusItem = {
+          id: res.id || idempotencyKey,
+          whatsappStatusId: res.id,
+          type: story.type,
+          mediaUrl: story.type === "image" ? story.mediaUrl : undefined,
+          caption: postedCaption || null,
+          mimeType: res.mimeType,
+          fileSize: res.fileSize,
+          status: res.status === "sent" ? "sent" : "pending",
+          idempotencyKey,
+          privacyType: "allow-list",
+          privacyCount: chosen.length,
+          createdAt: new Date().toISOString(),
+        };
+        await WhatsAppStatusRepository.recordPost(statusItem);
+        setHistoryItems(prev => [statusItem, ...prev]);
+        onStatusPublished?.(statusItem);
+        const sent = res.status === "sent";
+        if (sent) {
+          await WhatsAppStoryMediaRepository.loadAll().then(setLibraryStories).catch(console.warn);
+        }
+        handleClearSelectedStory();
+        setSelectedContactIds([]);
+        setSubmissionFeedback({
+          type: sent ? "success" : "pending",
+          message: sent
+            ? `Status publicado para ${chosen.length} contato(s). Eles ficam bloqueados para este Story.`
+            : "Publicação pendente de confirmação. Os contatos ficam bloqueados para evitar repetição.",
+        });
+        if (sent) toast.success("Story publicado. Contatos registrados no histórico.");
+        else toast.info("Publicação pendente. Não tente reenviar para os mesmos contatos.");
+        return;
+      }
       if (activeTab === "text") {
         const text = textContent.trim();
         if (!text) {
@@ -584,7 +917,7 @@ export function WhatsAppStatusModal({
           textContent: text,
           backgroundColor: color,
           fontIndex: selectedFontIndex,
-          status: "sent",
+          status: res.status === "pending" ? "pending" : "sent",
           idempotencyKey,
           privacyType,
           privacyCount: selectedContactIds.length,
@@ -597,10 +930,13 @@ export function WhatsAppStatusModal({
 
         setTextContent("");
         setSubmissionFeedback({
-          type: "success",
-          message: "Status de texto publicado com sucesso!",
+          type: res.status === "pending" ? "pending" : "success",
+          message: res.status === "pending"
+            ? "Status registrado, mas a entrega aos contatos ainda não foi confirmada."
+            : "Status de texto publicado com sucesso!",
         });
-        toast.success("Status publicado no WhatsApp!");
+        if (res.status === "pending") toast.info("Status aguardando confirmação de distribuição.");
+        else toast.success("Status publicado no WhatsApp!");
       } else if (activeTab === "image") {
         if (!imageBase64) {
           toast.error("Selecione uma imagem para publicar.");
@@ -615,7 +951,7 @@ export function WhatsAppStatusModal({
         };
 
         const res = await publishWhatsAppStatusImage({
-          mediaBase64: imageBase64,
+          ...(imageBase64.startsWith("https://") ? { mediaUrl: imageBase64 } : { mediaBase64: imageBase64 }),
           caption: imageCaption.trim() || undefined,
           idempotencyKey,
           filename: imageFile?.name || "status.jpg",
@@ -626,11 +962,12 @@ export function WhatsAppStatusModal({
           id: res.id || idempotencyKey,
           whatsappStatusId: res.id,
           type: "image",
-          mediaBase64Preview: imageBase64,
+          mediaBase64Preview: imageBase64.startsWith("data:") ? imageBase64 : undefined,
+          mediaUrl: imageBase64.startsWith("https://") ? imageBase64 : undefined,
           caption: imageCaption.trim() || null,
           mimeType: res.mimeType,
           fileSize: res.fileSize,
-          status: "sent",
+          status: res.status === "pending" ? "pending" : "sent",
           idempotencyKey,
           privacyType: selectedLibraryStory ? "allow-list" : privacyType,
           privacyCount: selectedContactIds.length,
@@ -638,7 +975,7 @@ export function WhatsAppStatusModal({
         };
 
         await WhatsAppStatusRepository.recordPost(statusItem);
-        if (selectedLibraryStory) {
+        if (selectedLibraryStory && res.status === "sent") {
           await persistEvergreenDelivery(res.id);
         }
         setHistoryItems((prev) => [statusItem, ...prev]);
@@ -653,10 +990,13 @@ export function WhatsAppStatusModal({
         setEvergreenLedgerError(null);
         setIsLoadingEvergreenRecipients(false);
         setSubmissionFeedback({
-          type: "success",
-          message: "Status com foto publicado com sucesso!",
+          type: res.status === "pending" ? "pending" : "success",
+          message: res.status === "pending"
+            ? "Foto registrada, mas a entrega aos contatos ainda não foi confirmada."
+            : "Status com foto publicado com sucesso!",
         });
-        toast.success("Foto publicada no WhatsApp Status!");
+        if (res.status === "pending") toast.info("Foto aguardando confirmação de distribuição.");
+        else toast.success("Foto publicada no WhatsApp Status!");
       } else if (activeTab === "video") {
         if (!videoBase64) {
           toast.error("Selecione um vídeo para publicar.");
@@ -671,7 +1011,7 @@ export function WhatsAppStatusModal({
         };
 
         const res = await publishWhatsAppStatusVideo({
-          mediaBase64: videoBase64,
+          ...(videoBase64.startsWith("https://") ? { mediaUrl: videoBase64 } : { mediaBase64: videoBase64 }),
           caption: videoCaption.trim() || undefined,
           idempotencyKey,
           filename: videoFile?.name || "status.mp4",
@@ -685,7 +1025,7 @@ export function WhatsAppStatusModal({
           caption: videoCaption.trim() || null,
           mimeType: res.mimeType,
           fileSize: res.fileSize,
-          status: "sent",
+          status: res.status === "pending" ? "pending" : "sent",
           idempotencyKey,
           privacyType: selectedLibraryStory ? "allow-list" : privacyType,
           privacyCount: selectedContactIds.length,
@@ -693,7 +1033,7 @@ export function WhatsAppStatusModal({
         };
 
         await WhatsAppStatusRepository.recordPost(statusItem);
-        if (selectedLibraryStory) {
+        if (selectedLibraryStory && res.status === "sent") {
           await persistEvergreenDelivery(res.id);
         }
         setHistoryItems((prev) => [statusItem, ...prev]);
@@ -708,10 +1048,13 @@ export function WhatsAppStatusModal({
         setEvergreenLedgerError(null);
         setIsLoadingEvergreenRecipients(false);
         setSubmissionFeedback({
-          type: "success",
-          message: "Status com vídeo publicado com sucesso!",
+          type: res.status === "pending" ? "pending" : "success",
+          message: res.status === "pending"
+            ? "Vídeo registrado, mas a entrega aos contatos ainda não foi confirmada."
+            : "Status com vídeo publicado com sucesso!",
         });
-        toast.success("Vídeo publicado no WhatsApp Status!");
+        if (res.status === "pending") toast.info("Vídeo aguardando confirmação de distribuição.");
+        else toast.success("Vídeo publicado no WhatsApp Status!");
       }
 
     } catch (err: any) {
@@ -868,12 +1211,16 @@ export function WhatsAppStatusModal({
             className={`px-4 py-2.5 text-xs flex items-center justify-between gap-2 shrink-0 ${
               submissionFeedback.type === "success"
                 ? "bg-emerald-950/80 text-emerald-200 border-b border-emerald-800/40"
+                : submissionFeedback.type === "pending"
+                ? "bg-amber-950/80 text-amber-200 border-b border-amber-800/40"
                 : "bg-red-950/80 text-red-200 border-b border-red-800/40"
             }`}
           >
             <div className="flex items-center gap-2">
               {submissionFeedback.type === "success" ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : submissionFeedback.type === "pending" ? (
+                <Loader2 className="w-4 h-4 text-amber-300 shrink-0" />
               ) : (
                 <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
               )}
@@ -938,7 +1285,7 @@ export function WhatsAppStatusModal({
 
           {/* ABA 2: STATUS COM FOTO */}
           {activeTab === "image" && (
-            <div className="relative flex-1 flex flex-col items-center justify-center bg-[#0b141a] overflow-hidden">
+            <div className="relative flex-1 flex flex-col items-center justify-center bg-[#111b21] overflow-hidden">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1011,7 +1358,7 @@ export function WhatsAppStatusModal({
 
           {/* ABA 3: STATUS COM VÍDEO */}
           {activeTab === "video" && (
-            <div className="relative flex-1 flex flex-col items-center justify-center bg-[#0b141a] overflow-hidden">
+            <div className="relative flex-1 flex flex-col items-center justify-center bg-[#111b21] overflow-hidden">
               <input
                 ref={videoInputRef}
                 type="file"
@@ -1109,7 +1456,7 @@ export function WhatsAppStatusModal({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setLibraryStories(WhatsAppStoryMediaRepository.getAll())}
+                  onClick={() => { void WhatsAppStoryMediaRepository.loadAll().then(setLibraryStories).catch(console.warn); }}
                   className="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-white/5 active:scale-95"
                   title="Atualizar biblioteca"
                 >
@@ -1163,7 +1510,7 @@ export function WhatsAppStatusModal({
 
                           <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between rounded-lg bg-black/75 px-2 py-0.5 text-[9px] text-white backdrop-blur">
                             <span className="text-emerald-400 font-bold">
-                              {seenCount} viram
+                              {seenCount} incluídos
                             </span>
                             <span className="text-zinc-400">
                               {story.timesPosted || 0}x
@@ -1197,6 +1544,51 @@ export function WhatsAppStatusModal({
           {/* ABA 4: HISTÓRICO */}
           {activeTab === "history" && (
             <div className="flex-1 flex flex-col p-4 bg-[#111b21] overflow-y-auto scrollbar-none">
+
+              <div className="rounded-xl border border-emerald-500/20 bg-[#162820] p-3 mb-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="text-xs font-bold text-emerald-200">
+                    Status ativos no WhatsApp ({activeStatuses.length})
+                  </h4>
+                  <button
+                    type="button"
+                    disabled={isLoadingActiveStatuses}
+                    onClick={() => void refreshActiveStatuses()}
+                    title="Atualizar Status ativos"
+                    aria-label="Atualizar Status ativos"
+                    className="p-1.5 text-emerald-200 hover:text-white disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isLoadingActiveStatuses ? "animate-spin" : ""}`} />
+                  </button>
+                </div>
+                {isLoadingActiveStatuses && activeStatuses.length === 0 ? (
+                  <p className="text-xs text-zinc-400 mt-2">Consultando Status publicados...</p>
+                ) : activeStatusError ? (
+                  <p className="text-xs text-amber-300 mt-2">{activeStatusError}</p>
+                ) : activeStatuses.length === 0 ? (
+                  <p className="text-xs text-zinc-400 mt-2">Nenhum Status ativo encontrado nas últimas 24 horas.</p>
+                ) : (
+                  <div className="space-y-2 mt-2">
+                    {activeStatuses.map((item) => (
+                      <div key={item.id} className="flex items-start gap-2.5 rounded-lg bg-white/5 p-2.5">
+                        {item.type === "text" ? <Type className="w-4 h-4 text-emerald-300 shrink-0" />
+                          : item.type === "image" ? <ImageIcon className="w-4 h-4 text-emerald-300 shrink-0" />
+                          : <VideoIcon className="w-4 h-4 text-emerald-300 shrink-0" />}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-zinc-100 break-words line-clamp-2">
+                            {item.text || item.caption || (item.type === "image" ? "Foto" : item.type === "video" ? "Vídeo" : "Status")}
+                          </p>
+                          <p className="text-[10px] text-zinc-400 mt-1">
+                            Publicado {new Date(item.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                            {" · "}Expira às {new Date(item.expiresAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[10px] text-zinc-500 mt-2">Publicações consultadas diretamente no WhatsApp. Visualizações ainda não disponíveis.</p>
+              </div>
 
               <div className="flex items-center justify-between mb-3">
                 <h4 className="text-xs font-bold tracking-wide uppercase text-zinc-400">
@@ -1296,6 +1688,11 @@ export function WhatsAppStatusModal({
                               <CheckCircle2 className="w-3 h-3" />
                               Publicado no WhatsApp
                             </span>
+                          ) : item.status === "pending" ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-amber-300 font-medium">
+                              <Loader2 className="w-3 h-3" />
+                              Aguardando confirmação
+                            </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-[10px] text-red-400 font-medium">
                               <AlertCircle className="w-3 h-3" />
@@ -1349,7 +1746,7 @@ export function WhatsAppStatusModal({
             <div className="flex items-center justify-between px-1 py-1">
               <button
                 type="button"
-                onClick={() => setIsPrivacyModalOpen(true)}
+                onClick={() => void openPrivacySettings()}
                 className={`flex items-center gap-2 px-3 py-2 rounded-full active:scale-95 transition-all text-xs font-medium border cursor-pointer group ${
                   selectedLibraryStory
                     ? "bg-violet-500/15 border-violet-500/40 text-violet-200 hover:bg-violet-500/25"
@@ -1361,6 +1758,11 @@ export function WhatsAppStatusModal({
                   <>
                     <Sparkles className="w-3.5 h-3.5 text-violet-400" />
                     <span>Público Evergreen: <strong className="text-violet-200 font-semibold">{selectedContactIds.length} contatos novos</strong></span>
+                  </>
+                ) : !isPrivacyVerified ? (
+                  <>
+                    <Shield className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-amber-300">Privacidade não confirmada</span>
                   </>
                 ) : privacyType === "contact" ? (
                   <>
@@ -1406,6 +1808,8 @@ export function WhatsAppStatusModal({
                     (
                       isLoadingEvergreenRecipients ||
                       evergreenLedgerError ||
+                      audienceExclusionsError ||
+                      !audienceExclusions ||
                       !selectedStoryKey ||
                       selectedContactIds.length === 0
                     )
@@ -1443,12 +1847,12 @@ export function WhatsAppStatusModal({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white">Privacidade do Status</h3>
-                  <p className="text-[11px] text-zinc-400">Quem pode ver suas atualizações</p>
+                  <p className="text-[11px] text-zinc-400">Público de Status enviados pelo Vendeo</p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsPrivacyModalOpen(false)}
+                onClick={closePrivacySettings}
                 className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -1456,7 +1860,20 @@ export function WhatsAppStatusModal({
             </div>
 
             {/* Conteúdo com Opções */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className={`flex-1 overflow-y-auto p-4 space-y-3 ${isLoadingPrivacy ? "pointer-events-none opacity-60" : ""}`}>
+              {privacyReadError && (
+                <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+                  {privacyReadError} A escolha só será considerada salva quando o WhatsApp confirmar.
+                </div>
+              )}
+              {!privacyReadError && isPrivacyVerified && (
+                <p className="text-[11px] text-emerald-300">
+                  <Check className="inline-block w-3 h-3 mr-1" /> Público confirmado na sessão WhatsApp Web do Vendeo.
+                </p>
+              )}
+              <div role="note" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] text-amber-100 leading-relaxed">
+                <strong>Importante:</strong> salvar aqui define o público dos Status enviados pelo Vendeo. Esta integração não altera a privacidade no WhatsApp do celular. Para publicar pelo celular, configure o público no próprio aplicativo.
+              </div>
               {!selectedLibraryStory && (
                 <>
                   {/* Opção 1: Meus contatos */}
@@ -1564,22 +1981,26 @@ export function WhatsAppStatusModal({
                           Story: {selectedLibraryStory.title}
                         </span>
                         <span className="text-[10px] bg-violet-500/20 text-violet-200 font-bold px-2 py-0.5 rounded-full">
-                          {isLoadingEvergreenRecipients ? "conferindo..." : `${eligibleContactsList.length} novos`}
+                          {isLoadingEvergreenRecipients ? "conferindo..." : evergreenLedgerError || contactLoadError || audienceExclusionsError ? "Indisponível" : isLoadingContacts || !audienceExclusions ? "carregando..." : `${eligibleContactsList.length} novos`}
                         </span>
                       </div>
                       <p className="text-[11px] text-zinc-400 leading-relaxed">
                         {isLoadingEvergreenRecipients ? (
-                          <>Conferindo no histórico permanente quem já recebeu este Story...</>
+                          <>Conferindo no histórico permanente quem já foi incluído no público deste Story...</>
                         ) : evergreenLedgerError ? (
                           <span className="text-red-300">
-                            Histórico permanente indisponível. A publicação está bloqueada para evitar repetição.
+                            Não foi possível consultar o histórico: {evergreenLedgerError}. Nenhuma publicação será feita até confirmar os destinatários.
+                            <button type="button" onClick={() => void handleSelectStoryFromLibrary(selectedLibraryStory)}
+                              className="mt-2 block min-h-9 rounded-lg border border-red-300/50 px-3 text-red-100 font-semibold hover:bg-red-400/10">
+                              Tentar consultar novamente
+                            </button>
                           </span>
                         ) : hiddenContactsCount > 0 ? (
                           <>
-                            <strong>{hiddenContactsCount}</strong> contato(s) que já receberam este Story foram <strong>ocultados automaticamente</strong>.
+                            <strong>{hiddenContactsCount}</strong> contato(s) já publicados ou com envio pendente aparecem bloqueados abaixo.
                           </>
                         ) : (
-                          <>Nenhum contato recebeu este Story ainda. Todos os listados estão elegíveis.</>
+                          <>Nenhum contato foi incluído no público deste Story ainda. Todos os listados estão elegíveis.</>
                         )}
                       </p>
                     </div>
@@ -1630,59 +2051,90 @@ export function WhatsAppStatusModal({
                     )}
                   </div>
 
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] text-zinc-400">Contatos salvos com conversa no Vendeo, sem bloqueios, arquivo ou tranca.</p>
+                    <button
+                      type="button"
+                      aria-pressed={tinderOnly}
+                      onClick={() => {
+                        setTinderOnly(value => !value);
+                        setSelectedContactIds([]);
+                        setContactNumbersById({});
+                      }}
+                      className={`min-h-9 rounded-full border px-3 text-xs font-semibold transition-colors ${tinderOnly ? "border-pink-400/70 bg-pink-500/20 text-pink-200" : "border-white/20 bg-white/5 text-zinc-300"}`}
+                    >
+                      {tinderOnly ? "✓ Só Tinder" : "Filtrar: Tinder"}
+                    </button>
+                  </div>
+
+                  {audienceExclusionsError && (
+                    <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+                      {audienceExclusionsError} A seleção fica indisponível até a conferência funcionar.
+                    </div>
+                  )}
+
                   {/* Lista de Contatos */}
                   <div className="max-h-60 overflow-y-auto space-y-1 pr-1 scrollbar-thin">
-                    {isLoadingContacts || (selectedLibraryStory && isLoadingEvergreenRecipients) ? (
+                    {isLoadingContacts || (!audienceExclusions && !audienceExclusionsError) || (selectedLibraryStory && isLoadingEvergreenRecipients) ? (
                       <div className="py-8 flex flex-col items-center justify-center gap-2 text-zinc-400">
                         <Loader2 className="w-5 h-5 animate-spin text-[#00a884]" />
                         <span className="text-xs">
-                          {selectedLibraryStory && isLoadingEvergreenRecipients
-                            ? "Conferindo quem já recebeu este Story..."
-                            : "Carregando contatos..."}
+                          {audienceExclusionsError || (selectedLibraryStory && isLoadingEvergreenRecipients
+                            ? "Conferindo públicos anteriores deste Story..."
+                            : !audienceExclusions ? "Conferindo bloqueados, arquivados e trancados..." : "Carregando contatos...")}
                         </span>
                       </div>
-                    ) : eligibleContactsList.length === 0 ? (
+                    ) : contactLoadError || audienceExclusionsError ? (
+                      <div role="alert" className="py-5 px-3 text-center text-xs text-rose-300 space-y-3">
+                        <p>{contactLoadError || audienceExclusionsError}</p>
+                        <p>Não foi possível conferir os contatos. Nenhum envio foi realizado.</p>
+                        <button type="button" onClick={() => setContactRetryCounter(value => value + 1)}
+                          className="rounded-lg border border-rose-300/50 px-4 py-2 font-semibold hover:bg-white/10">
+                          Tentar carregar novamente
+                        </button>
+                      </div>
+                    ) : filteredContactsList.length === 0 ? (
                       <div className="py-6 text-center text-xs text-zinc-500 px-4">
                         {selectedLibraryStory ? (
                           <>
-                            <p className="font-semibold text-zinc-400">Nenhum contato novo pendente</p>
-                            <p className="text-[11px] mt-1">Todos os contatos listados já receberam este Story anteriormente.</p>
+                            <p className="font-semibold text-zinc-400">Nenhum contato elegível encontrado</p>
+                            <p className="text-[11px] mt-1">Confira sua agenda, os bloqueios, arquivos e conversas trancadas, ou altere a pesquisa.</p>
                           </>
                         ) : (
                           "Nenhum contato encontrado."
                         )}
                       </div>
                     ) : (
-                      eligibleContactsList.map((contact) => {
-
-                        const isSelected = selectedContactIds.includes(contact.id);
+                      filteredContactsList.map((contact) => {
+                        const alreadyPosted = selectedLibraryStory && (
+                          evergreenSeenAliases.has(normalizeEvergreenContactAlias(contact.number)) ||
+                          evergreenSeenAliases.has(normalizeEvergreenContactAlias(contact.id))
+                        );
+                        const blocked = isStoryContactBlocked(contact);
+                        const isSelected = !blocked && selectedContactIds.includes(contact.id);
                         return (
                           <div
                             key={contact.id}
-                            onClick={() => toggleContactSelection(contact.id)}
-                            className={`flex items-center justify-between p-2 rounded-xl cursor-pointer transition-colors ${
-                              isSelected ? "bg-white/10" : "hover:bg-white/5"
+                            onClick={() => { if (!blocked) toggleContactSelection(contact.id); }}
+                            className={`flex items-center justify-between p-2 rounded-xl transition-colors ${
+                              blocked ? "bg-white/[0.025] opacity-65 cursor-not-allowed" :
+                              isSelected ? "bg-white/10 cursor-pointer" : "hover:bg-white/5 cursor-pointer"
                             }`}
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              {contact.avatarUrl ? (
-                                <img
-                                  src={contact.avatarUrl}
-                                  alt={contact.name}
-                                  className="w-8 h-8 rounded-full object-cover shrink-0 border border-white/10"
-                                />
-                              ) : (
-                                <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center font-bold text-xs text-white shrink-0">
-                                  {contact.name.charAt(0).toUpperCase()}
-                                </div>
-                              )}
+                              <StatusContactAvatar contact={contact} />
                               <div className="min-w-0">
                                 <p className="text-xs font-semibold text-white truncate">
-                                  {contact.name}
+                                  {normalizeStatusContactName(contact.name)}
                                 </p>
                                 <p className="text-[10px] text-zinc-400 truncate">
                                   {contact.number}
                                 </p>
+                                {blocked && (
+                                  <span className="text-[10px] font-semibold text-amber-300">
+                                    {alreadyPosted ? "Já publicado para este contato" : "Envio pendente/bloqueado"}
+                                  </span>
+                                )}
                               </div>
                             </div>
 
@@ -1700,6 +2152,18 @@ export function WhatsAppStatusModal({
                       })
                     )}
                   </div>
+                  {hasMoreContacts && !isLoadingContacts && Boolean(audienceExclusions) && (
+                    <button
+                      type="button"
+                      disabled={isLoadingMoreContacts}
+                      onClick={() => void loadMoreStatusContacts()}
+                      className="w-full min-h-9 rounded-lg bg-white/5 hover:bg-white/10 text-[11px] text-emerald-300 disabled:opacity-50"
+                    >
+                      {isLoadingMoreContacts
+                        ? "Carregando..."
+                        : `Carregar mais contatos (${contactNextOffset} de ${contactTotal})`}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1718,13 +2182,13 @@ export function WhatsAppStatusModal({
                   isLoadingPrivacy ||
                   Boolean(
                     selectedLibraryStory &&
-                    (isLoadingEvergreenRecipients || evergreenLedgerError || !selectedStoryKey)
+                    (isLoadingEvergreenRecipients || evergreenLedgerError || contactLoadError || isLoadingContacts || !audienceExclusions || audienceExclusionsError || !selectedStoryKey)
                   )
                 }
                 className="px-4 py-2 min-h-[44px] rounded-xl bg-[#00a884] hover:bg-[#029070] text-white text-xs font-bold transition-all active:scale-95 shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-wait flex items-center gap-1.5"
               >
                 {isLoadingPrivacy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {isLoadingPrivacy ? "Salvando..." : "Concluir"}
+                {isLoadingPrivacy ? "Confirmando..." : selectedLibraryStory ? "Usar estes contatos" : "Salvar público no Vendeo"}
               </button>
             </div>
           </div>

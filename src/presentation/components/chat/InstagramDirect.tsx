@@ -36,6 +36,7 @@ import {
   Clock,
   Bot,
   BotOff,
+  BrainCircuit,
   AlertTriangle,
   RefreshCw,
   ChevronDown,
@@ -68,6 +69,7 @@ import {
   ensureInstagramCompatibleAudio,
   ensureCompatibleAudioUrl,
 } from "./audio-converter";
+import { prepareWhatsAppVoiceNoteUrl } from "./whatsapp-voice-note";
 import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
 import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { activateWhatsApp2Autopilot } from "./whatsapp2-autopilot-activation";
@@ -79,8 +81,12 @@ import { WhatsAppDocumentMessage } from "./WhatsAppDocumentMessage";
 import { WhatsAppForwardedLabel, WhatsAppNativeMessage } from "./WhatsAppNativeMessage";
 import { WhatsAppStickerTray, type WhatsAppSavedSticker } from "./WhatsAppStickerTray";
 import { WhatsAppStatusModal } from "./WhatsAppStatusModal";
+import { WhatsAppMyStatusViewer } from "./WhatsAppMyStatusViewer";
+import { WhatsAppFinalizationActions } from "./WhatsAppFinalizationActions";
+import { BrainPrivateChat } from "./BrainPrivateChat";
 import { VaultItem } from "@/domain/entities/Vault";
 import { toast } from "sonner";
+import { getWhatsAppWallpaper } from "../config/WhatsAppWallpaperManager";
 import {
   formatMessageTime,
   getMessageTimestampMs,
@@ -116,6 +122,7 @@ import {
 } from "@/domain/entities/WhatsAppConversationIdentity";
 import {
   getWhatsApp2Chats,
+  refreshWhatsApp2ProfilePhoto,
   getWhatsApp2ChatState,
   getWhatsApp2ExternalChatLink,
   getWhatsApp2MediaUrl,
@@ -123,6 +130,7 @@ import {
   syncWhatsApp2LatestInbound,
   getWhatsApp2Presence,
   getWhatsApp2Status,
+  getWhatsApp2ActiveStatuses,
   resolveWhatsApp2PhoneNumbers,
   normalizeWhatsApp2Attachment,
   IS_WHATSAPP2_REMOTE_BUILD,
@@ -145,7 +153,35 @@ import {
   type WhatsApp2GatewayEvent,
   type WhatsApp2GatewayMessage,
   type WhatsApp2PresencePayload,
+  type WhatsApp2DeliveryQueueItem,
+  getWhatsApp2DeliveryQueue,
 } from "./whatsapp2-client";
+
+function mapDeliveryQueueItemToDirectMessage(item: WhatsApp2DeliveryQueueItem): DirectMessage {
+  const scheduledMs = Date.parse(item.scheduled_at) || Date.now();
+  const isAudio = item.kind === "audio" || Boolean(item.voice_note);
+  const isImage = item.kind === "image";
+  const text = isAudio
+    ? "🎙️ Mensagem de voz"
+    : isImage
+    ? (item.text_content ? `📷 Foto: ${item.text_content}` : "📷 Foto")
+    : (item.text_content || "");
+  return {
+    id: item.id,
+    senderId: "me",
+    text,
+    mediaType: isAudio ? "audio" : isImage ? "image" : undefined,
+    mediaUrl: item.media_url || undefined,
+    audioTranscript: isAudio ? "🎙️ Mensagem de voz" : undefined,
+    createdAt: formatMessageTime(scheduledMs),
+    timestamp: scheduledMs,
+    sentDate: item.scheduled_at,
+    isMine: true,
+    status: "sending",
+    deliverAt: scheduledMs,
+    deliveryQueueStatus: (item.status === "sending" ? "sending" : "pending") as "sending" | "pending",
+  };
+}
 
 function parseMediaObservationPauseReason(reason?: string | null): { kind: "video" | "image"; messageId: string } | null {
   const match = /^media_observation_required\|(video|image)\|(.+)$/.exec(String(reason || ""));
@@ -257,7 +293,7 @@ export interface DirectConversation {
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
-type WhatsAppResponseFilter = "todos" | "nao_respondidos" | "respondidos" | "arquivados" | "trancadas";
+type WhatsAppResponseFilter = "todos" | "nao_respondidos" | "respondidos" | "arquivados" | "trancadas" | "bloqueados";
 type WhatsAppQuickFilter = "todas" | "com_ia" | "sem_ia";
 type InboxChannel = "instagram" | "whatsapp2";
 
@@ -271,6 +307,18 @@ function isWhatsAppConversationArchived(c: DirectConversation): boolean {
 
 function isWhatsAppConversationLocked(c: DirectConversation): boolean {
   return c.isLocked === true || c.status === "locked" || c.status === "vault";
+}
+
+// O WhatsApp Web pode manter o chat na lista após sua exclusão no celular.
+// Contatos efetivamente bloqueados ficam acessíveis apenas no filtro próprio.
+function isWhatsAppConversationBlocked(c: DirectConversation): boolean {
+  return c.isBlocked === true;
+}
+
+function matchesWhatsAppBlockFilter(c: DirectConversation, filter: WhatsAppResponseFilter): boolean {
+  return filter === "bloqueados"
+    ? isWhatsAppConversationBlocked(c)
+    : !isWhatsAppConversationBlocked(c);
 }
 
 function formatWhatsApp2Preview(message: WhatsApp2GatewayMessage | null): string {
@@ -461,6 +509,42 @@ function mapWhatsApp2Message(message: WhatsApp2GatewayMessage): DirectMessage {
 }
 
 const avatarRefreshRequests = new Set<string>();
+const pendingWhatsAppAvatarRefreshes = new Map<string, Promise<string | null>>();
+const attemptedWhatsAppAvatarRefreshes = new Map<string, number>();
+
+function isWhatsAppProfilePhotoUrl(value: unknown): boolean {
+  try {
+    return new URL(String(value || "")).hostname === "pps.whatsapp.net";
+  } catch {
+    return false;
+  }
+}
+
+function refreshBrokenWhatsAppAvatar(conversationId: string, rejectedUrl: string): Promise<string | null> {
+  const chatId = whatsappProviderIdFromConversationId(conversationId);
+  if (!/^\d+@(c\.us|lid)$/.test(chatId) || !isWhatsAppProfilePhotoUrl(rejectedUrl)) {
+    return Promise.resolve(null);
+  }
+  const pending = pendingWhatsAppAvatarRefreshes.get(chatId);
+  if (pending) return pending;
+  const key = `${chatId}:${rejectedUrl}`;
+  const now = Date.now();
+  if (now - (attemptedWhatsAppAvatarRefreshes.get(key) || 0) < 10 * 60 * 1000) {
+    return Promise.resolve(null);
+  }
+  attemptedWhatsAppAvatarRefreshes.set(key, now);
+  while (attemptedWhatsAppAvatarRefreshes.size > 600) {
+    const oldestKey = attemptedWhatsAppAvatarRefreshes.keys().next().value;
+    if (!oldestKey) break;
+    attemptedWhatsAppAvatarRefreshes.delete(oldestKey);
+  }
+  const request = refreshWhatsApp2ProfilePhoto(chatId, rejectedUrl)
+    .then((result) => result.avatarUrl && result.avatarUrl !== rejectedUrl ? result.avatarUrl : null)
+    .catch(() => null)
+    .finally(() => pendingWhatsAppAvatarRefreshes.delete(chatId));
+  pendingWhatsAppAvatarRefreshes.set(chatId, request);
+  return request;
+}
 
 function isMetaCdnAvatarUrl(value: unknown): boolean {
   const source = String(value || "");
@@ -541,6 +625,10 @@ function AvatarWithFallback({
   ringClassName = "",
 }: AvatarWithFallbackProps) {
   const [hasError, setHasError] = useState(false);
+  const [replacementAvatar, setReplacementAvatar] = useState<string | null | undefined>(undefined);
+  const [alreadyRetried, setAlreadyRetried] = useState(false);
+  const originalSourceRef = useRef(src);
+  originalSourceRef.current = src;
   const expiredMetaAvatar = isExpiredMetaCdnAvatar(src);
   const isWhatsApp = Boolean(conversationId?.startsWith("wa2:"));
   const cleanName = String(alt || "").trim();
@@ -552,7 +640,7 @@ function AvatarWithFallback({
     ? `${nameParts[0][0] || ""}${nameParts[nameParts.length - 1][0] || ""}`.toUpperCase()
     : (nameParts[0]?.slice(0, 2) || "").toUpperCase();
   const numericOnlyName = /^\+?\d[\d\s()+-]*$/.test(cleanName);
-  const rawSrc = String(src || "").trim();
+  const rawSrc = String(isWhatsApp && replacementAvatar !== undefined ? replacementAvatar : src || "").trim();
   const hasRealPhoto =
     !hasError &&
     !expiredMetaAvatar &&
@@ -561,6 +649,8 @@ function AvatarWithFallback({
 
   useEffect(() => {
     setHasError(false);
+    setReplacementAvatar(undefined);
+    setAlreadyRetried(false);
     if (!isWhatsApp && expiredMetaAvatar) requestAvatarRefresh(conversationId);
   }, [src, conversationId, expiredMetaAvatar, isWhatsApp]);
 
@@ -598,7 +688,17 @@ function AvatarWithFallback({
         className="object-cover"
         onError={() => {
           setHasError(true);
-          if (!isWhatsApp && isMetaCdnAvatarUrl(src)) requestAvatarRefresh(conversationId);
+          if (isWhatsApp && conversationId && !alreadyRetried && isWhatsAppProfilePhotoUrl(rawSrc)) {
+            setAlreadyRetried(true);
+            void refreshBrokenWhatsAppAvatar(conversationId, rawSrc).then((updatedUrl) => {
+              if (updatedUrl && originalSourceRef.current === src) {
+                setReplacementAvatar(updatedUrl);
+                setHasError(false);
+              }
+            });
+          } else if (!isWhatsApp && isMetaCdnAvatarUrl(src)) {
+            requestAvatarRefresh(conversationId);
+          }
         }}
       />
     </div>
@@ -888,7 +988,9 @@ function isTemporaryOrSendingMessage(m?: DirectMessage | null): boolean {
     id.startsWith("sent_") ||
     id.startsWith("msg_local_") ||
     id.startsWith("local-") ||
-    id.startsWith("local_")
+    id.startsWith("local_") ||
+    id.startsWith("fin-") ||
+    id.startsWith("autopilot-preview:")
   );
 }
 
@@ -952,6 +1054,11 @@ function deduplicateMessages(msgs: DirectMessage[]): DirectMessage[] {
         // Se texto puro, compara o conteúdo
         if (!r.mediaUrl && !m.mediaUrl && hasText && r.text) {
           return r.text.trim() === m.text.trim();
+        }
+
+        // Se é mensagem finalizada (fin-) com mesmo tipo de mídia (áudio ou imagem)
+        if (r.id.startsWith("fin-") && r.mediaType && r.mediaType === m.mediaType) {
+          return true;
         }
 
         return false;
@@ -1119,6 +1226,8 @@ export function InstagramDirect({
   const [whatsapp2GatewayStatus, setWhatsapp2GatewayStatus] = useState("idle");
   const [whatsapp2GatewayError, setWhatsapp2GatewayError] = useState<string | null>(null);
   const whatsapp2InboxLastReconcileAtRef = useRef(0);
+  const whatsapp2ProviderSnapshotReadyRef = useRef(false);
+  const whatsapp2UnknownRealtimeCheckAtRef = useRef(0);
   const isRealtimeConnectedRef = useRef<boolean>(true);
 
   const loadWhatsApp2Conversations = useCallback(async () => {
@@ -1133,6 +1242,8 @@ export function InstagramDirect({
     const oneWeekAgoIso = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
     let gatewayRows: DirectConversation[] = [];
     let gatewayError: Error | null = null;
+    // Só um snapshot recebido com sucesso pode confirmar que um chat sumiu do WhatsApp.
+    let hasAuthoritativeGatewaySnapshot = false;
     let accountId: string | null = null;
     const resolvedPhonesByChatId = new Map<string, string>();
 
@@ -1151,6 +1262,7 @@ export function InstagramDirect({
         accountId = connectedAccountId;
         activeWhatsAppAccountIdRef.current = accountId;
         if (accountChanged) {
+          whatsapp2ProviderSnapshotReadyRef.current = false;
           setWhatsApp2Conversations((current) => current.filter((conversation) =>
             whatsappConversationBelongsToAccount(conversation.id, accountId),
           ));
@@ -1159,11 +1271,14 @@ export function InstagramDirect({
         }
         const rows = await getWhatsApp2Chats(500);
         if (!isLatestRequest() || activeWhatsAppAccountIdRef.current !== accountId) return;
+        hasAuthoritativeGatewaySnapshot = true;
+        whatsapp2ProviderSnapshotReadyRef.current = true;
         gatewayRows = rows
           .map((row) => mapWhatsApp2Chat(row, accountId!))
           .filter((conversation) => whatsappConversationBelongsToAccount(conversation.id, accountId));
       } else {
         activeWhatsAppAccountIdRef.current = null;
+        whatsapp2ProviderSnapshotReadyRef.current = false;
         setWhatsApp2Conversations([]);
         setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
       }
@@ -1174,6 +1289,7 @@ export function InstagramDirect({
       setWhatsapp2GatewayError(gatewayError.message || "Gateway indisponível");
       if (!accountId) {
         activeWhatsAppAccountIdRef.current = null;
+        whatsapp2ProviderSnapshotReadyRef.current = false;
         setWhatsApp2Conversations([]);
         setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
       }
@@ -1232,7 +1348,13 @@ export function InstagramDirect({
       canonicalRows,
       resolvedPhonesByChatId,
     );
-    const merged = identityGroups.map((group) => {
+    // O banco guarda histórico, mas não pode ressuscitar na caixa de entrada
+    // conversas já excluídas do WhatsApp. Aliases de telefone/LID continuam
+    // agrupados com os registros canônicos enquanto existir um chat no gateway.
+    const visibleIdentityGroups = hasAuthoritativeGatewaySnapshot
+      ? identityGroups.filter((group) => group.gatewayRows.length > 0)
+      : identityGroups;
+    const merged = visibleIdentityGroups.map((group) => {
       const gatewayCandidates = group.gatewayRows;
       const canonicalCandidates = group.canonicalRows;
       const gateway = [...gatewayCandidates].sort((a, b) => {
@@ -1383,7 +1505,11 @@ export function InstagramDirect({
           if (mergedIdentityKeys.has(currentIdentityKey)) continue;
           const currentAt = getMessageTimestampMs(current.lastMessageAt || current.lastActive);
           const oneWeekAgoMs = Date.now() - (7 * 24 * 60 * 60 * 1000);
-          if (currentAt >= oneWeekAgoMs) reconciledById.set(current.id, current);
+          // Uma conversa sem correspondência no snapshot do WhatsApp não
+          // pode reaparecer apenas por estar no estado local da interface.
+          if (!hasAuthoritativeGatewaySnapshot && currentAt >= oneWeekAgoMs) {
+            reconciledById.set(current.id, current);
+          }
           continue;
         }
 
@@ -1426,7 +1552,7 @@ export function InstagramDirect({
     // Transfere o histórico apenas entre aliases confirmados da mesma conta.
     setMessages((previous) => {
       const next = { ...previous };
-      for (const group of identityGroups) {
+      for (const group of visibleIdentityGroups) {
         const target = mergedByIdentity.get(group.identityKey);
         if (!target) continue;
         const ids = [...group.gatewayRows, ...group.canonicalRows].map((row) => row.id);
@@ -1451,7 +1577,7 @@ export function InstagramDirect({
       );
       const reconciled = mergedByIdentity.get(currentIdentityKey)
         || merged.find((conversation) => conversation.id === current.id);
-      if (!reconciled) return current;
+      if (!reconciled) return hasAuthoritativeGatewaySnapshot ? null : current;
       const currentAt = getMessageTimestampMs(current.lastMessageAt || current.lastActive);
       const reconciledAt = getMessageTimestampMs(
         reconciled.lastMessageAt || reconciled.lastActive
@@ -1492,6 +1618,14 @@ export function InstagramDirect({
   }, [conversations]);
   const prefersReducedMotion = useReducedMotion();
   const [whatsapp2Presence, setWhatsApp2Presence] = useState<WhatsApp2PresencePayload | null>(null);
+  const [whatsappWallpaper, setWhatsappWallpaper] = useState<string | null>(() => getWhatsAppWallpaper());
+  useEffect(() => {
+    const handleWallpaperChange = () => {
+      setWhatsappWallpaper(getWhatsAppWallpaper());
+    };
+    window.addEventListener("vendeo-wallpaper-change", handleWallpaperChange);
+    return () => window.removeEventListener("vendeo-wallpaper-change", handleWallpaperChange);
+  }, []);
   const initialWhatsAppLookupRef = useRef<string | null>(null);
   const [whatsapp2ExternalChatUrl, setWhatsApp2ExternalChatUrl] = useState<string | null>(null);
   const whatsapp2PresenceClientIdRef = useRef(
@@ -1501,9 +1635,26 @@ export function InstagramDirect({
   const [isWhatsAppContactInfoOpen, setIsWhatsAppContactInfoOpen] = useState(false);
   const [isWhatsAppStickerTrayOpen, setIsWhatsAppStickerTrayOpen] = useState(false);
   const [isWhatsAppStatusModalOpen, setIsWhatsAppStatusModalOpen] = useState(false);
+  const [isMyStatusViewerOpen, setIsMyStatusViewerOpen] = useState(false);
+  const [myStatusActiveCount, setMyStatusActiveCount] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const result = await getWhatsApp2ActiveStatuses();
+        if (!cancelled) setMyStatusActiveCount(result.count);
+      } catch {
+        if (!cancelled) setMyStatusActiveCount(null);
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 120000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [isMyStatusViewerOpen, isWhatsAppStatusModalOpen]);
   const [whatsappStickers, setWhatsappStickers] = useState<WhatsAppSavedSticker[]>([]);
   const [isLoadingWhatsAppStickers, setIsLoadingWhatsAppStickers] = useState(false);
   const [sendingStickerId, setSendingStickerId] = useState<string | null>(null);
+  const [privateBrainChatConversationId, setPrivateBrainChatConversationId] = useState<string | null>(null);
   const [brainConsoleRequest, setBrainConsoleRequest] = useState<{ conversationId: string; requestId: number } | null>(null);
   const brainConsoleRequestIdRef = useRef(0);
   const handleBrainConsoleOpenRequestHandled = useCallback((requestId: number) => {
@@ -2394,7 +2545,7 @@ export function InstagramDirect({
   // sinal que já esconde a BottomNav ao abrir uma conversa, restaurando-a
   // somente quando o modal fecha e não existe chat aberto.
   useEffect(() => {
-    if (isWhatsAppStatusModalOpen) {
+    if (isWhatsAppStatusModalOpen || isMyStatusViewerOpen) {
       onChatOpenChange?.(true);
       return;
     }
@@ -2402,7 +2553,7 @@ export function InstagramDirect({
     if (!activeChatIdRef.current) {
       onChatOpenChange?.(false);
     }
-  }, [isWhatsAppStatusModalOpen, onChatOpenChange]);
+  }, [isWhatsAppStatusModalOpen, isMyStatusViewerOpen, onChatOpenChange]);
 
   // Rastreamento síncrono da data/hora (ms) do último envio agendado por conversa
   const latestScheduledDeliverAtRef = useRef<Record<string, number>>({});
@@ -2805,7 +2956,7 @@ export function InstagramDirect({
 
     const scheduleNext = () => {
       if (cancelled) return;
-      const delayMs = isRealtimeConnectedRef.current ? 120_000 : 30_000;
+      const delayMs = isRealtimeConnectedRef.current ? 45_000 : 30_000;
       timerId = window.setTimeout(async () => {
         if (document.visibilityState === "visible") {
           await reconcileInbox();
@@ -3290,15 +3441,17 @@ export function InstagramDirect({
       if (fullReconcileInFlight) return fullReconcileInFlight;
 
       fullReconcileInFlight = (async () => {
-        const [gatewayRows, canonicalRows] = await Promise.all([
+        const [gatewayRows, canonicalRows, queueRows] = await Promise.all([
           getWhatsApp2Messages(providerId, 140),
           loadInstagramMessagesDirect(conversationId),
+          getWhatsApp2DeliveryQueue(providerId).catch(() => []),
         ]);
         if (cancelled) return;
 
         mergeConversationMessages([
           ...gatewayRows.map(mapWhatsApp2Message),
           ...(canonicalRows || []),
+          ...queueRows.map(mapDeliveryQueueItemToDirectMessage),
         ]);
         lastFullReconcileAt = Date.now();
         reconcileFailures = 0;
@@ -3340,6 +3493,49 @@ export function InstagramDirect({
 
     const handleGatewayEvent = (event: WhatsApp2GatewayEvent) => {
       if (cancelled) return;
+
+      if (event.type === "delivery_job_completed") {
+        const payload = event.payload as {
+          jobId?: string;
+          providerMessageId?: string;
+          conversationId?: string;
+          chatId?: string;
+        } | null;
+        if (!payload?.jobId) return;
+        setMessages((previous) => {
+          const currentList = previous[conversationId] || [];
+          return {
+            ...previous,
+            [conversationId]: currentList.map((item) =>
+              item.id === payload.jobId
+                ? {
+                    ...item,
+                    id: payload.providerMessageId || item.id,
+                    status: "sent",
+                    deliverAt: undefined,
+                    delaySeconds: undefined,
+                  }
+                : item
+            ),
+          };
+        });
+        return;
+      }
+
+      if (event.type === "finalization_queued") {
+        const payload = event.payload as {
+          conversationId?: string;
+          recipientId?: string;
+          items?: WhatsApp2DeliveryQueueItem[];
+        } | null;
+        if (payload?.conversationId === conversationId || payload?.recipientId === providerId) {
+          const mapped = (payload.items || []).map(mapDeliveryQueueItemToDirectMessage);
+          if (mapped.length > 0) {
+            mergeConversationMessages(mapped);
+          }
+        }
+        return;
+      }
 
       if (event.type === "message" || event.type === "message_create") {
         const message = event.payload as WhatsApp2GatewayMessage | null;
@@ -3791,6 +3987,19 @@ export function InstagramDirect({
       if (!id || (conv.channel !== "whatsapp2" && !id.startsWith("wa2:"))) return;
       if (!whatsappConversationBelongsToAccount(id, activeWhatsAppAccountIdRef.current)) return;
 
+      // Eventos do Supabase não provam que a conversa ainda existe no WhatsApp.
+      // Para um ID novo, revalide no gateway antes de exibir; isso também impede
+      // que atualizações de histórico ressuscitem conversas excluídas.
+      if (whatsapp2ProviderSnapshotReadyRef.current &&
+          !whatsapp2ConversationsRef.current.some((item) => item.id === id)) {
+        const now = Date.now();
+        if (now - whatsapp2UnknownRealtimeCheckAtRef.current > 5_000) {
+          whatsapp2UnknownRealtimeCheckAtRef.current = now;
+          void loadWhatsApp2Conversations();
+        }
+        return;
+      }
+
       const incomingAtMs = conv.lastMessageAt
         ? getMessageTimestampMs(conv.lastMessageAt)
         : 0;
@@ -3901,7 +4110,7 @@ export function InstagramDirect({
         return nextList;
       });
     },
-    []
+    [loadWhatsApp2Conversations]
   );
 
   // -------------------------------------------------------------
@@ -4896,7 +5105,8 @@ export function InstagramDirect({
 
       const data = await res.json();
       if (data.url) {
-        await sendMessageWithText(`[audio:${data.url}]`);
+        const sent = await sendMessageWithText(`[audio:${data.url}]`);
+        if (!sent) return; // O chat ja marca a tentativa como falha.
       }
     } catch (err) {
       console.error("Erro ao enviar áudio gravado:", err);
@@ -5282,8 +5492,13 @@ export function InstagramDirect({
               if (nativeVoiceUrl) whatsapp2AudioUrl = nativeVoiceUrl;
             }
           } catch (error) {
-            console.warn("[WhatsApp 2] Variante OGG/Opus indisponível; usando áudio original.", error);
+            console.warn("[WhatsApp 2] Variante OGG/Opus não encontrada; tentando preparar o áudio.", error);
           }
+        }
+        // WAV/MP3/M4A de audios antigos sao convertidos em nota de voz OGG/Opus.
+        // Nunca enviar arquivo comum quando o operador selecionou uma gravacao.
+        if (whatsapp2AudioUrl) {
+          whatsapp2AudioUrl = await prepareWhatsAppVoiceNoteUrl(whatsapp2AudioUrl);
         }
 
         const response = whatsapp2AudioUrl
@@ -5587,6 +5802,55 @@ export function InstagramDirect({
       ),
     }));
 
+    if (activeChat.type === "whatsapp2") {
+      try {
+        const providerId = activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id);
+        const replyToMessageId = failedMsg.replyToMessageId || null;
+        let response;
+        if (failedMsg.mediaType === "audio") {
+          const rawUrl = failedMsg.mediaUrl || failedMsg.text.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1];
+          if (!rawUrl) throw new Error("O audio nao tem URL para reenviar. Grave novamente.");
+          const voiceUrl = await prepareWhatsAppVoiceNoteUrl(rawUrl);
+          response = await sendWhatsApp2Media({
+            to: providerId, mediaUrl: voiceUrl, asVoice: true, replyToMessageId,
+          });
+        } else if (failedMsg.mediaUrl) {
+          response = await sendWhatsApp2Media({
+            to: providerId,
+            mediaUrl: failedMsg.mediaUrl,
+            asSticker: failedMsg.mediaType === "sticker",
+            replyToMessageId,
+          });
+        } else {
+          response = await sendWhatsApp2Text({
+            to: providerId, text: failedMsg.text, replyToMessageId,
+          });
+        }
+        const confirmedId = response.message?.id;
+        if (!confirmedId) {
+          throw new Error("O WhatsApp nao confirmou a mensagem. Confira a conversa antes de tentar novamente.");
+        }
+        setMessages((prev) => ({
+          ...prev,
+          [activeChat.id]: (prev[activeChat.id] || []).map((m) =>
+            m.id === failedMsg.id
+              ? { ...m, id: confirmedId, status: "sent", errorReason: undefined }
+              : m
+          ),
+        }));
+      } catch (error) {
+        console.error("[WhatsApp] Falha no reenvio manual:", error);
+        setMessages((prev) => ({
+          ...prev,
+          [activeChat.id]: (prev[activeChat.id] || []).map((m) =>
+            m.id === failedMsg.id ? { ...m, status: "failed" } : m
+          ),
+        }));
+        toast.error(error instanceof Error ? error.message : "Falha ao reenviar no WhatsApp.");
+      }
+      return;
+    }
+
     try {
       let textToSend = failedMsg.text;
       let audioUrlToSend = failedMsg.mediaUrl;
@@ -5680,6 +5944,48 @@ export function InstagramDirect({
     }
   };
 
+  const handleFinalizationQueued = useCallback((newQueuedMessages: DirectMessage[]) => {
+    if (!activeChat || !newQueuedMessages.length) return;
+    const conversationId = activeChat.id;
+    setMessages((prev) => {
+      const existing = prev[conversationId] || [];
+      return {
+        ...prev,
+        [conversationId]: deduplicateMessages([...existing, ...newQueuedMessages]),
+      };
+    });
+
+    const firstMsg = newQueuedMessages[0];
+    const previewText = firstMsg.mediaType === "audio"
+      ? "🎙️ Mensagem de voz"
+      : firstMsg.mediaType === "image"
+      ? "📷 Foto"
+      : firstMsg.text;
+
+    const applyPreview = (prev: DirectConversation[]) => {
+      const target = prev.find((item) => item.id === conversationId);
+      if (!target) return prev;
+      const updated: DirectConversation = {
+        ...target,
+        lastMessage: `Você: ${previewText}`,
+        lastActive: firstMsg.createdAt || "Agora",
+        lastMessageAt: firstMsg.sentDate || new Date().toISOString(),
+        lastSender: "me",
+        lastStatus: "sending",
+        unread: false,
+      };
+      return [updated, ...prev.filter((item) => item.id !== conversationId)];
+    };
+
+    if (activeChat.type === "whatsapp2") {
+      setWhatsApp2Conversations(applyPreview);
+    } else {
+      setConversations(applyPreview);
+    }
+
+    setTimeout(() => scrollToBottom("smooth"), 60);
+  }, [activeChat, scrollToBottom]);
+
   const handleOpenInInstagram = (username?: string) => {
     if (!username) return;
     const clean = username.replace(/^@/, "").replace(/^ig_/, "").trim();
@@ -5706,6 +6012,7 @@ export function InstagramDirect({
     setChatViewportReadyId(null);
     setShowScrollToBottom(false);
     setActiveChat(null);
+    setPrivateBrainChatConversationId(null);
     setReplyingToMessage(null);
     onChatOpenChange?.(false);
 
@@ -5775,9 +6082,13 @@ export function InstagramDirect({
       setLoadingConversationId(conv.id);
       try {
         const providerId = conv.providerId || whatsappProviderIdFromConversationId(conv.id);
-        const rows = await getWhatsApp2Messages(providerId, 140);
+        const [rows, queueRows] = await Promise.all([
+          getWhatsApp2Messages(providerId, 140),
+          getWhatsApp2DeliveryQueue(providerId).catch(() => []),
+        ]);
         const formatted = rows.map(mapWhatsApp2Message);
-        setMessages((previous) => ({ ...previous, [conv.id]: deduplicateMessages([...(previous[conv.id] || []), ...formatted]).sort((a, b) => getMessageTimestampMs(a.sentDate || a.timestamp) - getMessageTimestampMs(b.sentDate || b.timestamp)) }));
+        const mappedQueue = queueRows.map(mapDeliveryQueueItemToDirectMessage);
+        setMessages((previous) => ({ ...previous, [conv.id]: deduplicateMessages([...(previous[conv.id] || []), ...formatted, ...mappedQueue]).sort((a, b) => getMessageTimestampMs(a.sentDate || a.timestamp) - getMessageTimestampMs(b.sentDate || b.timestamp)) }));
       } catch (error) {
         console.error("Erro ao carregar mensagens do WhatsApp:", error);
         toast.error("Não consegui carregar o histórico do WhatsApp.");
@@ -5981,19 +6292,19 @@ export function InstagramDirect({
     (c) => isChatRestricted(c)
   ).length;
 
-  const aiEnabledCount = platformConversations.filter((c) => c.aiAutoRespond === true).length;
-  const aiDisabledCount = platformConversations.filter((c) => c.aiAutoRespond !== true).length;
   const whatsappArchivedCount = platformConversations.filter(
-    (c) => isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
+    (c) => !isWhatsAppConversationBlocked(c) && isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
   ).length;
   const whatsappLockedCount = activeChannel === "whatsapp2"
-    ? platformConversations.filter(isWhatsAppConversationLocked).length
+    ? platformConversations.filter((c) => !isWhatsAppConversationBlocked(c) && isWhatsAppConversationLocked(c)).length
     : 0;
+  const whatsappBlockedCount = platformConversations.filter(isWhatsAppConversationBlocked).length;
   const effectiveWhatsAppResponseFilter = whatsappResponseFilter;
   const whatsappInboxPrimaryConversations = platformConversations.filter(
     (c) =>
       !isChatRestricted(c) &&
       c.status !== "pending" &&
+      !isWhatsAppConversationBlocked(c) &&
       !isWhatsAppConversationArchived(c) &&
       (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
   );
@@ -6003,41 +6314,49 @@ export function InstagramDirect({
   const whatsappAnsweredCount = whatsappInboxPrimaryConversations.filter(
     (c) => c.lastSender === "me"
   ).length;
+  // Mesmo critério das demais etapas: contatos finalizados, exceto restritos,
+  // arquivados, trancados e bloqueados.
+  const whatsappFinalizedCount = platformConversations.filter(
+    (c) =>
+      !isChatRestricted(c) &&
+      Boolean(c.isConverted) &&
+      !isWhatsAppConversationBlocked(c) &&
+      !isWhatsAppConversationArchived(c) &&
+      (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c))
+  ).length;
+
+  // A categoria ativa define o universo dos contadores IA e da lista.
+  // O filtro rápido (Com/Sem IA) é aplicado depois, inclusive nas categorias especiais.
+  const matchesSelectedWhatsAppCategory = (c: DirectConversation): boolean => {
+    if (!matchesWhatsAppBlockFilter(c, effectiveWhatsAppResponseFilter)) return false;
+    if (effectiveWhatsAppResponseFilter === "bloqueados") return true;
+    if (effectiveWhatsAppResponseFilter === "trancadas") {
+      return activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c);
+    }
+    if (effectiveWhatsAppResponseFilter === "arquivados") {
+      return isWhatsAppConversationArchived(c) &&
+        (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c));
+    }
+    if (isWhatsAppConversationArchived(c)) return false;
+    if (activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c)) return false;
+    if (isChatRestricted(c) || c.status === "pending") return false;
+    if (effectiveWhatsAppResponseFilter === "respondidos" && c.lastSender !== "me") return false;
+    if (effectiveWhatsAppResponseFilter === "nao_respondidos" &&
+        !(c.lastSender === "them" || isConversationUnread(c))) return false;
+    return true;
+  };
+  const whatsappCategoryConversations = platformConversations.filter(matchesSelectedWhatsAppCategory);
+  const aiEnabledCount = whatsappCategoryConversations.filter((c) => c.aiAutoRespond === true).length;
+  const aiDisabledCount = whatsappCategoryConversations.filter((c) => c.aiAutoRespond !== true).length;
 
   const effectiveStageFilter = isWhatsAppInboxChannel ? whatsappStageFilter : stageFilter;
 
   const filteredConversations = platformConversations
     .filter((c) => {
+      if (isWhatsAppInboxChannel) return matchesSelectedWhatsAppCategory(c);
+
       const isRestr = isChatRestricted(c);
       const isRestrictedOrPending = Boolean(isRestr || c.status === "pending");
-
-      if (isWhatsAppInboxChannel) {
-        if (effectiveWhatsAppResponseFilter === "trancadas") {
-          return activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c);
-        }
-
-        if (effectiveWhatsAppResponseFilter === "arquivados") {
-          return isWhatsAppConversationArchived(c) && (activeChannel !== "whatsapp2" || !isWhatsAppConversationLocked(c));
-        }
-
-        // Conversas arquivadas e trancadas ficam fora da caixa principal.
-        if (isWhatsAppConversationArchived(c)) return false;
-        if (activeChannel === "whatsapp2" && isWhatsAppConversationLocked(c)) return false;
-
-        if (isRestrictedOrPending) return false;
-
-        if (effectiveWhatsAppResponseFilter === "respondidos" && c.lastSender !== "me") return false;
-        if (
-          effectiveWhatsAppResponseFilter === "nao_respondidos" &&
-          !(c.lastSender === "them" || isConversationUnread(c))
-        ) {
-          return false;
-        }
-
-        if (whatsappQuickFilter === "com_ia") return c.aiAutoRespond === true;
-        if (whatsappQuickFilter === "sem_ia") return c.aiAutoRespond !== true;
-        return true;
-      }
 
       // Aba PEDIDOS: reúne pedidos de novas mensagens e contas restringidas no Instagram.
       if (instaFilter === "pedidos") {
@@ -6065,7 +6384,11 @@ export function InstagramDirect({
       return true;
     })
     .filter((c) => {
-      if (isWhatsAppInboxChannel) return true;
+      if (isWhatsAppInboxChannel) {
+        if (whatsappQuickFilter === "com_ia") return c.aiAutoRespond === true;
+        if (whatsappQuickFilter === "sem_ia") return c.aiAutoRespond !== true;
+        return true;
+      }
       if (aiFilter === "todas") return true;
       if (aiFilter === "com_ia") return c.aiAutoRespond === true;
       return c.aiAutoRespond !== true;
@@ -6301,7 +6624,16 @@ export function InstagramDirect({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setPrivateBrainChatConversationId(activeChat.id)}
+              className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-violet-600 transition-all active:scale-90 wa-ios-glass hover:opacity-80 dark:text-violet-300"
+              title="Conversar com Brian sobre este cliente"
+              aria-label="Conversar com Brian sobre este cliente"
+            >
+              <BrainCircuit className="h-[19px] w-[19px]" />
+            </button>
             {whatsapp2ExternalChatUrl ? (
               <a
                 href={whatsapp2ExternalChatUrl}
@@ -6370,6 +6702,19 @@ export function InstagramDirect({
           </div>
         </div>
 
+        {privateBrainChatConversationId === activeChat.id && (
+          <BrainPrivateChat
+            key={activeChat.id}
+            conversationId={activeChat.id}
+            contactName={activeChat.fullName || activeChat.username || "Contato"}
+            visibleMessages={(activeChatMessagesRaw || [])
+              .filter((entry) => typeof entry.text === "string" && entry.text.trim())
+              .slice(-75)
+              .map((entry) => ({ role: entry.isMine ? "larissa" as const : "contact" as const, text: entry.text }))}
+            onClose={() => setPrivateBrainChatConversationId(null)}
+          />
+        )}
+
         {/* Cronograma / Etapa / Objetivos */}
         <ChatStageBar
           variant="whatsapp-ios"
@@ -6402,6 +6747,17 @@ export function InstagramDirect({
           } ${
             isWhatsAppLikeType(activeChat.type) ? "whatsapp-chat-wallpaper" : ""
           }`}
+          style={
+            isWhatsAppLikeType(activeChat.type) && whatsappWallpaper
+              ? {
+                  backgroundImage: `url(${whatsappWallpaper})`,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  backgroundRepeat: "no-repeat",
+                  backgroundAttachment: "local",
+                }
+              : undefined
+          }
         >
           <div
             ref={messagesContentRef}
@@ -7161,7 +7517,7 @@ export function InstagramDirect({
             className={`p-2.5 md:p-3 pb-[calc(10px+env(safe-area-inset-bottom,0px))] md:pb-3 border-t flex items-center justify-between gap-3 shrink-0 z-10 animate-in fade-in duration-200 ${
               isWhatsAppLikeType(activeChat.type)
                 ? "bg-[#f0f2f5] dark:bg-[#202c33] border-black/[0.06] dark:border-[#222d34]"
-                : "bg-white dark:bg-black border-zinc-200 dark:border-[#262626]"
+                : "bg-[#f0f2f5] dark:bg-[#111b21] border-zinc-200 dark:border-[#2a3942]"
             }`}
           >
             {/* Botão Cancelar (Lixeira) */}
@@ -7212,7 +7568,7 @@ export function InstagramDirect({
             className={`border-t shrink-0 z-10 ${
               isWhatsAppLikeType(activeChat.type)
                 ? "bg-[#f0f2f5] dark:bg-[#202c33] border-black/[0.06] dark:border-[#222d34]"
-                : "bg-white dark:bg-black border-zinc-200 dark:border-[#262626]"
+                : "bg-[#f0f2f5] dark:bg-[#111b21] border-zinc-200 dark:border-[#2a3942]"
             }`}
           >
             {/* Prévia de Foto Pendente para envio */}
@@ -7331,6 +7687,15 @@ export function InstagramDirect({
               />
             )}
 
+            {activeChat.type === "whatsapp2" && (
+              <WhatsAppFinalizationActions
+                conversationId={activeChat.id}
+                providerId={activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id)}
+                contactName={activeChat.fullName || activeChat.username || "este contato"}
+                onQueueFinalization={handleFinalizationQueued}
+              />
+            )}
+
             {/* Barra de Digitação Isolada (Zero Lag / 60 FPS com State Colocation) */}
             <InstagramChatComposer
               ref={composerRef}
@@ -7392,8 +7757,8 @@ export function InstagramDirect({
             const audioUrl = activeChat.type === "whatsapp2"
               ? (audio.whatsappAudioUrl || audio.audioUrl)
               : audio.audioUrl;
-            await sendMessageWithText(`[audio:${audioUrl}]`);
-            toast.success(`Áudio "${audio.title}" enviado com sucesso.`);
+            const sent = await sendMessageWithText(`[audio:${audioUrl}]`);
+            if (sent) toast.success(`Áudio "${audio.title}" enviado com sucesso.`);
           }}
         />
 
@@ -7489,6 +7854,16 @@ export function InstagramDirect({
               globalAiEnabled={autoPilot.config?.isEnabledGlobally !== false}
               onClose={() => setIsWhatsAppContactInfoOpen(false)}
               onToggleAi={handleToggleActiveChatAi}
+              onContactSaved={(savedName) => {
+                const id = activeChat.id;
+                setActiveChat((current) => current?.id === id ? { ...current, fullName: savedName, savedContactName: savedName } : current);
+                setWhatsApp2Conversations((current) =>
+                  current.map((row) => row.id === id ? { ...row, fullName: savedName, savedContactName: savedName } : row)
+                );
+                setConversations((current) =>
+                  current.map((row) => row.id === id ? { ...row, fullName: savedName, savedContactName: savedName } : row)
+                );
+              }}
             />
           )}
         </AnimatePresence>
@@ -7520,15 +7895,15 @@ export function InstagramDirect({
   };
 
   return (
-    <div className="relative flex flex-col md:flex-row h-full w-full bg-white dark:bg-black text-zinc-950 dark:text-white overflow-hidden">
+    <div className="relative flex flex-col md:flex-row h-full w-full bg-[#f0f2f5] dark:bg-[#111b21] text-zinc-950 dark:text-white overflow-hidden">
       {/* 1. LISTA DE CONVERSAS (NO MOBILE: OCULTA QUANDO O CHAT ESTIVER ABERTO; NO DESKTOP: FIXADA À ESQUERDA) */}
       <div className={`flex flex-col h-full w-full md:w-[360px] lg:w-[400px] shrink-0 md:border-r border-zinc-200 dark:border-[#262626] overflow-hidden ${activeChat ? "hidden md:flex" : "flex"}`}>
         {/* Cabeçalho da caixa de entrada: WhatsApp segue a hierarquia visual do iOS */}
         <div
           className={`shrink-0 px-4 backdrop-blur-2xl ${
             isWhatsAppInboxChannel
-              ? "whatsapp-ios border-b-0 bg-white/[0.94] pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-2 dark:bg-black/[0.94]"
-              : "border-b border-zinc-100 dark:border-[#1f1f1f] bg-white/95 dark:bg-black/95 pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-3"
+              ? "whatsapp-ios border-b-0 bg-[#f0f2f5]/[0.94] pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-2 dark:bg-[#111b21]/[0.94]"
+              : "border-b border-zinc-100 dark:border-[#2a3942] bg-[#f0f2f5]/95 dark:bg-[#111b21]/95 pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-3"
           }`}
         >
           <div className="flex items-center justify-between gap-3">
@@ -7538,21 +7913,6 @@ export function InstagramDirect({
               </h2>
             </div>
 
-            {isWhatsAppInboxChannel && (
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setIsWhatsAppStatusModalOpen(true)}
-                  className="min-h-[40px] flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#25d366]/15 hover:bg-[#25d366]/25 text-[#128c7e] dark:text-[#25d366] text-xs font-semibold transition-all active:scale-95 cursor-pointer border border-[#25d366]/30 shadow-sm"
-                  title="Publicar Status no WhatsApp"
-                >
-                  <span className="w-4 h-4 rounded-full border border-[#25d366] border-dashed flex items-center justify-center font-bold text-[10px] text-[#25d366] leading-none">
-                    +
-                  </span>
-                  <span>Status</span>
-                </button>
-              </div>
-            )}
 
             <div className={`items-center gap-1.5 shrink-0 ${isWhatsAppInboxChannel ? "hidden" : "flex"}`}>
               <button
@@ -7667,17 +8027,21 @@ export function InstagramDirect({
         </div>
 
         {isWhatsAppInboxChannel && (
-          <div className="whatsapp-ios px-4 pt-0.5 pb-2">
-            <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none select-none">
+          <div className="whatsapp-ios px-3 pt-0.5 pb-1.5 space-y-1">
+            {/* Filtros principais de status */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none select-none">
               {([
-                { id: "todos", label: "Todos", count: whatsappInboxPrimaryConversations.length, dotClass: "bg-[#34c759]" },
-                { id: "nao_respondidos", label: "Não respondidos", count: whatsappNotAnsweredCount, dotClass: "bg-[#0a84ff]" },
-                { id: "respondidos", label: "Respondidos", count: whatsappAnsweredCount, dotClass: "bg-[#8e8e93]" },
-                { id: "arquivados", label: "Arquivados", count: whatsappArchivedCount, dotClass: "bg-[#ff9f0a]" },
+                { id: "todos", label: "Todos", count: whatsappInboxPrimaryConversations.length, color: "#34c759" },
+                { id: "nao_respondidos", label: "Não respondidos", count: whatsappNotAnsweredCount, color: "#0a84ff" },
+                { id: "respondidos", label: "Respondidos", count: whatsappAnsweredCount, color: "#8e8e93" },
+                { id: "arquivados", label: "Arquivados", count: whatsappArchivedCount, color: "#ff9f0a" },
                 ...(activeChannel === "whatsapp2"
-                  ? [{ id: "trancadas" as WhatsAppResponseFilter, label: "Trancadas", count: whatsappLockedCount, dotClass: "bg-[#af52de]" }]
+                  ? [
+                      { id: "trancadas" as WhatsAppResponseFilter, label: "Trancadas", count: whatsappLockedCount, color: "#af52de" },
+                      { id: "bloqueados" as WhatsAppResponseFilter, label: "Bloqueados", count: whatsappBlockedCount, color: "#ff3b30" },
+                    ]
                   : []),
-              ] as Array<{ id: WhatsAppResponseFilter; label: string; count: number; dotClass: string }>).map((filter) => {
+              ] as Array<{ id: WhatsAppResponseFilter; label: string; count: number; color: string }>).map((filter) => {
                 const active = effectiveWhatsAppResponseFilter === filter.id;
                 return (
                   <motion.button
@@ -7688,23 +8052,37 @@ export function InstagramDirect({
                       setWhatsappResponseFilter(filter.id);
                       if (
                         activeChannel === "whatsapp2" &&
-                        (filter.id === "arquivados" || filter.id === "trancadas")
+                        (filter.id === "arquivados" || filter.id === "trancadas" || filter.id === "bloqueados")
                       ) {
                         void loadWhatsApp2Conversations();
                       }
                     }}
-                    whileTap={prefersReducedMotion ? undefined : { scale: 0.95 }}
+                    whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
                     transition={{ duration: prefersReducedMotion ? 0 : 0.12 }}
-                    className={`flex min-h-[32px] shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium tracking-[-0.01em] transition-colors cursor-pointer ${
+                    className={`group flex h-[28px] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-semibold tracking-tight transition-all duration-150 cursor-pointer ${
                       active
-                        ? "bg-[#ffffff] text-[#111111] shadow-[0_0.5px_1px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.035] dark:bg-[#2c2c2e] dark:text-white dark:ring-white/[0.05]"
-                        : "bg-transparent text-[#6e6e73] hover:bg-black/[0.03] dark:text-[#aeaeb2] dark:hover:bg-white/[0.04]"
+                        ? "shadow-sm shadow-black/10 dark:shadow-black/30"
+                        : ""
                     }`}
+                    style={{
+                      backgroundColor: active ? filter.color : "transparent",
+                      color: active ? "#ffffff" : undefined,
+                      border: active ? "none" : `1px solid ${filter.color}35`,
+                    }}
                   >
-                    <span className={`h-[6px] w-[6px] shrink-0 rounded-full ${filter.dotClass}`} />
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: active ? "#ffffff" : filter.color }}
+                    />
                     <span>{filter.label}</span>
-                    {(filter.id === "arquivados" || filter.id === "trancadas") && filter.count > 0 && (
-                      <span className="text-[12px] font-normal tabular-nums opacity-55">
+                    {filter.count > 0 && (
+                      <span
+                        className={`text-[10px] font-bold tabular-nums ${
+                          active
+                            ? "text-white/80"
+                            : "text-zinc-400 dark:text-zinc-500"
+                        }`}
+                      >
                         {filter.count > 99 ? "99+" : filter.count}
                       </span>
                     )}
@@ -7713,7 +8091,8 @@ export function InstagramDirect({
               })}
             </div>
 
-            <div className="flex items-center gap-2 overflow-x-auto pt-0.5 pb-0.5 scrollbar-none select-none">
+            {/* Filtros secundários: IA + Etapas */}
+            <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none select-none">
               {([
                 { id: "com_ia", label: "Com IA", count: aiEnabledCount },
                 { id: "sem_ia", label: "Sem IA", count: aiDisabledCount },
@@ -7725,17 +8104,19 @@ export function InstagramDirect({
                     key={filter.id}
                     type="button"
                     onClick={() => setWhatsappQuickFilter(active ? "todas" : filter.id)}
-                    whileTap={prefersReducedMotion ? undefined : { scale: 0.97 }}
+                    whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
                     transition={{ duration: prefersReducedMotion ? 0 : 0.12 }}
-                    className={`flex h-[27px] shrink-0 items-center gap-1 rounded-full px-3 text-[12px] font-medium tracking-[-0.01em] transition-colors ${
+                    className={`flex h-[26px] shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold tracking-tight transition-all duration-150 ${
                       active
-                        ? "bg-[#d8fdd2] text-[#176b42] dark:bg-[#173d2b] dark:text-[#5fda91]"
-                        : "bg-[#f2f2f7] text-[#3c3c43] dark:bg-[#2c2c2e] dark:text-[#ebebf5]"
+                        ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/20"
+                        : "bg-zinc-100 text-zinc-500 dark:bg-[#363650] dark:text-[#c8c8e0]"
                     }`}
                   >
                     <span>{filter.label}</span>
                     {filter.count > 0 && (
-                      <span className="text-[11px] font-normal tabular-nums opacity-50">
+                      <span className={`text-[10px] font-bold tabular-nums ${
+                        active ? "text-white/80" : "opacity-50"
+                      }`}>
                         {filter.count > 99 ? "99+" : filter.count}
                       </span>
                     )}
@@ -7747,12 +8128,12 @@ export function InstagramDirect({
                 layout
                 type="button"
                 onClick={() => setShowWhatsAppStages((current) => !current)}
-                whileTap={prefersReducedMotion ? undefined : { scale: 0.97 }}
+                whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
                 transition={{ duration: prefersReducedMotion ? 0 : 0.12 }}
-                className={`flex h-[27px] shrink-0 items-center rounded-full px-3 text-[12px] font-medium tracking-[-0.01em] transition-colors ${
+                className={`flex h-[26px] shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold tracking-tight transition-all duration-150 ${
                   showWhatsAppStages || whatsappStageFilter !== "todas"
-                    ? "bg-[#d8fdd2] text-[#176b42] dark:bg-[#173d2b] dark:text-[#5fda91]"
-                    : "bg-[#f2f2f7] text-[#3c3c43] dark:bg-[#2c2c2e] dark:text-[#ebebf5]"
+                    ? "bg-blue-500 text-white shadow-sm shadow-blue-500/20"
+                    : "bg-zinc-100 text-zinc-500 dark:bg-[#363650] dark:text-[#c8c8e0]"
                 }`}
               >
                 <span>
@@ -7762,29 +8143,35 @@ export function InstagramDirect({
                     ? stages.find((stage) => stage.id === whatsappStageFilter)?.name || "Etapas"
                     : "Etapas"}
                 </span>
+                {whatsappStageFilter === "concluidos" && (
+                  <span className="text-[10px] font-bold tabular-nums text-white/80">
+                    {whatsappFinalizedCount > 99 ? "99+" : whatsappFinalizedCount}
+                  </span>
+                )}
               </motion.button>
             </div>
 
+            {/* Sub-filtros de etapas expansíveis */}
             <AnimatePresence initial={false}>
               {showWhatsAppStages && (
                 <motion.div
-                  initial={prefersReducedMotion ? false : { height: 0, opacity: 0, y: -4 }}
+                  initial={prefersReducedMotion ? false : { height: 0, opacity: 0, y: -3 }}
                   animate={{ height: "auto", opacity: 1, y: 0 }}
-                  exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -4 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+                  exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -3 }}
+                  transition={{ duration: prefersReducedMotion ? 0 : 0.15, ease: [0.22, 1, 0.36, 1] }}
                   className="overflow-hidden"
                 >
-                  <div className="flex items-center gap-2 overflow-x-auto pt-1.5 pb-0.5 scrollbar-none">
+                  <div className="flex items-center gap-1.5 overflow-x-auto pt-1 scrollbar-none">
                     <button
                       type="button"
                       onClick={() => {
                         setWhatsappStageFilter("todas");
                         setShowWhatsAppStages(false);
                       }}
-                      className={`h-[28px] shrink-0 rounded-full px-[13px] text-[13px] font-medium tracking-[-0.01em] transition-colors ${
+                      className={`h-[26px] shrink-0 rounded-full px-2.5 text-[11px] font-semibold tracking-tight transition-all ${
                         whatsappStageFilter === "todas"
-                          ? "bg-[#d8fdd2] text-[#176b42] dark:bg-[#173d2b] dark:text-[#5fda91]"
-                          : "bg-[#f2f2f7] text-[#3c3c43] dark:bg-[#2c2c2e] dark:text-[#ebebf5]"
+                          ? "bg-blue-500 text-white shadow-sm"
+                          : "bg-zinc-100 text-zinc-500 dark:bg-[#363650] dark:text-[#c8c8e0]"
                       }`}
                     >
                       Todas as etapas
@@ -7793,6 +8180,9 @@ export function InstagramDirect({
                     {stages.map((stage) => {
                       const count = platformConversations.filter((conversation) => {
                         if (isChatRestricted(conversation) || conversation.isConverted) return false;
+                        if (isWhatsAppConversationBlocked(conversation)) return false;
+                        if (isWhatsAppConversationArchived(conversation)) return false;
+                        if (activeChannel === "whatsapp2" && isWhatsAppConversationLocked(conversation)) return false;
                         const currentStageId = conversation.currentStageId || stages[0]?.id;
                         return currentStageId === stage.id;
                       }).length;
@@ -7806,14 +8196,23 @@ export function InstagramDirect({
                             setWhatsappStageFilter(stage.id);
                             setShowWhatsAppStages(false);
                           }}
-                          className={`flex h-[28px] shrink-0 items-center gap-1 rounded-full px-[13px] text-[13px] font-medium tracking-[-0.01em] transition-colors ${
-                            active
-                              ? "bg-[#d8fdd2] text-[#176b42] dark:bg-[#173d2b] dark:text-[#5fda91]"
-                              : "bg-[#f2f2f7] text-[#3c3c43] dark:bg-[#2c2c2e] dark:text-[#ebebf5]"
+                          className={`flex h-[26px] shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold tracking-tight transition-all ${
+                            active ? "shadow-sm" : ""
                           }`}
+                          style={{
+                            backgroundColor: active ? stage.color || "#3b82f6" : undefined,
+                            color: active ? "#ffffff" : undefined,
+                            border: active ? "none" : `1px solid ${(stage.color || "#3b82f6")}35`,
+                          }}
                         >
                           <span>{stage.name}</span>
-                          {count > 0 && <span className="text-[12px] font-normal tabular-nums opacity-55">{count > 99 ? "99+" : count}</span>}
+                          {count > 0 && (
+                            <span className={`text-[10px] font-bold tabular-nums ${
+                              active ? "text-white/80" : "opacity-50"
+                            }`}>
+                              {count > 99 ? "99+" : count}
+                            </span>
+                          )}
                         </button>
                       );
                     })}
@@ -7824,13 +8223,27 @@ export function InstagramDirect({
                         setWhatsappStageFilter("concluidos");
                         setShowWhatsAppStages(false);
                       }}
-                      className={`h-[28px] shrink-0 rounded-full px-[13px] text-[13px] font-medium tracking-[-0.01em] transition-colors ${
+                      className={`flex h-[26px] shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold tracking-tight transition-all ${
                         whatsappStageFilter === "concluidos"
-                          ? "bg-[#d8fdd2] text-[#176b42] dark:bg-[#173d2b] dark:text-[#5fda91]"
-                          : "bg-[#f2f2f7] text-[#3c3c43] dark:bg-[#2c2c2e] dark:text-[#ebebf5]"
+                          ? "shadow-sm"
+                          : ""
                       }`}
+                      style={{
+                        backgroundColor: whatsappStageFilter === "concluidos" ? "#10b981" : undefined,
+                        color: whatsappStageFilter === "concluidos" ? "#ffffff" : undefined,
+                        border: whatsappStageFilter === "concluidos" ? "none" : "1px solid #10b98135",
+                      }}
                     >
-                      Finalizados
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: whatsappStageFilter === "concluidos" ? "#ffffff" : "#10b981" }}
+                      />
+                      <span>Finalizados</span>
+                      <span className={`text-[10px] font-bold tabular-nums ${
+                        whatsappStageFilter === "concluidos" ? "text-white/80" : "opacity-50"
+                      }`}>
+                        {whatsappFinalizedCount > 99 ? "99+" : whatsappFinalizedCount}
+                      </span>
                     </button>
                   </div>
                 </motion.div>
@@ -7840,32 +8253,41 @@ export function InstagramDirect({
         )}
 
         {isWhatsAppInboxChannel && (
-          <div className="whatsapp-ios px-4 py-2 border-b border-black/[0.05] dark:border-white/[0.05]">
+          <div className="whatsapp-ios px-4 py-2 border-b border-black/[0.05] dark:border-white/[0.05] flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setIsMyStatusViewerOpen(true)}
+              className="min-w-0 flex-1 flex items-center gap-3.5 p-2 rounded-2xl hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-all text-left active:scale-[0.99] group"
+              aria-label="Ver meus Status publicados e quem visualizou"
+            >
+              <div className="relative shrink-0">
+                <div className="w-12 h-12 rounded-full border-2 border-[#25d366] p-0.5 flex items-center justify-center bg-emerald-50 dark:bg-emerald-950/30">
+                  <div className="w-full h-full rounded-full bg-[#25d366] text-white flex items-center justify-center font-bold text-lg shadow-sm">
+                    {myStatusActiveCount && myStatusActiveCount > 0 ? myStatusActiveCount : "+"}
+                  </div>
+                </div>
+                {myStatusActiveCount !== null && myStatusActiveCount > 0 && (
+                  <span className="absolute -bottom-1 -right-1 rounded-full bg-[#111b21] border border-[#25d366] text-[#25d366] text-[10px] px-1.5">●</span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-[#111b21] dark:text-white group-hover:text-[#00a884] transition-colors">
+                  Meu Status
+                </h4>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate mt-0.5">
+                  {myStatusActiveCount && myStatusActiveCount > 0
+                    ? String(myStatusActiveCount) + (myStatusActiveCount === 1 ? " status ativo" : " status ativos") + " · Ver visualizações"
+                    : "Ver meus Status e visualizações"}
+                </p>
+              </div>
+            </button>
             <button
               type="button"
               onClick={() => setIsWhatsAppStatusModalOpen(true)}
-              className="w-full flex items-center gap-3.5 p-2 rounded-2xl hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-all text-left active:scale-[0.99] cursor-pointer group"
+              className="shrink-0 text-[11px] font-semibold text-[#00a884] bg-[#00a884]/10 hover:bg-[#00a884]/20 px-3 py-2 rounded-full"
+              aria-label="Publicar novo Status"
             >
-              <div className="relative shrink-0">
-                <div className="w-12 h-12 rounded-full border-2 border-[#25d366] border-dashed p-0.5 flex items-center justify-center bg-emerald-50 dark:bg-emerald-950/30">
-                  <div className="w-full h-full rounded-full bg-[#25d366] text-white flex items-center justify-center font-bold text-lg shadow-sm">
-                    +
-                  </div>
-                </div>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-semibold text-[#111b21] dark:text-white group-hover:text-[#00a884] transition-colors">
-                    Meu Status
-                  </h4>
-                  <span className="text-[11px] font-semibold text-[#00a884] bg-[#00a884]/10 px-2 py-0.5 rounded-full">
-                    Publicar
-                  </span>
-                </div>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate mt-0.5">
-                  Toque para postar texto, foto ou vídeo no Status
-                </p>
-              </div>
+              + Publicar
             </button>
           </div>
         )}
@@ -8069,15 +8491,28 @@ export function InstagramDirect({
                   <p className="text-sm font-bold text-zinc-950 dark:text-white">
                     {whatsapp2GatewayStatus === "offline"
                       ? "WhatsApp indisponível"
-                      : whatsapp2GatewayStatus === "loading"
-                      ? "Carregando WhatsApp..."
-                      : "WhatsApp conectado"}
+                      : whatsapp2GatewayStatus === "ready"
+                        ? "Nenhuma conversa encontrada"
+                        : whatsapp2GatewayStatus === "authenticated"
+                          ? "Aguardando sincronização"
+                          : "Conectando ao WhatsApp..."}
                   </p>
                   <p className="mx-auto max-w-xs text-xs leading-relaxed text-zinc-500 dark:text-[#8696a0]">
                     {whatsapp2GatewayStatus === "offline"
                       ? whatsapp2GatewayError || "Abra o gateway local do WhatsApp neste computador."
-                      : "Sessão ativa e sincronizada com o WhatsApp Web."}
+                      : whatsapp2GatewayStatus === "ready"
+                        ? "Nenhuma conversa corresponde aos filtros selecionados."
+                        : whatsapp2GatewayStatus === "authenticated"
+                          ? "Sessão autenticada. Aguardando a sincronização das conversas."
+                          : "A conexão está sendo estabelecida. As conversas ainda não estão disponíveis."}
                   </p>
+                  {whatsapp2GatewayStatus !== "ready" && (
+                    <button type="button"
+                      onClick={() => void loadWhatsApp2Conversations()}
+                      className="rounded-lg bg-[#25d366]/15 px-4 py-2 text-xs font-medium text-[#25d366]">
+                      Tentar carregar conversas
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -8669,6 +9104,15 @@ export function InstagramDirect({
         </div>
       )}
 
+      {/* STATUS PUBLICADOS E VISUALIZAÇÕES */}
+      <WhatsAppMyStatusViewer
+        open={isMyStatusViewerOpen}
+        onClose={() => setIsMyStatusViewerOpen(false)}
+        onPublish={() => {
+          setIsMyStatusViewerOpen(false);
+          setIsWhatsAppStatusModalOpen(true);
+        }}
+      />
       {/* MODAL DE PUBLICAR STATUS DO WHATSAPP */}
       <WhatsAppStatusModal
         isOpen={isWhatsAppStatusModalOpen}

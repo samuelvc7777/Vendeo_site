@@ -4,7 +4,16 @@ export interface WhatsAppStoryMedia {
   id: string;
   title: string;
   type: WhatsAppStoryMediaType;
-  mediaUrl: string; // Base64 data URL ou URL pública/Supabase
+  mediaUrl: string; // Base64 legado ou URL pública do Supabase
+  storyKey?: string; // Identidade estável para o histórico anti-repetição após migração
+  automationEnabled?: boolean;
+  triggerMode?: "anytime" | "after_start" | "clock" | "window";
+  sortOrder?: number;
+  afterMinutes?: number;
+  publishTime?: string | null;
+  windowStart?: string | null;
+  windowEnd?: string | null;
+  minGapMinutes?: number;
   thumbnailUrl?: string;
   caption?: string;
   backgroundColor?: string;

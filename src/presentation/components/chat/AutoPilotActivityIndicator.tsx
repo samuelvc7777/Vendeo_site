@@ -1132,7 +1132,7 @@ function BrainOperationalConsole({
       <div
         className={`flex h-full w-full max-w-4xl flex-col overflow-hidden shadow-2xl transition-all ${
           whatsappTheme
-            ? "brain-console-whatsapp rounded-none sm:rounded-[24px] border-0 sm:border border-white/[0.08] bg-[#0b141a] sm:bg-[#0b141a]/96 text-[#e9edef] shadow-black/40 backdrop-blur-3xl"
+            ? "brain-console-whatsapp rounded-none sm:rounded-[24px] border-0 sm:border border-white/[0.08] bg-[#111b21] sm:bg-[#111b21]/96 text-[#e9edef] shadow-black/40 backdrop-blur-3xl"
             : "rounded-none sm:rounded-2xl border-0 sm:border border-zinc-300 dark:border-zinc-700 bg-[#0b0b0f] text-zinc-900 dark:text-zinc-100"
         }`}
       >
@@ -1198,7 +1198,7 @@ function BrainOperationalConsole({
             followTailRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 88;
           }}
           className={`min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-3 sm:p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] sm:pb-5 ${
-            whatsappTheme ? "bg-[#0b141a]" : "bg-[#0b0b0f]"
+            whatsappTheme ? "bg-[#111b21]" : "bg-[#0b0b0f]"
           }`}
         >
           {mediaObservation && (
