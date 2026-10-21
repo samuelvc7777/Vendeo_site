@@ -1,24 +1,62 @@
-{
-  "hosting": {
-    "public": "out",
-    "cleanUrls": true,
-    "rewrites": [
-      {
-        "source": "/privacy/",
-        "destination": "/privacy.html"
-      },
-      {
-        "source": "/terms/",
-        "destination": "/terms.html"
-      },
-      {
-        "source": "/data-deletion/",
-        "destination": "/data-deletion.html"
-      },
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ]
-  }
+﻿{
+    "hosting":  {
+                    "public":  "out",
+                    "cleanUrls":  true,
+                    "rewrites":  [
+                                     {
+                                         "source":  "/privacy/",
+                                         "destination":  "/privacy.html"
+                                     },
+                                     {
+                                         "source":  "/terms/",
+                                         "destination":  "/terms.html"
+                                     },
+                                     {
+                                         "source":  "/data-deletion/",
+                                         "destination":  "/data-deletion.html"
+                                     },
+                                     {
+                                         "source":  "**",
+                                         "destination":  "/index.html"
+                                     }
+                                 ],
+                    "headers":  [
+                                    {
+                                        "headers":  [
+                                                        {
+                                                            "key":  "Cache-Control",
+                                                            "value":  "no-cache, no-store, max-age=0, must-revalidate"
+                                                        }
+                                                    ],
+                                        "source":  "/"
+                                    },
+                                    {
+                                        "headers":  [
+                                                        {
+                                                            "key":  "Cache-Control",
+                                                            "value":  "no-cache, no-store, max-age=0, must-revalidate"
+                                                        }
+                                                    ],
+                                        "source":  "/wa2-config.json"
+                                    },
+                                    {
+                                        "headers":  [
+                                                        {
+                                                            "key":  "Cache-Control",
+                                                            "value":  "no-cache, no-store, max-age=0, must-revalidate"
+                                                        }
+                                                    ],
+                                        "source":  "**/*.html"
+                                    },
+                                    {
+                                        "headers":  [
+                                                        {
+                                                            "key":  "Cache-Control",
+                                                            "value":  "no-cache, no-store, max-age=0, must-revalidate"
+                                                        }
+                                                    ],
+                                        "source":  "/_next/static/chunks/**"
+                                    }
+                                ]
+                }
 }

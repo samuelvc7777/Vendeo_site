@@ -1088,123 +1088,118 @@ export function WhatsAppStatusModal({
         if (e.target === e.currentTarget && !isSubmitting) onClose();
       }}
     >
-      <div className="relative flex flex-col w-full max-w-none h-[100dvh] max-h-none bg-[#111b21] rounded-none overflow-hidden shadow-2xl border-0 text-white sm:max-w-[480px] sm:h-[92vh] sm:max-h-[820px] sm:rounded-3xl sm:border sm:border-white/10">
-        {/* Cabeçalho */}
-        <div className="flex items-center justify-between px-4 py-3 pt-[calc(0.75rem+env(safe-area-inset-top,0px))] sm:pt-3 bg-[#202c33] border-b border-white/5 shrink-0 z-10">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-[#00a884] flex items-center justify-center text-white">
-              <span className="text-xs font-bold">WA</span>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold tracking-tight text-zinc-100">
-                Meu Status do WhatsApp
+      <div className="relative flex flex-col w-full max-w-none h-[100dvh] max-h-none bg-[#0b141a] rounded-none overflow-hidden shadow-2xl border-0 text-white sm:max-w-[480px] sm:h-[92vh] sm:max-h-[820px] sm:rounded-3xl sm:border sm:border-white/10">
+          {/* Cabeçalho — estilo WhatsApp Status */}
+          <div className="flex items-center justify-between px-3 py-2.5 pt-[calc(0.625rem+env(safe-area-inset-top,0px))] sm:pt-2.5 bg-[#1f2c34] shrink-0 z-10">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={onClose}
+                className="w-10 h-10 min-h-[40px] min-w-[40px] -ml-1 rounded-full flex items-center justify-center text-zinc-300 hover:text-white hover:bg-white/10 transition-all cursor-pointer active:scale-90 disabled:opacity-50"
+                aria-label="Voltar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h3 className="text-[19px] font-semibold tracking-tight text-white">
+                Status
               </h3>
-              <p className="text-[11px] text-zinc-400">
-                Visível para seus contatos por 24 horas
-              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-zinc-400 hidden sm:inline">24h</span>
+              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#00a884] to-[#008069] flex items-center justify-center shadow-md ring-2 ring-[#00a884]/20">
+                <Send className="w-4 h-4 text-white" />
+              </div>
             </div>
           </div>
 
-          <button
-            type="button"
-            disabled={isSubmitting}
-            onClick={onClose}
-            className="w-11 h-11 min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer active:scale-95 disabled:opacity-50"
-            aria-label="Fechar"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+          {/* Barra de Abas — pills elegantes com scroll horizontal */}
+          <div className="flex items-center gap-1.5 bg-[#111b21] px-3 py-2.5 border-b border-white/[0.04] shrink-0 overflow-x-auto scrollbar-none">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("text");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "text"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <Type className="w-3.5 h-3.5" />
+              <span>Texto</span>
+            </button>
 
-        {/* Barra de Abas */}
-        <div className="flex items-center justify-around bg-[#111b21] px-2 py-2 border-b border-white/5 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("text");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "text"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <Type className="w-3.5 h-3.5" />
-            <span>Texto</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("image");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "image"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+              <span>Foto</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("image");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "image"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <ImageIcon className="w-3.5 h-3.5" />
-            <span>Foto</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("video");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "video"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <VideoIcon className="w-3.5 h-3.5" />
+              <span>Vídeo</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("video");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "video"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <VideoIcon className="w-3.5 h-3.5" />
-            <span>Vídeo</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("library");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "library"
+                  ? "bg-violet-500/20 text-violet-300 ring-1 ring-violet-500/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Biblioteca</span>
+              {libraryStories.length > 0 && (
+                <span className="ml-0.5 text-[10px] min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-violet-500/30 text-violet-200 font-bold px-1">
+                  {libraryStories.length}
+                </span>
+              )}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("library");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "library"
-                ? "bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-violet-300" />
-            <span>Biblioteca</span>
-            {libraryStories.length > 0 && (
-              <span className="ml-0.5 text-[9px] px-1.5 py-0.2 rounded-full bg-white/20 font-bold">
-                {libraryStories.length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("history");
-              setSubmissionFeedback(null);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === "history"
-                ? "bg-[#00a884] text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
-            }`}
-          >
-            <History className="w-3.5 h-3.5" />
-            <span>Histórico</span>
-          </button>
-
-        </div>
-
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("history");
+                setSubmissionFeedback(null);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === "history"
+                  ? "bg-[#00a884]/20 text-[#00a884] ring-1 ring-[#00a884]/30"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Histórico</span>
+            </button>
+          </div>
         {/* Feedback Banner */}
         {submissionFeedback && (
           <div
@@ -1718,12 +1713,12 @@ export function WhatsAppStatusModal({
           )}
         </div>
 
-        {/* Rodapé: Legenda e Botão de Ação */}
+        {/* Rodapé: Legenda e Botão de Ação — redesign moderno */}
         {activeTab !== "history" && activeTab !== "library" && (
-          <div className="flex flex-col gap-2 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] sm:pb-3 bg-[#202c33] border-t border-white/5 shrink-0 z-10">
+          <div className="flex flex-col gap-2.5 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] sm:pb-3 bg-[#1f2c34] border-t border-white/[0.06] shrink-0 z-10">
             {/* Campo de Legenda para Foto ou Vídeo */}
             {(activeTab === "image" || activeTab === "video") && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#111b21] border border-white/5">
+              <div className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-[#2a3942] border border-white/[0.06] focus-within:border-[#00a884]/40 transition-colors">
                 <input
                   type="text"
                   value={activeTab === "image" ? imageCaption : videoCaption}
@@ -1733,106 +1728,104 @@ export function WhatsAppStatusModal({
                     else setVideoCaption(val);
                   }}
                   placeholder="Adicione uma legenda..."
-                  className="flex-1 bg-transparent text-[16px] md:text-xs text-white placeholder-zinc-400 focus:outline-none"
+                  className="flex-1 bg-transparent text-[15px] md:text-sm text-white placeholder-zinc-500 focus:outline-none"
                   maxLength={1024}
                 />
-                <span className="text-[10px] text-zinc-500 tabular-nums">
+                <span className="text-[10px] text-zinc-500 tabular-nums font-medium">
                   {(activeTab === "image" ? imageCaption : videoCaption).length}/1024
                 </span>
               </div>
             )}
 
-            {/* Seletor de Público do Status */}
-            <div className="flex items-center justify-between px-1 py-1">
-              <button
-                type="button"
-                onClick={() => void openPrivacySettings()}
-                className={`flex items-center gap-2 px-3 py-2 rounded-full active:scale-95 transition-all text-xs font-medium border cursor-pointer group ${
-                  selectedLibraryStory
-                    ? "bg-violet-500/15 border-violet-500/40 text-violet-200 hover:bg-violet-500/25"
-                    : "bg-white/5 hover:bg-white/10 border-white/10 text-zinc-300 hover:text-white"
-                }`}
-                title="Configurar quem pode ver este status"
-              >
-                {selectedLibraryStory ? (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 text-violet-400" />
-                    <span>Público Evergreen: <strong className="text-violet-200 font-semibold">{selectedContactIds.length} contatos novos</strong></span>
-                  </>
-                ) : !isPrivacyVerified ? (
-                  <>
-                    <Shield className="w-3.5 h-3.5 text-amber-400" />
-                    <span className="text-amber-300">Privacidade não confirmada</span>
-                  </>
-                ) : privacyType === "contact" ? (
-                  <>
-                    <Users className="w-3.5 h-3.5 text-[#25d366]" />
-                    <span>Público: <strong className="text-white font-semibold">Meus contatos</strong></span>
-                  </>
-                ) : privacyType === "deny-list" ? (
-                  <>
-                    <UserX className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Público: <strong className="text-amber-300 font-semibold">Exceto {selectedContactIds.length}</strong></span>
-                  </>
-                ) : (
-                  <>
-                    <UserCheck className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Público: <strong className="text-purple-300 font-semibold">Somente {selectedContactIds.length}</strong></span>
-                  </>
-                )}
-                <ChevronRight className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
-              </button>
-
-
-              <span className="text-[11px] text-zinc-500 tabular-nums">
-                {activeTab === "text"
-                  ? "Texto"
-                  : activeTab === "image"
-                  ? imageFile ? `${(imageFile.size / 1024 / 1024).toFixed(1)} MB` : ""
-                  : videoFile ? `${(videoFile.size / 1024 / 1024).toFixed(1)} MB` : ""}
-              </span>
-            </div>
-
-            {/* Linha do Botão de Publicar */}
-            <div className="flex items-center justify-end pt-1">
-
-              <button
-                type="button"
-                disabled={
-                  isSubmitting ||
-                  (activeTab === "text" && !textContent.trim()) ||
-                  (activeTab === "image" && !imageBase64) ||
-                  (activeTab === "video" && !videoBase64) ||
-                  Boolean(
-                    selectedLibraryStory &&
-                    (
-                      isLoadingEvergreenRecipients ||
-                      evergreenLedgerError ||
-                      audienceExclusionsError ||
-                      !audienceExclusions ||
-                      !selectedStoryKey ||
-                      selectedContactIds.length === 0
-                    )
-                  )
-                }
-                onClick={handlePublish}
-                className="flex items-center justify-center gap-2 px-5 py-2.5 min-h-[44px] rounded-full bg-[#00a884] text-white text-xs font-bold hover:bg-[#029070] active:scale-95 transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Publicando...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    <span>Publicar Status</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        )}
+            {/* Seletor de Público + Botão Publicar na mesma linha */}
+<div className="flex items-center justify-between gap-2">
+<button
+type="button"
+onClick={() => void openPrivacySettings()}
+className={`flex items-center gap-2 px-3 py-2 rounded-full active:scale-95 transition-all text-[13px] font-medium border cursor-pointer group ${
+selectedLibraryStory
+? "bg-violet-500/15 border-violet-500/30 text-violet-200 hover:bg-violet-500/25"
+: "bg-[#2a3942] hover:bg-[#32424b] border-white/[0.06] text-zinc-300 hover:text-white"
+}`}
+title="Configurar quem pode ver este status"
+>
+{selectedLibraryStory ? (
+<>
+<Sparkles className="w-3.5 h-3.5 text-violet-400" />
+<span className="truncate max-w-[140px] sm:max-w-[200px]">Evergreen: <strong className="text-violet-200 font-semibold">{selectedContactIds.length} novos</strong></span>
+</>
+) : !isPrivacyVerified ? (
+<>
+<Shield className="w-3.5 h-3.5 text-amber-400" />
+<span className="text-amber-300">Privacidade não confirmada</span>
+</>
+) : privacyType === "contact" ? (
+<>
+<Users className="w-3.5 h-3.5 text-[#25d366]" />
+<span>Meus contatos</span>
+</>
+) : privacyType === "deny-list" ? (
+<>
+<UserX className="w-3.5 h-3.5 text-amber-400" />
+<span>Exceto <strong className="text-amber-300 font-semibold">{selectedContactIds.length}</strong></span>
+</>
+) : (
+<>
+<UserCheck className="w-3.5 h-3.5 text-purple-400" />
+<span>Somente <strong className="text-purple-300 font-semibold">{selectedContactIds.length}</strong></span>
+</>
+)}
+<ChevronRight className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 transition-colors shrink-0" />
+</button>
+<button
+type="button"
+disabled={
+isSubmitting ||
+(activeTab === "text" && !textContent.trim()) ||
+(activeTab === "image" && !imageBase64) ||
+(activeTab === "video" && !videoBase64) ||
+Boolean(
+selectedLibraryStory &&
+(
+isLoadingEvergreenRecipients ||
+evergreenLedgerError ||
+audienceExclusionsError ||
+!audienceExclusions ||
+!selectedStoryKey ||
+selectedContactIds.length === 0
+)
+)
+}
+onClick={handlePublish}
+className="flex items-center justify-center gap-2 px-5 py-2.5 min-h-[44px] rounded-full bg-[#00a884] text-white text-[13px] font-bold hover:bg-[#00c49a] active:scale-95 transition-all shadow-lg shadow-[#00a884]/20 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
+>
+{isSubmitting ? (
+<>
+<Loader2 className="w-4 h-4 animate-spin" />
+<span>Publicando...</span>
+</>
+) : (
+<>
+<Send className="w-4 h-4" />
+<span>Publicar</span>
+</>
+)}
+</button>
+</div>
+{/* Info secundária: tipo e tamanho */}
+<div className="flex items-center justify-center gap-2 text-[11px] text-zinc-500">
+<span>{activeTab === "text" ? "Status de texto" : activeTab === "image" ? "Foto" : "Vídeo"}</span>
+{activeTab === "image" && imageFile && (
+<><span className="text-zinc-600">·</span><span>{(imageFile.size / 1024 / 1024).toFixed(1)} MB</span></>
+)}
+{activeTab === "video" && videoFile && (
+<><span className="text-zinc-600">·</span><span>{(videoFile.size / 1024 / 1024).toFixed(1)} MB</span></>
+)}
+<span className="text-zinc-600">·</span>
+<span>Visível por 24h</span>
+</div>
+</div>
+)}
       </div>
 
       {/* SUB-MODAL DE SELEÇÃO DE PRIVACIDADE DO STATUS */}

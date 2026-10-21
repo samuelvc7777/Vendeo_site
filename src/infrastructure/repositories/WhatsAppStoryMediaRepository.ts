@@ -1,8 +1,9 @@
 import type { WhatsAppStoryMedia, CreateWhatsAppStoryMediaInput } from "@/domain/entities/WhatsAppStoryMedia";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
+import { resolveWhatsApp2GatewayUrl } from "@/presentation/components/chat/whatsapp2-client";
 
 const STORAGE_KEY = "vendeo_whatsapp_stories_library_v1";
-const API_URL = (process.env.NEXT_PUBLIC_WHATSAPP2_GATEWAY_URL || "http://127.0.0.1:8788").replace(/\/$/, "");
+
 type CloudRow = {
   id: string;
   title: string;
@@ -41,7 +42,8 @@ function remoteStory(row: CloudRow): WhatsAppStoryMedia {
 }
 
 async function gatewayPost<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const gatewayUrl = (await resolveWhatsApp2GatewayUrl()).replace(/\/$/, "");
+  const response = await fetch(`${gatewayUrl}${path}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { MobileContainer } from "@/presentation/components/layout/MobileContainer";
@@ -31,6 +32,42 @@ const themeInitializerScript = `
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
   } catch {}
+`;
+
+const whatsappGatewayBridgeScript = `
+  (() => {
+    const nativeFetch = window.fetch.bind(window);
+    const gatewayConfig = nativeFetch("/wa2-config.json", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((config) => {
+        const raw = typeof config?.gatewayUrl === "string" ? config.gatewayUrl.trim() : "";
+        try {
+          const parsed = new URL(raw);
+          return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.origin : "";
+        } catch { return ""; }
+      })
+      .catch(() => "");
+
+    window.fetch = function(input, init) {
+      const rawUrl = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input && typeof input.url === "string"
+            ? input.url
+            : "";
+      let staleUrl;
+      try { staleUrl = new URL(rawUrl, window.location.href); }
+      catch { return nativeFetch(input, init); }
+      if (!staleUrl.hostname.endsWith(".trycloudflare.com")) {
+        return nativeFetch(input, init);
+      }
+      return gatewayConfig.then((gatewayUrl) => {
+        if (!gatewayUrl) return nativeFetch(input, init);
+        return nativeFetch(gatewayUrl + staleUrl.pathname + staleUrl.search, init);
+      });
+    };
+  })();
 `;
 
 export const metadata: Metadata = {
@@ -70,6 +107,7 @@ export default function RootLayout({
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitializerScript }} />
+        <Script id="wa2-gateway-bridge" strategy="beforeInteractive">{whatsappGatewayBridgeScript}</Script>
       </head>
       <body className="h-full overflow-hidden flex flex-col selection:bg-emerald-500 selection:text-white">
         <ThemeProvider>

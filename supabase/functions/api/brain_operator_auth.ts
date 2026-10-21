@@ -18,7 +18,7 @@ export function brainOperatorAllowedOrigin(request: Request): boolean {
   const allowed = new Set([
     "https://vendeo-e755e.web.app",
     "https://vendeo-e755e.firebaseapp.com",
-    "https://creature-submissions-brown-moscow.trycloudflare.com",
+    "https://cigarette-recommends-dip-sage.trycloudflare.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     ...configuredOrigins,

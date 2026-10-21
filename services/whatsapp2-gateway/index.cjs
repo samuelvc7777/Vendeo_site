@@ -16,19 +16,57 @@ const ROOT = __dirname;
 const SESSION_DIR = path.join(ROOT, ".session");
 
 function loadLocalEnv() {
-  const envPath = path.join(ROOT, ".env");
-  if (!fs.existsSync(envPath)) return;
-  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const value = line.trim();
-    if (!value || value.startsWith("#")) continue;
-    const i = value.indexOf("=");
-    if (i <= 0) continue;
-    const key = value.slice(0, i).trim();
-    if (process.env[key] !== undefined) continue;
-    process.env[key] = value.slice(i + 1).trim().replace(/^["']|["']$/g, "");
+  const candidates = [
+    path.join(ROOT, ".env"),
+    path.resolve(ROOT, "../../.env"),
+    path.resolve(ROOT, "../../.env.local"),
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.cwd(), ".env.local"),
+  ];
+  for (const envPath of candidates) {
+    if (!fs.existsSync(envPath)) continue;
+    try {
+      for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+        const value = line.trim();
+        if (!value || value.startsWith("#")) continue;
+        const i = value.indexOf("=");
+        if (i <= 0) continue;
+        const key = value.slice(0, i).trim();
+        if (process.env[key] !== undefined) continue;
+        process.env[key] = value.slice(i + 1).trim().replace(/^[\"\']|[\"\']$/g, "");
+      }
+    } catch {}
   }
 }
 loadLocalEnv();
+
+process.on("unhandledRejection", (reason) => {
+  const msg = String(reason?.message || reason);
+  if (
+    msg.includes("detached Frame") ||
+    msg.includes("Execution context was destroyed") ||
+    msg.includes("Session closed") ||
+    msg.includes("Target closed")
+  ) {
+    console.warn("[whatsapp2] unhandledRejection suprimida do Puppeteer:", msg);
+    return;
+  }
+  console.error("[whatsapp2] unhandledRejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  const msg = String(error?.message || error);
+  if (
+    msg.includes("detached Frame") ||
+    msg.includes("Execution context was destroyed") ||
+    msg.includes("Session closed") ||
+    msg.includes("Target closed")
+  ) {
+    console.warn("[whatsapp2] uncaughtException suprimida do Puppeteer:", msg);
+    return;
+  }
+  console.error("[whatsapp2] uncaughtException:", error);
+});
 
 const {
   extractPdfDocument,
@@ -58,6 +96,8 @@ const {
   getStatusContacts,
   WhatsAppStatusError,
 } = require("./status/status-service.cjs");
+const { normalizeActiveWhatsAppStatuses } = require("./status/active-status.cjs");
+const { normalizeStatusViewers } = require("./status/status-viewers.cjs");
 
 const HOST = process.env.WHATSAPP2_GATEWAY_HOST || "127.0.0.1";
 const PORT = Number(process.env.WHATSAPP2_GATEWAY_PORT || 8788);
@@ -134,6 +174,8 @@ const WORKER_ID = `wa2-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
 const DEFAULT_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const CHROME_PATH = process.env.WHATSAPP2_CHROME_PATH || (fs.existsSync(DEFAULT_CHROME) ? DEFAULT_CHROME : undefined);
 let client = null;
+let pairingRequestInFlight = false;
+let pairingRetryAfter = 0;
 let initializing = null;
 let waJsReadyPromise = null;
 let waJsGatewayBundleSource = null;
@@ -1791,6 +1833,7 @@ async function enqueueWhatsApp2Inbound(message) {
 }
 
 async function waitForCanonicalWhatsApp2Message(conversationId, messageId, timeoutMs = 20_000) {
+  if (!supabase) return false;
   const deadline = Date.now() + timeoutMs;
 
   do {
@@ -4049,6 +4092,18 @@ const server = http.createServer(async (req, res) => {
         throw new Error("WhatsApp Web ainda está iniciando. Tente novamente em alguns segundos.");
       }
 
+      if (pairingRequestInFlight) {
+        const busyError = new Error("Já existe uma solicitação de código em andamento. Aguarde o resultado antes de tentar novamente.");
+        busyError.statusCode = 409;
+        throw busyError;
+      }
+      if (Date.now() < pairingRetryAfter) {
+        const waitSeconds = Math.ceil((pairingRetryAfter - Date.now()) / 1000);
+        const cooldownError = new Error(`O WhatsApp recusou uma tentativa recente. Aguarde ${Math.ceil(waitSeconds / 60)} minuto(s) antes de tentar novamente.`);
+        cooldownError.statusCode = 429;
+        throw cooldownError;
+      }
+
       setState({
         status: "requesting_pairing_code",
         pairingPhone: phoneNumber,
@@ -4057,7 +4112,40 @@ const server = http.createServer(async (req, res) => {
         pairingExpiresAt: null,
         lastError: null,
       });
-      const code = await client.requestPairingCode(phoneNumber, true, 180_000);
+
+      pairingRequestInFlight = true;
+      let code;
+      try {
+        code = await client.requestPairingCode(phoneNumber, true, 180_000);
+        pairingRetryAfter = 0;
+      } catch (error) {
+        try {
+          if (typeof client?.cancelPairingCode === "function") {
+            await client.cancelPairingCode().catch(() => {});
+          }
+        } catch {}
+        const rawMessage = String(error?.message || error).trim();
+        const likelyRateLimit = /rate.?overlimit|iqerrorrateoverlimit|429|^t(?::\s*t)?$/i.test(rawMessage);
+        const cooldownMs = likelyRateLimit ? 15 * 60_000 : 60_000;
+        pairingRetryAfter = Date.now() + cooldownMs;
+        const userMessage = likelyRateLimit
+          ? "O WhatsApp recusou a geração do código por limite temporário de tentativas para este número. Aguarde cerca de 15 minutos antes de tentar novamente."
+          : `Não foi possível gerar o código de pareamento: ${rawMessage}`;
+        setState({
+          status: "awaiting_pairing",
+          pairingPhone: phoneNumber,
+          pairingCode: null,
+          pairingUpdatedAt: null,
+          pairingExpiresAt: null,
+          lastError: userMessage,
+        });
+        const pairingError = new Error(userMessage);
+        pairingError.statusCode = likelyRateLimit ? 429 : 400;
+        throw pairingError;
+      } finally {
+        pairingRequestInFlight = false;
+      }
+
       const updatedAt = new Date().toISOString();
       const expiresAt = new Date(Date.now() + 180_000).toISOString();
       setState({
@@ -4137,6 +4225,26 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         ...(await getWhatsApp2ExternalChatLink(chatId)),
       });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/chat/delivery-queue") {
+      const chatId = String(url.searchParams.get("chatId") || "");
+      if (!chatId || !supabase) {
+        json(res, 200, { ok: true, pendingDeliveries: [] });
+        return;
+      }
+      try {
+        const conversationId = await resolveCanonicalConversationId(chatId);
+        const { data: queueRows } = await supabase
+          .from("whatsapp2_delivery_queue")
+          .select("id, conversation_id, status, kind, text_content, media_url, scheduled_at, created_at, attempts")
+          .in("conversation_id", [conversationId, whatsapp2ConversationId(chatId)])
+          .in("status", ["pending", "sending", "uncertain"])
+          .order("created_at", { ascending: true });
+        json(res, 200, { ok: true, pendingDeliveries: queueRows || [] });
+      } catch {
+        json(res, 200, { ok: true, pendingDeliveries: [] });
+      }
       return;
     }
     if (req.method === "POST" && url.pathname === "/chat/resolve-phones") {
@@ -4229,6 +4337,9 @@ const server = http.createServer(async (req, res) => {
       if (!chatId) throw new Error("chatId obrigatório");
       if (chatId === "status@broadcast" || chatId.endsWith("@g.us")) {
         throw new Error("A sincronização imediata só está disponível em conversas individuais.");
+      }
+      if (!supabase) {
+        throw new Error("A integração do Supabase não está ativa no gateway do WhatsApp. Verifique as credenciais no .env.");
       }
 
       const chat = await active.getChatById(chatId);
@@ -4421,6 +4532,99 @@ const server = http.createServer(async (req, res) => {
         limit,
       });
       json(res, 200, result); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/active") {
+      if (!client || state.status !== "ready") {
+        json(res, 200, { ok: true, count: 0, items: [] }); return;
+      }
+      const active = ensureReady();
+      await ensureWaJsReady();
+      const page = active.pupPage;
+      if (!page) {
+        json(res, 503, { ok: false, error: "Página do WhatsApp Web indisponível." }); return;
+      }
+      const myStatus = await page.evaluate(async () => {
+        const wpp = globalThis.WPP;
+        if (!wpp?.isReady || typeof wpp.status?.getMyStatus !== "function") {
+          return null;
+        }
+        try {
+          const result = await wpp.status.getMyStatus();
+          return result ? JSON.parse(JSON.stringify(result)) : null;
+        } catch {
+          return null;
+        }
+      });
+      json(res, 200, normalizeActiveWhatsAppStatuses(myStatus)); return;
+    }
+    if (req.method === "GET" && url.pathname === "/status/views") {
+      const requestingOrigin = String(req.headers.origin || "");
+      const allowedStatusViewerOrigin =
+        !requestingOrigin ||
+        requestingOrigin === "https://vendeo-e755e.web.app" ||
+        requestingOrigin.endsWith(".web.app") ||
+        /^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/.test(requestingOrigin);
+      if (!allowedStatusViewerOrigin) {
+        json(res, 403, { ok: false, error: "Origem do visualizador de Status não autorizada." }); return;
+      }
+      const messageId = String(url.searchParams.get("messageId") || "");
+      if (!messageId || messageId.length > 200) {
+        json(res, 400, { ok: false, error: "ID do Status inválido." }); return;
+      }
+      if (!client || state.status !== "ready") {
+        json(res, 200, { ok: true, available: false, count: null, viewers: [], reason: "WhatsApp não está conectado." }); return;
+      }
+      const active = ensureReady();
+      await ensureWaJsReady();
+      if (!active.pupPage) {
+        json(res, 503, { ok: false, error: "WhatsApp Web indisponível." }); return;
+      }
+      const ownStatusSnapshot = await active.pupPage.evaluate(async () => {
+        const wpp = globalThis.WPP;
+        if (!wpp?.isReady || typeof wpp.status?.getMyStatus !== "function") return null;
+        const data = await wpp.status.getMyStatus();
+        return data ? JSON.parse(JSON.stringify(data)) : null;
+      });
+      const isOwnActiveStatus = normalizeActiveWhatsAppStatuses(ownStatusSnapshot).items
+        .some((item) => item.id === messageId);
+      if (!isOwnActiveStatus) {
+        json(res, 404, { ok: false, error: "Status próprio ativo não encontrado." }); return;
+      }
+      const receipt = await active.pupPage.evaluate(async (id) => {
+        const wpp = globalThis.WPP;
+        if (!wpp?.isReady || typeof wpp.chat?.getMessageACK !== "function") {
+          return { unavailable: "O WhatsApp Web não fornece recibos deste Status." };
+        }
+        try {
+          const ack = await Promise.race([
+            wpp.chat.getMessageACK(id),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000)),
+          ]);
+          if (!ack || !Array.isArray(ack.participants)) {
+            return { unavailable: "Visualizações não disponíveis para este Status." };
+          }
+          const store = wpp.whatsapp?.ContactStore;
+          return {
+            participants: ack.participants.map((entry) => {
+              const wid = entry.wid?._serialized || entry.wid?.toString?.() || entry.id || "";
+              let contact;
+              try { contact = store?.get(entry.wid) || store?.get(wid); } catch {}
+              return {
+                wid: { _serialized: String(wid) },
+                readAt: entry.readAt,
+                playedAt: entry.playedAt,
+                name: String(contact?.name || contact?.pushname || contact?.formattedName || "").slice(0, 100),
+              };
+            }).slice(0, 2000),
+          };
+        } catch {
+          return { unavailable: "O WhatsApp não retornou os recibos de leitura deste Status." };
+        }
+      }, messageId);
+      if (receipt?.unavailable) {
+        json(res, 200, { ok: true, available: false, count: null, viewers: [], reason: receipt.unavailable }); return;
+      }
+      json(res, 200, normalizeStatusViewers(receipt)); return;
     }
     if (req.method === "GET" && url.pathname === "/status/my-status") {
       const active = ensureReady();
