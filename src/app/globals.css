@@ -351,3 +351,37 @@ body {
   border: 0 !important;
   border-radius: 0 !important;
 }
+
+/* Wallpaper customizado ativo: tornar elementos glass translúcidos com blur para deixar a foto aparecer */
+.has-wallpaper-image .wa-ios-glass {
+  background: rgba(255, 255, 255, 0.25) !important;
+  backdrop-filter: saturate(180%) blur(20px) !important;
+  -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+}
+:root[data-theme="dark"] .has-wallpaper-image .wa-ios-glass {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+/* Wallpaper customizado ativo: força transparência em qualquer contexto (light/dark) para a foto do container pai aparecer. */
+:root .has-wallpaper-image .whatsapp-chat-wallpaper,
+:root[data-theme="light"] .has-wallpaper-image .whatsapp-chat-wallpaper,
+:root[data-theme="dark"] .has-wallpaper-image .whatsapp-chat-wallpaper,
+.has-wallpaper-image.whatsapp-chat-wallpaper {
+  background-color: transparent !important;
+  background-image: none !important;
+  background: transparent !important;
+}
+/* Wallpaper customizado ativo: força transparência na área de chat para a foto aparecer */
+
+/* Wallpaper customizado ativo: o container do input de texto fica totalmente transparente */
+.has-wallpaper-image .wa-ios-glass.flex.min-h-10 {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: rgba(255, 255, 255, 0.25) !important;
+}
+:root[data-theme="dark"] .has-wallpaper-image .wa-ios-glass.flex.min-h-10 {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}

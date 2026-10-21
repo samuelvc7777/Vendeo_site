@@ -7,6 +7,11 @@ const sourceDir = path.join(root, "node_modules", "@ffmpeg", "core", "dist", "um
 const targetDir = path.join(root, "public", "ffmpeg");
 
 const assets = ["ffmpeg-core.js", "ffmpeg-core.wasm"];
+const allTargetsExist = assets.every((asset) => existsSync(path.join(targetDir, asset)));
+if (allTargetsExist) {
+  console.log("FFmpeg web assets já existem em public/ffmpeg, pulando cópia.");
+  process.exit(0);
+}
 for (const asset of assets) {
   const source = path.join(sourceDir, asset);
   if (!existsSync(source)) {

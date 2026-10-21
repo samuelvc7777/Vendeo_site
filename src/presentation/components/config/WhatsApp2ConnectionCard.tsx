@@ -29,7 +29,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
     try {
       const next = await getWhatsApp2Status();
       setStatus(next);
-      setError(null);
+      setError(next.lastError || null);
       if (next.pairingPhone) setPhone(next.pairingPhone);
       setPairingCode(next.pairingCode || null);
       const connected = next.status === "ready";

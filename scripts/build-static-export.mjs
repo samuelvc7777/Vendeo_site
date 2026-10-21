@@ -19,8 +19,8 @@ let devTypesMoved = false;
 let buildExitCode = 1;
 
 try {
-  try { renameSync(apiRoutes, apiRoutesBackup); } catch (e) { if (e.code === 'EPERM') { console.warn('Aviso: não foi possível mover src/app/api (EPERM), continuando sem backup...'); apiRoutesMoved = false; } else throw e; }
-  apiRoutesMoved = true;
+  try { renameSync(apiRoutes, apiRoutesBackup); apiRoutesMoved = true; } catch (e) { if (e.code === 'EPERM') { console.warn('Aviso: não foi possível mover src/app/api (EPERM), continuando sem backup...'); apiRoutesMoved = false; } else throw e; }
+
   if (existsSync(devTypes)) {
     renameSync(devTypes, devTypesBackup);
     devTypesMoved = true;

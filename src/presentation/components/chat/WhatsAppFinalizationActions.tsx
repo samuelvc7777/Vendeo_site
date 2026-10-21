@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, FileAudio2, FolderOpen, Image as ImageIcon, Loader2, Plus, Send, Ticket, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, FileAudio2, FolderOpen, Image as ImageIcon, Loader2, Pencil, Plus, Send, Ticket, Trash2, X } from "lucide-react";
+import { Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { getApiUrl } from "@/infrastructure/http/network";
@@ -27,6 +28,105 @@ const TABLE = "whatsapp_finalization_vault_items";
 const MAX_ITEMS = 30;
 const label: Record<FinalizationKind, string> = { text: "Texto", audio: "Áudio", image: "Foto", raffle_numbers: "10 números livres da rifa" };
 const delay: Record<FinalizationKind, number> = { text: 5, audio: 1, image: 3, raffle_numbers: 5 };
+
+const kindColor = (kind: FinalizationKind) => {
+  switch (kind) {
+    case "text": return "border-blue-500/15 bg-blue-500/[0.04]";
+    case "audio": return "border-violet-500/15 bg-violet-500/[0.04]";
+    case "image": return "border-pink-500/15 bg-pink-500/[0.04]";
+    case "raffle_numbers": return "border-emerald-500/15 bg-emerald-500/[0.04]";
+  }
+};
+
+const kindBadge = (kind: FinalizationKind) => {
+  switch (kind) {
+    case "text": return "bg-blue-500/15 text-blue-400";
+    case "audio": return "bg-violet-500/15 text-violet-400";
+    case "image": return "bg-pink-500/15 text-pink-400";
+    case "raffle_numbers": return "bg-emerald-500/15 text-emerald-400";
+  }
+};
+
+const kindEmoji = (kind: FinalizationKind) => {
+  switch (kind) {
+    case "text": return "📝";
+    case "audio": return "🎙️";
+    case "image": return "📷";
+    case "raffle_numbers": return "🎰";
+  }
+};
+
+function VaultAudioPlayer({ src, fileName }: { src: string; fileName?: string | null }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => {
+      setCurrentTime(audio.currentTime);
+      if (audio.duration > 0) setProgress((audio.currentTime / audio.duration) * 100);
+    };
+    const onLoaded = () => { if (Number.isFinite(audio.duration)) setDuration(audio.duration); };
+    const onEnd = () => { setPlaying(false); setProgress(0); setCurrentTime(0); };
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("ended", onEnd);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("ended", onEnd);
+    };
+  }, []);
+
+  const toggle = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) { audio.pause(); setPlaying(false); }
+    else { void audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false)); }
+  };
+
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    if (!audio || !audio.duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audio.currentTime = pct * audio.duration;
+    setProgress(pct * 100);
+    setCurrentTime(audio.currentTime);
+  };
+
+  const fmt = (s: number) => {
+    if (!Number.isFinite(s) || s <= 0) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return m + ":" + String(sec).padStart(2, "0");
+  };
+
+  return (
+    <div className="mt-1.5 flex items-center gap-2.5 rounded-2xl border border-violet-500/10 bg-violet-500/[0.06] px-3 py-2">
+      <audio ref={audioRef} preload="metadata" src={src} />
+      <button type="button" onClick={toggle} aria-label={playing ? "Pausar" : "Reproduzir"}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 active:scale-90 transition-all">
+        {playing ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-white/[0.08]" onClick={seek}>
+          <div className="absolute inset-y-0 left-0 rounded-full bg-violet-400/60 transition-all" style={{ width: progress + "%" }} />
+          <div className="absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-violet-300 shadow-sm transition-all" style={{ left: "calc(" + progress + "% - 6px)" }} />
+        </div>
+        <div className="mt-1 flex items-center justify-between">
+          <span className="text-[10px] font-medium text-white/30 tabular-nums">{fmt(currentTime)}</span>
+          {fileName && <span className="truncate text-[10px] text-white/20 mx-2">{fileName}</span>}
+          <span className="text-[10px] font-medium text-white/30 tabular-nums">{fmt(duration)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function getFinalizationDelaySeconds(item: Pick<FinalizationItem, "kind" | "duration_seconds">): number {
   if (item.kind === "audio") {
@@ -386,89 +486,163 @@ export function WhatsAppFinalizationActions({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-white/5 bg-transparent dark:bg-transparent backdrop-blur-sm">
+      <div className="flex items-center gap-2 px-3 py-2 border-t border-white/[0.06] bg-transparent backdrop-blur-sm">
         <button type="button" onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-[#3b5355] bg-[#172a2c] px-3 py-1.5 text-xs font-semibold text-[#c0e7dc] hover:bg-[#23393a]"
-          aria-label="Abrir cofre de finalização"><FolderOpen size={16} /> Cofre de finalização</button>
-        <button type="button" disabled={sending} onClick={() => void send()}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-[#008c72] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#00a884] disabled:opacity-50"
-          aria-label="Enviar mensagens de finalização para esta conversa">
-          {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Enviar finalização
+          className="group inline-flex items-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-xl px-4 py-2 text-[13px] font-semibold text-white/80 hover:bg-white/[0.08] hover:text-white hover:border-white/[0.12] active:scale-[0.97] transition-all duration-200"
+          aria-label="Abrir cofre de finalização">
+          <FolderOpen size={15} className="text-emerald-400 group-hover:text-emerald-300 transition-colors" />
+          Cofre
+          {items.length > 0 && (
+            <span className="ml-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-emerald-500/20 px-1.5 text-[10px] font-bold text-emerald-400 tabular-nums">{items.length}</span>
+          )}
+        </button>
+        <button type="button" disabled={sending || !items.length} onClick={() => void send()}
+          className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-[13px] font-bold text-white shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/30 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.97] disabled:opacity-40 disabled:shadow-none transition-all duration-200"
+          aria-label="Enviar mensagens de finalização">
+          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          Enviar
         </button>
       </div>
       {open && createPortal(
-        <div className="fixed inset-0 z-[13000] flex items-center justify-center bg-black/75 p-3" role="presentation">
+        <div className="fixed inset-0 z-[13000] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4" role="presentation" onClick={() => setOpen(false)}>
           <section role="dialog" aria-modal="true" aria-label="Cofre de finalização"
-            className="flex h-[min(92dvh,780px)] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-[#111b21] text-white shadow-2xl">
-            <header className="flex items-center justify-between border-b border-white/10 px-4 py-4">
-              <div><h2 className="text-base font-bold">Cofre de finalização</h2>
-                <p className="text-xs text-[#98aeb5]">Biblioteca compartilhada · {items.length} de 30 itens</p></div>
-              <button type="button" aria-label="Fechar cofre" onClick={() => setOpen(false)} className="rounded-full p-2 hover:bg-white/10"><X size={20} /></button>
+            onClick={(e) => e.stopPropagation()}
+            className="flex h-[92dvh] sm:h-[min(90dvh,820px)] w-full sm:max-w-lg flex-col overflow-hidden rounded-t-3xl sm:rounded-3xl bg-[#0c1117]/95 backdrop-blur-2xl text-white shadow-2xl shadow-black/50 border border-white/[0.06]">
+            <header className="relative flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
+              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/20">
+                  <FolderOpen size={18} className="text-emerald-400" />
+                </div>
+                <div>
+                  <h2 className="text-[17px] font-bold tracking-tight">Cofre de Finalização</h2>
+                  <p className="text-[12px] text-white/40 font-medium">{items.length} de {MAX_ITEMS} itens · Biblioteca compartilhada</p>
+                </div>
+              </div>
+              <button type="button" aria-label="Fechar cofre" onClick={() => setOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.12] active:scale-90 transition-all">
+                <X size={16} className="text-white/60" />
+              </button>
             </header>
-            <div className="flex-1 overflow-y-auto px-4 py-3">
-              <div className="mb-3 flex flex-wrap gap-2">
+            <div className="flex-1 overflow-y-auto px-5 pb-4">
+              <div className="mb-5 grid grid-cols-3 gap-2">
                 <button disabled={busy} type="button" onClick={() => startUpload("audio")}
-                  className="flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs"><FileAudio2 size={16} /> Adicionar áudio</button>
+                  className="flex flex-col items-center gap-1.5 rounded-2xl border border-white/[0.06] bg-white/[0.03] py-3 text-[11px] font-medium text-white/60 hover:bg-white/[0.06] hover:text-white/80 active:scale-[0.97] disabled:opacity-30 transition-all">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-500/15"><FileAudio2 size={15} className="text-violet-400" /></div>
+                  Áudio
+                </button>
                 <button disabled={busy} type="button" onClick={() => startUpload("image")}
-                  className="flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs"><ImageIcon size={16} /> Adicionar foto</button>
+                  className="flex flex-col items-center gap-1.5 rounded-2xl border border-white/[0.06] bg-white/[0.03] py-3 text-[11px] font-medium text-white/60 hover:bg-white/[0.06] hover:text-white/80 active:scale-[0.97] disabled:opacity-30 transition-all">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-pink-500/15"><ImageIcon size={15} className="text-pink-400" /></div>
+                  Foto
+                </button>
                 <button disabled={busy || items.some((item) => item.kind === "raffle_numbers")} type="button" onClick={() => void addRaffleNumbers()}
-                  className="flex items-center gap-1.5 rounded-lg border border-[#2c6d56] px-3 py-2 text-xs text-[#8ee4c2] disabled:opacity-40"><Ticket size={16} /> 10 números livres</button>
+                  className="flex flex-col items-center gap-1.5 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.04] py-3 text-[11px] font-medium text-emerald-400/70 hover:bg-emerald-500/[0.08] hover:text-emerald-300 active:scale-[0.97] disabled:opacity-30 transition-all">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/15"><Ticket size={15} className="text-emerald-400" /></div>
+                  Rifa
+                </button>
               </div>
               <input ref={fileInput} type="file" className="hidden" onChange={(event) => {
                 const file = event.target.files?.[0] || null;
                 event.currentTarget.value = "";
                 void uploadMedia(file);
               }} />
-              <div className="mb-4 space-y-2">
-                <label htmlFor="finalization-text" className="text-sm font-semibold">Mensagem de texto</label>
+              <div className="mb-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
+                <label htmlFor="finalization-text" className="mb-2 block text-[13px] font-semibold text-white/70">Mensagem de texto</label>
                 <textarea id="finalization-text" rows={3} maxLength={4000} value={draft} onChange={(e) => setDraft(e.target.value)}
                   placeholder="Digite uma mensagem para salvar na sequência..."
-                  className="w-full resize-y rounded-xl border border-white/15 bg-[#1c2b33] p-3 text-sm outline-none focus:border-[#00a884]" />
-                <div className="flex gap-2">
+                  className="w-full resize-none rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-[13px] text-white/90 placeholder:text-white/25 outline-none focus:border-emerald-500/30 focus:bg-white/[0.04] transition-all" />
+                <div className="mt-2.5 flex items-center gap-2">
                   <button disabled={busy || !draft.trim()} type="button" onClick={() => void saveText()}
-                    className="flex items-center gap-1.5 rounded-lg bg-[#008c72] px-3 py-2 text-xs font-semibold disabled:opacity-40">
-                    <Plus size={15} /> {editingId ? "Salvar alteração" : "Adicionar texto"}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/20 px-3.5 py-2 text-[12px] font-semibold text-emerald-400 hover:bg-emerald-500/20 active:scale-[0.97] disabled:opacity-30 transition-all">
+                    <Plus size={13} /> {editingId ? "Salvar alteração" : "Adicionar texto"}
                   </button>
-                  {editingId && <button type="button" onClick={() => { setEditingId(null); setDraft(""); }} className="text-xs text-[#a1b4ba]">Cancelar edição</button>}
+                  {editingId && (
+                    <button type="button" onClick={() => { setEditingId(null); setDraft(""); }}
+                      className="text-[12px] text-white/35 hover:text-white/60 transition-colors">Cancelar</button>
+                  )}
+                  <span className="ml-auto text-[11px] text-white/20 tabular-nums">{draft.length}/4000</span>
                 </div>
               </div>
-              <h3 className="mb-2 text-sm font-bold">Ordem de envio</h3>
-              <p className="mb-3 text-xs text-[#99aeb4]">Cada texto, áudio e lista de números aguarda 10s; cada foto, 3s. Áudios saem como voz gravada. Os 10 números livres são escolhidos da rifa ativa somente ao confirmar o envio.</p>
-              {loading && <p className="text-xs text-[#99aeb4]">Carregando...</p>}
-              {!loading && items.length === 0 && <p className="rounded-xl border border-dashed border-white/20 p-5 text-center text-xs text-[#99aeb4]">Cofre vazio. Adicione o primeiro item acima.</p>}
-              <ol className="space-y-2">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-[14px] font-bold text-white/80">Ordem de envio</h3>
+              </div>
+              <p className="mb-4 text-[11px] leading-relaxed text-white/30">
+                Cada texto aguarda 5s, cada foto 3s. Áudios saem como voz gravada com duração real. Os 10 números da rifa são sorteados no envio.
+              </p>
+              {loading && (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="animate-spin text-white/20" size={24} />
+                </div>
+              )}
+              {!loading && items.length === 0 && (
+                <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.08] py-12 text-center">
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.03]">
+                    <FolderOpen size={20} className="text-white/15" />
+                  </div>
+                  <p className="text-[13px] font-medium text-white/25">Cofre vazio</p>
+                  <p className="mt-1 text-[11px] text-white/15">Adicione o primeiro item acima</p>
+                </div>
+              )}
+              <ol className="space-y-2.5">
                 {items.map((item, index) => (
-                  <li key={item.id} className="flex items-start gap-2 rounded-xl border border-white/10 bg-[#1a2a31] p-2.5">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#294941] text-xs font-bold">{index + 1}</div>
+                  <li key={item.id}
+                    className={"group relative flex items-start gap-3 rounded-2xl border p-3.5 transition-all duration-200 hover:brightness-110 " + kindColor(item.kind)}>
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-[11px] font-bold text-white/50 tabular-nums mt-0.5">
+                      {index + 1}
+                    </div>
                     <div className="min-w-0 flex-1">
-                      <strong className="text-xs">{label[item.kind]} · {delay[item.kind]}s</strong>
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <span className="text-sm">{kindEmoji(item.kind)}</span>
+                        <span className={"rounded-md px-1.5 py-0.5 text-[10px] font-semibold " + kindBadge(item.kind)}>{label[item.kind]}</span>
+                        <span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 text-[10px] font-medium text-white/30 tabular-nums">{getFinalizationDelaySeconds(item)}s</span>
+                      </div>
                       {item.kind === "text"
-                        ? <p className="mt-1 break-words text-xs text-[#cad5d8]">{item.body}</p>
+                        ? <p className="break-words text-[11px] leading-snug text-white/45 line-clamp-2">{item.body}</p>
                         : item.kind === "raffle_numbers"
-                        ? <p className="mt-1 text-xs text-[#8ee4c2]">Exemplo: 05, 15, 19, 29, 53, 56, 73, 87, 92, 99. Os números reais serão selecionados entre os disponíveis no envio.</p>
-                        : <div className="mt-1">
+                          ? <p className="text-[11px] leading-snug text-emerald-400/60 line-clamp-2">10 números sorteados entre os disponíveis na rifa ativa.</p>
+                          : <div>
                             {item.kind === "image" && item.media_url
                               // eslint-disable-next-line @next/next/no-img-element
-                              ? <img src={item.media_url} alt="Foto da finalização" className="max-h-28 rounded-lg object-contain" />
-                              : <audio controls preload="none" src={item.media_url || undefined} className="h-9 max-w-full" />}
-                            <p className="mt-1 truncate text-[10px] text-[#91a9ae]">{item.file_name}</p>
+                                ? <img src={item.media_url} alt="Foto da finalização" className="mt-1 max-h-24 rounded-xl object-contain border border-white/[0.06]" />
+                                : item.media_url ? <VaultAudioPlayer src={item.media_url} fileName={item.file_name} /> : null}
                           </div>}
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <button disabled={busy || index === 0} type="button" aria-label="Mover para cima" onClick={() => void move(index,-1)} className="p-1 disabled:opacity-30"><ArrowUp size={15} /></button>
-                      <button disabled={busy || index === items.length - 1} type="button" aria-label="Mover para baixo" onClick={() => void move(index,1)} className="p-1 disabled:opacity-30"><ArrowDown size={15} /></button>
-                      {item.kind === "text" && <button disabled={busy} type="button" title="Editar texto" onClick={() => { setEditingId(item.id);setDraft(item.body || ""); }} className="text-xs text-[#79d9bb]">Editar</button>}
-                      <button disabled={busy} type="button" title="Excluir" aria-label="Excluir item" onClick={() => void remove(item.id)} className="p-1 text-rose-400"><Trash2 size={15} /></button>
+                    <div className="flex flex-col items-center gap-0.5 shrink-0">
+                      <button disabled={busy || index === 0} type="button" aria-label="Mover para cima" onClick={() => void move(index, -1)}
+                        className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-white/[0.06] hover:text-white/50 disabled:opacity-15 transition-all">
+                        <ArrowUp size={13} />
+                      </button>
+                      <button disabled={busy || index === items.length - 1} type="button" aria-label="Mover para baixo" onClick={() => void move(index, 1)}
+                        className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-white/[0.06] hover:text-white/50 disabled:opacity-15 transition-all">
+                        <ArrowDown size={13} />
+                      </button>
+                      {item.kind === "text" && (
+                        <button disabled={busy} type="button" title="Editar texto" onClick={() => { setEditingId(item.id); setDraft(item.body || ""); }}
+                          className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-white/[0.06] hover:text-blue-400/70 transition-all">
+                          <Pencil size={12} />
+                        </button>
+                      )}
+                      <button disabled={busy} type="button" title="Excluir" aria-label="Excluir item" onClick={() => void remove(item.id)}
+                        className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-red-500/10 hover:text-red-400/70 transition-all">
+                        <Trash2 size={12} />
+                      </button>
                     </div>
                   </li>
                 ))}
               </ol>
             </div>
-            <footer className="border-t border-white/10 px-4 py-3">
-              {busy && <p className="mb-2 flex items-center gap-2 text-xs text-[#90b9af]"><Loader2 className="animate-spin" size={15} /> Salvando ou preparando arquivo...</p>}
+            <footer className="relative border-t border-white/[0.06] px-5 py-4 shrink-0">
+              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+              {busy && (
+                <p className="mb-3 flex items-center gap-2 text-[12px] text-white/35">
+                  <Loader2 className="animate-spin" size={13} /> Salvando ou preparando arquivo...
+                </p>
+              )}
               <button disabled={busy || sending || !items.length} type="button" onClick={() => void send()}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#00a884] px-3 py-3 font-bold disabled:opacity-40">
-                <Send size={17} /> Enviar {items.length} {items.length === 1 ? "mensagem" : "mensagens"} para {contactName}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-3.5 text-[14px] font-bold text-white shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/30 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] disabled:opacity-30 disabled:shadow-none transition-all duration-200">
+                {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                Enviar {items.length} {items.length === 1 ? "mensagem" : "mensagens"} para {contactName}
               </button>
             </footer>
           </section>

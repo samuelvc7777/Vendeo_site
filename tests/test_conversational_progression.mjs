@@ -41,7 +41,7 @@ test("CONTRATO 0B: engajamento antecipado com a rifa exige handoff manual sem re
   assert.match(brain, /RIFA ANTECIPADA É HANDOFF, NÃO CONTEÚDO PARA RESPONDER/);
 });
 
-test("CONTRATO 0C: pedidos de Instagram retornam os arrobas canônicos sem mandar para a bio", () => {
+test("CONTRATO 0C: pedidos de Instagram redirecionam para Facebook (sem Instagram pessoal)", () => {
   const canonical = fs.readFileSync(
     new URL("../supabase/functions/api/larissa_canonical_prompt.md", import.meta.url),
     "utf8",
@@ -52,12 +52,14 @@ test("CONTRATO 0C: pedidos de Instagram retornam os arrobas canônicos sem manda
     "utf8",
   );
 
-  assert.match(canonical, /@lariresende_0611/);
+  assert.match(canonical, /NÃO tem mais Instagram/);
+  assert.match(canonical, /https:\/\/www\.facebook\.com\/larissa\.resende\.90813/);
   assert.match(canonical, /@lari_modasr/);
-  assert.match(canonical, /NUNCA diga que \"o link está na bio\", \"os links estão na bio\"/);
-  assert.match(api, /Instagram pessoal: @lariresende_0611/);
+  assert.match(canonical, /NÃO envie @larissa_resende06 nem @lariresende_0611/);
+  assert.match(api, /NÃO tem mais Instagram/);
+  assert.match(api, /https:\/\/www\.facebook\.com\/larissa\.resende\.90813/);
   assert.match(api, /Instagram da loja: @lari_modasr/);
-  assert.match(api, /Nunca diga que faltam ao operador/);
+  assert.match(api, /NÃO envie @larissa_resende06 nem @lariresende_0611/);
 });
 
 test("CONTRATO 1: Saudação + objetivo cidade pendente -> pode pursue de forma fluida", async () => {

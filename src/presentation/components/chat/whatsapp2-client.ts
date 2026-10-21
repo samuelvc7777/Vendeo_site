@@ -21,6 +21,45 @@ export {
 export const WHATSAPP2_GATEWAY_URL =
   process.env.NEXT_PUBLIC_WHATSAPP2_GATEWAY_URL || "http://127.0.0.1:8788";
 
+// A URL do Quick Tunnel não deve ficar presa ao bundle compilado.
+// A configuração pública é servida separadamente e pode ser atualizada sem
+// reconstruir o JavaScript do aplicativo.
+type WhatsApp2GatewayRuntimeConfig = { gatewayUrl?: unknown };
+let runtimeGatewayUrl: string | null = null;
+let runtimeGatewayUrlPromise: Promise<string> | null = null;
+
+export async function resolveWhatsApp2GatewayUrl(): Promise<string> {
+  if (runtimeGatewayUrl) return runtimeGatewayUrl;
+  if (typeof window === "undefined") return WHATSAPP2_GATEWAY_URL;
+
+  if (!runtimeGatewayUrlPromise) {
+    runtimeGatewayUrlPromise = fetch("/wa2-config.json", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return WHATSAPP2_GATEWAY_URL;
+        const config = await response.json() as WhatsApp2GatewayRuntimeConfig;
+        const candidate = typeof config.gatewayUrl === "string"
+          ? config.gatewayUrl.trim().replace(/\/+$/, "")
+          : "";
+        if (!/^https:\/\//i.test(candidate) && !/^http:\/\//i.test(candidate)) {
+          return WHATSAPP2_GATEWAY_URL;
+        }
+        runtimeGatewayUrl = candidate;
+        return candidate;
+      })
+      .catch(() => WHATSAPP2_GATEWAY_URL)
+      .then((url) => {
+        runtimeGatewayUrl = url;
+        return url;
+      });
+  }
+
+  return runtimeGatewayUrlPromise;
+}
+
+if (typeof window !== "undefined") {
+  void resolveWhatsApp2GatewayUrl();
+}
+
 export const IS_WHATSAPP2_REMOTE_BUILD =
   WHATSAPP2_GATEWAY_URL === "/wa2" ||
   !/^http:\/\/(?:127\.0\.0\.1|localhost):8788\/?$/i.test(WHATSAPP2_GATEWAY_URL);
@@ -237,7 +276,8 @@ export interface WhatsApp2GatewayEvent {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${WHATSAPP2_GATEWAY_URL}${path}`, {
+  const gatewayUrl = await resolveWhatsApp2GatewayUrl();
+  const response = await fetch(`${gatewayUrl}${path}`, {
     cache: "no-store",
     ...init,
   });
@@ -257,6 +297,7 @@ export async function getWhatsApp2Status() {
     pairingPhone?: string | null;
     pairingUpdatedAt?: string | null;
     pairingExpiresAt?: string | null;
+    lastError?: string | null;
     readyAt?: string | null;
     me?: { wid?: string | null; pushname?: string | null; platform?: string | null } | null;
   }>("/status");
@@ -426,7 +467,8 @@ export async function setWhatsApp2ChatLocked(chatId: string, locked: boolean) {
 }
 
 export function getWhatsApp2MediaUrl(messageId: string) {
-  return `${WHATSAPP2_GATEWAY_URL}/message/media?messageId=${encodeURIComponent(messageId)}`;
+  const gatewayUrl = runtimeGatewayUrl || WHATSAPP2_GATEWAY_URL;
+  return `${gatewayUrl}/message/media?messageId=${encodeURIComponent(messageId)}`;
 }
 
 export async function getWhatsApp2Messages(chatId: string, limit = 120) {
@@ -528,7 +570,8 @@ export function openWhatsApp2EventStream(
     return () => {};
   }
 
-  const source = new EventSource(`${WHATSAPP2_GATEWAY_URL}/events`);
+  let source: EventSource | null = null;
+  let cancelled = false;
   const onWhatsApp2 = (event: MessageEvent<string>) => {
     try {
       onEvent(JSON.parse(event.data) as WhatsApp2GatewayEvent);
@@ -544,12 +587,18 @@ export function openWhatsApp2EventStream(
   const onOpen = () => options?.onOpen?.();
   const onError = () => options?.onError?.();
 
-  source.addEventListener("whatsapp2", onWhatsApp2 as EventListener);
-  source.addEventListener("status", onStatus as EventListener);
-  source.addEventListener("open", onOpen as EventListener);
-  source.addEventListener("error", onError as EventListener);
+  void resolveWhatsApp2GatewayUrl().then((gatewayUrl) => {
+    if (cancelled) return;
+    source = new EventSource(`${gatewayUrl}/events`);
+    source.addEventListener("whatsapp2", onWhatsApp2 as EventListener);
+    source.addEventListener("status", onStatus as EventListener);
+    source.addEventListener("open", onOpen as EventListener);
+    source.addEventListener("error", onError as EventListener);
+  });
 
   return () => {
+    cancelled = true;
+    if (!source) return;
     source.removeEventListener("whatsapp2", onWhatsApp2 as EventListener);
     source.removeEventListener("status", onStatus as EventListener);
     source.removeEventListener("open", onOpen as EventListener);

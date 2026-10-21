@@ -1993,11 +1993,13 @@ export function InstagramDirect({
     stages,
     chatDetail,
     scheduleRuntime,
-    chatDetailResolvedConversationId,    toggleObjective,
+    chatDetailResolvedConversationId,
+    toggleObjective,
     advanceStage,
     setStage,
     setSchedule,
-    toggleConverted,  } = chatStages;
+    toggleConverted,
+  } = chatStages;
 
   // Envio de mensagem automática disparado pelo Piloto Automático
   const handleSendAutoPilotMessage = async (conversationId: string, text: string) => {
@@ -5447,7 +5449,8 @@ export function InstagramDirect({
   const sendMessageWithText = async (textToSend: string): Promise<boolean> => {
     if (!textToSend.trim() || !activeChat) return false;
 
-    const messageText = textToSend.trim();    const now = new Date();
+    const messageText = textToSend.trim();
+    const now = new Date();
     const nowIso = now.toISOString();
     const timeFormatted = formatMessageTime(now);
 
@@ -6590,17 +6593,12 @@ export function InstagramDirect({
     return (
       <div
         key={activeChat.id}
-        className="relative absolute md:relative inset-0 md:inset-auto z-30 md:z-10 flex h-full w-full md:flex-1 md:min-w-0 flex-col overflow-hidden text-zinc-950 dark:text-white whatsapp-ios whatsapp-chat-wallpaper"
+        className={`relative absolute md:relative inset-0 md:inset-auto z-30 md:z-10 flex h-full w-full md:flex-1 md:min-w-0 flex-col overflow-hidden text-zinc-950 dark:text-white whatsapp-ios ${isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? "has-wallpaper-image" : "whatsapp-chat-wallpaper"}`}
+        style={isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? { backgroundImage: `url(${whatsappWallpaper})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" } : undefined}
       >
-        {isWhatsAppLikeType(activeChat.type) && whatsappWallpaper && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-0 bg-cover bg-center bg-no-repeat"
-            style={{ backgroundImage: `url(${whatsappWallpaper})` }}
-          />
-        )}
+        
         {/* Header do Chat */}
-        <div className="border-b flex items-center justify-between shrink-0 z-10 pt-[env(safe-area-inset-top,0px)] md:pt-0 h-[calc(68px+env(safe-area-inset-top,0px))] md:h-[68px] px-2.5 border-black/[0.08] bg-white/62 backdrop-blur-3xl shadow-[0_1px_0_rgba(0,0,0,0.035)] dark:border-white/[0.06] dark:bg-[#1c1c1e]/62">
+        <div className={`border-b flex items-center justify-between shrink-0 z-10 pt-[env(safe-area-inset-top,0px)] md:pt-0 h-[calc(68px+env(safe-area-inset-top,0px))] md:h-[68px] px-2.5 border-black/[0.08] shadow-[0_1px_0_rgba(0,0,0,0.035)] dark:border-white/[0.06] ${isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? "bg-white/55 dark:bg-black/35 backdrop-blur-2xl" : "bg-white/62 backdrop-blur-3xl dark:bg-[#1c1c1e]/62"}`}>
           <div className="flex items-center gap-2 md:gap-3 min-w-0">
             <button
               onClick={handleCloseChat}
@@ -6753,14 +6751,16 @@ export function InstagramDirect({
           detail={chatDetail}
           scheduleRuntime={scheduleRuntime}
           availableSchedules={activeSchedules}
-          configuredStages={stages}          onToggleObjective={toggleObjective}
+          configuredStages={stages}
+          onToggleObjective={toggleObjective}
           onAdvanceStage={advanceStage}
           onSetStage={setStage}
           onSetSchedule={setSchedule}
           onToggleConverted={toggleConverted}
           raffleStatus={normalizeRaffleCommercialStatus(activeChat.raffleStatus)}
           onSetRaffleStatus={handleSetRaffleStatus}
-          isUpdatingRaffleStatus={isUpdatingRaffleStatus}        />
+          isUpdatingRaffleStatus={isUpdatingRaffleStatus}
+        />
 
         {/* Área de Mensagens */}
         <div
@@ -6779,6 +6779,7 @@ export function InstagramDirect({
           } ${
             isWhatsAppLikeType(activeChat.type) ? "whatsapp-chat-wallpaper" : ""
           }`}
+          style={isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? { backgroundColor: 'transparent', backgroundImage: 'none' } : undefined}
           >
           <div
             ref={messagesContentRef}
@@ -6819,7 +6820,7 @@ export function InstagramDirect({
                       <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/30 flex items-center justify-center shrink-0">
                         <AlertTriangle className="w-4 h-4 text-violet-500 dark:text-violet-300" />
                       </div>
-                      <div className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1 pb-2.5">
                         <h5 className="text-xs font-bold text-violet-800 dark:text-violet-200">Precisa de observação</h5>
                         <p className="text-[11px] text-zinc-700 dark:text-zinc-300 mt-0.5 leading-snug">
                           {isSharedObservation
@@ -7937,7 +7938,7 @@ export function InstagramDirect({
             </div>
 
 
-            <div className={`items-center gap-1.5 shrink-0 ${isWhatsAppInboxChannel ? "hidden" : "flex"}`}>
+        <div className={`items-center gap-1 shrink-0 flex`}>
               <button
                 type="button"
                 onClick={() => {
@@ -8046,7 +8047,17 @@ export function InstagramDirect({
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
+            {!searchQuery && isWhatsAppInboxChannel && (
+              <button type="button" className="absolute right-2.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-[#8e8e93] hover:text-[#007aff] active:scale-90 transition-all cursor-pointer" aria-label="Camera" title="Camera">
+                <Camera className="w-4 h-4" />
+              </button>
+            )}
           </div>
+          {isWhatsAppInboxChannel && (
+            <button type="button" className="shrink-0 min-h-[40px] min-w-[40px] rounded-full flex items-center justify-center text-[#007aff] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] active:scale-95 transition-all cursor-pointer" aria-label="Filtros" title="Filtros">
+              <SlidersHorizontal className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {isWhatsAppInboxChannel && (
@@ -8570,9 +8581,9 @@ export function InstagramDirect({
                   cancelLongPress();
                   setSelectedChatForActionSheet(conv);
                 }}
-                className={`flex items-center justify-between cursor-pointer select-none transition-all ${
+                className={`flex items-start cursor-pointer select-none transition-all ${
                   isWhatsAppLikeType(conv.type)
-                    ? "wa-ios-chat-row px-4 py-2.5 rounded-none hover:bg-black/[0.025] active:bg-black/[0.055] dark:hover:bg-white/[0.035] dark:active:bg-white/[0.065]"
+                    ? "wa-ios-chat-row px-4 pt-2.5 pb-0 rounded-none hover:bg-black/[0.025] active:bg-black/[0.055] dark:hover:bg-white/[0.035] dark:active:bg-white/[0.065]"
                     : "py-3 px-2.5 rounded-2xl hover:bg-zinc-100/70 dark:hover:bg-[#121212] active:scale-[0.995]"
                 }`}
               >
@@ -8589,7 +8600,7 @@ export function InstagramDirect({
                     />
                   </div>
 
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 pb-2.5">
                     <div className={`flex items-center gap-1.5 ${
                       isWhatsAppLikeType(conv.type) ? "flex-nowrap" : "flex-wrap"
                     }`}>
