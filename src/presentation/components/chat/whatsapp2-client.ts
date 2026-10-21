@@ -287,6 +287,23 @@ export async function disconnectWhatsApp2() {
   });
 }
 
+export async function getWhatsApp2ProfilePhoto(chatId: string) {
+  return request<{ ok: true; chatId: string; avatarUrl: string | null }>(
+    `/chat/profile?chatId=${encodeURIComponent(chatId)}`,
+  );
+}
+
+export async function refreshWhatsApp2ProfilePhoto(chatId: string, rejectedUrl: string) {
+  return request<{ ok: true; chatId: string; avatarUrl: string | null }>(
+    "/chat/profile/refresh",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId, rejectedUrl }),
+    },
+  );
+}
+
 export async function getWhatsApp2Chats(limit = 160) {
   const data = await request<{ ok: true; chats: WhatsApp2GatewayChat[] }>(
     `/chats?limit=${Math.max(1, Math.min(limit, 500))}`,
@@ -329,6 +346,26 @@ export interface WhatsApp2ResolvedPhone {
   phoneNumber: string | null;
   savedName?: string | null;
   available: boolean;
+}
+
+export async function saveWhatsApp2Contact(params: {
+  chatId: string;
+  conversationId: string;
+  contactName: string;
+  syncAddressBook: boolean;
+}) {
+  return request<{
+    ok: true;
+    chatId: string;
+    conversationId: string;
+    phoneNumber: string;
+    savedName: string;
+    syncAddressBookRequested: boolean;
+  }>("/chat/contact/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
 }
 
 export async function resolveWhatsApp2PhoneNumbers(chatIds: string[]) {
@@ -548,12 +585,59 @@ export async function sendWhatsApp2Media(params: {
   });
 }
 
+export type WhatsApp2DeliveryQueueItem = {
+  id: string;
+  kind: "text" | "audio" | "image" | string;
+  text_content?: string | null;
+  media_url?: string | null;
+  voice_note?: boolean;
+  status: "pending" | "sending" | string;
+  scheduled_at: string;
+  created_at?: string;
+};
+
+export async function queueWhatsApp2Finalization(params: {
+  to: string;
+  conversationId: string;
+  requestId: string;
+}) {
+  return request<{
+    ok: true;
+    queued: true;
+    alreadyQueued: boolean;
+    count: number;
+    batchId: string;
+    lastScheduledAt: string;
+    items?: WhatsApp2DeliveryQueueItem[];
+  }>("/messages/finalization/queue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getWhatsApp2DeliveryQueue(chatId: string) {
+  try {
+    const data = await request<{
+      ok: true;
+      pendingDeliveries: WhatsApp2DeliveryQueueItem[];
+    }>(`/chat/delivery-queue?chatId=${encodeURIComponent(chatId)}`);
+    return data.pendingDeliveries || [];
+  } catch {
+    return [];
+  }
+}
+
 export type WhatsAppStatusPrivacyType = "contact" | "deny-list" | "allow-list";
 
 export interface WhatsAppStatusPrivacyConfig {
   type: WhatsAppStatusPrivacyType;
   list?: string[];
   count?: number;
+  verified?: boolean; // Confirmação apenas na sessão WhatsApp Web vinculada.
+  scope?: "linked-web-session";
+  mobileSynced?: boolean;
+  source?: string;
 }
 
 export interface WhatsAppStatusContact {
@@ -568,6 +652,8 @@ export interface WhatsAppStatusContactsResult {
   ok: true;
   contacts: WhatsAppStatusContact[];
   total: number;
+  offset?: number;
+  hasMore?: boolean;
 }
 
 export interface WhatsApp2PublishStatusTextParams {
@@ -582,7 +668,7 @@ export interface WhatsApp2StatusPublishResult {
   ok: true;
   id: string | null;
   ack: number;
-  status: "sent";
+  status: "sent" | "pending";
   type: "text";
   text: string;
   backgroundColor?: string | null;
@@ -615,7 +701,7 @@ export interface WhatsApp2StatusImagePublishResult {
   ok: true;
   id: string | null;
   ack: number;
-  status: "sent";
+  status: "sent" | "pending";
   type: "image";
   caption?: string | null;
   mimeType: string;
@@ -649,7 +735,7 @@ export interface WhatsApp2StatusVideoPublishResult {
   ok: true;
   id: string | null;
   ack: number;
-  status: "sent";
+  status: "sent" | "pending";
   type: "video";
   caption?: string | null;
   mimeType: string;
@@ -658,15 +744,111 @@ export interface WhatsApp2StatusVideoPublishResult {
   cached?: boolean;
 }
 
+interface WhatsApp2StatusVideoJob {
+  ok: true;
+  jobId: string;
+  status: "processing" | "sent" | "failed";
+  result?: WhatsApp2StatusVideoPublishResult;
+  error?: string;
+  code?: string;
+}
+
+/**
+ * Vídeos podem levar >90 segundos (download, conversão e confirmação WhatsApp).
+ * O Cloudflare encerra requisições HTTP longas com 502 sem cabeçalhos CORS.
+ * Envie o vídeo em um job de curta duração e acompanhe separadamente.
+ */
 export async function publishWhatsAppStatusVideo(
   params: WhatsApp2PublishStatusVideoParams,
 ): Promise<WhatsApp2StatusVideoPublishResult> {
-  return request<WhatsApp2StatusVideoPublishResult>("/status/video", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
+  const key = params.idempotencyKey?.trim();
+  let job: WhatsApp2StatusVideoJob | null = null;
+  try {
+    job = await request<WhatsApp2StatusVideoJob>("/status/video/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+  } catch (error) {
+    // Se o túnel perdeu a resposta, o gateway pode ter aceitado o job.
+    // Nunca publique novamente automaticamente; procure pelo identificador.
+    if (key) {
+      try {
+        job = await request<WhatsApp2StatusVideoJob>(
+          `/status/video/job?idempotencyKey=${encodeURIComponent(key)}`,
+        );
+      } catch { /* Resposta realmente indisponível. */ }
+    }
+    if (!job) {
+      throw new Error(
+        "Não foi possível confirmar o recebimento do vídeo pelo gateway. " +
+        "Confira seus Status antes de tentar novamente. " +
+        (error instanceof Error ? error.message : ""),
+      );
+    }
+  }
+  const jobId = job.jobId;
+  const deadline = Date.now() + 200_000;
+  let consecutiveNetworkErrors = 0;
+  while (Date.now() < deadline) {
+    if (job.status === "sent" && job.result) return job.result;
+    if (job.status === "failed") {
+      throw new Error(job.error || "O WhatsApp não confirmou o envio do vídeo.");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1600));
+    try {
+      job = await request<WhatsApp2StatusVideoJob>(
+        `/status/video/job?jobId=${encodeURIComponent(jobId)}`,
+      );
+      consecutiveNetworkErrors = 0;
+    } catch {
+      consecutiveNetworkErrors += 1;
+      if (consecutiveNetworkErrors >= 12) break;
+    }
+  }
+  throw new Error(
+    "Não foi possível confirmar o resultado do vídeo. " +
+    "O processamento pode continuar no gateway. " +
+    "Verifique o Status do WhatsApp antes de tentar novamente, para evitar duplicação.",
+  );
 }
+export interface WhatsApp2ActiveStatus {
+  id: string;
+  type: "text" | "image" | "video" | "other";
+  text: string;
+  caption: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export async function getWhatsApp2ActiveStatuses(): Promise<{
+  ok: true;
+  count: number;
+  items: WhatsApp2ActiveStatus[];
+}> {
+  return request("/status/active");
+}
+
+export interface WhatsApp2StatusViewer {
+  id: string;
+  name: string;
+  viewedAt: string;
+}
+
+export interface WhatsApp2StatusViews {
+  ok: true;
+  available: boolean;
+  count: number | null;
+  viewers: WhatsApp2StatusViewer[];
+  reason?: string;
+}
+
+export async function getWhatsApp2StatusViews(messageId: string): Promise<WhatsApp2StatusViews> {
+  return request<WhatsApp2StatusViews>(
+    "/status/views?messageId=" + encodeURIComponent(messageId),
+  );
+}
+
 export async function getWhatsApp2StatusPrivacy(): Promise<WhatsAppStatusPrivacyConfig & { ok: boolean }> {
   return request<WhatsAppStatusPrivacyConfig & { ok: boolean }>("/status/privacy", {
     method: "GET",
@@ -675,8 +857,8 @@ export async function getWhatsApp2StatusPrivacy(): Promise<WhatsAppStatusPrivacy
 
 export async function setWhatsApp2StatusPrivacy(
   config: WhatsAppStatusPrivacyConfig,
-): Promise<{ ok: boolean; type: WhatsAppStatusPrivacyType; count: number }> {
-  return request<{ ok: boolean; type: WhatsAppStatusPrivacyType; count: number }>("/status/privacy", {
+): Promise<WhatsAppStatusPrivacyConfig & { ok: boolean }> {
+  return request<WhatsAppStatusPrivacyConfig & { ok: boolean }>("/status/privacy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
@@ -686,10 +868,16 @@ export async function setWhatsApp2StatusPrivacy(
 export async function getWhatsApp2StatusContacts(
   search = "",
   limit = 300,
+  offset = 0,
+  storyId = "",
+  tinderOnly = false,
 ): Promise<WhatsAppStatusContactsResult> {
   const query = new URLSearchParams();
   if (search) query.set("search", search);
+  if (storyId) query.set("storyId", storyId);
+  if (tinderOnly) query.set("tinderOnly", "1");
   if (limit) query.set("limit", String(limit));
+  if (offset) query.set("offset", String(offset));
   const queryString = query.toString();
   return request<WhatsAppStatusContactsResult>(`/status/contacts${queryString ? `?${queryString}` : ""}`, {
     method: "GET",
@@ -714,6 +902,64 @@ export async function getWhatsApp2EvergreenRecipients(storyKey: string) {
   }>(`/status/evergreen-recipients?${query.toString()}`, {
     method: "GET",
   });
+}
+
+export async function getWhatsApp2LibraryRecipients(storyId: string) {
+  return request<{
+    ok: true;
+    recipients: WhatsAppStatusEvergreenRecipient[];
+    locks: Array<{ contact_key: string; state: "reserved" | "sent" | "uncertain" | "failed"; sent_at: string | null }>;
+  }>(`/status/library/recipients?storyId=${encodeURIComponent(storyId)}`);
+}
+
+export async function publishWhatsAppLibraryStory(params: {
+  storyId: string;
+  recipients: Array<{ id: string; number?: string | null }>;
+  caption?: string;
+  idempotencyKey: string;
+}): Promise<WhatsApp2StatusImagePublishResult | WhatsApp2StatusVideoPublishResult> {
+  type Job = {
+    ok: true;
+    jobId: string;
+    status: "processing" | "sent" | "failed";
+    result?: WhatsApp2StatusImagePublishResult | WhatsApp2StatusVideoPublishResult;
+    error?: string;
+  };
+  let job: Job | null = null;
+  try {
+    job = await request<Job>("/status/library/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+  } catch (error) {
+    // Se a resposta do túnel sumir, nunca inicie outra publicação às cegas.
+    try {
+      job = await request<Job>(
+        `/status/library/publish/job?idempotencyKey=${encodeURIComponent(params.idempotencyKey)}`,
+      );
+    } catch { /* O estado permanece incerto. */ }
+    if (!job) {
+      throw new Error("Publicação sem confirmação do gateway. Confira o histórico antes de tentar de novo.");
+    }
+  }
+
+  const deadline = Date.now() + 200_000;
+  let errors = 0;
+  while (Date.now() < deadline) {
+    if (job.status === "sent" && job.result) return job.result;
+    if (job.status === "failed") throw new Error(job.error || "Falha ao publicar o Story.");
+    await new Promise<void>(resolve => setTimeout(resolve, 1600));
+    try {
+      job = await request<Job>(
+        `/status/library/publish/job?jobId=${encodeURIComponent(job.jobId)}`,
+      );
+      errors = 0;
+    } catch {
+      if (++errors >= 12) break;
+    }
+  }
+  throw new Error("Resultado da publicação ainda incerto. Não tente reenviar sem conferir os Status.");
 }
 
 export async function recordWhatsApp2EvergreenRecipients(params: {

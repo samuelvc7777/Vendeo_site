@@ -1,25 +1,30 @@
 @import "tailwindcss";
 
+/* Manter visualizadores e chats privados em compilações isoladas. */
+@source "../presentation/components/chat/WhatsAppMyStatusViewer.tsx";
+@source "../presentation/components/chat/BrainPrivateChat.tsx";
+@source "../presentation/components/match/TinderMatchesSection.tsx";
+
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 :root,
 :root[data-theme="dark"] {
-  --background: #000000;
-  --foreground: #f5f5f5;
-  --surface: #111113;
-  --surface-muted: #18181b;
-  --border: #262626;
-  --muted: #a1a1aa;
+  --background: #111b21;
+  --foreground: #e9edef;
+  --surface: #202c33;
+  --surface-muted: #2a3942;
+  --border: #3b4a54;
+  --muted: #8696a0;
   color-scheme: dark;
 }
 
 :root[data-theme="light"] {
-  --background: #ffffff;
-  --foreground: #18181b;
+  --background: #f0f2f5;
+  --foreground: #111b21;
   --surface: #ffffff;
-  --surface-muted: #f4f4f5;
-  --border: #e4e4e7;
-  --muted: #71717a;
+  --surface-muted: #e9edef;
+  --border: #d1d7db;
+  --muted: #54656f;
   color-scheme: light;
 }
 
@@ -133,7 +138,7 @@ body {
 }
 
 :root[data-theme="dark"] .whatsapp-chat-wallpaper {
-  background-color: #0b141a;
+  background-color: #111b21;
   background-image:
     radial-gradient(circle at 18px 18px, rgba(134, 150, 160, 0.05) 1.1px, transparent 1.35px),
     radial-gradient(circle at 54px 42px, transparent 7px, rgba(134, 150, 160, 0.036) 7.6px, rgba(134, 150, 160, 0.036) 8.4px, transparent 9px),
