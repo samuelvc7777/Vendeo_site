@@ -990,6 +990,7 @@ function isTemporaryOrSendingMessage(m?: DirectMessage | null): boolean {
     id.startsWith("local-") ||
     id.startsWith("local_") ||
     id.startsWith("fin-") ||
+    id.startsWith("fin_") ||
     id.startsWith("autopilot-preview:")
   );
 }
@@ -1056,8 +1057,8 @@ function deduplicateMessages(msgs: DirectMessage[]): DirectMessage[] {
           return r.text.trim() === m.text.trim();
         }
 
-        // Se é mensagem finalizada (fin-) com mesmo tipo de mídia (áudio ou imagem)
-        if (r.id.startsWith("fin-") && r.mediaType && r.mediaType === m.mediaType) {
+        // Se é mensagem finalizada (fin- ou fin_) com mesmo tipo de mídia (áudio ou imagem)
+        if ((r.id.startsWith("fin-") || r.id.startsWith("fin_")) && r.mediaType && r.mediaType === m.mediaType) {
           return true;
         }
 
@@ -1735,6 +1736,11 @@ export function InstagramDirect({
   const [mediaObservationText, setMediaObservationText] = useState("");
   const [isSubmittingMediaObservation, setIsSubmittingMediaObservation] = useState(false);
   const [isUpdatingRaffleStatus, setIsUpdatingRaffleStatus] = useState(false);
+
+  // --- Bulk AI Activation States ---
+  const [isBulkSelectionMode, setIsBulkSelectionMode] = useState(false);
+  const [selectedConversationIds, setSelectedConversationIds] = useState<Set<string>>(new Set());
+  const [isBulkActivationModalOpen, setIsBulkActivationModalOpen] = useState(false);
 
   const loadWhatsAppStickers = useCallback(async () => {
     setIsLoadingWhatsAppStickers(true);
@@ -7813,6 +7819,32 @@ export function InstagramDirect({
           }}
         />
 
+        {/* Modal de Ativação de IA em Massa (Bulk) */}
+        <AutoPilotActivationModal
+          isOpen={isBulkActivationModalOpen}
+          onClose={() => setIsBulkActivationModalOpen(false)}
+          bulkCount={selectedConversationIds.size}
+          onConfirm={async (mode) => {
+            try {
+              const ids = Array.from(selectedConversationIds);
+              const result = await autoPilot.activateAutoPilotBulk(ids, mode);
+              if (result.failed === 0) {
+                toast.success(`IA ativada em ${result.succeeded} conversa${result.succeeded > 1 ? "s" : ""}.`);
+              } else if (result.succeeded > 0) {
+                toast.warning(`${result.succeeded} ativada${result.succeeded > 1 ? "s" : ""}, ${result.failed} falha${result.failed > 1 ? "s" : ""}.`);
+              } else {
+                toast.error("Falha ao ativar IA em massa.");
+              }
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : "Erro ao ativar IA em massa.");
+            } finally {
+              setIsBulkActivationModalOpen(false);
+              setSelectedConversationIds(new Set());
+              setIsBulkSelectionMode(false);
+            }
+          }}
+        />
+
         {isGlobalAutoPilotDisabledModalOpen && (
           <div
             className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-in fade-in duration-150"
@@ -8053,7 +8085,28 @@ export function InstagramDirect({
               </button>
             )}
           </div>
-          {isWhatsAppInboxChannel && (
+          {isBulkSelectionMode ? (
+            <button
+              type="button"
+              onClick={() => {
+                setIsBulkSelectionMode(false);
+                setSelectedConversationIds(new Set());
+              }}
+              className="shrink-0 px-3 h-9 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-xs font-semibold hover:bg-zinc-300 dark:hover:bg-zinc-700 active:scale-95 transition-all cursor-pointer"
+            >
+              Cancelar
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsBulkSelectionMode(true)}
+              className="shrink-0 px-3 h-9 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-500/20 active:scale-95 transition-all cursor-pointer"
+              title="Selecionar conversas para ativar IA em massa"
+            >
+              Selecionar
+            </button>
+          )}
+          {isWhatsAppInboxChannel && !isBulkSelectionMode && (
             <button type="button" className="shrink-0 min-h-[40px] min-w-[40px] rounded-full flex items-center justify-center text-[#007aff] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] active:scale-95 transition-all cursor-pointer" aria-label="Filtros" title="Filtros">
               <SlidersHorizontal className="w-5 h-5" />
             </button>
@@ -8588,6 +8641,30 @@ export function InstagramDirect({
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
+                  {isBulkSelectionMode && (
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedConversationIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(conv.id)) next.delete(conv.id);
+                          else next.add(conv.id);
+                          return next;
+                        });
+                      }}
+                      className={`shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all cursor-pointer ${
+                        selectedConversationIds.has(conv.id)
+                          ? "bg-emerald-500 border-emerald-500"
+                          : "border-zinc-400 dark:border-zinc-500 hover:border-emerald-400"
+                      }`}
+                    >
+                      {selectedConversationIds.has(conv.id) && (
+                        <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
                   <div
                     title="Contato do WhatsApp"
                     className="transition-all shrink-0 cursor-default"
@@ -8914,6 +8991,61 @@ export function InstagramDirect({
         })
           )}
         </div>
+
+        {/* Bottom Action Bar para Bulk AI Activation */}
+        {isBulkSelectionMode && selectedConversationIds.size > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 z-30 px-4 pb-[calc(12px+env(safe-area-inset-bottom,0px))] pt-3 bg-gradient-to-t from-white via-white/95 to-transparent dark:from-[#0b141a] dark:via-[#0b141a]/95">
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/60 dark:border-[#222] bg-white/90 dark:bg-[#111b21]/90 backdrop-blur-xl px-4 py-3 shadow-[0_-4px_24px_rgba(0,0,0,0.08)]">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-emerald-500 text-white text-xs font-bold shrink-0">
+                  {selectedConversationIds.size}
+                </span>
+                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                  selecionada{selectedConversationIds.size > 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedConversationIds(new Set())}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
+                >
+                  Limpar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const globalEnabled = autoPilot.config?.isEnabledGlobally === false
+                      ? false
+                      : await autoPilot.isGlobalAutoPilotEnabled();
+                    if (!globalEnabled) {
+                      setIsGlobalAutoPilotDisabledModalOpen(true);
+                      return;
+                    }
+                    // Filtra chats que já têm IA ativa
+                    const eligibleIds = Array.from(selectedConversationIds).filter((id) => {
+                      const conv = sortedConversations.find((c) => c.id === id);
+                      if (!conv) return false;
+                      if (conv.aiAutoRespond) return false;
+                      if (autoPilot.chatStates[id]?.isEnabled) return false;
+                      return true;
+                    });
+                    if (eligibleIds.length === 0) {
+                      toast.info("Todos os chats selecionados já estão com IA ativa.");
+                      return;
+                    }
+                    setSelectedConversationIds(new Set(eligibleIds));
+                    setIsBulkActivationModalOpen(true);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Ativar IA
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
 
