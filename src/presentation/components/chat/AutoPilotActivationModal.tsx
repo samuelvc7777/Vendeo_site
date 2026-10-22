@@ -8,6 +8,7 @@ interface AutoPilotActivationModalProps {
   onClose: () => void;
   onConfirm: (mode: "immediate" | "wait_next") => Promise<void> | void;
   chatName?: string;
+  bulkCount?: number;
 }
 
 export function AutoPilotActivationModal({
@@ -15,7 +16,9 @@ export function AutoPilotActivationModal({
   onClose,
   onConfirm,
   chatName,
+  bulkCount,
 }: AutoPilotActivationModalProps) {
+  const isBulk = (bulkCount ?? 0) > 1;
   const [selectedMode, setSelectedMode] = useState<"immediate" | "wait_next" | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -54,13 +57,17 @@ export function AutoPilotActivationModal({
             </div>
             <div>
               <h3 className="text-sm font-bold text-zinc-950 dark:text-white tracking-tight flex items-center gap-2">
-                Ativar Piloto Automático
+                {isBulk ? `Ativar IA em ${bulkCount} conversas` : "Ativar Piloto Automático"}
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
                   <Sparkles className="w-2.5 h-2.5" /> IA
                 </span>
               </h3>
               <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
-                {chatName ? `Conversa com ${chatName}` : "Escolha como a IA deve iniciar"}
+                {isBulk
+                  ? "A IA será ativada em todas as conversas selecionadas"
+                  : chatName
+                    ? `Conversa com ${chatName}`
+                    : "Escolha como a IA deve iniciar"}
               </p>
             </div>
           </div>
@@ -77,7 +84,9 @@ export function AutoPilotActivationModal({
         {/* Corpo do Modal com Opções de Inicialização */}
         <div className="p-5 space-y-3.5">
           <p className="text-xs text-zinc-700 dark:text-zinc-300 font-medium">
-            Como deseja que a Larissa inicie o atendimento nesta conversa?
+            {isBulk
+              ? "Como deseja que a Larissa inicie o atendimento nas conversas selecionadas?"
+              : "Como deseja que a Larissa inicie o atendimento nesta conversa?"}
           </p>
           {errorMessage && (
             <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
@@ -103,7 +112,7 @@ export function AutoPilotActivationModal({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <h4 className="text-xs font-bold text-zinc-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300 transition-colors flex items-center gap-1.5">
-                    Responder agora (Imediatamente)
+                    {isBulk ? "Ativar agora em todas" : "Responder agora (Imediatamente)"}
                   </h4>
                   <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40 shrink-0">
                     Recomendado
@@ -137,7 +146,7 @@ export function AutoPilotActivationModal({
               </div>
               <div className="flex-1 min-w-0">
                 <h4 className="text-xs font-bold text-zinc-950 dark:text-white group-hover:text-zinc-700 dark:group-hover:text-zinc-200 transition-colors">
-                  Apenas aguardar próxima mensagem
+                  {isBulk ? "Aguardar próxima mensagem em todas" : "Apenas aguardar próxima mensagem"}
                 </h4>
                 <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-1 leading-snug">
                   O piloto ficará pronto e armado, mas só responderá quando o cliente enviar uma nova mensagem.

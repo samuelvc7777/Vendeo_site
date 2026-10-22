@@ -344,5 +344,26 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, restartAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
+  const activateAutoPilotBulk = useCallback(async (
+    conversationIds: string[],
+    mode: "immediate" | "wait_next",
+  ): Promise<{ succeeded: number; failed: number; results: Array<{ conversationId: string; success: boolean; error?: string; immediateTriggered?: boolean }> }> => {
+    const res = await autopilotApiFetch("/api/autopilot/bulk-toggle-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationIds, mode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success !== true) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    await refreshState(true);
+    return {
+      succeeded: data.summary?.succeeded ?? 0,
+      failed: data.summary?.failed ?? 0,
+      results: Array.isArray(data.results) ? data.results : [],
+    };
+  }, [refreshState]);
+
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, activateAutoPilotBulk, restartAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
 }

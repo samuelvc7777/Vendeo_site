@@ -42,7 +42,7 @@ import {
   whatsapp2ProviderIdFromConversationId,
 } from "./whatsapp2_gateway.ts";
 import { readConversationScheduleRuntimeSnapshot } from "./conversation_schedule_runtime.ts";
-import { createTinderBackgroundMessageReader, handleTinderMatchRoutes, requireTinderMatchSession, tinderAutomationReadiness } from "./tinder_match_routes.ts";
+import { createTinderBackgroundMessageReader, handleTinderMatchRoutes } from "./tinder_match_routes.ts";
 import { processTinderBackgroundSync } from "./tinder_sync_service.ts";
 
 const corsHeaders = {
@@ -3594,6 +3594,55 @@ serve(async (req: Request) => {
           } catch (staleErr) {
             console.error("[Cloud AutoPilot] Falha fechada na recuperação atômica de ciclos stale:", staleErr);
           }
+
+          // Recuperação de conversas órfãs: estado in_queue sem job na fila durável.
+          // Quando o Brain retorna global_capacity_busy, o worker re-agenda o job,
+          // mas se esse job for completado/removido enquanto o estado fica travado
+          // em in_queue, a conversa nunca mais será re-tentada. Esta recuperação
+          // detecta e reseta essas conversas órfãs para idle, permitindo que o
+          // próximo inbound as reative normalmente.
+          try {
+            const orphanedThreshold = new Date(Date.now() - 60_000).toISOString(); // 1 minuto atrás
+            const { data: orphanedConvs, error: orphanedError } = await supabase
+              .from("autopilot_chat_states")
+              .select("conversation_id")
+              .eq("status", "in_queue")
+              .lt("state_updated_at", orphanedThreshold)
+              .limit(20);
+
+            if (orphanedError) {
+              console.warn("[Cloud AutoPilot] Erro ao buscar conversas órfãs:", orphanedError);
+            } else if (orphanedConvs && orphanedConvs.length > 0) {
+              // Verifica quais NÃO têm job correspondente na fila durável
+              const orphanedIds = orphanedConvs.map((c: any) => c.conversation_id);
+              const { data: jobsExist, error: jobsError } = await supabase
+                .from("autopilot_inbound_jobs")
+                .select("conversation_id")
+                .in("conversation_id", orphanedIds);
+
+              if (!jobsError && jobsExist) {
+                const withJobs = new Set(jobsExist.map((j: any) => j.conversation_id));
+                const trulyOrphaned = orphanedIds.filter((id: string) => !withJobs.has(id));
+
+                if (trulyOrphaned.length > 0) {
+                  // Reseta conversas órfãs para idle via RPC atômica (cuida do state JSONB)
+                  for (const convId of trulyOrphaned) {
+                    await supabase.rpc("set_autopilot_runtime_state_atomic", {
+                      p_conversation_id: convId,
+                      p_status: "idle",
+                      p_reason: "orphaned_queue_recovery",
+                      p_cancel_current_cycle: false,
+                      p_clear_cancel_current_cycle: true,
+                    });
+                  }
+
+                  console.log(`[Cloud AutoPilot] Recuperadas ${trulyOrphaned.length} conversas órfãs de in_queue:`, trulyOrphaned);
+                }
+              }
+            }
+          } catch (orphanedErr) {
+            console.warn("[Cloud AutoPilot] Falha na recuperação de conversas órfãs:", orphanedErr);
+          }
         }
 
         // A fila durável é a autoridade de novas inbounds. O scanner legado só
@@ -4092,6 +4141,33 @@ serve(async (req: Request) => {
           }
         }
 
+        if (retryMessageId) {
+          try {
+            const { data: convRow } = await supabase
+              .from("instagram_conversations")
+              .select("stage_completed_rules")
+              .eq("id", conversationId)
+              .single();
+            const rules = convRow?.stage_completed_rules || {};
+            const orch = rules.orchestration || {};
+            if (orch.messageLedger && orch.messageLedger[retryMessageId]) {
+              delete orch.messageLedger[retryMessageId];
+              orch.lastProcessedMessageId = null;
+              await supabase
+                .from("instagram_conversations")
+                .update({
+                  stage_completed_rules: {
+                    ...rules,
+                    orchestration: orch,
+                  },
+                })
+                .eq("id", conversationId);
+            }
+          } catch (ledgerCleanErr) {
+            console.warn("[Autopilot Restart] Falha ao limpar ledger da mensagem:", ledgerCleanErr);
+          }
+        }
+
         const nowIso = new Date().toISOString();
         await publishAutoPilotState(supabase, conversationId, {
           isEnabled: true,
@@ -4111,6 +4187,7 @@ serve(async (req: Request) => {
               ),
           scheduledResponseAt: null,
           pendingAction: null,
+          pendingOutboundMessages: [],
         });
 
         return new Response(JSON.stringify({
@@ -4161,34 +4238,6 @@ serve(async (req: Request) => {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
-        }
-
-        // Tinder só pode alternar a IA com uma sessão Match válida. O canal
-        // é obtido no servidor; nunca confiar na indicação do cliente.
-        const { data: targetConversation, error: targetError } = await supabase
-          .from("instagram_conversations")
-          .select("channel")
-          .eq("id", conversationId)
-          .maybeSingle();
-        if (targetError) throw targetError;
-        if (targetConversation?.channel === "tinder" || String(conversationId).startsWith("tinder:")) {
-          if (!brainOperatorAllowedOrigin(req)) {
-            return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
-              status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-          try {
-            await requireTinderMatchSession(req, supabase);
-          } catch {
-            return new Response(JSON.stringify({ success: false, error: "Sessão Tinder obrigatória.", code: "MATCH_SESSION_REQUIRED" }), {
-              status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-          if (isEnabled && !tinderAutomationReadiness().enabled) {
-            return new Response(JSON.stringify({ success: false, error: "Automação do Tinder indisponível enquanto leitura ou envio estiver desabilitado.", code: "TINDER_AUTOMATION_DISABLED" }), {
-              status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
         }
 
         let immediateResult: { started: boolean; reason?: string; cycleId?: string } | null = null;
@@ -4423,6 +4472,223 @@ serve(async (req: Request) => {
         });
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no toggle-chat" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Rota batch para ATIVAR o Piloto Automático em múltiplos chats de uma vez
+    if ((path === "/autopilot/bulk-toggle-chat" || path === "/api/autopilot/bulk-toggle-chat") && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationIds: string[] = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+        const mode = String(body?.mode || "wait_next");
+        const triggerImmediate = mode === "immediate";
+
+        if (conversationIds.length === 0) {
+          return new Response(JSON.stringify({ error: "conversationIds é obrigatório e não pode ser vazio." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        if (conversationIds.length > 50) {
+          return new Response(JSON.stringify({ error: "Limite máximo de 50 conversas por requisição." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // Verificação global única para todo o lote
+        const { data: globalConfigRow, error: globalConfigError } = await supabase
+          .from("autopilot_settings")
+          .select("config")
+          .eq("id", "global")
+          .maybeSingle();
+        if (globalConfigError) throw globalConfigError;
+        if (globalConfigRow?.config?.isEnabledGlobally === false) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: "global_autopilot_disabled",
+            detail: "Ative o Piloto Automático globalmente antes de ativar a IA em massa.",
+          }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const results: Array<{ conversationId: string; success: boolean; immediateTriggered?: boolean; reason?: string; error?: string }> = [];
+
+        for (const conversationId of conversationIds) {
+          try {
+            // Verifica cronograma individual
+            const { data: scheduleRow, error: scheduleErr } = await supabase
+              .from("instagram_conversations")
+              .select("stage_completed_rules")
+              .eq("id", conversationId)
+              .maybeSingle();
+            if (scheduleErr) throw scheduleErr;
+            if (["ready_for_transition", "completed_waiting_manual"].includes(
+              String(scheduleRow?.stage_completed_rules?.schedule_status || ""),
+            )) {
+              results.push({ conversationId, success: false, error: "schedule_completed_waiting_manual" });
+              continue;
+            }
+
+            // Arma atomicamente
+            const { data: armResult, error: armErr } = await supabase.rpc(
+              "arm_autopilot_with_watermark_atomic",
+              { p_conversation_id: conversationId },
+            );
+            if (armErr || !armResult?.success) {
+              results.push({ conversationId, success: false, error: armErr?.message || "activation_failed" });
+              continue;
+            }
+
+            let immediateTriggered = false;
+            let reason: string | undefined;
+
+            if (triggerImmediate) {
+              if (await hasWaitingManualBrainTurn(supabase, conversationId)) {
+                reason = "waiting_manual";
+              } else {
+                const { data: lastMsgs } = await supabase
+                  .from("instagram_messages")
+                  .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
+                  .eq("conversation_id", conversationId)
+                  .order("timestamp", { ascending: false })
+                  .limit(1);
+                const lastMsg = lastMsgs?.[0];
+
+                if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
+                  const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+                  const needsMediaWorker =
+                    lastMediaType === "image" ||
+                    lastMediaType === "video" ||
+                    String(lastMsg.text || "").startsWith("[image:") ||
+                    String(lastMsg.text || "").startsWith("[video:");
+
+                  if (needsMediaWorker) {
+                    const { data: queueResult, error: queueError } = await supabase.rpc(
+                      "enqueue_autopilot_inbound_job",
+                      { p_conversation_id: conversationId, p_message_id: lastMsg.id, p_due_at: new Date().toISOString() },
+                    );
+                    if (queueError || queueResult?.success !== true) {
+                      reason = queueError?.message || queueResult?.reason || "media_queue_failed";
+                    } else {
+                      immediateTriggered = true;
+                      reason = "media_queued";
+                      await publishAutoPilotState(supabase, conversationId, {
+                        status: "starting",
+                        activity: activity(
+                          "starting",
+                          lastMediaType === "video" ? "Preparando observação" : "Analisando foto",
+                          lastMediaType === "video"
+                            ? "Vídeo encaminhado para observação humana antes do Brain."
+                            : "Foto encaminhada para descrição visual antes do Brain.",
+                          { event: "media_worker_queued", mediaType: lastMediaType, messageId: lastMsg.id },
+                        ),
+                        scheduledResponseAt: null,
+                      });
+                    }
+                  } else {
+                    const proposedCycleId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                    const { data: authResult } = await supabase.rpc("authorize_send_now_atomic", {
+                      p_conversation_id: conversationId,
+                      p_new_cycle_token: proposedCycleId,
+                      p_stale_seconds: 300,
+                    });
+                    if (authResult?.success) {
+                      const cycleId = authResult.cycleToken || proposedCycleId;
+                      const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+                      await publishAutoPilotState(supabase, conversationId, {
+                        cycleId,
+                        status: "starting",
+                        activity: activity("starting", "Iniciando...", "Ciclo iniciado imediatamente via bulk.", { cycleId, event: "bulk_immediate_started" }),
+                        scheduledResponseAt: null,
+                      });
+                      const brainPromise = runBrainOrchestration({
+                        supabase,
+                        conversationId,
+                        correlationId: cycleId,
+                        preClaimedCycleToken: cycleId,
+                        newMessage: {
+                          id: lastMsg.id,
+                          text: resolvedAudio.text,
+                          timestamp: lastMsg.timestamp,
+                          sender: lastMsg.sender_id || "them",
+                          mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+                          audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
+                        },
+                      });
+                      if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                        (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
+                      } else {
+                        void brainPromise;
+                      }
+                      immediateTriggered = true;
+                    } else if (authResult?.reason === "already_processing") {
+                      immediateTriggered = true;
+                      reason = "already_processing";
+                    } else {
+                      reason = authResult?.reason || "auth_failed";
+                    }
+                  }
+                } else {
+                  reason = "nothing_to_answer";
+                }
+              }
+            }
+
+            // Projeta estado canônico
+            const nowIso = new Date().toISOString();
+            const { data: canonicalRow } = await supabase
+              .from("instagram_conversations")
+              .select("ai_auto_respond, updated_at")
+              .eq("id", conversationId)
+              .maybeSingle();
+            if (canonicalRow) {
+              await patchAutoPilotProjectionState(supabase, conversationId, {
+                isEnabled: true,
+                status: immediateTriggered ? "processing" : "idle",
+                pauseReason: undefined,
+                pausedAt: undefined,
+                enabledAt: canonicalRow.updated_at,
+                activity: null,
+                scheduledResponseAt: null,
+                updatedAt: canonicalRow.updated_at,
+                stateUpdatedAt: canonicalRow.updated_at,
+              }).catch((err) => console.warn(`[Bulk] patch projection falhou conv=${conversationId}`, err));
+            }
+
+            results.push({ conversationId, success: true, immediateTriggered, reason });
+          } catch (perChatErr) {
+            results.push({ conversationId, success: false, error: perChatErr instanceof Error ? perChatErr.message : "unknown_error" });
+          }
+        }
+
+        const succeeded = results.filter((r) => r.success).length;
+        const failed = results.length - succeeded;
+
+        // Broadcast único para sincronizar abas
+        try {
+          const rt = supabase.channel("vendeo_realtime_chat");
+          await rt.send({
+            type: "broadcast",
+            event: "autopilot_bulk_update",
+            payload: { succeeded, failed, timestamp: new Date().toISOString() },
+          });
+        } catch (_) { /* best-effort */ }
+
+        return new Response(JSON.stringify({
+          success: true,
+          results,
+          summary: { total: results.length, succeeded, failed },
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: unknown) {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no bulk-toggle-chat" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
