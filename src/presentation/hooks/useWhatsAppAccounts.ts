@@ -5,11 +5,24 @@ import { resolveWhatsApp2GatewayUrl } from "@/presentation/components/chat/whats
 import type { WhatsAppConnection } from "@/presentation/components/chat/WhatsAppAccountContext";
 
 const SELECTION_KEY = "vendeo_whatsapp_connection";
+const MANAGEMENT_TOKEN_KEY = "vendeo_whatsapp_management_token";
 const UPDATED = "vendeo-whatsapp-accounts-updated";
+
+export function storeWhatsAppManagementToken(token: string) {
+  try {
+    if (token) sessionStorage.setItem(MANAGEMENT_TOKEN_KEY, token);
+    else sessionStorage.removeItem(MANAGEMENT_TOKEN_KEY);
+  } catch {}
+}
 
 export async function whatsappAccountsRequest(path: string, init?: RequestInit) {
   const base = await resolveWhatsApp2GatewayUrl();
-  const response = await fetch(`${base}${path}`, { cache: "no-store", ...init });
+  const headers = new Headers(init?.headers);
+  try {
+    const token = sessionStorage.getItem(MANAGEMENT_TOKEN_KEY);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  } catch {}
+  const response = await fetch(`${base}${path}`, { cache: "no-store", ...init, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || body.ok === false) {
     throw Object.assign(new Error(body.error || "Gerenciamento de WhatsApps indisponível."), { status: response.status });

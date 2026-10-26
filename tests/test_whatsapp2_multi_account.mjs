@@ -66,7 +66,7 @@ test("roteador mantém processos, corpos e destinos separados e pausa somente a 
   const readJson = async req => { const chunks = []; for await (const chunk of req) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString() || "{}"); };
   const manager = createAccountManager({ directory,
     entry: fileURLToPath(new URL("./fixtures/whatsapp-account-worker.cjs", import.meta.url)),
-    legacyStatus: () => ({ status: "ready" }), readJson, json, limit: 3,
+    legacyStatus: () => ({ status: "ready" }), readJson, json, limit: 3, managerToken: "test-management-token",
   });
   const server = http.createServer(async (req, res) => {
     try {
@@ -78,7 +78,9 @@ test("roteador mantém processos, corpos e destinos separados e pausa somente a 
   t.after(async () => { await manager.close(); await new Promise(resolve => server.close(resolve)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const request = async (route, body) => {
-    const response = await fetch(base + route, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const management = route === "/accounts" || route.endsWith("/configuration");
+    const headers = { "content-type": "application/json", ...(management ? { authorization: "Bearer test-management-token" } : {}) };
+    const response = await fetch(base + route, body === undefined ? {} : { method: "POST", headers, body: JSON.stringify(body) });
     return { status: response.status, data: await response.json() };
   };
   const a = (await request("/accounts", { name: "A" })).data.account;
@@ -112,6 +114,31 @@ test("roteador mantém processos, corpos e destinos separados e pausa somente a 
   await request(`/connections/${a.id}/configuration`, { enabled: true });
   await waitFor(a.id);
   assert.equal((await request(`/connections/${a.id}/status`)).data.connectionId, a.id);
+});
+
+test("criar e alterar contas exige a chave de gerenciamento", async t => {
+  const directory = temporary(t);
+  const json = (res, status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+  const readJson = async req => { const chunks = []; for await (const chunk of req) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString() || "{}"); };
+  const manager = createAccountManager({ directory, entry: "unused", legacyStatus: () => ({ status: "idle" }),
+    readJson, json, managerToken: "secret-management-key",
+  });
+  const server = http.createServer(async (req, res) => {
+    try { if (!await manager.handle(req, res, new URL(req.url, "http://local"))) json(res, 404, { ok: false }); }
+    catch (error) { json(res, error.statusCode || 500, { ok: false, error: error.message }); }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { await manager.close(); await new Promise(resolve => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const get = await fetch(base + "/accounts");
+  assert.equal(get.status, 200, "a leitura das contas continua disponível para o seletor");
+  const createWithoutKey = await fetch(base + "/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Intrusa" }) });
+  assert.equal(createWithoutKey.status, 401);
+  const configureWithoutKey = await fetch(`${base}/connections/legacy/configuration`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Intrusa" }) });
+  assert.equal(configureWithoutKey.status, 401);
+  const configureWithKey = await fetch(`${base}/connections/legacy/configuration`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer secret-management-key" }, body: JSON.stringify({ name: "Conta principal" }) });
+  assert.equal(configureWithKey.status, 200);
+  assert.equal(new AccountRegistry(directory).get("legacy").name, "Conta principal");
 });
 
 test("gerenciador adota gateway existente sem assumir sessão e bloqueia troca de identidade", async t => {

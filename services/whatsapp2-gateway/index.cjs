@@ -4098,6 +4098,7 @@ const accountManager = IS_CHILD || process.env.WHATSAPP2_MULTI_ACCOUNT_ENABLED =
   legacyStatus: snapshot,
   legacyUpstream: LEGACY_UPSTREAM,
   legacyToken: process.env.WHATSAPP2_LEGACY_UPSTREAM_TOKEN || "",
+  managerToken: process.env.WHATSAPP2_MANAGER_TOKEN || "",
   readJson,
   json,
   limit: Math.max(1, Math.min(20, Number(process.env.WHATSAPP2_MAX_ACCOUNTS) || 4)),

@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { fork } = require("node:child_process");
-const { randomUUID, randomBytes } = require("node:crypto");
+const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { whatsappAccountIdFromWid } = require("../../src/domain/entities/whatsapp2-account-scope.cjs");
 
 function failure(message, statusCode = 409) {
@@ -83,7 +83,7 @@ function acquireManagerLock(directory) {
   };
 }
 
-function createAccountManager({ directory, entry, legacyStatus, readJson, json, spawnWorker = fork, limit = 4, legacyUpstream, legacyToken = "" }) {
+function createAccountManager({ directory, entry, legacyStatus, readJson, json, spawnWorker = fork, limit = 4, legacyUpstream, legacyToken = "", managerToken = "" }) {
   const external = legacyUpstream ? new URL(legacyUpstream) : null;
   if (external && (external.protocol !== "http:" || external.hostname !== "127.0.0.1" || !external.port || external.username || external.password || external.pathname !== "/" || external.search || external.hash)) {
     throw new Error("O gateway existente deve ser um endereço HTTP local em 127.0.0.1, com porta explícita.");
@@ -93,6 +93,21 @@ function createAccountManager({ directory, entry, legacyStatus, readJson, json, 
   const workers = new Map();
   let closing = false;
   let externalState = { status: "offline" };
+
+  function authorizeManagement(req, res) {
+    if (!managerToken) {
+      json(res, 503, { ok: false, error: "A chave de gerenciamento de contas não está configurada." });
+      return false;
+    }
+    const supplied = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    const expectedBytes = Buffer.from(managerToken);
+    const suppliedBytes = Buffer.from(supplied);
+    if (expectedBytes.length !== suppliedBytes.length || !timingSafeEqual(expectedBytes, suppliedBytes)) {
+      json(res, 401, { ok: false, error: "Chave de gerenciamento inválida." });
+      return false;
+    }
+    return true;
+  }
 
   async function refreshLegacy() {
     if (!external) return;
@@ -176,6 +191,7 @@ function createAccountManager({ directory, entry, legacyStatus, readJson, json, 
 
   async function handle(req, res, url) {
     if (url.pathname === "/accounts") {
+      if (req.method === "POST" && !authorizeManagement(req, res)) return true;
       if (external) {
         try { await refreshLegacy(); }
         catch { /* A indisponibilidade da conta principal não oculta as outras contas. */ }
@@ -194,6 +210,7 @@ function createAccountManager({ directory, entry, legacyStatus, readJson, json, 
     const match = /^\/connections\/([^/]+)(\/.*)$/.exec(url.pathname) ||
       (external ? [url.pathname, "legacy", url.pathname] : null);
     if (!match) return false;
+    if (match[2] === "/configuration" && req.method === "POST" && !authorizeManagement(req, res)) return true;
     const row = registry.get(match[1]);
     if (match[2] === "/configuration" && req.method === "POST") {
       const body = await readJson(req, 4096);
