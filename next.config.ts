@@ -5,6 +5,7 @@ export default function (phase: string): NextConfig {
   const isDev = phase === PHASE_DEVELOPMENT_SERVER;
 
   return {
+    ...(!isDev ? { output: "export" as const } : {}),
     reactCompiler: true,
 
     images: {

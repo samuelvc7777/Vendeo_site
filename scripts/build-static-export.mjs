@@ -29,7 +29,9 @@ try {
   const npmCli = process.env.npm_execpath;
   const isCmd = !npmCli && process.platform === "win32";
   const executable = npmCli ? process.execPath : (process.platform === "win32" ? "npm.cmd" : "npm");
-  const args = npmCli ? [npmCli, "exec", "next", "build"] : ["exec", "next", "build"];
+  const args = npmCli
+    ? [npmCli, "run", "build", "--", "--webpack"]
+    : ["run", "build", "--", "--webpack"];
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", shell: isCmd });
   buildExitCode = result.status ?? 1;
 } finally {
