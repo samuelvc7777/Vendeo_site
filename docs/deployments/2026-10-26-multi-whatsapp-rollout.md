@@ -22,3 +22,12 @@ O endereço Cloudflare é um Quick Tunnel e o gateway manager e o túnel estão 
 - O segredo de gerenciamento não apareceu nos assets públicos. Nenhuma mensagem foi enviada, conversa foi limpa ou automação de IA foi ativada.
 - A conferência visual manual no navegador não foi realizada. As verificações da publicação foram por build, comparação dos assets e HTTP.
 - O deploy foi somente do Firebase Hosting. Os quatro commits locais da `main` ainda não foram enviados a `origin/main`.
+
+## Recuperação do gateway e atualização do Hosting — 26/10/2026
+
+- O Quick Tunnel anterior deixou de resolver. O gerenciador foi restaurado em `127.0.0.1:8789`, usando o gateway principal em `127.0.0.1:8788`, e o novo Quick Tunnel público é `https://backed-stamps-canal-seven.trycloudflare.com`.
+- `/health` e `/accounts` responderam HTTP 200 pelo túnel; as contas `WhatsApp principal` e `Samuel` ficaram `ready`. A rota de conversas respondeu para ambas (649 conversas na principal e 5 em Samuel).
+- O Hosting foi atualizado somente para substituir o `gatewayUrl` do `wa2-config.json`; não houve deploy de Functions ou nova migração.
+- A inspeção pós-reconexão confirmou duas mensagens `pending`, nenhuma `sending`, e zero pendentes nos escopos das duas contas ativas. As duas filas pendentes estão associadas a outra conta; portanto permaneceram intactas e não foram entregues.
+- O endereço continua sendo Quick Tunnel: depende dos processos nesta máquina e pode mudar quando o túnel for reiniciado. Para estabilidade contínua, ainda é necessário migrar para Named Tunnel/serviço permanente.
+- As variáveis locais não continham URL de webhook; nenhum webhook foi criado ou alterado nesta recuperação. O comportamento de automação inbound não foi validado por este reparo de conectividade.
