@@ -239,7 +239,7 @@ test("alinhamento de contrato entre gateway e whatsapp2-client", () => {
   // Client frontend deve expor a função correspondente
   assert.match(
     clientCode,
-    /export async function publishWhatsAppStatusText/,
+    /export const \{[^}]*publishWhatsAppStatusText/,
     "whatsapp2-client.ts deve exportar publishWhatsAppStatusText",
   );
   assert.match(

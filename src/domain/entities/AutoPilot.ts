@@ -127,4 +127,5 @@ export interface AutoPilotChatState {
   lastError?: string;
   stateUpdatedAt?: string;
   stateRevision?: number;
+  autoCloseTestEnabled?: boolean;
 }

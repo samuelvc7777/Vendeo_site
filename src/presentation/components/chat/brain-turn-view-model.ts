@@ -219,7 +219,7 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelado",
   cycle_cancelled: "Cancelado",
   idle: "Aguardando nova mensagem",
-  disabled: "IA desligada",
+  disabled: "Brain desligada",
   collecting: "Carregando contexto",
   active: "Em andamento",
   stale: "Atividade incompleta antiga",
@@ -252,7 +252,7 @@ const TERMINAL_EVENTS = new Set([
 const FAILED_EVENTS = new Set(["cycle_failed"]);
 const FAILED_ACTION_EVENTS = new Set(["action_failed_confirmed", "failed_confirmed"]);
 const CANCELLED_EVENTS = new Set(["cycle_cancelled"]);
-const WAITING_EVENTS = new Set(["manual_resolution_required", "waiting_human"]);
+const WAITING_EVENTS = new Set(["manual_resolution_required", "waiting_human", "waiting_manual"]);
 const SENT_EVENTS = new Set(["action_sent", "sent"]);
 const ACTION_EVENTS = new Set([
   "action_sending", "action_sent", "action_cancelled", "action_failed_retryable",
@@ -277,6 +277,8 @@ export function formatBrainPhase(phase: string | null | undefined): string {
 export function formatVisibleBrainIdentity(value: string | null | undefined): string {
   if (!value) return "";
   return value
+    .replace(/^brain_manual_resolution\|/, "")
+    .replace(/^media_observation_required\|(?:video|image)\|/, "")
     .replace(/\bAtria[- ]Dawn(?:[- ]Preview)?(?:\s*\(Atria-ASI\))?/gi, "Brain")
     .replace(/\bAtria\b/gi, "Brain");
 }
@@ -311,7 +313,12 @@ function terminalStatusForEvent(event: BrainOperationalEvent): BrainTurnStatus |
   const status = event.status || "";
   if (CANCELLED_EVENTS.has(event.event) || status === "cancelled" || status === "cycle_cancelled") return "cancelled";
   if (FAILED_EVENTS.has(event.event) || FAILED_EVENTS.has(status) || status === "failed" || status === "failed_technical") return "failed";
-  if (TERMINAL_EVENTS.has(event.event) || status === "completed" || status === "cycle_completed") return "completed";
+  if (TERMINAL_EVENTS.has(event.event) || status === "completed" || status === "cycle_completed") {
+    if (event.event === "cycle_completed" && event.metadata?.action === "manual_resolution") {
+      return null;
+    }
+    return "completed";
+  }
   return null;
 }
 
@@ -319,17 +326,53 @@ function lastTerminalEvent(events: BrainOperationalEvent[]): BrainOperationalEve
   return [...events].reverse().find((event) => terminalStatusForEvent(event) !== null);
 }
 
+function isWaitingEvent(e: BrainOperationalEvent): boolean {
+  const status = e.status || "";
+  return WAITING_EVENTS.has(e.event) || status === "waiting_human" || status === "waiting_manual" || status === "manual_resolution_required";
+}
+
 function classifyTurn(events: BrainOperationalEvent[]): BrainTurnStatus {
-  const terminal = lastTerminalEvent(events);
-  if (terminal) return terminalStatusForEvent(terminal)!;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    const status = e.status || "";
+    if (e.event === "manual_resolution_received" || e.event === "media_observation_received") {
+      return "running";
+    }
+    if (isWaitingEvent(e)) {
+      return "waiting_human";
+    }
+    if (["brain_started", "turn_started", "action_sending", "action_sent"].includes(e.event)) {
+      return "running";
+    }
+    if (CANCELLED_EVENTS.has(e.event) || status === "cancelled" || status === "cycle_cancelled") {
+      return "cancelled";
+    }
+    if (FAILED_EVENTS.has(e.event) || FAILED_EVENTS.has(status) || status === "failed" || status === "failed_technical") {
+      return "failed";
+    }
+    if (e.event === "turn_completed") {
+      return "completed";
+    }
+    if (e.event === "cycle_completed" || status === "cycle_completed" || status === "completed") {
+      const hasUnresolvedWaiting = events.slice(0, i).some(isWaitingEvent)
+        && !events.slice(0, i).some((prev) => prev.event === "manual_resolution_received" || prev.event === "media_observation_received");
+
+      if (!hasUnresolvedWaiting) {
+        return "completed";
+      }
+    }
+  }
+
   const latest = events[events.length - 1];
   if (!latest) return "running";
-  const status = latest.status || "";
-  if (WAITING_EVENTS.has(latest.event) || status === "waiting_human" || status === "manual_resolution_required") return "waiting_human";
+  if (isWaitingEvent(latest)) return "waiting_human";
   return "running";
 }
 
 export function getEffectiveBrainTurnEvent(turn: BrainTurnView): BrainOperationalEvent | undefined {
+  if (turn.status === "waiting_human") {
+    return [...turn.events].reverse().find(isWaitingEvent) || turn.events[turn.events.length - 1];
+  }
   return lastTerminalEvent(turn.events) || turn.events[turn.events.length - 1];
 }
 
@@ -446,7 +489,7 @@ export function groupBrainTurns(events: BrainOperationalEvent[]): BrainTurnView[
       cycleId: sorted.find((item) => item.cycleId)?.cycleId,
       provisional: sorted.every(isProvisionalEvent),
       startedAt: first.timestamp,
-      finishedAt: terminal?.timestamp,
+      finishedAt: classifyTurn(sorted) === "waiting_human" || classifyTurn(sorted) === "running" ? undefined : terminal?.timestamp,
       status: classifyTurn(sorted),
       events: sorted,
       summary: { actionCount: uniqueActions.size, sentCount: sentActions.size, failedCount: failedActions.size },

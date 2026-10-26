@@ -13,12 +13,24 @@ import { CreateRaffleInput } from "@/domain/repositories/IRaffleRepository";
 import { manageRaffleUseCase } from "@/infrastructure/di/container";
 import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
-import { resolveWhatsApp2PhoneNumbers } from "@/presentation/components/chat/whatsapp2-client";
+import { createWhatsApp2Client, getWhatsApp2Status, whatsappAccountIdFromConversationId, whatsappAccountIdFromWid } from "@/presentation/components/chat/whatsapp2-client";
+import { whatsappAccountsRequest } from "./useWhatsAppAccounts";
 import { toast } from "sonner";
+
+const STORAGE_ACTIVE_RAFFLE_KEY = "vendeo_active_raffle_id_v1";
 
 export function useRaffles() {
   const [raffles, setRaffles] = useState<Raffle[]>([]);
-  const [activeRaffleId, setActiveRaffleId] = useState<string | null>(null);
+  const [activeRaffleId, setActiveRaffleId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        return localStorage.getItem(STORAGE_ACTIVE_RAFFLE_KEY) || null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
   const [tickets, setTickets] = useState<RaffleTicket[]>([]);
   const [selectedNumbers, setSelectedNumbers] = useState<number[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -56,6 +68,11 @@ export function useRaffles() {
   const ticketsMap = useMemo(() => {
     const map = new Map<number, RaffleTicket>();
     for (const ticket of tickets) {
+      const existing = map.get(ticket.number);
+      // Cota paga tem prioridade máxima e nunca é sobrescrita por reserva
+      if (existing && existing.status === "paid" && ticket.status !== "paid") {
+        continue;
+      }
       map.set(ticket.number, ticket);
     }
     return map;
@@ -71,13 +88,20 @@ export function useRaffles() {
         setRaffles(list);
 
         if (list.length > 0) {
+          const storedId = typeof window !== "undefined" ? localStorage.getItem(STORAGE_ACTIVE_RAFFLE_KEY) : null;
+          const candidateId = activeRaffleId || storedId;
           const targetId =
-            activeRaffleId && list.some((r) => r.id === activeRaffleId)
-              ? activeRaffleId
+            candidateId && list.some((r) => r.id === candidateId)
+              ? candidateId
               : list[0].id;
 
           if (targetId !== activeRaffleId) {
             setActiveRaffleId(targetId);
+            if (typeof window !== "undefined") {
+              try {
+                localStorage.setItem(STORAGE_ACTIVE_RAFFLE_KEY, targetId);
+              } catch {}
+            }
           }
 
           const details = await manageRaffleUseCase.getRaffleWithDetails(targetId);
@@ -98,6 +122,11 @@ export function useRaffles() {
   // Carrega bilhetes quando troca a rifa ativa
   const selectRaffle = useCallback(async (id: string) => {
     setActiveRaffleId(id);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(STORAGE_ACTIVE_RAFFLE_KEY, id);
+      } catch {}
+    }
     setSelectedNumbers([]);
     try {
       const details = await manageRaffleUseCase.getRaffleWithDetails(id);
@@ -130,8 +159,6 @@ export function useRaffles() {
           .like("id", "wa2:%")
           .eq("is_converted", true)
           .not("workflow_finalized_at", "is", null)
-          .neq("status", "locked")
-          .neq("status", "archived")
           .neq("status", "system")
           .neq("status", "vault")
           .order("last_message_at", { ascending: false, nullsFirst: false })
@@ -162,25 +189,47 @@ export function useRaffles() {
         return;
       }
 
-      const providerIds = rows.map((row: any) =>
-        String(row.contact_id || row.id.replace(/^wa2:(?:account-[^:]+:)?/i, "")).trim()
-      );
-      const resolved = await resolveWhatsApp2PhoneNumbers(providerIds);
-      const identityByProviderId = new Map(
-        (resolved.contacts || []).map((item) => [item.chatId, item])
-      );
+      const connections = new Map<string, string | undefined>();
+      try {
+        const result = await whatsappAccountsRequest("/accounts");
+        for (const connection of result.accounts) {
+          if (connection.accountId && connection.status === "ready") connections.set(connection.accountId, connection.id);
+        }
+      } catch (error) {
+        if ((error as { status?: number }).status === 404) {
+          const status = await getWhatsApp2Status();
+          const accountId = whatsappAccountIdFromWid(status.me?.wid);
+          if (accountId && status.status === "ready") connections.set(accountId, undefined);
+        } else throw error;
+      }
+      const identityByConversationId = new Map<string, { phoneNumber: string | null; savedName?: string | null }>();
+      await Promise.all([...connections].map(async ([accountId, connectionId]) => {
+        const accountRows = rows.filter(row => whatsappAccountIdFromConversationId(row.id) === accountId);
+        if (!accountRows.length) return;
+        const providerIds = accountRows.map(row => String(row.contact_id || row.id.replace(/^wa2:account-[^:]+:/, "")));
+        try {
+          const resolved = await createWhatsApp2Client(connectionId).resolveWhatsApp2PhoneNumbers(providerIds);
+          const byProvider = new Map(resolved.contacts.map(contact => [contact.chatId, contact]));
+          accountRows.forEach((row, index) => {
+            const contact = byProvider.get(providerIds[index]);
+            if (contact) identityByConversationId.set(row.id, contact);
+          });
+        } catch (error) { console.warn("Conta indisponível para resolver contatos da rifa:", accountId, error); }
+      }));
 
       const contacts = new Map<string, RaffleBuyer>();
       for (const row of rows) {
         const providerId = String(
           row.contact_id || String(row.id || "").replace(/^wa2:(?:account-[^:]+:)?/i, "")
         ).trim();
-        const identity = identityByProviderId.get(providerId);
+        const identity = identityByConversationId.get(row.id);
+        const directPhoneMatch = String(row.id || "").match(/wa2:(?:account-[^:]+:)?(\d+)@c\.us/i);
+        const directPhone = directPhoneMatch ? directPhoneMatch[1] : undefined;
         const phone = identity?.phoneNumber
           ? String(identity.phoneNumber)
-          : undefined;
+          : directPhone;
         const conversationId = String(row.id);
-        const dedupeKey = phone ? `phone:${phone}` : `conversation:${conversationId}`;
+        const dedupeKey = phone ? `${whatsappAccountIdFromConversationId(conversationId)}:phone:${phone}` : `conversation:${conversationId}`;
         if (contacts.has(dedupeKey)) continue;
 
         const rawName = String(

@@ -263,7 +263,7 @@ test("alinhamento de contrato de imagem entre gateway e whatsapp2-client", () =>
   // Client frontend deve expor publishWhatsAppStatusImage chamando /status/image
   assert.match(
     clientCode,
-    /export async function publishWhatsAppStatusImage/,
+    /export const \{[^}]*publishWhatsAppStatusImage/,
     "whatsapp2-client.ts deve exportar publishWhatsAppStatusImage",
   );
   assert.match(

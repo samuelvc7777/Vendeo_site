@@ -11,6 +11,7 @@ export interface WhatsApp2QueuedDeliveryParams {
   mediaUrl?: string;
   voiceNote?: boolean;
   replyToMessageId?: string | null;
+ viewOnce?: boolean;
   saveRecipientContact?: boolean;
   recipientContactName?: string;
   timeoutMs?: number;
@@ -55,6 +56,7 @@ export async function enqueueAndWaitWhatsApp2Delivery(
     mediaUrl,
     voiceNote = false,
     replyToMessageId = null,
+    viewOnce = false,
     saveRecipientContact = false,
     recipientContactName = "",
     timeoutMs = 18_000,
@@ -62,6 +64,10 @@ export async function enqueueAndWaitWhatsApp2Delivery(
 
   if (!supabase || !queueId || !conversationId || !recipientId) {
     return { success: false, error: "whatsapp2_delivery_invalid_params" };
+  }
+  const conversationAccountId = /^wa2:(account-\d{8,15}):/.exec(conversationId)?.[1];
+  if (conversationAccountId && conversationAccountId !== gatewayAccountId) {
+    return { success: false, error: "whatsapp2_delivery_account_mismatch" };
   }
 
   const { data: existing, error: existingError } = await supabase
@@ -105,6 +111,7 @@ export async function enqueueAndWaitWhatsApp2Delivery(
         media_url: mediaUrl || null,
         voice_note: voiceNote === true,
         reply_to_message_id: replyToMessageId || null,
+       view_once: viewOnce === true,
         save_recipient_contact: saveRecipientContact === true,
         recipient_contact_name: recipientContactName || null,
         recipient_contact_save_status: saveRecipientContact ? "pending" : "not_requested",
@@ -131,6 +138,7 @@ export async function enqueueAndWaitWhatsApp2Delivery(
         media_url: mediaUrl || null,
         voice_note: voiceNote === true,
         reply_to_message_id: replyToMessageId || null,
+       view_once: viewOnce === true,
         save_recipient_contact: saveRecipientContact === true,
         recipient_contact_name: recipientContactName || null,
         recipient_contact_save_status: saveRecipientContact ? "pending" : "not_requested",

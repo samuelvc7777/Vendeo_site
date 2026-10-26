@@ -1,6 +1,10 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const QRCode = require("qrcode");
+const { classifyPairingError, isPairingStorageReady } = require("./pairing-errors.cjs");
+const crypto = require("node:crypto");
+const { resolveRaffleNumbersForFinalization } = require("./finalization-raffle-numbers.cjs");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { limitChatSnapshot } = require("./chat-snapshot-policy.cjs");
 const { latestInboundProviderMessage } = require("./latest-provider-message.cjs");
@@ -13,7 +17,6 @@ const { createClient } = require("@supabase/supabase-js");
 const WA_JS_BUNDLE = require.resolve("@wppconnect/wa-js");
 
 const ROOT = __dirname;
-const SESSION_DIR = path.join(ROOT, ".session");
 
 function loadLocalEnv() {
   const candidates = [
@@ -39,16 +42,38 @@ function loadLocalEnv() {
   }
 }
 loadLocalEnv();
+const SESSION_DIR = process.env.WHATSAPP2_SESSION_DIR || path.join(ROOT, ".session");
+const CONNECTION_ID = process.env.WHATSAPP2_CONNECTION_ID || "legacy";
+const IS_CHILD = process.env.WHATSAPP2_CHILD === "1";
+const LEGACY_UPSTREAM = !IS_CHILD ? process.env.WHATSAPP2_LEGACY_UPSTREAM_URL || "" : "";
+if (LEGACY_UPSTREAM && Number(new URL(LEGACY_UPSTREAM).port) === Number(process.env.WHATSAPP2_GATEWAY_PORT ?? 8788)) {
+  throw new Error("O gerenciador e o gateway existente devem usar portas diferentes.");
+}
+const { accountMessageId, providerMessageId } = require("./message-scope.cjs");
+function scopedMessageId(id) { return accountMessageId(id, currentWhatsApp2AccountId(), IS_CHILD); }
+function rawMessageId(id) { return providerMessageId(id, currentWhatsApp2AccountId()); }
+const { createAccountManager } = require("./account-manager.cjs");
+
+function ignorePipeErrors(stream) {
+  if (!stream) return;
+  stream.on?.("error", (err) => {
+    if (err?.code === "EPIPE" || err?.code === "ERR_STREAM_DESTROYED") return;
+  });
+}
+ignorePipeErrors(process.stdout);
+ignorePipeErrors(process.stderr);
 
 process.on("unhandledRejection", (reason) => {
   const msg = String(reason?.message || reason);
   if (
+    reason?.code === "EPIPE" ||
+    reason?.code === "ERR_STREAM_DESTROYED" ||
     msg.includes("detached Frame") ||
     msg.includes("Execution context was destroyed") ||
     msg.includes("Session closed") ||
     msg.includes("Target closed")
   ) {
-    console.warn("[whatsapp2] unhandledRejection suprimida do Puppeteer:", msg);
+    console.warn("[whatsapp2] unhandledRejection suprimida:", msg);
     return;
   }
   console.error("[whatsapp2] unhandledRejection:", reason);
@@ -57,12 +82,14 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (error) => {
   const msg = String(error?.message || error);
   if (
+    error?.code === "EPIPE" ||
+    error?.code === "ERR_STREAM_DESTROYED" ||
     msg.includes("detached Frame") ||
     msg.includes("Execution context was destroyed") ||
     msg.includes("Session closed") ||
     msg.includes("Target closed")
   ) {
-    console.warn("[whatsapp2] uncaughtException suprimida do Puppeteer:", msg);
+    console.warn("[whatsapp2] uncaughtException suprimida:", msg);
     return;
   }
   console.error("[whatsapp2] uncaughtException:", error);
@@ -100,7 +127,7 @@ const { normalizeActiveWhatsAppStatuses } = require("./status/active-status.cjs"
 const { normalizeStatusViewers } = require("./status/status-viewers.cjs");
 
 const HOST = process.env.WHATSAPP2_GATEWAY_HOST || "127.0.0.1";
-const PORT = Number(process.env.WHATSAPP2_GATEWAY_PORT || 8788);
+const PORT = Number(process.env.WHATSAPP2_GATEWAY_PORT ?? 8788);
 const API_TOKEN = String(process.env.WHATSAPP2_GATEWAY_TOKEN || "");
 const WEBHOOK_URL = String(process.env.VENDEO_WHATSAPP2_WEBHOOK_URL || "");
 const WEBHOOK_TOKEN = String(process.env.VENDEO_WHATSAPP2_WEBHOOK_TOKEN || "");
@@ -123,11 +150,13 @@ async function loadEvergreenStatusRecipients(storyKey) {
   if (!supabase) throw new Error("Supabase indisponível para histórico Evergreen");
   const key = String(storyKey || "").trim();
   if (!key) throw new Error("storyKey obrigatório");
+  const persistedKey = IS_CHILD ? `${currentWhatsApp2AccountId()}::${key}` : key;
 
   const { data, error } = await supabase
     .from("whatsapp_status_story_recipients")
     .select("contact_key, contact_id, contact_number, status_post_id, sent_at")
-    .eq("story_key", key)
+    .in("gateway_account_id", IS_CHILD ? [currentWhatsApp2AccountId()] : [currentWhatsApp2AccountId(), "primary"])
+    .eq("story_key", persistedKey)
     .order("sent_at", { ascending: true });
 
   if (error) throw error;
@@ -144,6 +173,7 @@ async function recordEvergreenStatusRecipients({ storyKey, statusPostId, recipie
   if (!supabase) throw new Error("Supabase indisponível para histórico Evergreen");
   const key = String(storyKey || "").trim();
   if (!key) throw new Error("storyKey obrigatório");
+  const persistedKey = IS_CHILD ? `${currentWhatsApp2AccountId()}::${key}` : key;
   const rows = [];
 
   for (const recipient of Array.isArray(recipients) ? recipients : []) {
@@ -152,7 +182,8 @@ async function recordEvergreenStatusRecipients({ storyKey, statusPostId, recipie
     const contactKey = normalizeEvergreenRecipientKey(contactNumber || contactId);
     if (!contactKey) continue;
     rows.push({
-      story_key: key,
+      gateway_account_id: currentWhatsApp2AccountId(),
+      story_key: persistedKey,
       contact_key: contactKey,
       contact_id: contactId,
       contact_number: contactNumber,
@@ -296,6 +327,8 @@ const state = {
 function snapshot() {
   return {
     ...state,
+    connectionId: CONNECTION_ID,
+    accountId: currentWhatsApp2AccountId(),
     hasQr: false,
     hasPairingCode: Boolean(state.pairingCode),
   };
@@ -316,8 +349,9 @@ function broadcast(event, data) {
 function setState(patch) {
   Object.assign(state, patch);
   broadcast("status", snapshot());
+  if (IS_CHILD && process.connected) process.send({ type: "state", status: state.status, lastError: state.lastError });
 }async function emitEvent(type, payload = {}) {
-  const event = { type, payload, at: new Date().toISOString() };
+  const event = { type, payload, connectionId: CONNECTION_ID, accountId: currentWhatsApp2AccountId(), at: new Date().toISOString() };
   broadcast("whatsapp2", event);
   if (!WEBHOOK_URL) return;
   try {
@@ -341,7 +375,7 @@ function setState(patch) {
 function serializeMessage(message) {
   if (!message || isInternalWhatsApp2Message(message)) return null;
   return {
-    id: message.id?._serialized || message.id?.$1 || null,
+    id: scopedMessageId(message.id?._serialized || message.id?.$1 || null),
     from: message.from || null,
     to: message.to || null,
     body: message.body || "",
@@ -401,7 +435,12 @@ async function readJson(req, maxBytes = 25 * 1024 * 1024) {
     if (bytes > maxBytes) throw new Error("Payload grande demais");
     chunks.push(chunk);
   }
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+  const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+  if (body.conversationId?.startsWith("wa2:") &&
+      !body.conversationId.startsWith(`wa2:${currentWhatsApp2AccountId()}:`)) {
+    throw new Error("whatsapp2_conversation_account_mismatch");
+  }
+  return body;
 }function ensureReady() {
   if (!client || state.status !== "ready") {
     throw new Error("WhatsApp 2 não está pronto: " + state.status);
@@ -1509,6 +1548,7 @@ async function enrichDocumentAttachment(attachment, persisted) {
 }
 
 async function downloadMessageMediaPayload(messageId) {
+  messageId = rawMessageId(messageId);
   const active = ensureReady();
   await ensureWaJsReady();
 
@@ -1674,7 +1714,7 @@ async function persistWhatsApp2MediaUnlocked(messageId, kind, options = {}) {
   } = await downloadMessageMediaPayload(messageId);
   const safeId = String(messageId).replace(/[^a-zA-Z0-9._-]+/g, "_");
   const ext = mimeExtension(contentType, kind === "audio" ? "ogg" : "bin");
-  const objectPath = `whatsapp2/${kind}/${safeId}.${ext}`;
+  const objectPath = `whatsapp2/${currentWhatsApp2AccountId()}/${kind}/${safeId}.${ext}`;
   const { error } = await supabase.storage.from("vendeo_vault").upload(objectPath, buffer, {
     contentType,
     upsert: true,
@@ -1706,7 +1746,7 @@ async function resolveQuotedMessageId(message) {
   if (!message?.hasQuotedMsg) return null;
   try {
     const quoted = await message.getQuotedMessage();
-    return quoted?.id?._serialized || quoted?.id?.$1 || null;
+    return scopedMessageId(quoted?.id?._serialized || quoted?.id?.$1 || null);
   } catch {
     return null;
   }
@@ -1841,7 +1881,7 @@ async function waitForCanonicalWhatsApp2Message(conversationId, messageId, timeo
       .from("instagram_messages")
       .select("id")
       .eq("conversation_id", conversationId)
-      .eq("id", messageId)
+      .eq("id", scopedMessageId(messageId))
       .maybeSingle();
     if (error) throw error;
     if (data?.id) return true;
@@ -1917,7 +1957,7 @@ async function syncWhatsApp2Message(message) {
   const { data, error } = await supabase.rpc("record_whatsapp2_outbound_attachment_atomic", {
     p_conversation_id: conversationId,
     p_raw_contact_id: chatId,
-    p_message_id: messageId,
+    p_message_id: scopedMessageId(messageId),
     p_contact_name: chatName,
     p_text: text || preview,
     p_timestamp: timestamp,
@@ -1953,7 +1993,7 @@ async function syncWhatsApp2Ack(message, ack) {
       status,
       ...(seenAt ? { seen_at: seenAt } : {}),
     })
-    .eq("id", messageId)
+    .eq("id", scopedMessageId(messageId))
     .eq("conversation_id", conversationId)
     .eq("channel", "whatsapp2");
 
@@ -1986,7 +2026,7 @@ async function syncWhatsApp2Reaction(reaction) {
     : new Date().toISOString();
 
   const { error } = await supabase.rpc("apply_instagram_message_reaction_atomic", {
-    p_message_id: targetMessageId,
+    p_message_id: scopedMessageId(targetMessageId),
     p_sender_id: senderId || "whatsapp2",
     p_emoji: emoji || null,
     p_action: emoji ? "react" : "unreact",
@@ -2003,7 +2043,7 @@ function serializeWhatsApp2PollVote(vote) {
     vote.parentMsgKey?.toString?.() ||
     null;
   return {
-    parentMessageId,
+    parentMessageId: scopedMessageId(parentMessageId),
     voter: String(vote.voter || ""),
     selectedOptions: Array.isArray(vote.selectedOptions)
       ? vote.selectedOptions.slice(0, 20).map((option) => ({
@@ -2055,7 +2095,7 @@ async function syncWhatsApp2Revoke(after, before) {
         message_metadata: { nativeKind: "revoked", providerType: "revoked" },
         audio_transcript: null,
       })
-      .eq("id", target)
+      .eq("id", scopedMessageId(target))
       .eq("conversation_id", whatsapp2ConversationId(chatId))
       .eq("channel", "whatsapp2");
   } catch {}
@@ -2273,7 +2313,7 @@ async function sendTextInternal({ to, text, replyToMessageId }) {
         normalizeChatId(to),
         String(text || ""),
         {
-          ...(replyToMessageId ? { quotedMessageId: String(replyToMessageId) } : {}),
+          ...(replyToMessageId ? { quotedMessageId: rawMessageId(replyToMessageId) } : {}),
         },
       ),
       WHATSAPP2_SEND_TIMEOUT_MS,
@@ -2293,7 +2333,10 @@ async function sendMediaInternalUnlocked({
   asVoice,
   asSticker,
   replyToMessageId,
+  viewOnce,
+  isViewOnce,
 }) {
+  const shouldViewOnce = Boolean(isViewOnce ?? viewOnce);
   let media;
   let sourceBytes = 0;
   const requestedFilename = filename
@@ -2384,7 +2427,7 @@ async function sendMediaInternalUnlocked({
 
   const result = await withOperationTimeout(
     active.pupPage.evaluate(
-      async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg }) => {
+      async ({ chatId, dataUrl, type, cleanMime, filename, caption, asVoice, quotedMsg, isViewOnce }) => {
         let targetId = chatId;
         if (String(chatId).endsWith("@lid")) {
           try {
@@ -2402,6 +2445,7 @@ async function sendMediaInternalUnlocked({
           ...(caption ? { caption } : {}),
           ...(asVoice ? { isPtt: true, waveform: true } : {}),
           ...(quotedMsg ? { quotedMsg } : {}),
+          ...(isViewOnce ? { isViewOnce: true } : {}),
         };
         const sent = await globalThis.WPP.chat.sendFileMessage(targetId, dataUrl, options);
         return sent ? JSON.parse(JSON.stringify(sent)) : null;
@@ -2414,7 +2458,8 @@ async function sendMediaInternalUnlocked({
         filename: resolvedFilename,
         caption: caption ? String(caption) : "",
         asVoice: Boolean(asVoice),
-        quotedMsg: replyToMessageId ? String(replyToMessageId) : "",
+        quotedMsg: replyToMessageId ? rawMessageId(replyToMessageId) : "",
+        isViewOnce: shouldViewOnce,
       },
     ),
     WHATSAPP2_SEND_TIMEOUT_MS,
@@ -2428,7 +2473,7 @@ async function sendMediaInternalUnlocked({
   const providerType = asVoice ? "ptt" : type;
   const kind = type === "document" ? "document" : type;
   return {
-    id: messageId,
+    id: scopedMessageId(messageId),
     fromMe: true,
     to: chatId,
     body: caption ? String(caption) : "",
@@ -2451,7 +2496,7 @@ async function sendMediaInternalUnlocked({
       pageCount: null,
       isGif: false,
       isAnimated: false,
-      isViewOnce: false,
+      isViewOnce: shouldViewOnce,
       isForwarded: false,
       forwardingScore: 0,
       downloadable: true,
@@ -2522,7 +2567,11 @@ async function processWhatsApp2InboundJob(job, workerToken, accountId) {
   const avatarUrl = await resolveProfilePic(chatId).catch(() => null);
   let mediaUrl = null;
 
-  if (kind) {
+  // View-once messages cannot be downloaded via wwebjs — skip media persistence
+  // and save the message with a placeholder so it appears in the chat.
+  const isViewOnce = Boolean(attachment?.isViewOnce || providerMessage?.isViewOnce);
+
+  if (kind && !isViewOnce) {
     const persisted = kind === "document"
       ? await persistWhatsApp2Media(messageId, kind, { includePayload: true })
       : await persistWhatsApp2Media(messageId, kind, { includeMetadata: true });
@@ -2562,6 +2611,19 @@ async function processWhatsApp2InboundJob(job, workerToken, accountId) {
     else if (kind === "sticker") text = `[sticker:${mediaUrl}]`;
     else if (kind === "document") text = attachment?.caption || attachment?.fileName || preview;
     else if (!text) text = attachment?.fileName || preview;
+  } else if (kind && isViewOnce) {
+    // Preserve the attachment metadata with isViewOnce flag but no media URL
+    attachment = {
+      ...(attachment || {}),
+      kind,
+      providerType,
+      mediaUrl: null,
+      downloadable: false,
+      previewable: false,
+      isViewOnce: true,
+    };
+    preview = "🔒 Visualização única";
+    if (!text) text = "[mídia de visualização única]";
   }
 
   const conversationId = String(job.conversation_id || await resolveCanonicalConversationId(chatId));
@@ -2572,7 +2634,7 @@ async function processWhatsApp2InboundJob(job, workerToken, accountId) {
       {
         p_conversation_id: conversationId,
         p_raw_contact_id: chatId,
-        p_message_id: messageId,
+        p_message_id: scopedMessageId(messageId),
         p_sender_id: String(job.sender_id || chatId),
         p_contact_name: chatName,
         p_text: text || preview,
@@ -2611,7 +2673,7 @@ async function processWhatsApp2InboundJob(job, workerToken, accountId) {
   const { data, error } = await supabase.rpc("ingest_whatsapp2_inbound_attachment_atomic", {
     p_conversation_id: conversationId,
     p_raw_contact_id: chatId,
-    p_message_id: messageId,
+    p_message_id: scopedMessageId(messageId),
     p_sender_id: String(job.sender_id || chatId),
     p_contact_name: chatName,
     p_text: text || preview,
@@ -2912,6 +2974,11 @@ async function processDeliveryQueue() {
     for (const job of jobs || []) {
       let confirmedProviderMessageId = null;
       try {
+        if (job.gateway_account_id !== accountId || (String(job.conversation_id || "").startsWith("wa2:") && !job.conversation_id.startsWith(`wa2:${accountId}:`))) {
+          const error = new Error("whatsapp2_delivery_account_mismatch");
+          error.deliveryPhase = "before_send";
+          throw error;
+        }
         if (Number(job.attempts || 0) > WHATSAPP2_DELIVERY_MAX_ATTEMPTS) {
           await finalizeDeliveryJob({
             job,
@@ -2937,6 +3004,7 @@ async function processDeliveryQueue() {
             asVoice: job.kind === "audio" && job.voice_note === true,
             asSticker: job.kind === "sticker",
             replyToMessageId: job.reply_to_message_id,
+            isViewOnce: Boolean(job.view_once ?? job.is_view_once ?? job.isViewOnce ?? job.viewOnce),
           });
         }
 
@@ -3058,7 +3126,7 @@ function scheduleClientReconnect(reason = "disconnected") {
     reconnectAttempt,
     WHATSAPP2_RECONNECT_BACKOFF_MS.length - 1,
   );
-  const delayMs = WHATSAPP2_RECONNECT_BACKOFF_MS[backoffIndex];
+  const delayMs = Math.max(WHATSAPP2_RECONNECT_BACKOFF_MS[backoffIndex], reason === "LOGOUT" ? 30_000 : 0);
   reconnectAttempt = Math.min(
     reconnectAttempt + 1,
     WHATSAPP2_RECONNECT_BACKOFF_MS.length - 1,
@@ -3073,6 +3141,7 @@ function scheduleClientReconnect(reason = "disconnected") {
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     if (shuttingDown) return;
+    if (["ready", "authenticated", "awaiting_pairing", "pairing_code"].includes(state.status)) return;
 
     reconnectInProgress = true;
     try {
@@ -3121,8 +3190,9 @@ async function startClient() {
 
   initializing = (async () => {
     const next = new Client({
+      userAgent: false,
       bypassCSP: true,
-      authStrategy: new LocalAuth({ clientId: "vendeo-whatsapp2", dataPath: SESSION_DIR }),
+      authStrategy: new LocalAuth({ clientId: process.env.WHATSAPP2_AUTH_CLIENT_ID || "vendeo-whatsapp2", dataPath: SESSION_DIR }),
       puppeteer: {
         headless: true,
         ...(CHROME_PATH ? { executablePath: CHROME_PATH } : {}),
@@ -3131,11 +3201,14 @@ async function startClient() {
     });
     client = next;
 
-    next.on("qr", async () => {
+    next.on("qr", async (qr) => {
+      const qrDataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: "M", margin: 4, width: 320 });
+      if (client !== next || state.status === "ready" || state.status === "authenticated") return;
+      cancelScheduledReconnect({ resetAttempt: true });
       const updatedAt = new Date().toISOString();
       setState({
         status: "awaiting_pairing",
-        qrDataUrl: null,
+        qrDataUrl,
         qrUpdatedAt: updatedAt,
         pairingCode: null,
         pairingUpdatedAt: null,
@@ -3164,6 +3237,8 @@ async function startClient() {
       console.log("[whatsapp2] código de pareamento gerado");
     });
     next.on("authenticated", async () => {
+      if (client !== next || shuttingDown) return;
+      cancelScheduledReconnect();
       setState({
         status: "authenticated",
         qrDataUrl: null,
@@ -3181,6 +3256,15 @@ async function startClient() {
         pushname: next.info.pushname || null,
         platform: next.info.platform || null,
       } : null;
+      try {
+        await confirmAccountIdentity(whatsappAccountIdFromWid(me?.wid));
+      } catch (error) {
+        await destroyClient();
+        cancelScheduledReconnect();
+        setState({ status: "account_mismatch", me: null, lastError: error.message });
+        return;
+      }
+      if (client !== next || shuttingDown) return;
       invalidateChatSnapshot();
       setState({
         status: "ready",
@@ -3221,6 +3305,7 @@ async function startClient() {
       await emitEvent("auth_failure", { message: String(message || "") });
     });
     next.on("disconnected", async (reason) => {
+      if (client !== next || shuttingDown) return;
       stopTranscriptionWorker();
       stopInboundWorker();
       stopDeliveryWorker();
@@ -3263,7 +3348,7 @@ async function startClient() {
         console.warn("[whatsapp2] revoke sync:", error?.message || error));
     });
     next.on("message_reaction", (reaction) => {
-      void emitEvent("message_reaction", reaction);
+      void emitEvent("message_reaction", { ...reaction, msgId: { _serialized: scopedMessageId(reaction.msgId?._serialized || reaction.msgId?.$1 || String(reaction.msgId || "")) } });
       void syncWhatsApp2Reaction(reaction).catch((error) =>
         console.warn("[whatsapp2] reaction sync:", error?.message || error));
     });
@@ -3276,6 +3361,7 @@ async function startClient() {
 
     try { await next.initialize(); }
     catch (error) {
+      if (client !== next || shuttingDown) return;
       initializing = null;
       setState({ status: "error", lastError: String(error?.message || error) });
       if (client === next && !shuttingDown) {
@@ -3286,7 +3372,7 @@ async function startClient() {
   })();
   return initializing;
 }async function getMessage(messageId) {
-  const message = await ensureReady().getMessageById(String(messageId || ""));
+  const message = await ensureReady().getMessageById(rawMessageId(messageId));
   if (!message) throw new Error("Mensagem não encontrada");
   return message;
 }
@@ -4006,11 +4092,42 @@ async function subscribePresenceSubscription(subscriptionId, chatId, { refresh =
   }
 }
 
+const accountManager = IS_CHILD || process.env.WHATSAPP2_MULTI_ACCOUNT_ENABLED === "0" ? null : createAccountManager({
+  directory: process.env.WHATSAPP2_ACCOUNTS_DIR || path.join(ROOT, ".accounts"),
+  entry: __filename,
+  legacyStatus: snapshot,
+  legacyUpstream: LEGACY_UPSTREAM,
+  legacyToken: process.env.WHATSAPP2_LEGACY_UPSTREAM_TOKEN || "",
+  readJson,
+  json,
+  limit: Math.max(1, Math.min(20, Number(process.env.WHATSAPP2_MAX_ACCOUNTS) || 4)),
+});
+
+async function confirmAccountIdentity(accountId) {
+  if (!accountId) throw new Error("Identidade do WhatsApp indisponível.");
+  const expected = process.env.WHATSAPP2_EXPECTED_ACCOUNT;
+  if (expected && expected !== accountId) throw new Error("whatsapp2_connected_account_mismatch");
+  if (!IS_CHILD) { accountManager?.bindLegacy(accountId); return; }
+  if (!process.connected) throw new Error("Gerenciador de contas indisponível.");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { process.off("message", received); reject(new Error("Confirmação de conta expirou.")); }, 10_000);
+    function received(message) {
+      if (message?.type !== "identity-result") return;
+      clearTimeout(timer);
+      process.off("message", received);
+      if (message.ok) resolve();
+      else reject(new Error(message.error || "Conta recusada pelo gerenciador."));
+    }
+    process.on("message", received);
+    process.send({ type: "identity", accountId });
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   applyCors(req, res);
   if (req.method === "OPTIONS") { res.statusCode = 204; res.end(); return; }
 
-  const url = new URL(req.url || "/", "http://" + (req.headers.host || HOST + ":" + PORT));
+  let url = new URL(req.url || "/", "http://" + (req.headers.host || HOST + ":" + PORT));
   if (url.pathname === "/health") {
     json(res, 200, { ok: true, service: "vendeo-whatsapp2-gateway", status: state.status });
     return;
@@ -4018,6 +4135,10 @@ const server = http.createServer(async (req, res) => {
   if (!isAuthorized(req)) { json(res, 401, { ok: false, error: "unauthorized" }); return; }
 
   try {
+    if (accountManager) {
+      if (await accountManager.handle(req, res, url)) return;
+      url = new URL(req.url || "/", "http://" + (req.headers.host || HOST + ":" + PORT));
+    }
     if (req.method === "GET" && url.pathname === "/status") {
       json(res, 200, { ok: true, ...snapshot() }); return;
     }
@@ -4073,6 +4194,20 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true, disconnected: true, status: "disconnected" });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/pairing-qr") {
+      if (state.status === "ready" || state.status === "authenticated" || pairingRequestInFlight) {
+        json(res, 409, { ok: false, error: "A conexão está ativa ou tem um pareamento em andamento." });
+        return;
+      }
+      if (!state.qrDataUrl || state.status !== "awaiting_pairing") {
+        await destroyClient();
+        cancelScheduledReconnect();
+        setState({ status: "starting", qrDataUrl: null, pairingCode: null, lastError: null });
+        void startClient().catch(error => setState({ status: "error", lastError: "Não foi possível iniciar o pareamento por QR." }));
+      }
+      json(res, 202, { ok: true, status: state.status });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/pairing-code") {
       if (state.status === "ready") {
         json(res, 409, {
@@ -4099,7 +4234,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (Date.now() < pairingRetryAfter) {
         const waitSeconds = Math.ceil((pairingRetryAfter - Date.now()) / 1000);
-        const cooldownError = new Error(`O WhatsApp recusou uma tentativa recente. Aguarde ${Math.ceil(waitSeconds / 60)} minuto(s) antes de tentar novamente.`);
+        const cooldownError = new Error(`Aguarde ${waitSeconds} segundo(s) antes de solicitar outro código.`);
         cooldownError.statusCode = 429;
         throw cooldownError;
       }
@@ -4115,22 +4250,21 @@ const server = http.createServer(async (req, res) => {
 
       pairingRequestInFlight = true;
       let code;
+      let providerAttempted = false;
       try {
+        if (!await isPairingStorageReady(client.pupPage)) throw new Error("whatsapp_pairing_storage_not_ready");
+        providerAttempted = true;
         code = await client.requestPairingCode(phoneNumber, true, 180_000);
         pairingRetryAfter = 0;
       } catch (error) {
         try {
-          if (typeof client?.cancelPairingCode === "function") {
+          if (providerAttempted && typeof client?.cancelPairingCode === "function") {
             await client.cancelPairingCode().catch(() => {});
           }
         } catch {}
-        const rawMessage = String(error?.message || error).trim();
-        const likelyRateLimit = /rate.?overlimit|iqerrorrateoverlimit|429|^t(?::\s*t)?$/i.test(rawMessage);
-        const cooldownMs = likelyRateLimit ? 15 * 60_000 : 60_000;
-        pairingRetryAfter = Date.now() + cooldownMs;
-        const userMessage = likelyRateLimit
-          ? "O WhatsApp recusou a geração do código por limite temporário de tentativas para este número. Aguarde cerca de 15 minutos antes de tentar novamente."
-          : `Não foi possível gerar o código de pareamento: ${rawMessage}`;
+        const failure = classifyPairingError(error);
+        pairingRetryAfter = Date.now() + failure.cooldownMs;
+        const userMessage = failure.message;
         setState({
           status: "awaiting_pairing",
           pairingPhone: phoneNumber,
@@ -4140,7 +4274,7 @@ const server = http.createServer(async (req, res) => {
           lastError: userMessage,
         });
         const pairingError = new Error(userMessage);
-        pairingError.statusCode = likelyRateLimit ? 429 : 400;
+        pairingError.statusCode = failure.statusCode;
         throw pairingError;
       } finally {
         pairingRequestInFlight = false;
@@ -4746,8 +4880,8 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true, data }); return;
     }
     if (req.method === "GET" && url.pathname === "/status/screenshot") {
-      const active = ensureReady();
-      const page = active.pupPage;
+      const page = client?.pupPage;
+      if (!page) throw new Error("Página indisponível");
 
       // 1. Tenta fechar modais com Escape ou clique no X
       try {
@@ -4856,6 +4990,231 @@ const server = http.createServer(async (req, res) => {
 
 
 
+    if (req.method === "POST" && url.pathname === "/messages/finalization/queue") {
+      const body = await readJson(req);
+      const to = String(body.to || "").trim();
+      const conversationId = String(body.conversationId || "").trim();
+      const requestId = String(body.requestId || "").trim();
+      const filterContext = body.context ? String(body.context).trim() : null;
+      const contactName = body.contactName ? String(body.contactName).trim() : null;
+      const requestedRaffleId = body.raffleId ? String(body.raffleId).trim() : null;
+
+      if (!to && !conversationId) {
+        throw new Error("Destinatário ou conversa obrigatória para enfileirar finalização.");
+      }
+      if (!requestId) {
+        throw new Error("requestId obrigatório para garantir idempotência da finalização.");
+      }
+      if (!supabase) {
+        throw new Error("Supabase não configurado no gateway.");
+      }
+
+      const recipientId = to ? normalizeChatId(to) : whatsappProviderIdFromConversationId(conversationId);
+      const canonicalConversationId = conversationId || (await resolveCanonicalConversationId(recipientId));
+      const accountId = currentWhatsApp2AccountId();
+      if (!accountId || state.status !== "ready") throw new Error("WhatsApp desta conta indisponível para finalização.");
+      if (whatsappProviderIdFromConversationId(canonicalConversationId) !== recipientId) throw new Error("Destinatário divergente da conversa de finalização.");
+
+      // Idempotência: verificar se este lote já foi inserido
+      const batchPrefix = `fin-${crypto.createHash("sha256").update(JSON.stringify([accountId, canonicalConversationId, requestId])).digest("hex")}-`;
+      const { data: existingRows, error: existingError } = await supabase
+        .from("whatsapp2_delivery_queue")
+        .select("id, conversation_id, status, kind, text_content, media_url, scheduled_at, created_at, attempts")
+        .eq("gateway_account_id", accountId)
+        .eq("conversation_id", canonicalConversationId)
+        .ilike("id", `${batchPrefix}%`)
+        .order("scheduled_at", { ascending: true });
+
+      if (existingError) {
+        throw existingError;
+      }
+
+      if (existingRows && existingRows.length > 0) {
+        json(res, 200, {
+          ok: true,
+          queued: true,
+          alreadyQueued: true,
+          count: existingRows.length,
+          batchId: requestId,
+          lastScheduledAt: existingRows[existingRows.length - 1].scheduled_at,
+          items: existingRows,
+        });
+        return;
+      }
+
+      // Buscar itens do cofre
+      const { data: vaultItems, error: vaultErr } = await supabase
+        .from("whatsapp_finalization_vault_items")
+        .select("*")
+        .order("position", { ascending: true });
+
+      if (vaultErr) throw vaultErr;
+
+      let itemsToQueue = Array.isArray(vaultItems) ? vaultItems : [];
+      if (filterContext && filterContext !== "all") {
+        itemsToQueue = itemsToQueue.filter(
+          (item) => (item.reaction_context || "") === filterContext
+        );
+      }
+
+      if (!itemsToQueue.length) {
+        json(res, 400, {
+          ok: false,
+          error: filterContext && filterContext !== "all"
+            ? "Nenhum item encontrado no cofre para este contexto de reação."
+            : "Nenhum item encontrado no cofre para envio.",
+        });
+        return;
+      }
+
+      // Desativar IA para a conversa no momento da finalização manual
+      try {
+        await supabase
+          .from("instagram_conversations")
+          .update({
+            ai_auto_respond: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", canonicalConversationId);
+      } catch (aiErr) {
+        console.warn("[whatsapp2] erro ao desativar IA na conversa:", aiErr?.message || aiErr);
+      }
+
+      // Resolver números da rifa se houver item kind: 'raffle_numbers'
+      let resolvedRaffleText = null;
+      if (itemsToQueue.some((item) => item.kind === "raffle_numbers")) {
+        resolvedRaffleText = await resolveRaffleNumbersForFinalization({
+          supabase,
+          canonicalConversationId,
+          recipientId,
+          contactName,
+          requestedRaffleId,
+        });
+      }
+
+      // Montar itens com atrasos cumulativos
+      let currentScheduledMs = Date.now();
+      const queueRowsToInsert = [];
+
+      for (let i = 0; i < itemsToQueue.length; i++) {
+        const item = itemsToQueue[i];
+        let delaySec = 5;
+        if (item.kind === "audio") {
+          const dur = Number(item.duration_seconds);
+          delaySec = Number.isFinite(dur) && dur > 0 ? Math.max(1, Math.ceil(dur)) : 1;
+        } else if (item.kind === "image") {
+          delaySec = 3;
+        } else if (item.kind === "text" || item.kind === "raffle_numbers") {
+          delaySec = 5;
+        }
+
+        currentScheduledMs += delaySec * 1000;
+        const scheduledAt = new Date(currentScheduledMs).toISOString();
+        const rowId = `${batchPrefix}${String(i + 1).padStart(2, "0")}`;
+
+        if (item.kind === "raffle_numbers") {
+          const numbersList = resolvedRaffleText;
+          let text = numbersList;
+          const customBody = item.body && String(item.body).trim() !== "" && String(item.body).trim() !== "null"
+            ? String(item.body).trim()
+            : null;
+
+          if (customBody) {
+            if (customBody.includes("{numbers}")) {
+              text = customBody.replace(/\{numbers\}/g, numbersList);
+            } else {
+              text = `${customBody}\n${numbersList}`;
+            }
+          }
+
+          queueRowsToInsert.push({
+            id: rowId,
+            conversation_id: canonicalConversationId,
+            recipient_id: recipientId,
+            gateway_account_id: accountId,
+            kind: "text",
+            text_content: text,
+            media_url: null,
+            voice_note: false,
+            status: "pending",
+            scheduled_at: scheduledAt,
+            created_at: new Date().toISOString(),
+          });
+        } else if (item.kind === "audio") {
+          queueRowsToInsert.push({
+            id: rowId,
+            conversation_id: canonicalConversationId,
+            recipient_id: recipientId,
+            gateway_account_id: accountId,
+            kind: "audio",
+            text_content: null,
+            media_url: item.media_url,
+            voice_note: true,
+            status: "pending",
+            scheduled_at: scheduledAt,
+            created_at: new Date().toISOString(),
+          });
+        } else if (item.kind === "image") {
+          queueRowsToInsert.push({
+            id: rowId,
+            conversation_id: canonicalConversationId,
+            recipient_id: recipientId,
+            gateway_account_id: accountId,
+            kind: "image",
+            text_content: item.body || null,
+            media_url: item.media_url,
+            voice_note: false,
+            status: "pending",
+            scheduled_at: scheduledAt,
+            created_at: new Date().toISOString(),
+          });
+        } else {
+          // text
+          queueRowsToInsert.push({
+            id: rowId,
+            conversation_id: canonicalConversationId,
+            recipient_id: recipientId,
+            gateway_account_id: accountId,
+            kind: "text",
+            text_content: item.body || "",
+            media_url: null,
+            voice_note: false,
+            status: "pending",
+            scheduled_at: scheduledAt,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      const { data: inserted, error: insertError } = await supabase
+        .from("whatsapp2_delivery_queue")
+        .insert(queueRowsToInsert)
+        .select("id, conversation_id, status, kind, text_content, media_url, scheduled_at, created_at, attempts");
+
+      if (insertError) {
+        console.error("[whatsapp2] erro ao inserir lote de finalização:", insertError);
+        throw insertError;
+      }
+
+      // Notificar worker de entrega imediatamente
+      if (state.status === "ready") {
+        setImmediate(() => void processDeliveryQueue());
+      }
+
+      const finalItems = Array.isArray(inserted) && inserted.length > 0 ? inserted : queueRowsToInsert;
+
+      json(res, 200, {
+        ok: true,
+        queued: true,
+        alreadyQueued: false,
+        count: finalItems.length,
+        batchId: requestId,
+        lastScheduledAt: finalItems[finalItems.length - 1].scheduled_at,
+        items: finalItems,
+      });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/messages/send") {
       const body = await readJson(req);
       const sent = await sendTextInternal({
@@ -4877,6 +5236,7 @@ const server = http.createServer(async (req, res) => {
         asVoice: Boolean(body.asVoice),
         asSticker: Boolean(body.asSticker),
         replyToMessageId: body.replyToMessageId,
+        isViewOnce: Boolean(body.isViewOnce ?? body.viewOnce ?? body.is_view_once ?? body.view_once),
       });
       json(res, 200, { ok: true, message: sent, provider: "wa-js" });
       return;
@@ -4931,7 +5291,8 @@ const server = http.createServer(async (req, res) => {
 });server.listen(PORT, HOST, () => {
   console.log("[whatsapp2] gateway em http://" + HOST + ":" + PORT);
   console.log("[whatsapp2] sessão persistente em " + SESSION_DIR);
-  void startClient().catch((error) => console.error("[whatsapp2] initialize:", error));
+  if (IS_CHILD && process.connected) process.send({ type: "listening", port: server.address().port });
+  if (!LEGACY_UPSTREAM) void startClient().catch((error) => console.error("[whatsapp2] initialize:", error));
 });
 
 async function shutdown(signal) {
@@ -4939,9 +5300,14 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log("[whatsapp2] encerrando " + signal);
   server.close();
+  if (accountManager) await accountManager.close();
   await destroyClient();
   process.exit(0);
 }
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+if (IS_CHILD) {
+  process.on("disconnect", () => void shutdown("manager-disconnected"));
+  process.on("message", message => { if (message?.type === "shutdown") void shutdown("manager"); });
+}

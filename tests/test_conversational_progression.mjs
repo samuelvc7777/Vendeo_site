@@ -23,7 +23,7 @@ test("CONTRATO 0: Metadados do DNA v1.6.5 e princípios de Progressão Oportuní
   assert.ok(LARISSA_INTERACTION_DNA.includes("Saudação Simples do Pretendente"));
 });
 
-test("CONTRATO 0B: engajamento antecipado com a rifa exige handoff manual sem resposta automática", () => {
+test("CONTRATO 0B: engajamento com a rifa segue reações configuradas e respeita recusa", () => {
   const canonical = fs.readFileSync(
     new URL("../supabase/functions/api/larissa_canonical_prompt.md", import.meta.url),
     "utf8",
@@ -33,12 +33,12 @@ test("CONTRATO 0B: engajamento antecipado com a rifa exige handoff manual sem re
     "utf8",
   );
 
-  assert.match(canonical, /ENGAJAMENTO ANTECIPADO COM A RIFA EXIGE OPERADOR/);
+  assert.match(canonical, /ENGAJAMENTO COM A RIFA \(AUTOMÁTICO\)/);
+  assert.match(canonical, /RECUSA DIRETA NÃO GERA INSISTÊNCIA/);
+  assert.match(canonical, /finalization_vault_search/);
   assert.match(canonical, /action="manual_resolution"/);
   assert.match(canonical, /deixe outboundActions=\[\]/);
-  assert.match(canonical, /NÃO responda sobre a rifa, NÃO avance outro objetivo/);
-  assert.match(brain, /HANDOFF DE RIFA ANTECIPADA/);
-  assert.match(brain, /RIFA ANTECIPADA É HANDOFF, NÃO CONTEÚDO PARA RESPONDER/);
+  assert.match(brain, /manual_resolution_technical_identifier_forbidden/);
 });
 
 test("CONTRATO 0C: pedidos de Instagram redirecionam para Facebook (sem Instagram pessoal)", () => {

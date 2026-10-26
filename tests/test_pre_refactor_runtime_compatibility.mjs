@@ -35,7 +35,7 @@ test("TTL de stale usa a fonte única de 300s", () => {
   assert.match(indexSource, /getStaleCycleThresholdIso\(\)/);
   assert.doesNotMatch(indexSource, /180_000/);
   const recoveryStart = indexSource.indexOf("// Auto-recuperação atômica de ciclos stale é manutenção");
-  const recoveryEnd = indexSource.indexOf("// A fila durável é a autoridade", recoveryStart);
+  const recoveryEnd = indexSource.indexOf("// --- GHOST CHECK OTIMIZADO", recoveryStart);
   assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart);
   const staleRecoveryBlock = indexSource.slice(recoveryStart, recoveryEnd);
   assert.match(staleRecoveryBlock, /recover_stale_experimental_cycles_atomic/);

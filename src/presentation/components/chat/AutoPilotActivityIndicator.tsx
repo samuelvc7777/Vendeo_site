@@ -24,6 +24,9 @@ import {
   X,
   FastForward,
   Search,
+  Target,
+  Code,
+  HelpCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -770,7 +773,7 @@ function BrainTurnTimeline({
   onRetryAction: (actionId: string) => void;
   onToggleTurn: (turnId: string) => void;
   manualResolution: { answer: string; question: string; submitting: boolean };
-  onManualResolution: (saveForFuture: boolean) => void;
+  onManualResolution: (saveForFuture: boolean, overrideAnswer?: string) => void;
   onManualResolutionChange: (value: string) => void;
   theme?: BrainConsoleTheme;
 }) {
@@ -892,6 +895,90 @@ function BrainTurnTimeline({
         <div className={`border-t px-3 pb-4 pt-3 sm:px-4 ${
           whatsappTheme ? "border-white/[0.07]" : "border-zinc-200 dark:border-zinc-800"
         }`}>
+          {/* Seção principal: Como a IA pensou */}
+          {decision && (
+            <section className={`mb-4 rounded-2xl border p-4 ${
+              whatsappTheme
+                ? "border-[#25d366]/20 bg-gradient-to-br from-[#25d366]/[0.08] via-[#111b21] to-[#111b21]"
+                : "border-purple-400/25 bg-gradient-to-br from-purple-50 via-white to-purple-50/50 dark:from-purple-950/20 dark:via-[#111018] dark:to-[#111018]"
+            }`}>
+              <div className={`flex items-center gap-2.5 mb-3 ${
+                whatsappTheme ? "text-[#25d366]" : "text-purple-700 dark:text-purple-300"
+              }`}>
+                <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${
+                  whatsappTheme ? "bg-[#25d366]/15" : "bg-purple-100 dark:bg-purple-900/30"
+                }`}>
+                  <BrainCircuit className="h-4 w-4" />
+                </div>
+                <h4 className="text-sm font-bold">Como a Larissa pensou</h4>
+              </div>
+
+              {decisionSummary && (
+                <div className={`rounded-xl p-3.5 mb-3 ${
+                  whatsappTheme ? "bg-[#111b21]/60 border border-white/[0.06]" : "bg-white/70 dark:bg-black/20 border border-purple-200/30 dark:border-purple-800/30"
+                }`}>
+                  <p className="text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">{decisionSummary}</p>
+                </div>
+              )}
+
+              {/* Cards do raciocínio passo a passo */}
+              <div className="space-y-2.5">
+                {objectiveLabel && (
+                  <div className={`flex items-start gap-3 rounded-xl p-3 ${
+                    whatsappTheme ? "bg-[#202c33]/60" : "bg-amber-50 dark:bg-amber-950/20 border border-amber-200/40 dark:border-amber-800/30"
+                  }`}>
+                    <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
+                      whatsappTheme ? "bg-[#ffb020]/15 text-[#ffb020]" : "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                    }`}>
+                      <Target className="h-3.5 w-3.5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-[10px] font-bold uppercase tracking-wide mb-0.5 ${
+                        whatsappTheme ? "text-[#ffb020]" : "text-amber-700 dark:text-amber-400"
+                      }`}>Objetivo deste turno</div>
+                      <div className="text-sm text-zinc-800 dark:text-zinc-200">{objectiveLabel}</div>
+                      {objectiveStatus && (
+                        <div className={`mt-1 text-xs font-medium ${
+                          objectiveStatus === "Concluído" ? "text-emerald-600 dark:text-emerald-400" : "text-zinc-500 dark:text-zinc-400"
+                        }`}>
+                          {objectiveStatus === "Concluído" ? "✓ " : ""}{objectiveStatus}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {plannedResponses.length > 0 && (
+                  <div className={`rounded-xl p-3 ${
+                    whatsappTheme ? "bg-[#202c33]/60" : "bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200/40 dark:border-emerald-800/30"
+                  }`}>
+                    <div className={`flex items-center gap-2 mb-2 ${
+                      whatsappTheme ? "text-[#25d366]" : "text-emerald-700 dark:text-emerald-400"
+                    }`}>
+                      <div className={`flex h-7 w-7 items-center justify-center rounded-lg ${
+                        whatsappTheme ? "bg-[#25d366]/15" : "bg-emerald-100 dark:bg-emerald-900/40"
+                      }`}>
+                        <MessageSquare className="h-3.5 w-3.5" />
+                      </div>
+                      <span className="text-[10px] font-bold uppercase tracking-wide">Resposta planejada</span>
+                    </div>
+                    <ul className="space-y-2">
+                      {plannedResponses.map((response, index) => (
+                        <li key={`${index}-${response}`} className={`rounded-lg px-3 py-2.5 text-sm leading-relaxed ${
+                          whatsappTheme ? "bg-[#111b21]/80 text-[#e9edef]" : "bg-white/80 dark:bg-black/30 text-zinc-800 dark:text-zinc-200 border border-emerald-200/30 dark:border-emerald-800/20"
+                        }`}>
+                          <span className={`mr-2 font-bold ${whatsappTheme ? "text-[#25d366]" : "text-emerald-600 dark:text-emerald-400"}`}>{index + 1}.</span>
+                          {response}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Estado de entrega */}
           {delivery && delivery.actionCount > 0 && (
             <section aria-label="Estado de entrega" className={`mb-4 rounded-xl border p-3 ${deliveryStatusTone(delivery.status)}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -908,101 +995,96 @@ function BrainTurnTimeline({
               </ol>
             </section>
           )}
-          {decision && (
-            <section className={`mb-4 rounded-xl border p-3 ${
-              whatsappTheme
-                ? "border-[#25d366]/15 bg-[#25d366]/[0.045]"
-                : "border-purple-400/20 bg-purple-400/[0.06]"
-            }`}>
-              <div className={`flex items-center gap-2 text-xs font-semibold ${
-                whatsappTheme ? "text-[#25d366]" : "text-purple-800 dark:text-purple-200"
-              }`}><BrainCircuit className="h-4 w-4" />Decisão</div>
-              {decisionSummary && <p className="mt-2 line-clamp-3 text-sm leading-6 text-zinc-800 dark:text-zinc-200">{decisionSummary}</p>}
-              {objectiveLabel && (
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                  <span className="text-zinc-600 dark:text-zinc-400">Objetivo deste turno</span><span className="rounded-full bg-zinc-200 dark:bg-zinc-800 px-2.5 py-1 text-zinc-800 dark:text-zinc-200">{objectiveLabel}</span>
-                  {objectiveStatus && <span className={objectiveStatus === "Concluído" ? "text-emerald-700 dark:text-emerald-300" : "text-zinc-600 dark:text-zinc-400"}>{objectiveStatus === "Concluído" ? "✓ " : ""}{objectiveStatus}</span>}
-                </div>
-              )}
-              {plannedResponses.length > 0 && (
-                <details className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">
-                  <summary className="min-h-11 cursor-pointer py-2 font-medium text-emerald-800 dark:text-emerald-200">Ver resposta planejada</summary>
-                  <ul className="space-y-2 pb-2">{plannedResponses.map((response, index) => <li key={`${index}-${response}`} className="rounded-lg bg-black/20 px-3 py-2 leading-5">{response}</li>)}</ul>
-                </details>
-              )}
-              {decisionSummary && <details className="mt-1 text-sm text-zinc-700 dark:text-zinc-300"><summary className="min-h-11 cursor-pointer py-2 font-medium text-zinc-600 dark:text-zinc-400">Ver detalhes do raciocínio</summary><p className="pb-2 leading-6">{decisionSummary}</p></details>}
-            </section>
-          )}
 
           {turn.status === "waiting_human" && (
-            <BrainConsultationPanel
-              turnId={turn.turnId || turn.id}
-              question={manualResolution.question || "Uma informação factual para continuar."}
-              answer={manualResolution.answer}
-              submitting={manualResolution.submitting}
-              onAnswerChange={onManualResolutionChange}
-              onSubmit={onManualResolution}
-            />
+            <div className="mb-4">
+              <BrainConsultationPanel
+                turnId={turn.turnId || turn.id}
+                question={formatVisibleBrainIdentity(manualResolution.question) || "Uma informação factual para continuar."}
+                answer={manualResolution.answer}
+                submitting={manualResolution.submitting}
+                onAnswerChange={onManualResolutionChange}
+                onSubmit={onManualResolution}
+                theme={theme}
+              />
+            </div>
           )}
 
-          {turn.status === "failed" && <p className="mb-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-3 text-sm leading-5 text-rose-900 dark:text-rose-100">O Brain terminou com um problema. Abra os detalhes técnicos do evento para consultar a causa registrada.</p>}
-          <ol className="space-y-0">
-            {turnEvents.map((event, index) => {
-              const isLast = index === turnEvents.length - 1;
-              const label = formatBrainEvent(event.event);
-              const description = eventMainDescription(event);
-              const linkedAction = event.actionId ? failedActions.find((action) => action.id === event.actionId) : undefined;
-              return (
-                <li key={`${turn.id}-${event.sequence}-${event.event}`} className="relative flex gap-3">
-                  {!isLast && <span aria-hidden="true" className="absolute bottom-0 left-[7px] top-4 w-px bg-zinc-200 dark:bg-zinc-800" />}
-                  <span className={`relative mt-1.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${eventDotTone(event.event)}`} />
-                  <div className={`min-w-0 flex-1 pb-4 ${isLast ? "pb-1" : ""}`}>
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{label}</span></div>
-                    {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-700 dark:text-zinc-300">{description}</p>}
-                    {linkedAction && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-2.5"><span className="text-sm text-rose-900 dark:text-rose-100">Ação {linkedAction.action_index + 1}: {linkedAction.action_type === "audio" ? "áudio" : "mensagem"} não enviada</span><button type="button" onClick={() => onRetryAction(linkedAction.id)} disabled={Boolean(retryingActionId)} className="min-h-11 rounded-lg bg-rose-300 px-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{retryingActionId === linkedAction.id ? "Enviando…" : "Enviar manualmente"}</button></div>}
-                    <details className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                      <summary className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-zinc-200 dark:border-white/5 bg-black/10 dark:bg-white/[0.03] cursor-pointer font-medium select-none flex items-center justify-between hover:bg-black/20 dark:hover:bg-white/[0.06] transition-colors">
-                        <span>Ver detalhes técnicos</span>
-                        <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
-                      </summary>
-                      <div className="mt-2 space-y-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 p-3">
-                        {event.metadata && event.metadata.providerError && typeof event.metadata.providerError === "object"
-                          ? <ProviderErrorDetails value={event.metadata.providerError as Record<string, unknown>} />
-                          : null}
-                        <dl className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2">
-                          <CopyableIdBadge label="ID do turno" value={event.turnId || turn.turnId} />
-                          <CopyableIdBadge label="ID da sessão" value={event.sessionId || turn.sessionId} />
-                          <CopyableIdBadge label="ID do ciclo" value={event.cycleId || turn.cycleId} />
-                          {event.decisionId && <CopyableIdBadge label="ID da decisão" value={event.decisionId} />}
-                          <div>
-                            <dt className="text-[10px] uppercase font-bold text-zinc-500">Etapa registrada</dt>
-                            <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">
-                              {formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span>
-                            </dd>
+          {turn.status === "failed" && <p className="mb-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-3 text-sm leading-5 text-rose-900 dark:text-rose-100">O Brain terminou com um problema. Abra os detalhes técnicos abaixo para consultar a causa registrada.</p>}
+
+          {/* Detalhes técnicos recolhidos */}
+          <details className="mt-4">
+            <summary className={`min-h-[44px] px-3 py-2 rounded-xl border cursor-pointer font-medium text-sm select-none flex items-center justify-between transition-colors ${
+              whatsappTheme
+                ? "border-white/[0.08] bg-white/[0.03] text-[#8696a0] hover:bg-white/[0.06]"
+                : "border-zinc-200 dark:border-zinc-800 bg-zinc-100 dark:bg-zinc-900/50 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800/70"
+            }`}>
+              <span className="flex items-center gap-2">
+                <Code className="h-4 w-4" />
+                Ver detalhes técnicos
+              </span>
+              <ChevronDown className="h-4 w-4" />
+            </summary>
+            <div className="mt-3 space-y-3">
+              <ol className="space-y-0">
+                {turnEvents.map((event, index) => {
+                  const isLast = index === turnEvents.length - 1;
+                  const label = formatBrainEvent(event.event);
+                  const description = eventMainDescription(event);
+                  const linkedAction = event.actionId ? failedActions.find((action) => action.id === event.actionId) : undefined;
+                  return (
+                    <li key={`${turn.id}-${event.sequence}-${event.event}`} className="relative flex gap-3">
+                      {!isLast && <span aria-hidden="true" className="absolute bottom-0 left-[7px] top-4 w-px bg-zinc-200 dark:bg-zinc-800" />}
+                      <span className={`relative mt-1.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${eventDotTone(event.event)}`} />
+                      <div className={`min-w-0 flex-1 pb-4 ${isLast ? "pb-1" : ""}`}>
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><time className="text-xs tabular-nums text-zinc-500">{formatConsoleTime(event.timestamp, true)}</time><span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{label}</span></div>
+                        {description && <p className="mt-1 break-words text-sm leading-5 text-zinc-700 dark:text-zinc-300">{description}</p>}
+                        {linkedAction && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-2.5"><span className="text-sm text-rose-900 dark:text-rose-100">Ação {linkedAction.action_index + 1}: {linkedAction.action_type === "audio" ? "áudio" : "mensagem"} não enviada</span><button type="button" onClick={() => onRetryAction(linkedAction.id)} disabled={Boolean(retryingActionId)} className="min-h-11 rounded-lg bg-rose-300 px-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{retryingActionId === linkedAction.id ? "Enviando…" : "Enviar manualmente"}</button></div>}
+                        <details className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+                          <summary className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-zinc-200 dark:border-white/5 bg-black/10 dark:bg-white/[0.03] cursor-pointer font-medium select-none flex items-center justify-between hover:bg-black/20 dark:hover:bg-white/[0.06] transition-colors">
+                            <span>Ver dados completos</span>
+                            <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+                          </summary>
+                          <div className="mt-2 space-y-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-200/80 dark:bg-black/30 p-3">
+                            {event.metadata && event.metadata.providerError && typeof event.metadata.providerError === "object"
+                              ? <ProviderErrorDetails value={event.metadata.providerError as Record<string, unknown>} />
+                              : null}
+                            <dl className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2">
+                              <CopyableIdBadge label="ID do turno" value={event.turnId || turn.turnId} />
+                              <CopyableIdBadge label="ID da sessão" value={event.sessionId || turn.sessionId} />
+                              <CopyableIdBadge label="ID do ciclo" value={event.cycleId || turn.cycleId} />
+                              {event.decisionId && <CopyableIdBadge label="ID da decisão" value={event.decisionId} />}
+                              <div>
+                                <dt className="text-[10px] uppercase font-bold text-zinc-500">Etapa registrada</dt>
+                                <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                                  {formatBrainPhase(event.phase)} <span className="text-zinc-500">({event.phase})</span>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-[10px] uppercase font-bold text-zinc-500">Estado registrado</dt>
+                                <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                                  {formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}
+                                </dd>
+                              </div>
+                              {event.actionId && <CopyableIdBadge label="ID da ação" value={event.actionId} />}
+                              <div className="sm:col-span-2">
+                                <dt className="text-[10px] uppercase font-bold text-zinc-500">Data e hora</dt>
+                                <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">{event.timestamp}</dd>
+                              </div>
+                            </dl>
+                            <ConsoleCycleEventCard event={event} />
+                            {event.metadata && Object.keys(event.metadata).length > 0 && (
+                              <ConsoleJsonViewer data={event.metadata} title="Dados completos do evento" />
+                            )}
                           </div>
-                          <div>
-                            <dt className="text-[10px] uppercase font-bold text-zinc-500">Estado registrado</dt>
-                            <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">
-                              {formatBrainStatus(event.status)}{event.status ? ` (${event.status})` : ""}
-                            </dd>
-                          </div>
-                          {event.actionId && <CopyableIdBadge label="ID da ação" value={event.actionId} />}
-                          <div className="sm:col-span-2">
-                            <dt className="text-[10px] uppercase font-bold text-zinc-500">Data e hora</dt>
-                            <dd className="break-all font-mono text-xs text-zinc-700 dark:text-zinc-300">{event.timestamp}</dd>
-                          </div>
-                        </dl>
-                        <ConsoleCycleEventCard event={event} />
-                        {event.metadata && Object.keys(event.metadata).length > 0 && (
-                          <ConsoleJsonViewer data={event.metadata} title="Dados completos do evento" />
-                        )}
+                        </details>
                       </div>
-                    </details>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          </details>
         </div>
       )}
     </article>
@@ -1043,7 +1125,7 @@ function BrainOperationalConsole({
   onManualRetry: () => void;
   onClose: () => void;
   manualResolution: { answer: string; question: string; submitting: boolean };
-  onManualResolution: (saveForFuture: boolean) => void;
+  onManualResolution: (saveForFuture: boolean, overrideAnswer?: string) => void;
   onManualResolutionChange: (value: string) => void;
   mediaObservation: MediaObservationRequest | null;
   mediaObservationAnswer: string;
@@ -1257,6 +1339,22 @@ function BrainOperationalConsole({
                   </button>
                 </div>
               </div>
+            </section>
+          )}
+          {!mediaObservation && manualResolution?.question && (activeTurn?.status === "waiting_human" || turns.some((t) => t.status === "waiting_human")) && (!activeTurn || activeTurn.status !== "waiting_human") && (
+            <section aria-label="Resolução manual pendente" className="mb-4">
+              <h3 className={`mb-2 text-xs font-semibold uppercase tracking-widest ${
+                whatsappTheme ? "text-[#25d366]" : "text-purple-700 dark:text-purple-300"
+              }`}>Agora</h3>
+              <BrainConsultationPanel
+                turnId={activeTurn?.turnId || "current"}
+                question={formatVisibleBrainIdentity(manualResolution.question) || "Uma informação factual para continuar."}
+                answer={manualResolution.answer}
+                submitting={manualResolution.submitting}
+                onAnswerChange={onManualResolutionChange}
+                onSubmit={onManualResolution}
+                theme={theme}
+              />
             </section>
           )}
           {activeTurn && !mediaObservation && (
@@ -1718,6 +1816,8 @@ export function AutoPilotActivityIndicator({
         },
         pauseReason: latestCanonicalEvent.event === "manual_resolution_required"
           ? latestCanonicalEvent.detail || sourceState.pauseReason
+          : ["cycle_completed", "turn_completed", "manual_resolution_received"].includes(latestCanonicalEvent.event)
+          ? undefined
           : sourceState.pauseReason,
       }
     : sourceState;
@@ -1976,8 +2076,9 @@ export function AutoPilotActivityIndicator({
     }
   };
 
-  const handleSubmitManualResolution = async (saveForFuture: boolean) => {
-    if (!targetId || !manualResolutionAnswer.trim() || isSubmittingResolution) return;
+  const handleSubmitManualResolution = async (saveForFuture: boolean, overrideAnswer?: string) => {
+    const finalAnswer = (typeof overrideAnswer === "string" && overrideAnswer.trim()) || manualResolutionAnswer.trim();
+    if (!targetId || !finalAnswer || isSubmittingResolution) return;
     setIsSubmittingResolution(true);
     try {
       const response = await brainOperatorFetch("/operator/brain/manual-resolution", {
@@ -1985,7 +2086,7 @@ export function AutoPilotActivityIndicator({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversationId: targetId,
-          answer: manualResolutionAnswer.trim(),
+          answer: finalAnswer,
           saveForFuture,
           question: state.pauseReason || "",
         }),
@@ -1993,6 +2094,8 @@ export function AutoPilotActivityIndicator({
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) throw new Error(result.error || "Não foi possível retomar o Brain.");
       setManualResolutionAnswer("");
+      setIsConsoleOpen(false);
+      if (openConsoleRequestId !== undefined) onConsoleOpenRequestDismissed?.(openConsoleRequestId);
       toast.success(saveForFuture ? "Fato salvo para novas sessões. Brain retomou o turno." : "Brain retomou o turno com este fato apenas nesta sessão.");
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : "Erro ao enviar a informação ao Brain.");
@@ -2106,6 +2209,8 @@ export function AutoPilotActivityIndicator({
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border transition-all duration-300",
                 isBrainActive
                   ? "bg-purple-500/20 border-purple-500/50 text-purple-700 dark:text-purple-300 shadow-sm shadow-purple-500/20"
+                  : state.status === "waiting_human"
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-700 dark:text-amber-300 shadow-sm shadow-amber-500/20 animate-pulse"
                   : isTypingOrSending
                   ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-700 dark:text-emerald-300 shadow-sm shadow-emerald-500/20"
                   : isCompleted
@@ -2202,10 +2307,22 @@ export function AutoPilotActivityIndicator({
               </button>
             )}
 
-            <button type="button" onClick={() => setIsConsoleOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 text-[10px] hover:bg-zinc-200 dark:hover:bg-zinc-800" title="Abrir console operacional">
-              <Maximize2 className="h-3 w-3" />
-              <span className="whitespace-nowrap">Abrir console</span>
-            </button>
+            {state.status === "waiting_human" ? (
+              <button
+                type="button"
+                onClick={() => setIsConsoleOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black text-xs shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer"
+                title="Abrir consulta e responder à Larissa"
+              >
+                <HelpCircle className="h-3.5 w-3.5" />
+                <span>Responder à Larissa</span>
+              </button>
+            ) : (
+              <button type="button" onClick={() => setIsConsoleOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 text-[10px] hover:bg-zinc-200 dark:hover:bg-zinc-800" title="Abrir console operacional">
+                <Maximize2 className="h-3 w-3" />
+                <span className="whitespace-nowrap">Abrir console</span>
+              </button>
+            )}
 
             {/* Botão Alternar Raciocínio (Estilo Antigravity) */}
             {shouldShowReasoningSection && (

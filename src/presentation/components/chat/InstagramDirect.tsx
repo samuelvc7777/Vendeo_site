@@ -1,4 +1,9 @@
 "use client";
+import { useWhatsApp2Client } from "@/presentation/components/chat/WhatsAppAccountContext";
+import { WhatsAppAccountProvider, useWhatsAppAccount } from "./WhatsAppAccountContext";
+import { WhatsAppAccountSelector } from "./WhatsAppAccountSelector";
+import { useWhatsAppAccounts } from "@/presentation/hooks/useWhatsAppAccounts";
+import { whatsappAccountIdFromConversationId } from "./whatsapp2-client";
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
@@ -62,7 +67,7 @@ import {
   RealtimeInstagramReactionPayload,
 } from "@/presentation/hooks/useChatRealtime";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
-import { WhatsAppStatusRepository } from "@/infrastructure/repositories/WhatsAppStatusRepository";
+import { useWhatsAppStatusRepository } from "./WhatsAppAccountContext";
 import { InstagramAudioMessage } from "./InstagramAudioMessage";
 import {
   convertToWhatsAppVoiceNote,
@@ -70,7 +75,7 @@ import {
   ensureCompatibleAudioUrl,
 } from "./audio-converter";
 import { prepareWhatsAppVoiceNoteUrl } from "./whatsapp-voice-note";
-import { PersonaAudioVaultModal } from "../vault/PersonaAudioVaultModal";
+import { PersonaVaultModal } from "../vault/PersonaVaultModal";
 import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { activateWhatsApp2Autopilot } from "./whatsapp2-autopilot-activation";
 import { selectWhatsApp2StateOwner } from "@/domain/entities/whatsapp2-state-owner.cjs";
@@ -120,42 +125,7 @@ import {
   getWhatsAppConversationIdentityKey,
   reconcileWhatsAppControlState,
 } from "@/domain/entities/WhatsAppConversationIdentity";
-import {
-  getWhatsApp2Chats,
-  refreshWhatsApp2ProfilePhoto,
-  getWhatsApp2ChatState,
-  getWhatsApp2ExternalChatLink,
-  getWhatsApp2MediaUrl,
-  getWhatsApp2Messages,
-  syncWhatsApp2LatestInbound,
-  getWhatsApp2Presence,
-  getWhatsApp2Status,
-  getWhatsApp2ActiveStatuses,
-  resolveWhatsApp2PhoneNumbers,
-  normalizeWhatsApp2Attachment,
-  IS_WHATSAPP2_REMOTE_BUILD,
-  openWhatsApp2EventStream,
-  sendWhatsApp2Media,
-  sendWhatsApp2Text,
-  setWhatsApp2ChatBlocked,
-  setWhatsApp2ChatLocked,
-  subscribeWhatsApp2Presence,
-  unsubscribeWhatsApp2Presence,
-  whatsappAccountIdFromWid,
-  whatsapp2ConversationIdForAccount,
-  whatsappProviderIdFromConversationId,
-  whatsappConversationBelongsToAccount,
-  isLatestWhatsAppAccountLoad,
-  resolveWhatsAppContactDisplayName,
-  type WhatsApp2GatewayChat,
-  type WhatsApp2Attachment,
-  type WhatsApp2MessageMetadata,
-  type WhatsApp2GatewayEvent,
-  type WhatsApp2GatewayMessage,
-  type WhatsApp2PresencePayload,
-  type WhatsApp2DeliveryQueueItem,
-  getWhatsApp2DeliveryQueue,
-} from "./whatsapp2-client";
+import { normalizeWhatsApp2Attachment, IS_WHATSAPP2_REMOTE_BUILD, whatsappAccountIdFromWid, whatsapp2ConversationIdForAccount, whatsappProviderIdFromConversationId, whatsappConversationBelongsToAccount, isLatestWhatsAppAccountLoad, resolveWhatsAppContactDisplayName, type WhatsApp2GatewayChat, type WhatsApp2Attachment, type WhatsApp2MessageMetadata, type WhatsApp2GatewayEvent, type WhatsApp2GatewayMessage, type WhatsApp2PresencePayload, type WhatsApp2DeliveryQueueItem } from "./whatsapp2-client";
 
 function mapDeliveryQueueItemToDirectMessage(item: WhatsApp2DeliveryQueueItem): DirectMessage {
   const scheduledMs = Date.parse(item.scheduled_at) || Date.now();
@@ -290,6 +260,7 @@ export interface DirectConversation {
   isBlocked?: boolean;
   whatsappIdentityKey?: string;
   savedContactName?: string | null;
+  autoCloseTestEnabled?: boolean;
 }
 
 type InstagramFilter = "todos" | "nao_respondidos" | "respondidos" | "pedidos";
@@ -447,7 +418,7 @@ function mapWhatsApp2Chat(chat: WhatsApp2GatewayChat, accountId: string): Direct
   };
 }
 
-function mapWhatsApp2Message(message: WhatsApp2GatewayMessage): DirectMessage {
+function mapWhatsApp2GatewayMessage(message: WhatsApp2GatewayMessage, getWhatsApp2MediaUrl: (id: string) => string): DirectMessage {
   const timestampMs = Number(message.timestamp || 0) * 1000;
   const text = String(message.body || "").trim() || formatWhatsApp2Preview(message);
   const messageId = String(
@@ -520,14 +491,14 @@ function isWhatsAppProfilePhotoUrl(value: unknown): boolean {
   }
 }
 
-function refreshBrokenWhatsAppAvatar(conversationId: string, rejectedUrl: string): Promise<string | null> {
+function refreshBrokenWhatsAppAvatar(conversationId: string, rejectedUrl: string, refreshWhatsApp2ProfilePhoto: ReturnType<typeof useWhatsApp2Client>["refreshWhatsApp2ProfilePhoto"]): Promise<string | null> {
   const chatId = whatsappProviderIdFromConversationId(conversationId);
   if (!/^\d+@(c\.us|lid)$/.test(chatId) || !isWhatsAppProfilePhotoUrl(rejectedUrl)) {
     return Promise.resolve(null);
   }
-  const pending = pendingWhatsAppAvatarRefreshes.get(chatId);
+  const pending = pendingWhatsAppAvatarRefreshes.get(conversationId);
   if (pending) return pending;
-  const key = `${chatId}:${rejectedUrl}`;
+  const key = `${conversationId}:${rejectedUrl}`;
   const now = Date.now();
   if (now - (attemptedWhatsAppAvatarRefreshes.get(key) || 0) < 10 * 60 * 1000) {
     return Promise.resolve(null);
@@ -541,8 +512,8 @@ function refreshBrokenWhatsAppAvatar(conversationId: string, rejectedUrl: string
   const request = refreshWhatsApp2ProfilePhoto(chatId, rejectedUrl)
     .then((result) => result.avatarUrl && result.avatarUrl !== rejectedUrl ? result.avatarUrl : null)
     .catch(() => null)
-    .finally(() => pendingWhatsAppAvatarRefreshes.delete(chatId));
-  pendingWhatsAppAvatarRefreshes.set(chatId, request);
+    .finally(() => pendingWhatsAppAvatarRefreshes.delete(conversationId));
+  pendingWhatsAppAvatarRefreshes.set(conversationId, request);
   return request;
 }
 
@@ -624,6 +595,7 @@ function AvatarWithFallback({
   sizeClassName = "w-10 h-10",
   ringClassName = "",
 }: AvatarWithFallbackProps) {
+  const { refreshWhatsApp2ProfilePhoto } = useWhatsApp2Client();
   const [hasError, setHasError] = useState(false);
   const [replacementAvatar, setReplacementAvatar] = useState<string | null | undefined>(undefined);
   const [alreadyRetried, setAlreadyRetried] = useState(false);
@@ -690,7 +662,7 @@ function AvatarWithFallback({
           setHasError(true);
           if (isWhatsApp && conversationId && !alreadyRetried && isWhatsAppProfilePhotoUrl(rawSrc)) {
             setAlreadyRetried(true);
-            void refreshBrokenWhatsAppAvatar(conversationId, rawSrc).then((updatedUrl) => {
+            void refreshBrokenWhatsAppAvatar(conversationId, rawSrc, refreshWhatsApp2ProfilePhoto).then((updatedUrl) => {
               if (updatedUrl && originalSourceRef.current === src) {
                 setReplacementAvatar(updatedUrl);
                 setHasError(false);
@@ -926,7 +898,7 @@ function MessageCountdown({
 }
 
 type BrainInboxOverviewItem = {
-  status: "idle" | "waiting_delay" | "queued" | "processing" | "sending" | "waiting_human" | "failed" | "uncertain" | "completed" | "disabled";
+  status: "disabled" | "awaiting_message" | "new_message" | "waiting_time" | "waiting_human" | "processing" | "sending" | "sent" | "failed";
   label: string;
   detail: string;
   active: boolean;
@@ -941,7 +913,7 @@ type BrainInboxOverviewItem = {
 
 function InboxAiStatusLabel({ ai }: { ai: BrainInboxOverviewItem }) {
   const scheduledAtMs = ai.scheduledResponseAt ? Date.parse(ai.scheduledResponseAt) : 0;
-  const isWaiting = ai.status === "waiting_delay" && scheduledAtMs > 0;
+  const isWaiting = ai.status === "waiting_time" && scheduledAtMs > 0;
   const calcRemaining = () => isWaiting
     ? Math.max(0, Math.ceil((scheduledAtMs - Date.now()) / 1000))
     : 0;
@@ -960,7 +932,7 @@ function InboxAiStatusLabel({ ai }: { ai: BrainInboxOverviewItem }) {
   }, [isWaiting, scheduledAtMs]);
 
   if (!isWaiting) return <>{ai.label}</>;
-  if (remainingSeconds <= 0) return <>IA iniciando...</>;
+  if (remainingSeconds <= 0) return <>Brain processando...</>;
 
   const minutes = Math.floor(remainingSeconds / 60);
   const seconds = remainingSeconds % 60;
@@ -990,6 +962,7 @@ function isTemporaryOrSendingMessage(m?: DirectMessage | null): boolean {
     id.startsWith("local-") ||
     id.startsWith("local_") ||
     id.startsWith("fin-") ||
+    id.startsWith("fin_") ||
     id.startsWith("autopilot-preview:")
   );
 }
@@ -1056,8 +1029,8 @@ function deduplicateMessages(msgs: DirectMessage[]): DirectMessage[] {
           return r.text.trim() === m.text.trim();
         }
 
-        // Se é mensagem finalizada (fin-) com mesmo tipo de mídia (áudio ou imagem)
-        if (r.id.startsWith("fin-") && r.mediaType && r.mediaType === m.mediaType) {
+        // Se é mensagem finalizada (fin- ou fin_) com mesmo tipo de mídia (áudio ou imagem)
+        if ((r.id.startsWith("fin-") || r.id.startsWith("fin_")) && r.mediaType && r.mediaType === m.mediaType) {
           return true;
         }
 
@@ -1212,11 +1185,50 @@ function getStoredRestrictedChatIds(): Set<string> {
   return new Set();
 }
 
-export function InstagramDirect({
+export function InstagramDirect(props: InstagramDirectProps) {
+  const [notificationAccountId, setNotificationAccountId] = useState<string | null>(null);
+  useEffect(() => {
+    const read = () => {
+      try { setNotificationAccountId(whatsappAccountIdFromConversationId(decodeURIComponent(window.location.hash.replace(/^#chat=/, "")))); }
+      catch { setNotificationAccountId(null); }
+    };
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
+  }, []);
+  const manager = useWhatsAppAccounts(whatsappAccountIdFromConversationId(props.initialWhatsAppIdentityId) || notificationAccountId);
+  if (manager.loading) return <div role="status" className="p-6 text-sm text-zinc-500">Carregando contas de WhatsApp…</div>;
+  if (manager.error && !manager.accounts.length) return <div role="alert" className="p-6 text-sm text-red-500">{manager.error}<button type="button" className="ml-3 underline" onClick={() => void manager.refresh()}>Tentar novamente</button></div>;
+  return <div className="flex h-full min-h-0 flex-col">
+    <div className="min-h-0 flex-1">
+      <WhatsAppAccountProvider account={manager.supported ? manager.selected : undefined}>
+        <InstagramDirectInbox
+          key={`${manager.selected?.id || "compatibility"}:${manager.selected?.accountId || ""}`}
+          {...props}
+          accountSwitcher={manager.supported ? <WhatsAppAccountSelector accounts={manager.accounts} selectedId={manager.selected?.id} onChange={id => {
+            setNotificationAccountId(null);
+            window.history.replaceState(null, "", window.location.pathname + window.location.search);
+            manager.select(id);
+          }} /> : null}
+        />
+      </WhatsAppAccountProvider>
+    </div>
+  </div>;
+}
+
+function InstagramDirectInbox({
+  accountSwitcher,
   onChatOpenChange,
   initialWhatsAppIdentityId,
   onInitialConversationHandled,
-}: InstagramDirectProps) {
+}: InstagramDirectProps & { accountSwitcher?: React.ReactNode }) {
+  const whatsappClient = useWhatsApp2Client();
+  const WhatsAppStatusRepository = useWhatsAppStatusRepository();
+  const boundAccountId = useWhatsAppAccount()?.accountId || null;
+  const { getWhatsApp2Chats, refreshWhatsApp2ProfilePhoto, getWhatsApp2ChatState, getWhatsApp2ExternalChatLink, getWhatsApp2MediaUrl, getWhatsApp2Messages, syncWhatsApp2LatestInbound, getWhatsApp2Presence, getWhatsApp2Status, getWhatsApp2ActiveStatuses, resolveWhatsApp2PhoneNumbers, openWhatsApp2EventStream, sendWhatsApp2Media, sendWhatsApp2Text, setWhatsApp2ChatBlocked, setWhatsApp2ChatLocked, subscribeWhatsApp2Presence, unsubscribeWhatsApp2Presence, getWhatsApp2DeliveryQueue } = whatsappClient;
+
+  const mapWhatsApp2Message = useCallback((message: WhatsApp2GatewayMessage) => mapWhatsApp2GatewayMessage(message, getWhatsApp2MediaUrl), [getWhatsApp2MediaUrl]);
+
   const [conversations, setConversations] = useState<DirectConversation[]>([]);
   const [whatsapp2Conversations, setWhatsApp2Conversations] = useState<DirectConversation[]>([]);
   const [activeChat, setActiveChat] = useState<DirectConversation | null>(null);
@@ -1244,7 +1256,7 @@ export function InstagramDirect({
     let gatewayError: Error | null = null;
     // Só um snapshot recebido com sucesso pode confirmar que um chat sumiu do WhatsApp.
     let hasAuthoritativeGatewaySnapshot = false;
-    let accountId: string | null = null;
+    let accountId: string | null = boundAccountId;
     const resolvedPhonesByChatId = new Map<string, string>();
 
     try {
@@ -1277,14 +1289,17 @@ export function InstagramDirect({
           .map((row) => mapWhatsApp2Chat(row, accountId!))
           .filter((conversation) => whatsappConversationBelongsToAccount(conversation.id, accountId));
       } else {
-        activeWhatsAppAccountIdRef.current = null;
+        activeWhatsAppAccountIdRef.current = accountId;
         whatsapp2ProviderSnapshotReadyRef.current = false;
-        setWhatsApp2Conversations([]);
-        setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
+        if (!accountId) {
+          setWhatsApp2Conversations([]);
+          setActiveChat((current) => current?.type === "whatsapp2" ? null : current);
+        }
       }
     } catch (error) {
       if (!isLatestRequest()) return;
       gatewayError = error as Error;
+      activeWhatsAppAccountIdRef.current = accountId;
       setWhatsapp2GatewayStatus("offline");
       setWhatsapp2GatewayError(gatewayError.message || "Gateway indisponível");
       if (!accountId) {
@@ -1300,7 +1315,7 @@ export function InstagramDirect({
       const { data, error } = await supabase
         .from("instagram_conversations")
         .select(
-          "id, contact_id, username, full_name, avatar, avatar_url, last_message, last_message_at, last_direction, last_status, seen_at, unread, unread_count, status, current_stage_id, is_converted, raffle_status, ai_auto_respond, autopilot_status:stage_completed_rules->>status"
+          "id, contact_id, username, full_name, avatar, avatar_url, last_message, last_message_at, last_direction, last_status, seen_at, unread, unread_count, status, current_stage_id, is_converted, raffle_status, ai_auto_respond, auto_close_test_enabled, autopilot_status:stage_completed_rules->>status"
         )
         .eq("channel", "whatsapp2")
         .like("id", `wa2:${accountId}:%`)
@@ -1473,6 +1488,7 @@ export function InstagramDirect({
         isConverted: Boolean(canonical?.is_converted),
         raffleStatus: normalizeRaffleCommercialStatus(canonical?.raffle_status),
         aiAutoRespond: Boolean(canonical?.ai_auto_respond),
+        autoCloseTestEnabled: Boolean(canonical?.auto_close_test_enabled),
         archived: controls.archived,
         isLocked: controls.isLocked,
         isBlocked: gatewayCandidates.some((row) => row.isBlocked === true),
@@ -1722,7 +1738,8 @@ export function InstagramDirect({
   const [hasCanonicalInstagramSnapshot, setHasCanonicalInstagramSnapshot] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const isLoadingMessages = loadingConversationId === activeChat?.id;
-  const [isPersonaAudioModalOpen, setIsPersonaAudioModalOpen] = useState(false);
+  // Estado unificado do Cofre: null = fechado, "photos" | "audios" = aba ativa
+  const [vaultTab, setVaultTab] = useState<"photos" | "audios" | null>(null);
   const [isAutoPilotActivationModalOpen, setIsAutoPilotActivationModalOpen] = useState(false);
   const [isGlobalAutoPilotDisabledModalOpen, setIsGlobalAutoPilotDisabledModalOpen] = useState(false);
   const [isRestartingActiveChatAi, setIsRestartingActiveChatAi] = useState(false);
@@ -1735,6 +1752,12 @@ export function InstagramDirect({
   const [mediaObservationText, setMediaObservationText] = useState("");
   const [isSubmittingMediaObservation, setIsSubmittingMediaObservation] = useState(false);
   const [isUpdatingRaffleStatus, setIsUpdatingRaffleStatus] = useState(false);
+
+  // --- Bulk AI Activation States ---
+  const [isBulkSelectionMode, setIsBulkSelectionMode] = useState(false);
+  const [selectedConversationIds, setSelectedConversationIds] = useState<Set<string>>(new Set());
+  const [isBulkActivationModalOpen, setIsBulkActivationModalOpen] = useState(false);
+const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
 
   const loadWhatsAppStickers = useCallback(async () => {
     setIsLoadingWhatsAppStickers(true);
@@ -2540,7 +2563,7 @@ export function InstagramDirect({
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Estados de Foto/Imagem com Prévia antes do Envio
-  const [pendingImage, setPendingImage] = useState<{ file: File; previewUrl: string } | null>(null);
+  const [pendingImage, setPendingImage] = useState<{ file: File; previewUrl: string; isViewOnce?: boolean } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   // Preservação de Histórico, Navegação e Scroll da Lista
@@ -2560,6 +2583,15 @@ export function InstagramDirect({
   const messageElementRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const replyHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [highlightedReplyTargetId, setHighlightedReplyTargetId] = useState<string | null>(null);
+  const [autoCloseTestEnabled, setAutoCloseTestEnabled] = useState<boolean>(false);
+  const [savingAutoClose, setSavingAutoClose] = useState(false);
+
+  // Hidrata o estado visual do botão "Finalizar Sozinha" ao trocar de conversa
+  // ou quando os dados remotos são recarregados. O campo vem de instagram_conversations
+  // via SupabaseInstagramRepository.getConversations().
+  useEffect(() => {
+    setAutoCloseTestEnabled(Boolean(activeChat?.autoCloseTestEnabled));
+  }, [activeChat?.id, activeChat?.autoCloseTestEnabled]);
 
   // Sub-filtro da aba Pedidos no Instagram: todos os pedidos ou contas restringidas
   const [pedidosSubFilter, setPedidosSubFilter] = useState<"todos_pedidos" | "restringidos">("todos_pedidos");
@@ -5144,7 +5176,7 @@ export function InstagramDirect({
   };
 
   // Upload para Supabase Storage e Envio de Foto/Vídeo (com suporte a legenda opcional)
-  const handleUploadAndSendMedia = async (file: File, caption?: string) => {
+  const handleUploadAndSendMedia = async (file: File, caption?: string, options?: { viewOnce?: boolean }) => {
     if (!activeChat) return;
 
     setIsUploadingMedia(true);
@@ -5177,7 +5209,7 @@ export function InstagramDirect({
         } else if (isVideo) {
           await sendMessageWithText(`[video:${data.url}]${cleanCaption ? ` ${cleanCaption}` : ""}`);
         } else {
-          await sendMessageWithText(`[image:${data.url}]${cleanCaption ? ` ${cleanCaption}` : ""}`);
+          await sendMessageWithText(`[image:${data.url}]${cleanCaption ? ` ${cleanCaption}` : ""}`, { viewOnce: options?.viewOnce });
         }
       }
     } catch (err) {
@@ -5446,7 +5478,7 @@ export function InstagramDirect({
   };
 
   // Envio central de mensagem com rastreamento de status e suporte completo a mídias
-  const sendMessageWithText = async (textToSend: string): Promise<boolean> => {
+  const sendMessageWithText = async (textToSend: string, options?: { viewOnce?: boolean }): Promise<boolean> => {
     if (!textToSend.trim() || !activeChat) return false;
 
     const messageText = textToSend.trim();
@@ -5541,6 +5573,7 @@ export function InstagramDirect({
               to: providerId,
               mediaUrl: imageUrl,
               replyToMessageId: currentReply?.id || null,
+              viewOnce: options?.viewOnce,
             })
           : await sendWhatsApp2Text({
               to: providerId,
@@ -5809,8 +5842,9 @@ export function InstagramDirect({
     if (pendingImage) {
       const fileToSend = pendingImage.file;
       const captionText = textToSend.trim();
+      const isViewOnce = Boolean(pendingImage.isViewOnce);
       cancelPendingImage();
-      await handleUploadAndSendMedia(fileToSend, captionText);
+      await handleUploadAndSendMedia(fileToSend, captionText, { viewOnce: isViewOnce });
       return;
     }
 
@@ -6221,7 +6255,7 @@ export function InstagramDirect({
         }
         const target = conversations.find((c) => c.id === convId)
           || whatsapp2Conversations.find((c) =>
-            c.id === convId || c.providerId === whatsappProviderIdFromConversationId(convId)
+            c.id === convId || ((!whatsappAccountIdFromConversationId(convId) || whatsappConversationBelongsToAccount(convId, activeWhatsAppAccountIdRef.current)) && c.providerId === whatsappProviderIdFromConversationId(convId))
           );
         if (target) {
           handleOpenConversation(target);
@@ -6445,29 +6479,101 @@ export function InstagramDirect({
     for (const conversation of sortedConversations) {
       const state = autoPilot.chatStates[conversation.id];
       if (!state) continue;
+      // Detectar se recebeu mensagem nova (cliente enviou, IA ainda não respondeu)
+      const hasNewClientMessage = Boolean(
+        state.lastClientMessageAt &&
+        (!state.lastResponseSentAt || Date.parse(state.lastClientMessageAt) > Date.parse(state.lastResponseSentAt))
+      );
+      // Detectar se acabou de enviar (últimos 30 segundos)
+      const recentlySent = Boolean(
+        state.lastResponseSentAt && (Date.now() - Date.parse(state.lastResponseSentAt)) < 30000
+      );
       const rawStatus = state.isSending ? "sending" : state.status;
-      const status: BrainInboxOverviewItem["status"] =
-        rawStatus === "activation_wait" || rawStatus === "waiting_delay" || rawStatus === "waiting_debounce" || rawStatus === "scheduled"
-          ? "waiting_delay"
-          : rawStatus === "in_queue"
-          ? "queued"
-          : rawStatus === "paused_handoff" || rawStatus === "paused_guardrail" || rawStatus === "waiting_human"
-          ? "waiting_human"
-          : rawStatus === "processing"
-          ? "processing"
-          : rawStatus === "failed"
-          ? "failed"
-          : rawStatus === "disabled"
-          ? "disabled"
-          : rawStatus === "sending"
-          ? "sending"
-          : "idle";
+      let status: BrainInboxOverviewItem["status"];
+      let label: string;
+      let detail: string;
+      if (!state.isEnabled) {
+        status = "disabled";
+        label = "Brain desligada";
+        detail = "A IA não está ativa nesta conversa.";
+      } else if (
+        rawStatus === "paused_handoff" ||
+        rawStatus === "paused_guardrail" ||
+        rawStatus === "waiting_human"
+      ) {
+        status = "waiting_human";
+        label = "Aguardando Você";
+        detail = "A IA precisa da sua intervenção.";
+      } else if (
+        state.isSending ||
+        rawStatus === "sending" ||
+        state.activity?.phase === "sending" ||
+        (state.pendingOutboundMessages || []).some((msg) => msg.status === "sending")
+      ) {
+        status = "sending";
+        label = "Brain enviando";
+        detail = "Enviando resposta ao cliente...";
+      } else if (recentlySent && !hasNewClientMessage) {
+        status = "sent";
+        label = "Brain enviou";
+        detail = "Resposta enviada com sucesso.";
+      } else if (
+        rawStatus === "processing" ||
+        state.activity?.phase === "brain" ||
+        state.activity?.phase === "typing" ||
+        state.activity?.phase === "loading_context" ||
+        state.activity?.phase === "context" ||
+        state.activity?.phase === "search" ||
+        state.activity?.phase === "reanalyzing" ||
+        state.activity?.phase === "checklist" ||
+        state.activity?.phase === "validating" ||
+        state.activity?.phase === "recording_audio"
+      ) {
+        status = "processing";
+        label = "Brain processando";
+        detail = "Gerando resposta inteligente...";
+      } else if (
+        state.scheduledResponseAt &&
+        Date.parse(state.scheduledResponseAt) > Date.now() &&
+        (rawStatus === "waiting_delay" ||
+          rawStatus === "waiting_debounce" ||
+          rawStatus === "scheduled" ||
+          rawStatus === "activation_wait")
+      ) {
+        status = "waiting_time";
+        label = "Aguardando tempo";
+        detail = "Aguardando tempo configurado antes de responder.";
+      } else if (
+        rawStatus === "failed" ||
+        state.activity?.phase === "failed" ||
+        state.activity?.phase === "cancelled" ||
+        (Boolean(state.lastError) && !recentlySent)
+      ) {
+        status = "failed";
+        label = "Brain falhou";
+        detail = state.lastError || state.activity?.detail || "Erro no ciclo da IA.";
+      } else if (
+        hasNewClientMessage &&
+        (rawStatus === "waiting_delay" ||
+          rawStatus === "waiting_debounce" ||
+          rawStatus === "scheduled" ||
+          rawStatus === "in_queue" ||
+          rawStatus === "activation_wait")
+      ) {
+        status = "new_message";
+        label = "Recebeu mensagem nova";
+        detail = "Cliente enviou mensagem, aguardando processamento.";
+      } else {
+        status = "awaiting_message";
+        label = "Aguardando mensagem";
+        detail = "Brain pronta, esperando nova mensagem do cliente.";
+      }
       const runtimeState = state as typeof state & { currentObjectiveLabel?: string | null };
       const actionTypes = Array.from(new Set((state.pendingOutboundMessages || []).map((item) => item.messageType)));
       result[conversation.id] = {
         status,
-        label: state.activity?.label || (state.isEnabled ? "IA pronta" : "IA desligada"),
-        detail: state.activity?.detail || (state.isEnabled ? "Aguardando nova mensagem." : "O AutoPilot n?o est? ativo nesta conversa."),
+        label,
+        detail: state.activity?.detail || detail,
         active: isAutoPilotActivelyWorking(state),
         updatedAt: state.stateUpdatedAt || state.activity?.updatedAt || null,
         scheduledResponseAt: state.scheduledResponseAt || null,
@@ -6727,6 +6833,32 @@ export function InstagramDirect({
                       : "bg-[#8e8e93]"
                   }`}
                 />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (savingAutoClose) return;
+                const conversationId = activeChat.id;
+                const newState = !autoCloseTestEnabled;
+                setSavingAutoClose(true);
+                try {
+                  const confirmed = await autoPilot.toggleAutoCloseTest(conversationId, newState);
+                  setWhatsApp2Conversations(rows => rows.map(row => row.id === conversationId ? { ...row, autoCloseTestEnabled: confirmed } : row));
+                  setActiveChat(current => current?.id === conversationId ? { ...current, autoCloseTestEnabled: confirmed } : current);
+                  if (activeChatIdRef.current === conversationId) setAutoCloseTestEnabled(confirmed);
+                } finally { setSavingAutoClose(false); }
+              }}
+              disabled={savingAutoClose}
+              className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all active:scale-90 wa-ios-glass hover:opacity-80 ${
+                autoCloseTestEnabled ? "text-amber-500 bg-amber-500/10" : "text-zinc-400"
+              }`}
+              title={autoCloseTestEnabled ? "Desativar modo 'Finalizar Sozinha'" : "Ativar modo 'Finalizar Sozinha' (Teste)"}
+              aria-label={autoCloseTestEnabled ? "Desativar modo 'Finalizar Sozinha'" : "Ativar modo 'Finalizar Sozinha' (Teste)"}
+            >
+              <Zap className="h-[18px] w-[18px]" />
+              {autoCloseTestEnabled && (
+                <span className="absolute bottom-[5px] right-[5px] h-2 w-2 rounded-full ring-2 ring-white/80 dark:ring-[#2c2c2e]/90 bg-amber-500" />
               )}
             </button>
           </div>
@@ -7307,6 +7439,21 @@ export function InstagramDirect({
                           >
                             Seu navegador não conseguiu reproduzir este vídeo.
                           </video>
+                        ) : /* 3.5. Mídia de visualização única (não acessível fora do WhatsApp) */
+                        msg.attachment?.isViewOnce ? (
+                          <div className="flex items-center gap-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 px-3 py-2.5 max-w-[260px]">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-700">
+                              <Lock className="h-4 w-4 text-zinc-500 dark:text-zinc-400" />
+                            </div>
+                            <div className="min-w-0 flex-1 leading-tight">
+                              <span className={`block text-xs font-semibold ${msg.isMine ? "text-white" : "text-zinc-900 dark:text-white"}`}>
+                                Visualização única
+                              </span>
+                              <span className={`mt-0.5 block text-[10px] ${msg.isMine ? "text-white/70" : "text-zinc-500 dark:text-zinc-400"}`}>
+                                Abra no WhatsApp para ver
+                              </span>
+                            </div>
+                          </div>
                         ) : /* 4. Mídia do tipo Imagem / Foto com URL */
                         (msg.mediaType === "image" || msg.text.startsWith("[image:")) &&
                         (msg.mediaUrl || msg.text.match(/^\[image:(https?:\/\/[^\]]+)\]/)?.[1]) ? (
@@ -7615,6 +7762,19 @@ export function InstagramDirect({
                 </div>
                 <button
                   type="button"
+                  onClick={() => setPendingImage((prev) => prev ? { ...prev, isViewOnce: !prev.isViewOnce } : null)}
+                  className={`px-2 py-1 rounded-full text-xs font-semibold border transition-all flex items-center gap-1 cursor-pointer select-none ${
+                    pendingImage.isViewOnce
+                      ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
+                      : "bg-zinc-200/60 dark:bg-zinc-800/60 text-zinc-600 dark:text-zinc-400 border-zinc-300 dark:border-zinc-700"
+                  }`}
+                  title={pendingImage.isViewOnce ? "Visualização única ativada (clique para desativar)" : "Clique para ativar visualização única"}
+                >
+                  <span className="font-bold">①</span>
+                  <span className="text-[10px]">{pendingImage.isViewOnce ? "Única" : "Normal"}</span>
+                </button>
+                <button
+                  type="button"
                   onClick={cancelPendingImage}
                   className="p-1.5 rounded-full text-zinc-600 dark:text-zinc-400 hover:text-zinc-950 dark:hover:text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer"
                   title="Remover foto selecionada"
@@ -7721,6 +7881,8 @@ export function InstagramDirect({
             {/* Barra de Digitação Isolada (Zero Lag / 60 FPS com State Colocation) */}
             <div className={`relative z-10 shrink-0 ${isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? "bg-transparent" : ""}`}>
             <InstagramChatComposer
+              key={activeChat.id}
+              draftKey={activeChat.id}
               ref={composerRef}
               variant={activeChat.type === "whatsapp2" ? "whatsapp" : "instagram"}
               isUploadingMedia={isUploadingMedia}
@@ -7741,7 +7903,8 @@ export function InstagramDirect({
                 void handleUploadAndSendMedia(file);
               }}
               onStartRecording={handleStartRecording}
-              onOpenVault={() => setIsPersonaAudioModalOpen(true)}
+              onOpenVault={() => setVaultTab("audios")}
+              onOpenImageVault={() => setVaultTab("photos")}
               onOpenConsole={
                 isWhatsAppLikeType(activeChat.type)
                   ? () => {
@@ -7763,10 +7926,11 @@ export function InstagramDirect({
           </div>
         )}
 
-        {/* Modal Canônico: Cofre de Áudios da Larissa */}
-        <PersonaAudioVaultModal
-          isOpen={isPersonaAudioModalOpen}
-          onClose={() => setIsPersonaAudioModalOpen(false)}
+        {/* Modal Unificado: Cofre da Larissa (Fotos + Áudios) */}
+        <PersonaVaultModal
+          isOpen={vaultTab !== null}
+          onClose={() => setVaultTab(null)}
+          initialTab={vaultTab ?? "photos"}
           activeChat={
             activeChat
               ? {
@@ -7776,6 +7940,14 @@ export function InstagramDirect({
                 }
               : null
           }
+          onSendImageToChat={async (image) => {
+            if (!activeChat) return;
+            const imageUrl = activeChat.type === "whatsapp2"
+              ? (image.whatsappImageUrl || image.imageUrl)
+              : image.imageUrl;
+            const sent = await sendMessageWithText(`[image:${imageUrl}]`, { viewOnce: image.isViewOnce });
+            if (sent) toast.success(`Imagem "${image.title}" enviada com sucesso.`);
+          }}
           onSendAudioToChat={async (audio) => {
             if (!activeChat) return;
             const audioUrl = activeChat.type === "whatsapp2"
@@ -7939,6 +8111,7 @@ export function InstagramDirect({
 
 
         <div className={`items-center gap-1 shrink-0 flex`}>
+              {accountSwitcher}
               <button
                 type="button"
                 onClick={() => {
@@ -8047,18 +8220,29 @@ export function InstagramDirect({
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
-            {!searchQuery && isWhatsAppInboxChannel && (
-              <button type="button" className="absolute right-2.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-[#8e8e93] hover:text-[#007aff] active:scale-90 transition-all cursor-pointer" aria-label="Camera" title="Camera">
-                <Camera className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-          {isWhatsAppInboxChannel && (
-            <button type="button" className="shrink-0 min-h-[40px] min-w-[40px] rounded-full flex items-center justify-center text-[#007aff] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] active:scale-95 transition-all cursor-pointer" aria-label="Filtros" title="Filtros">
-              <SlidersHorizontal className="w-5 h-5" />
+            </div>
+          {isBulkSelectionMode ? (
+            <button
+              type="button"
+              onClick={() => {
+                setIsBulkSelectionMode(false);
+                setSelectedConversationIds(new Set());
+              }}
+              className="shrink-0 px-3 h-9 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-xs font-semibold hover:bg-zinc-300 dark:hover:bg-zinc-700 active:scale-95 transition-all cursor-pointer"
+            >
+              Cancelar
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsBulkSelectionMode(true)}
+              className="shrink-0 px-3 h-9 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-500/20 active:scale-95 transition-all cursor-pointer"
+              title="Selecionar conversas para ativar IA em massa"
+            >
+              Selecionar
             </button>
           )}
-        </div>
+          </div>
 
         {isWhatsAppInboxChannel && (
           <div className="whatsapp-ios px-3 pt-0.5 pb-1.5 space-y-1">
@@ -8588,6 +8772,30 @@ export function InstagramDirect({
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
+                  {isBulkSelectionMode && (
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedConversationIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(conv.id)) next.delete(conv.id);
+                          else next.add(conv.id);
+                          return next;
+                        });
+                      }}
+                      className={`shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all cursor-pointer ${
+                        selectedConversationIds.has(conv.id)
+                          ? "bg-emerald-500 border-emerald-500"
+                          : "border-zinc-400 dark:border-zinc-500 hover:border-emerald-400"
+                      }`}
+                    >
+                      {selectedConversationIds.has(conv.id) && (
+                        <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
                   <div
                     title="Contato do WhatsApp"
                     className="transition-all shrink-0 cursor-default"
@@ -8710,30 +8918,45 @@ export function InstagramDirect({
                             dot: "bg-[#34c759]",
                             chip: "bg-[#34c759]/10 text-[#248a3d] dark:bg-[#30d158]/12 dark:text-[#30d158]",
                           }
-                        : ai.status === "failed"
+                        : ai.status === "disabled"
                         ? {
-                            dot: "bg-[#ff3b30]",
-                            chip: "bg-[#ff3b30]/9 text-[#d70015] dark:bg-[#ff453a]/12 dark:text-[#ff6961]",
+                            dot: "bg-[#8e8e93]",
+                            chip: "bg-black/[0.035] text-[#6e6e73] dark:bg-white/[0.055] dark:text-[#98989d]",
+                          }
+                        : ai.status === "awaiting_message"
+                        ? {
+                            dot: "bg-[#34c759]",
+                            chip: "bg-[#34c759]/10 text-[#248a3d] dark:bg-[#30d158]/12 dark:text-[#30d158]",
+                          }
+                        : ai.status === "new_message" || ai.status === "waiting_time"
+                        ? {
+                            dot: "bg-[#ff9500]",
+                            chip: "bg-[#ff9500]/10 text-[#c93400] dark:bg-[#ff9f0a]/12 dark:text-[#ff9f0a]",
                           }
                         : ai.status === "waiting_human"
                         ? {
                             dot: "bg-[#af52de]",
                             chip: "bg-[#af52de]/9 text-[#8944ab] dark:bg-[#bf5af2]/12 dark:text-[#bf5af2]",
                           }
-                        : ai.status === "waiting_delay" || ai.status === "queued"
-                        ? {
-                            dot: "bg-[#ff9500]",
-                            chip: "bg-[#ff9500]/10 text-[#c93400] dark:bg-[#ff9f0a]/12 dark:text-[#ff9f0a]",
-                          }
                         : ai.status === "processing"
                         ? {
                             dot: "bg-[#007aff]",
                             chip: "bg-[#007aff]/9 text-[#0066cc] dark:bg-[#0a84ff]/12 dark:text-[#0a84ff]",
                           }
-                        : ai.status === "sending" || ai.status === "completed"
+                        : ai.status === "sending"
+                        ? {
+                            dot: "bg-[#5ac8fa]",
+                            chip: "bg-[#5ac8fa]/10 text-[#0099cc] dark:bg-[#64d2ff]/12 dark:text-[#64d2ff]",
+                          }
+                        : ai.status === "sent"
                         ? {
                             dot: "bg-[#34c759]",
                             chip: "bg-[#34c759]/10 text-[#248a3d] dark:bg-[#30d158]/12 dark:text-[#30d158]",
+                          }
+                        : ai.status === "failed"
+                        ? {
+                            dot: "bg-[#ff3b30]",
+                            chip: "bg-[#ff3b30]/10 text-[#d70015] dark:bg-[#ff453a]/12 dark:text-[#ff6961]",
                           }
                         : {
                             dot: "bg-[#8e8e93]",
@@ -8804,16 +9027,22 @@ export function InstagramDirect({
 
                       const aiDotClass = !ai
                         ? "bg-emerald-400"
-                        : ai.status === "failed"
-                        ? "bg-red-400"
+                        : ai.status === "disabled"
+                        ? "bg-zinc-400"
+                        : ai.status === "awaiting_message"
+                        ? "bg-emerald-400"
+                        : ai.status === "new_message" || ai.status === "waiting_time"
+                        ? "bg-amber-400"
                         : ai.status === "waiting_human"
                         ? "bg-violet-400"
-                        : ai.status === "waiting_delay" || ai.status === "queued"
-                        ? "bg-amber-400"
                         : ai.status === "processing"
                         ? "bg-sky-400"
-                        : ai.status === "sending" || ai.status === "completed"
+                        : ai.status === "sending"
+                        ? "bg-cyan-400"
+                        : ai.status === "sent"
                         ? "bg-emerald-400"
+                        : ai.status === "failed"
+                        ? "bg-red-400"
                         : "bg-zinc-400";
 
                       return (
@@ -8842,7 +9071,7 @@ export function InstagramDirect({
                               {(conv.isConverted || currentStage) && <span className="text-zinc-300 dark:text-[#383838]">·</span>}
                               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiDotClass}`} />
                               <span className="shrink-0">
-                                {ai ? <InboxAiStatusLabel ai={ai} /> : "IA ativa"}
+                                {ai ? <InboxAiStatusLabel ai={ai} /> : "Brain ativa"}
                               </span>
                             </>
                           )}
@@ -8914,6 +9143,94 @@ export function InstagramDirect({
         })
           )}
         </div>
+
+        {/* Bottom Action Bar para Bulk AI Activation */}
+        {isBulkSelectionMode && selectedConversationIds.size > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 z-30 px-4 pb-[calc(12px+env(safe-area-inset-bottom,0px))] pt-3 bg-gradient-to-t from-white via-white/95 to-transparent dark:from-[#0b141a] dark:via-[#0b141a]/95">
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/60 dark:border-[#222] bg-white/90 dark:bg-[#111b21]/90 backdrop-blur-xl px-4 py-3 shadow-[0_-4px_24px_rgba(0,0,0,0.08)]">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-emerald-500 text-white text-xs font-bold shrink-0">
+                  {selectedConversationIds.size}
+                </span>
+                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                  selecionada{selectedConversationIds.size > 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedConversationIds(new Set())}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
+                >
+                  Limpar
+                </button>
+                <button
+                  type="button"
+                  disabled={isBulkSyncingWa2}
+                  onClick={async () => {
+                    const globalEnabled = autoPilot.config?.isEnabledGlobally === false
+                      ? false
+                      : await autoPilot.isGlobalAutoPilotEnabled();
+                    if (!globalEnabled) {
+                      setIsGlobalAutoPilotDisabledModalOpen(true);
+                      return;
+                    }
+                    // Filtra chats que já têm IA ativa
+                    const eligibleIds = Array.from(selectedConversationIds).filter((id) => {
+                      const conv = sortedConversations.find((c) => c.id === id);
+                      if (!conv) return false;
+                      if (conv.aiAutoRespond) return false;
+                      if (autoPilot.chatStates[id]?.isEnabled) return false;
+                      return true;
+                    });
+                    if (eligibleIds.length === 0) {
+                      toast.info("Todos os chats selecionados já estão com IA ativa.");
+                      return;
+                    }
+                    // Sincroniza inbound dos chats WhatsApp2 antes de abrir o modal,
+                    // garantindo que msgs recentes do cliente estejam no Postgres
+                    // antes do endpoint bulk consultar instagram_messages.
+                    const wa2Chats = eligibleIds
+                      .map((id) => sortedConversations.find((c) => c.id === id))
+                      .filter((c): c is DirectConversation => !!c && c.type === "whatsapp2");
+                    if (wa2Chats.length > 0) {
+                      setIsBulkSyncingWa2(true);
+                      try {
+                        await Promise.all(
+                          wa2Chats.map(async (conv) => {
+                            try {
+                              const providerId = conv.providerId || whatsappProviderIdFromConversationId(conv.id);
+                              await syncWhatsApp2LatestInbound(providerId, conv.id);
+                            } catch (syncErr) {
+                              console.warn(`[Bulk] sync inbound falhou para ${conv.id}:`, syncErr);
+                            }
+                          }),
+                        );
+                      } finally {
+                        setIsBulkSyncingWa2(false);
+                      }
+                    }
+                    setSelectedConversationIds(new Set(eligibleIds));
+                    setIsBulkActivationModalOpen(true);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-wait"
+                >
+                  {isBulkSyncingWa2 ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Sincronizando...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Ativar IA
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
 
@@ -9151,6 +9468,31 @@ export function InstagramDirect({
       <WhatsAppStatusModal
         isOpen={isWhatsAppStatusModalOpen}
         onClose={() => setIsWhatsAppStatusModalOpen(false)}
+      />
+      {/* Modal de Ativação de IA em Massa (Bulk) — fora do activeChat para renderizar na inbox */}
+      <AutoPilotActivationModal
+        isOpen={isBulkActivationModalOpen}
+        onClose={() => setIsBulkActivationModalOpen(false)}
+        bulkCount={selectedConversationIds.size}
+        onConfirm={async (mode) => {
+          try {
+            const ids = Array.from(selectedConversationIds);
+            const result = await autoPilot.activateAutoPilotBulk(ids, mode);
+            if (result.failed === 0) {
+              toast.success(`IA ativada em ${result.succeeded} conversa${result.succeeded > 1 ? "s" : ""}.`);
+            } else if (result.succeeded > 0) {
+              toast.warning(`${result.succeeded} ativada${result.succeeded > 1 ? "s" : ""}, ${result.failed} falha${result.failed > 1 ? "s" : ""}.`);
+            } else {
+              toast.error("Falha ao ativar IA em massa.");
+            }
+          } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Erro ao ativar IA em massa.");
+          } finally {
+            setIsBulkActivationModalOpen(false);
+            setSelectedConversationIds(new Set());
+            setIsBulkSelectionMode(false);
+          }
+        }}
       />
     </div>
   );

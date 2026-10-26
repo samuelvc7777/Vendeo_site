@@ -1,26 +1,28 @@
 "use client";
+import { useWhatsApp2Client } from "@/presentation/components/chat/WhatsAppAccountContext";
 
 import React, { useEffect, useState } from "react";
 import { AlertTriangle, Loader2, MessageCircle, Smartphone } from "lucide-react";
 import { toast } from "sonner";
-import {
-  disconnectWhatsApp2,
-  getWhatsApp2Status,
-  requestWhatsApp2PairingCode,
-} from "@/presentation/components/chat/whatsapp2-client";
+
 import { ResponsiveModal } from "@/presentation/components/ui/ResponsiveModal";
+import { WhatsAppPairingQr } from "./WhatsAppPairingQr";
 
 interface WhatsApp2ConnectionCardProps {
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2ConnectionCardProps) {
+  const whatsappClient = useWhatsApp2Client();
+  const { disconnectWhatsApp2, getWhatsApp2Status, requestWhatsApp2PairingCode, requestWhatsApp2PairingQr } = whatsappClient;
+
   const [status, setStatus] = useState<Awaited<ReturnType<typeof getWhatsApp2Status>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [showConnect, setShowConnect] = useState(false);
   const [phone, setPhone] = useState("");
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [requestingCode, setRequestingCode] = useState(false);
+  const [pairingMode, setPairingMode] = useState<"number" | "qr">("number");
   const [disconnecting, setDisconnecting] = useState(false);
   const [isDisconnectModalOpen, setIsDisconnectModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +52,13 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
   }, []);
 
   const connected = status?.status === "ready";
+
+  const showQr = async () => {
+    setPairingMode("qr"); setRequestingCode(true); setError(null);
+    try { await requestWhatsApp2PairingQr(); await refresh(); }
+    catch (err) { setError((err as Error).message); }
+    finally { setRequestingCode(false); }
+  };
 
   const requestCode = async () => {
     const normalized = phone.replace(/\D/g, "");
@@ -176,7 +185,7 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
         ) : !showConnect ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400 sm:max-w-md">
-              Conecte como dispositivo vinculado usando número e código de 8 caracteres, sem QR.
+              Conecte como dispositivo vinculado usando código por número ou QR.
             </p>
             <button
               type="button"
@@ -191,6 +200,11 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
           </div>
         ) : (
           <div className="space-y-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="flex gap-2">
+              <button type="button" disabled={requestingCode} onClick={() => setPairingMode("number")} aria-pressed={pairingMode === "number"} className="min-h-10 flex-1 rounded-lg border border-zinc-300 px-2 text-xs font-semibold dark:border-zinc-700">Por número</button>
+              <button type="button" disabled={requestingCode} onClick={() => void showQr()} aria-pressed={pairingMode === "qr"} className="min-h-10 flex-1 rounded-lg border border-zinc-300 px-2 text-xs font-semibold dark:border-zinc-700">Conectar com QR</button>
+            </div>
+            {pairingMode === "qr" ? <WhatsAppPairingQr dataUrl={status?.qrDataUrl} /> : <>
             <div>
               <p className="text-xs font-bold text-zinc-950 dark:text-white">Conectar por número</p>
               <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">Informe país + DDD + número. Exemplo: 5537999999999.</p>
@@ -239,6 +253,8 @@ export function WhatsApp2ConnectionCard({ onConnectionChange }: WhatsApp2Connect
                 </p>
               </div>
             )}
+            </>}
+            {pairingMode === "qr" && error && <p role="alert" className="text-[11px] text-red-500">{error}</p>}
 
             <button
               type="button"

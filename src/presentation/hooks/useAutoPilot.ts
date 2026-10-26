@@ -344,5 +344,46 @@ export function useAutoPilot({ conversations, onSendMessage, onStageChange, isRe
     setChatStates((previous) => ({ ...previous, [conversationId]: updated }));
   }, []);
 
-  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, restartAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate };
+  const activateAutoPilotBulk = useCallback(async (
+    conversationIds: string[],
+    mode: "immediate" | "wait_next",
+  ): Promise<{ succeeded: number; failed: number; results: Array<{ conversationId: string; success: boolean; error?: string; immediateTriggered?: boolean }> }> => {
+    const res = await autopilotApiFetch("/api/autopilot/bulk-toggle-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationIds, mode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success !== true) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    await refreshState(true);
+    return {
+      succeeded: data.summary?.succeeded ?? 0,
+      failed: data.summary?.failed ?? 0,
+      results: Array.isArray(data.results) ? data.results : [],
+    };
+  }, [refreshState]);
+
+  const toggleAutoCloseTest = useCallback(async (conversationId: string, isEnabled: boolean) => {
+    try {
+      const response = await autopilotApiFetch("/api/autopilot/toggle-auto-close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, isEnabled }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success !== true) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+      toast.success(isEnabled ? "Modo 'Finalizar Sozinha' ativado neste chat." : "Modo 'Finalizar Sozinha' desativado.");
+      return isEnabled;
+    } catch (error) {
+      console.error("Falha ao alternar modo de teste Auto-Close:", error);
+      toast.error("Não foi possível alterar o modo de teste.");
+      return !isEnabled;
+    }
+  }, []);
+
+  return { config, chatStates, activeQueue: [], currentProcessingId, updateConfig, isGlobalAutoPilotEnabled, toggleAutoPilotForChat, activateAutoPilotWithChoice, activateAutoPilotBulk, restartAutoPilotForChat, registerClientMessage, resumeChatFromPause, approvePendingAction, updatePendingResponses, rejectPendingAction, refreshState, applyRemoteStateUpdate, toggleAutoCloseTest };
 }

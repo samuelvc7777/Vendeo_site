@@ -32,7 +32,7 @@ import { ConversationSchedulesManager } from "./ConversationSchedulesManager";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { useConversationSchedules } from "@/presentation/hooks/useConversationSchedules";
 import { useTheme } from "@/presentation/context/ThemeContext";
-import { WhatsApp2ConnectionCard } from "./WhatsApp2ConnectionCard";
+import { WhatsAppAccountsManager } from "./WhatsAppAccountsManager";
 import { WhatsAppStoryMediaManager } from "./WhatsAppStoryMediaManager";
 import { WhatsAppWallpaperManager } from "./WhatsAppWallpaperManager";
 import { TinderConnectionCard } from "./TinderConnectionCard";
@@ -270,7 +270,7 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
         detailTitle = "WhatsApp";
         detailContent = (
           <div className="space-y-4">
-            <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
+            <WhatsAppAccountsManager onConnectionChange={setIsWhatsApp2Connected} />
             <WhatsAppWallpaperManager />
           </div>
         );
@@ -807,7 +807,7 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
                 </div>
               </article>
 
-              <WhatsApp2ConnectionCard onConnectionChange={setIsWhatsApp2Connected} />
+              <WhatsAppAccountsManager onConnectionChange={setIsWhatsApp2Connected} />
 
               <TinderConnectionCard onConnectionChange={setIsTinderConnected} />
             </div>

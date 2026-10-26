@@ -12,6 +12,13 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  X,
+  FileText,
+  BookmarkPlus,
+  ArrowRight,
 } from "lucide-react";
 import { brainOperatorFetch } from "@/infrastructure/http/brainOperatorApi";
 
@@ -21,20 +28,26 @@ type ConsultationMessage = {
   content: string;
 };
 
-interface BrainConsultationPanelProps {
+export interface BrainConsultationPanelProps {
   turnId: string;
   question: string;
   answer: string;
   submitting: boolean;
   onAnswerChange: (value: string) => void;
-  onSubmit: (saveForFuture: boolean) => void;
+  onSubmit: (saveForFuture: boolean, overrideAnswer?: string) => void;
+  theme?: "default" | "whatsapp-ios";
 }
 
 const QUICK_PROMPTS = [
   {
-    label: "Resumir contexto",
-    prompt: "Me resume o contexto que levou a essa dúvida e separa o que é fato do que é inferência.",
-    icon: Search,
+    label: "3 caminhos",
+    prompt: "Me dê 3 caminhos possíveis para conduzir essa situação, com uma frase curta explicando a diferença entre eles.",
+    icon: Sparkles,
+  },
+  {
+    label: "Sugerir resposta neutra",
+    prompt: "Sugira uma resposta natural e descontraída no estilo da Larissa que contorne a situação sem inventar fatos.",
+    icon: MessageCircleQuestion,
   },
   {
     label: "O que já sabemos?",
@@ -42,19 +55,36 @@ const QUICK_PROMPTS = [
     icon: BrainCircuit,
   },
   {
-    label: "3 caminhos",
-    prompt: "Me dê 3 caminhos possíveis para conduzir essa situação, com uma frase curta explicando a diferença entre eles.",
-    icon: Sparkles,
+    label: "Resumir contexto",
+    prompt: "Me resume o contexto que levou a essa dúvida e separa o que é fato do que é inferência.",
+    icon: Search,
   },
-  {
-    label: "Pergunta de sondagem",
-    prompt: "Sugira uma pergunta natural e neutra para descobrir a informação que está faltando sem parecer interrogatório.",
-    icon: MessageCircleQuestion,
-  },
+];
+
+const QUICK_SHORTCUTS = [
+  "Sim, pode confirmar",
+  "Não, não faz/não tem",
+  "Desconversa e muda de assunto",
+  "Diz que vai ver com calma depois",
 ];
 
 function makeId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function parseQuestionAndContext(rawQuestion: string) {
+  let cleaned = (rawQuestion || "")
+    .replace(/^brain_manual_resolution\|?/i, "")
+    .replace(/^Brain precisa saber:\s*/i, "")
+    .trim();
+
+  const contextMatch = cleaned.match(/[\r\n]+Contexto:\s*([\s\S]+)$/i);
+  if (contextMatch) {
+    const mainQuestion = cleaned.slice(0, contextMatch.index).trim();
+    const context = contextMatch[1].trim();
+    return { mainQuestion: mainQuestion || cleaned, context };
+  }
+  return { mainQuestion: cleaned || "O Brain precisa da sua instrução para formular a resposta.", context: null };
 }
 
 export function BrainConsultationPanel({
@@ -64,27 +94,40 @@ export function BrainConsultationPanel({
   submitting,
   onAnswerChange,
   onSubmit,
+  theme = "default",
 }: BrainConsultationPanelProps) {
   const [messages, setMessages] = useState<ConsultationMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [isConsulting, setIsConsulting] = useState(false);
   const [consultationError, setConsultationError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const answerInputRef = useRef<HTMLTextAreaElement>(null);
+
+  const isWa = theme === "whatsapp-ios";
+  const { mainQuestion, context } = parseQuestionAndContext(question);
 
   useEffect(() => {
     setMessages([]);
     setDraft("");
     setConsultationError(null);
+    setIsAssistantOpen(false);
   }, [turnId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [messages, isConsulting]);
+    if (isAssistantOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [messages, isConsulting, isAssistantOpen]);
 
   const sendConsultation = async (overrideMessage?: string) => {
     const content = (overrideMessage ?? draft).trim();
     if (!content || isConsulting) return;
+
+    if (!isAssistantOpen) {
+      setIsAssistantOpen(true);
+    }
 
     const operatorEntry: ConsultationMessage = {
       id: makeId("operator"),
@@ -135,6 +178,26 @@ export function BrainConsultationPanel({
     }
   };
 
+  const handleApplySuggestion = (text: string) => {
+    onAnswerChange(text);
+    if (answerInputRef.current) {
+      answerInputRef.current.focus();
+    }
+  };
+
+  const effectiveAnswer = answer.trim() || draft.trim();
+  const canSubmit = Boolean(effectiveAnswer) && !submitting;
+
+  const handleFinalSubmit = (saveForFuture: boolean) => {
+    if (!effectiveAnswer || submitting) return;
+    if (!answer.trim() && draft.trim()) {
+      onAnswerChange(draft.trim());
+      onSubmit(saveForFuture, draft.trim());
+    } else {
+      onSubmit(saveForFuture, answer.trim());
+    }
+  };
+
   const copyMessage = async (message: ConsultationMessage) => {
     try {
       await navigator.clipboard.writeText(message.content);
@@ -146,187 +209,421 @@ export function BrainConsultationPanel({
   };
 
   return (
-    <section className="mb-4 overflow-hidden rounded-[22px] border border-violet-300/60 bg-gradient-to-br from-violet-50 via-white to-sky-50/70 shadow-[0_18px_50px_-34px_rgba(124,58,237,0.55)] dark:border-violet-500/25 dark:from-[#17131f] dark:via-[#111016] dark:to-[#10141d]">
-      <div className="border-b border-violet-200/70 bg-white/55 px-3.5 py-3 backdrop-blur-xl dark:border-violet-500/15 dark:bg-white/[0.025]">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/20">
-              <BrainCircuit className="h-5 w-5" />
+    <article
+      aria-label="Intervenção do operador necessária"
+      className={`overflow-hidden rounded-2xl border transition-all shadow-md ${
+        isWa
+          ? "border-[#ffb020]/30 bg-[#182229] text-[#e9edef]"
+          : "border-amber-400/35 bg-white dark:bg-[#131218] text-zinc-900 dark:text-zinc-100"
+      }`}
+    >
+      {/* 1. TOPO: Badge e Título de Chamada */}
+      <div
+        className={`px-4 py-3.5 border-b flex flex-wrap items-center justify-between gap-2.5 ${
+          isWa
+            ? "border-white/[0.08] bg-[#111b21]/70"
+            : "border-amber-500/15 bg-amber-500/[0.04]"
+        }`}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${
+              isWa
+                ? "border-[#ffb020]/35 bg-[#ffb020]/15 text-[#ffb020]"
+                : "border-amber-400/40 bg-amber-400/15 text-amber-600 dark:text-amber-300"
+            }`}
+          >
+            <HelpCircle className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h4 className="text-sm font-bold tracking-tight">
+                A Larissa precisa da sua instrução
+              </h4>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                  isWa
+                    ? "bg-[#ffb020]/20 text-[#ffb020]"
+                    : "bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200"
+                }`}
+              >
+                Aguardando você
+              </span>
             </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <h4 className="text-sm font-black text-zinc-950 dark:text-white">
-                  Consulta privada com o Brain
-                </h4>
-                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
-                  <ShieldCheck className="h-3 w-3" />
-                  Interno
-                </span>
-              </div>
-              <p className="mt-0.5 text-[10.5px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-                Pense junto com o Brain antes de decidir o que entra no turno.
-              </p>
-            </div>
+            <p className={`text-xs ${isWa ? "text-[#8696a0]" : "text-zinc-500"}`}>
+              A IA pausou este turno com segurança para não inventar informações.
+            </p>
           </div>
         </div>
 
-        <div className="mt-3 rounded-2xl border border-amber-200/80 bg-amber-50/80 p-3 dark:border-amber-500/20 dark:bg-amber-500/[0.07]">
-          <p className="text-[9px] font-black uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-            O que está faltando
-          </p>
-          <p className="mt-1 break-words text-xs font-medium leading-5 text-zinc-800 dark:text-zinc-200">
-            {question || "Uma informação factual para continuar."}
-          </p>
-        </div>
+        <span
+          className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md ${
+            isWa
+              ? "text-[#8696a0] bg-white/[0.04]"
+              : "text-zinc-500 bg-zinc-100 dark:bg-zinc-800"
+          }`}
+          title="Esta interação é interna da equipe e não é visível para o pretendente"
+        >
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+          Consulta interna
+        </span>
       </div>
 
-      <div className="space-y-3 p-3.5">
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-          {QUICK_PROMPTS.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.label}
-                type="button"
-                onClick={() => void sendConsultation(item.prompt)}
-                disabled={isConsulting}
-                className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 text-[10px] font-bold text-zinc-700 shadow-sm transition active:scale-95 hover:border-violet-300 hover:text-violet-700 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:border-violet-500/30 dark:hover:text-violet-300 cursor-pointer"
+      <div className="p-4 sm:p-5 space-y-4">
+        {/* 2. CARD DA PERGUNTA DO BRAIN */}
+        <div
+          className={`rounded-xl p-3.5 sm:p-4 border ${
+            isWa
+              ? "border-[#ffb020]/25 bg-[#202c33]/70"
+              : "border-amber-300/40 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-500/20"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <span
+              className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs font-black ${
+                isWa
+                  ? "bg-[#ffb020]/20 text-[#ffb020]"
+                  : "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+              }`}
+            >
+              ?
+            </span>
+            <div className="min-w-0 flex-1">
+              <span
+                className={`text-[10px] font-bold uppercase tracking-wider block mb-1 ${
+                  isWa ? "text-[#ffb020]" : "text-amber-700 dark:text-amber-300"
+                }`}
               >
-                <Icon className="h-3.5 w-3.5" />
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
+                Dúvida factual levantada
+              </span>
+              <p
+                className={`text-sm sm:text-[15px] font-semibold leading-snug break-words ${
+                  isWa ? "text-[#e9edef]" : "text-zinc-900 dark:text-zinc-100"
+                }`}
+              >
+                {mainQuestion}
+              </p>
 
-        {(messages.length > 0 || isConsulting) && (
-          <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border border-zinc-200/80 bg-white/60 p-2.5 scrollbar-thin dark:border-white/10 dark:bg-black/15">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.role === "operator" ? "justify-end" : "justify-start"}`}
-              >
+              {context && (
                 <div
-                  className={`max-w-[88%] rounded-2xl px-3 py-2.5 text-[11px] leading-5 shadow-sm ${
-                    message.role === "operator"
-                      ? "rounded-br-md bg-zinc-900 text-white dark:bg-white dark:text-black"
-                      : "rounded-bl-md border border-violet-200 bg-violet-50 text-zinc-800 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-zinc-200"
+                  className={`mt-2.5 pt-2.5 border-t text-xs leading-relaxed flex items-start gap-2 ${
+                    isWa
+                      ? "border-white/[0.08] text-[#8696a0]"
+                      : "border-amber-200/60 dark:border-amber-500/20 text-zinc-600 dark:text-zinc-400"
                   }`}
                 >
-                  <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                  {message.role === "brain" && (
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-violet-200/70 pt-2 dark:border-violet-500/15">
-                      <button
-                        type="button"
-                        onClick={() => onAnswerChange(message.content)}
-                        className="inline-flex items-center gap-1 rounded-lg bg-violet-600 px-2 py-1 text-[9px] font-bold text-white transition hover:bg-violet-500"
-                      >
-                        <Lightbulb className="h-3 w-3" />
-                        Usar no campo final
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void copyMessage(message)}
-                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[9px] font-bold text-violet-700 transition hover:bg-violet-100 dark:text-violet-300 dark:hover:bg-violet-500/10"
-                      >
-                        {copiedId === message.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                        {copiedId === message.id ? "Copiado" : "Copiar"}
-                      </button>
-                    </div>
-                  )}
+                  <FileText className="h-3.5 w-3.5 shrink-0 mt-0.5 opacity-70" />
+                  <div className="min-w-0 flex-1">
+                    <span className="font-semibold mr-1">Contexto da conversa:</span>
+                    <span className="italic">{context}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
-
-            {isConsulting && (
-              <div className="flex justify-start">
-                <div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-violet-200 bg-violet-50 px-3 py-2.5 text-[10px] font-semibold text-violet-700 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-violet-300">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Brain consultando histórico e contexto…
-                </div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
+              )}
+            </div>
           </div>
-        )}
-
-        {consultationError && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[10px] font-medium text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
-            {consultationError}
-          </div>
-        )}
-
-        <div className="flex items-end gap-2 rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-sm focus-within:border-violet-300 dark:border-white/10 dark:bg-black/20 dark:focus-within:border-violet-500/30">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void sendConsultation();
-              }
-            }}
-            rows={1}
-            maxLength={3000}
-            placeholder="Pergunte algo ao Brain antes de responder…"
-            className="max-h-28 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[16px] md:text-[11px] leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-600"
-            disabled={isConsulting}
-          />
-          <button
-            type="button"
-            onClick={() => void sendConsultation()}
-            disabled={!draft.trim() || isConsulting}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-md shadow-violet-500/20 transition active:scale-95 disabled:opacity-35 cursor-pointer"
-            aria-label="Enviar pergunta ao Brain"
-          >
-            {isConsulting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-          </button>
         </div>
 
-        <div className="rounded-2xl border border-zinc-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.035]">
+        {/* 3. CAMPO DE RESPOSTA PRINCIPAL (DIRETO E CONFORTÁVEL) */}
+        <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-zinc-500">
-                Informação final
-              </p>
-              <p className="mt-0.5 text-[9.5px] text-zinc-400 dark:text-zinc-500">
-                Só este campo será usado para retomar o turno.
-              </p>
-            </div>
-            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            <label
+              htmlFor={`manual-resolution-${turnId}`}
+              className={`text-xs font-bold flex items-center gap-1.5 ${
+                isWa ? "text-[#e9edef]" : "text-zinc-800 dark:text-zinc-200"
+              }`}
+            >
+              <span>Sua resposta / instrução para a conversa:</span>
+            </label>
+            {answer && (
+              <button
+                type="button"
+                onClick={() => onAnswerChange("")}
+                className={`text-[11px] font-medium transition hover:underline cursor-pointer flex items-center gap-1 ${
+                  isWa ? "text-[#8696a0] hover:text-[#e9edef]" : "text-zinc-500 hover:text-zinc-700"
+                }`}
+              >
+                <X className="h-3 w-3" />
+                Limpar campo
+              </button>
+            )}
           </div>
 
           <textarea
+            ref={answerInputRef}
             id={`manual-resolution-${turnId}`}
             value={answer}
-            onChange={(event) => onAnswerChange(event.target.value)}
-            rows={2}
+            onChange={(e) => onAnswerChange(e.target.value)}
+            rows={3}
             maxLength={1000}
-            placeholder="Digite ou traga uma conclusão da consulta"
-            className="mt-2.5 min-h-20 w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[16px] md:text-xs leading-5 text-zinc-900 outline-none transition focus:border-violet-300 dark:border-white/10 dark:bg-black/20 dark:text-zinc-100 dark:focus:border-violet-500/40"
+            placeholder="Digite a informação factual ou instrua como a Larissa deve conduzir a resposta..."
+            className={`w-full resize-y rounded-xl p-3 text-sm leading-relaxed outline-none transition focus:ring-2 ${
+              isWa
+                ? "border border-white/[0.12] bg-[#202c33] text-[#e9edef] placeholder:text-[#8696a0] focus:border-[#25d366]/50 focus:ring-[#25d366]/20"
+                : "border border-zinc-200 bg-zinc-50/70 text-zinc-900 placeholder:text-zinc-400 focus:border-violet-500/50 focus:ring-violet-500/20 dark:border-zinc-800 dark:bg-black/30 dark:text-zinc-100"
+            }`}
             disabled={submitting}
           />
 
-          <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
-            <button
-              type="button"
-              onClick={() => onSubmit(false)}
-              disabled={submitting || !answer.trim()}
-              className="min-h-[44px] flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-xs font-bold text-zinc-700 shadow-sm transition hover:bg-zinc-50 active:scale-95 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-zinc-200 dark:hover:bg-white/10 cursor-pointer"
-            >
-              {submitting ? "Retomando…" : "Usar só neste turno"}
-            </button>
-            <button
-              type="button"
-              onClick={() => onSubmit(true)}
-              disabled={submitting || !answer.trim()}
-              className="min-h-[44px] flex-1 rounded-xl bg-gradient-to-r from-amber-300 to-amber-400 px-3 text-xs font-black text-zinc-950 shadow-md shadow-amber-400/15 transition hover:-translate-y-0.5 active:scale-95 disabled:opacity-40 cursor-pointer"
-            >
-              {submitting ? "Retomando…" : "Salvar e retomar"}
-            </button>
+          {/* Atalhos rápidos de 1 clique */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className={`text-[10px] font-semibold uppercase tracking-wider mr-0.5 ${isWa ? "text-[#8696a0]" : "text-zinc-400"}`}>
+              Atalhos rápidos:
+            </span>
+            {QUICK_SHORTCUTS.map((shortcut) => (
+              <button
+                key={shortcut}
+                type="button"
+                onClick={() => handleApplySuggestion(shortcut)}
+                disabled={submitting}
+                className={`text-xs px-2.5 py-1 rounded-lg border transition active:scale-95 cursor-pointer font-medium ${
+                  isWa
+                    ? "border-white/[0.08] bg-[#202c33]/70 hover:bg-[#202c33] text-[#e9edef]"
+                    : "border-zinc-200 bg-zinc-100/70 hover:bg-zinc-200 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-300"
+                }`}
+              >
+                {shortcut}
+              </button>
+            ))}
           </div>
         </div>
+
+        {/* 4. ASSISTENTE INTELIGENTE RECOLHÍVEL (CONSULTA COM O BRAIN) */}
+        <div
+          className={`rounded-xl border transition-all ${
+            isAssistantOpen
+              ? isWa
+                ? "border-emerald-500/30 bg-[#111b21]/90"
+                : "border-violet-400/30 bg-violet-500/[0.03]"
+              : isWa
+              ? "border-white/[0.08] bg-[#202c33]/40 hover:bg-[#202c33]/70"
+              : "border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-white/[0.02] hover:bg-zinc-100/60"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setIsAssistantOpen(!isAssistantOpen)}
+            className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 text-left cursor-pointer transition select-none"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${
+                  isWa
+                    ? "bg-[#25d366]/15 text-[#25d366]"
+                    : "bg-violet-500/15 text-violet-600 dark:text-violet-300"
+                }`}
+              >
+                <Lightbulb className="h-3.5 w-3.5" />
+              </span>
+              <span className={`text-xs font-bold ${isWa ? "text-[#e9edef]" : "text-zinc-800 dark:text-zinc-200"}`}>
+                Quer ideias? Peça sugestões ao Brain
+              </span>
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded ${
+                  isWa
+                    ? "bg-white/[0.06] text-[#8696a0]"
+                    : "bg-zinc-200 dark:bg-zinc-800 text-zinc-500"
+                }`}
+              >
+                Opcional
+              </span>
+            </div>
+            {isAssistantOpen ? (
+              <ChevronUp className="h-4 w-4 shrink-0 opacity-70" />
+            ) : (
+              <ChevronDown className="h-4 w-4 shrink-0 opacity-70" />
+            )}
+          </button>
+
+          {isAssistantOpen && (
+            <div className={`p-3.5 pt-0 space-y-3 border-t ${isWa ? "border-white/[0.08]" : "border-zinc-200 dark:border-zinc-800"}`}>
+              <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none pt-2">
+                {QUICK_PROMPTS.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => void sendConsultation(item.prompt)}
+                      disabled={isConsulting}
+                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition active:scale-95 disabled:opacity-40 cursor-pointer ${
+                        isWa
+                          ? "border-white/[0.08] bg-[#202c33] text-[#e9edef] hover:border-[#25d366]/40 hover:text-[#25d366]"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:border-violet-300 hover:text-violet-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                      }`}
+                    >
+                      <Icon className="h-3 w-3" />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Mensagens de Consulta */}
+              {(messages.length > 0 || isConsulting) && (
+                <div
+                  className={`max-h-60 space-y-2.5 overflow-y-auto rounded-xl border p-3 scrollbar-thin ${
+                    isWa
+                      ? "border-white/[0.08] bg-[#0c1317]"
+                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-black/40"
+                  }`}
+                >
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`flex ${message.role === "operator" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[90%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
+                          message.role === "operator"
+                            ? isWa
+                              ? "bg-[#005c4b] text-[#e9edef] rounded-br-sm"
+                              : "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-black rounded-br-sm"
+                            : isWa
+                            ? "bg-[#202c33] text-[#e9edef] border border-white/[0.06] rounded-bl-sm"
+                            : "bg-violet-50 text-zinc-800 border border-violet-200/60 dark:bg-violet-950/20 dark:border-violet-500/20 dark:text-zinc-200 rounded-bl-sm"
+                        }`}
+                      >
+                        <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                        {message.role === "brain" && (
+                          <div className={`mt-2 flex flex-wrap items-center gap-1.5 pt-2 border-t ${isWa ? "border-white/[0.08]" : "border-violet-200/60 dark:border-violet-500/20"}`}>
+                            <button
+                              type="button"
+                              onClick={() => handleApplySuggestion(message.content)}
+                              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold transition active:scale-95 cursor-pointer ${
+                                isWa
+                                  ? "bg-[#00a884] text-white hover:bg-[#06cf9c]"
+                                  : "bg-violet-600 text-white hover:bg-violet-500"
+                              }`}
+                            >
+                              <ArrowRight className="h-3 w-3" />
+                              Usar como minha resposta
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void copyMessage(message)}
+                              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition cursor-pointer ${
+                                isWa
+                                  ? "text-[#8696a0] hover:text-[#e9edef]"
+                                  : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                              }`}
+                            >
+                              {copiedId === message.id ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                              {copiedId === message.id ? "Copiado" : "Copiar"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {isConsulting && (
+                    <div className="flex justify-start">
+                      <div
+                        className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium ${
+                          isWa
+                            ? "bg-[#202c33] text-[#8696a0]"
+                            : "bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-300"
+                        }`}
+                      >
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Brain pensando na melhor sugestão...
+                      </div>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+
+              {consultationError && (
+                <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-600 dark:text-rose-300">
+                  {consultationError}
+                </div>
+              )}
+
+              {/* Input de Pergunta Livre ao Brain */}
+              <div
+                className={`flex items-center gap-2 rounded-xl border p-1.5 ${
+                  isWa
+                    ? "border-white/[0.12] bg-[#202c33]"
+                    : "border-zinc-200 bg-white dark:border-zinc-700 dark:bg-black/30"
+                }`}
+              >
+                <input
+                  type="text"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void sendConsultation();
+                    }
+                  }}
+                  placeholder="Pergunte algo ao Brain..."
+                  className={`flex-1 bg-transparent px-2.5 py-1 text-xs outline-none ${
+                    isWa
+                      ? "text-[#e9edef] placeholder:text-[#8696a0]"
+                      : "text-zinc-900 placeholder:text-zinc-400 dark:text-zinc-100"
+                  }`}
+                  disabled={isConsulting}
+                />
+                <button
+                  type="button"
+                  onClick={() => void sendConsultation()}
+                  disabled={!draft.trim() || isConsulting}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition active:scale-95 disabled:opacity-40 cursor-pointer ${
+                    isWa
+                      ? "bg-[#00a884] text-white hover:bg-[#06cf9c]"
+                      : "bg-violet-600 text-white hover:bg-violet-500"
+                  }`}
+                  aria-label="Enviar ao Brain"
+                >
+                  {isConsulting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 5. BOTÕES DE AÇÃO PRINCIPAIS (RETOMADA DO TURNO) */}
+        <div className="pt-2 border-t border-white/[0.08] flex flex-col sm:flex-row gap-2.5">
+          {/* Botão Secundário: Usar só neste turno */}
+          <button
+            type="button"
+            onClick={() => handleFinalSubmit(false)}
+            disabled={!canSubmit}
+            className={`min-h-[46px] flex-1 rounded-xl px-4 py-2 text-xs font-bold transition active:scale-95 disabled:opacity-40 cursor-pointer border flex flex-col items-center justify-center text-center ${
+              isWa
+                ? "border-white/[0.12] bg-[#202c33] text-[#e9edef] hover:bg-white/[0.08]"
+                : "border-zinc-200 bg-white hover:bg-zinc-50 text-zinc-800 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+            }`}
+          >
+            <span>{submitting ? "Retomando..." : "Responder só nesta vez"}</span>
+            <span className={`text-[10px] font-normal mt-0.5 ${isWa ? "text-[#8696a0]" : "text-zinc-400"}`}>
+              Apenas para esta mensagem
+            </span>
+          </button>
+
+          {/* Botão Primário: Salvar na memória e retomar */}
+          <button
+            type="button"
+            onClick={() => handleFinalSubmit(true)}
+            disabled={!canSubmit}
+            className={`min-h-[46px] flex-1 rounded-xl px-4 py-2 text-xs font-black transition active:scale-95 disabled:opacity-40 cursor-pointer flex flex-col items-center justify-center text-center shadow-lg ${
+              isWa
+                ? "bg-[#00a884] hover:bg-[#06cf9c] text-white shadow-[#00a884]/20"
+                : "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-emerald-600/20"
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <BookmarkPlus className="h-3.5 w-3.5" />
+              <span>{submitting ? "Gravando e retomando..." : "Salvar na memória e responder"}</span>
+            </span>
+            <span className="text-[10px] font-normal opacity-90 mt-0.5">
+              Larissa aprende e lembra nos próximos papos
+            </span>
+          </button>
+        </div>
       </div>
-    </section>
+    </article>
   );
 }

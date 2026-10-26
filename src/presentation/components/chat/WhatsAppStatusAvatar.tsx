@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  getWhatsApp2ProfilePhoto,
-  refreshWhatsApp2ProfilePhoto,
-} from "./whatsapp2-client";
+import { useWhatsApp2Client } from "./WhatsAppAccountContext";
+import type { WhatsApp2Client } from "./whatsapp2-client";
 
 type CachedPhoto = { url: string | null; expiresAt: number };
 const photos = new Map<string, CachedPhoto>();
@@ -56,23 +54,24 @@ function queued<T>(action: () => Promise<T>): Promise<T> {
   });
 }
 
-function lookupPhoto(wid: string): Promise<string | null> {
-  const stored = photos.get(wid);
+function lookupPhoto(wid: string, client: WhatsApp2Client): Promise<string | null> {
+  const key = `${client.connectionId || "legacy"}:${wid}`;
+  const stored = photos.get(key);
   if (stored && stored.expiresAt > Date.now()) return Promise.resolve(stored.url);
-  const pending = inflight.get(wid);
+  const pending = inflight.get(key);
   if (pending) return pending;
   const result = queued(async () => {
     try {
-      const response = await getWhatsApp2ProfilePhoto(wid);
+      const response = await client.getWhatsApp2ProfilePhoto(wid);
       const url = safePhotoUrl(response.avatarUrl);
-      remember(wid, url);
+      remember(key, url);
       return url;
     } catch {
-      remember(wid, null);
+      remember(key, null);
       return null;
     }
-  }).finally(() => inflight.delete(wid));
-  inflight.set(wid, result);
+  }).finally(() => inflight.delete(key));
+  inflight.set(key, result);
   return result;
 }
 
@@ -85,17 +84,19 @@ export function WhatsAppStatusAvatar({
   label: string;
   eager?: boolean;
 }) {
+  const client = useWhatsApp2Client();
+  const photoKey = `${client.connectionId || "legacy"}:${wid}`;
   const container = useRef<HTMLSpanElement>(null);
   const retried = useRef(false);
   const [url, setUrl] = useState<string | null>(() =>
-    wid ? (photos.get(wid)?.url || null) : null,
+    wid ? (photos.get(photoKey)?.url || null) : null,
   );
 
   useEffect(() => {
     if (!wid || !/^\d+@(c\.us|lid)$/.test(wid)) return;
     let cancelled = false;
     const load = () => {
-      void lookupPhoto(wid).then((photo) => {
+      void lookupPhoto(wid, client).then((photo) => {
         if (!cancelled) setUrl(photo);
       });
     };
@@ -113,20 +114,20 @@ export function WhatsAppStatusAvatar({
       return () => { cancelled = true; observer.disconnect(); };
     }
     return () => { cancelled = true; };
-  }, [wid, eager]);
+  }, [wid, eager, client]);
 
   const onPhotoError = () => {
     if (!wid || !url) return;
     const rejected = url;
     setUrl(null);
-    remember(wid, null);
+    remember(photoKey, null);
     if (retried.current) return;
     retried.current = true;
-    void refreshWhatsApp2ProfilePhoto(wid, rejected)
+    void client.refreshWhatsApp2ProfilePhoto(wid, rejected)
       .then((response) => {
         const fresh = safePhotoUrl(response.avatarUrl);
         if (fresh && fresh !== rejected) {
-          remember(wid, fresh);
+          remember(photoKey, fresh);
           setUrl(fresh);
         }
       })

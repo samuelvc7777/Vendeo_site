@@ -1,8 +1,10 @@
 "use client";
+import { useWhatsApp2Client } from "@/presentation/components/chat/WhatsAppAccountContext";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, FileAudio2, FolderOpen, Image as ImageIcon, Loader2, Pencil, Plus, Send, Ticket, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, FileAudio2, FolderOpen, Image as ImageIcon, Loader2, Pencil, Plus, Send, Ticket, Trash2, X } from "lucide-react";
+import { useRaffles } from "@/presentation/hooks/useRaffles";
 import { Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
@@ -10,9 +12,16 @@ import { getApiUrl } from "@/infrastructure/http/network";
 import { formatMessageTime } from "@/lib/utils";
 import type { DirectMessage } from "./InstagramDirect";
 import { convertToWhatsAppVoiceNote } from "./audio-converter";
-import { queueWhatsApp2Finalization } from "./whatsapp2-client";
+
 
 type FinalizationKind = "text" | "audio" | "image" | "raffle_numbers";
+type ReactionContext =
+  | "raffle_interest_response"
+  | "raffle_refusal_empathy"
+  | "raffle_insistence_soft"
+  | "raffle_confirmation"
+  | "raffle_ghost_reminder";
+
 type FinalizationItem = {
   id: string;
   position: number;
@@ -22,6 +31,7 @@ type FinalizationItem = {
   file_name: string | null;
   duration_seconds: number | null;
   created_at: string;
+  reaction_context: ReactionContext | null;
 };
 
 const TABLE = "whatsapp_finalization_vault_items";
@@ -54,6 +64,31 @@ const kindEmoji = (kind: FinalizationKind) => {
     case "image": return "📷";
     case "raffle_numbers": return "🎰";
   }
+};
+
+const REACTION_CONTEXT_OPTIONS: Array<{ value: ReactionContext | ""; label: string; emoji: string }> = [
+  { value: "", label: "Mostrando valores e a rifa", emoji: "🎰" },
+  { value: "raffle_interest_response", label: "Resposta a Interesse", emoji: "🤩" },
+  { value: "raffle_refusal_empathy", label: "Empatia na Recusa", emoji: "🥺" },
+  { value: "raffle_insistence_soft", label: "Insistência Leve", emoji: "🙏" },
+  { value: "raffle_confirmation", label: "Confirmação de Pagamento", emoji: "✅" },
+  { value: "raffle_ghost_reminder", label: "Lembrete Ghost", emoji: "👻" },
+];
+
+const reactionContextBadge = (ctx: ReactionContext | null) => {
+  switch (ctx) {
+    case "raffle_interest_response": return "bg-amber-500/15 text-amber-400";
+    case "raffle_refusal_empathy": return "bg-rose-500/15 text-rose-400";
+    case "raffle_insistence_soft": return "bg-orange-500/15 text-orange-400";
+    case "raffle_confirmation": return "bg-emerald-500/15 text-emerald-400";
+    case "raffle_ghost_reminder": return "bg-slate-500/15 text-slate-400";
+    default: return null;
+  }
+};
+
+const reactionContextLabel = (ctx: ReactionContext | null) => {
+  const opt = REACTION_CONTEXT_OPTIONS.find((o) => o.value === ctx);
+  return opt ? `${opt.emoji} ${opt.label}` : null;
 };
 
 function VaultAudioPlayer({ src, fileName }: { src: string; fileName?: string | null }) {
@@ -107,21 +142,21 @@ function VaultAudioPlayer({ src, fileName }: { src: string; fileName?: string | 
   };
 
   return (
-    <div className="mt-1.5 flex items-center gap-2.5 rounded-2xl border border-violet-500/10 bg-violet-500/[0.06] px-3 py-2">
+    <div className="mt-2 flex items-center gap-3 rounded-2xl border border-violet-400/15 bg-violet-500/[0.07] px-3 py-2.5">
       <audio ref={audioRef} preload="metadata" src={src} />
       <button type="button" onClick={toggle} aria-label={playing ? "Pausar" : "Reproduzir"}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 active:scale-90 transition-all">
-        {playing ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-400/20 text-violet-200 ring-1 ring-violet-300/15 hover:bg-violet-400/30 active:scale-90 transition-all">
+        {playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" className="ml-0.5" />}
       </button>
       <div className="min-w-0 flex-1">
-        <div className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-white/[0.08]" onClick={seek}>
-          <div className="absolute inset-y-0 left-0 rounded-full bg-violet-400/60 transition-all" style={{ width: progress + "%" }} />
-          <div className="absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-violet-300 shadow-sm transition-all" style={{ left: "calc(" + progress + "% - 6px)" }} />
+        <div className="relative h-2 flex-1 cursor-pointer rounded-full bg-white/[0.10]" onClick={seek} aria-label="Progresso do áudio">
+          <div className="absolute inset-y-0 left-0 rounded-full bg-violet-300/80 transition-all" style={{ width: progress + "%" }} />
+          <div className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full border-2 border-[#211a35] bg-violet-200 shadow-sm transition-all" style={{ left: "calc(" + progress + "% - 7px)" }} />
         </div>
         <div className="mt-1 flex items-center justify-between">
-          <span className="text-[10px] font-medium text-white/30 tabular-nums">{fmt(currentTime)}</span>
-          {fileName && <span className="truncate text-[10px] text-white/20 mx-2">{fileName}</span>}
-          <span className="text-[10px] font-medium text-white/30 tabular-nums">{fmt(duration)}</span>
+          <span className="text-[10px] font-medium text-white/55 tabular-nums">{fmt(currentTime)}</span>
+          {fileName && <span title={fileName} className="mx-2 min-w-0 truncate text-[10px] text-white/45">{fileName}</span>}
+          <span className="text-[10px] font-medium text-white/55 tabular-nums">{fmt(duration)}</span>
         </div>
       </div>
     </div>
@@ -198,7 +233,7 @@ function client() {
 
 async function readVault(): Promise<FinalizationItem[]> {
   const { data, error } = await client().from(TABLE)
-    .select("id,position,kind,body,media_url,file_name,duration_seconds,created_at")
+    .select("id,position,kind,body,media_url,file_name,duration_seconds,created_at,reaction_context")
     .order("position", { ascending: true })
     .order("created_at", { ascending: true });
   if (error) throw new Error(error.message);
@@ -213,17 +248,24 @@ export function WhatsAppFinalizationActions({
   contactName: string;
   onQueueFinalization?: (messages: DirectMessage[]) => void;
 }) {
+  const whatsappClient = useWhatsApp2Client();
+  const { queueWhatsApp2Finalization } = whatsappClient;
+
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<FinalizationItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState("");
+  const [draftReactionContext, setDraftReactionContext] = useState<ReactionContext | "">("");
+  const [reactionDropdownOpen, setReactionDropdownOpen] = useState(false);
+  const [sendReactionModalOpen, setSendReactionModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const inputKind = useRef<"audio" | "image">("image");
   const requestRef = useRef<{ chatId: string; id: string } | null>(null);
   const sendingRef = useRef(false);
+  const { activeRaffle } = useRaffles();
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -257,12 +299,14 @@ export function WhatsAppFinalizationActions({
     if (!editingId && items.length >= MAX_ITEMS) return toast.error("Limite de 30 itens no cofre.");
     setBusy(true);
     try {
-      const payload = { kind: "text", body: text, media_url: null, file_name: null, updated_at: new Date().toISOString() };
+      const reactionCtx = draftReactionContext || null;
+      const payload = { kind: "text", body: text, media_url: null, file_name: null, reaction_context: reactionCtx, updated_at: new Date().toISOString() };
       const result = editingId
         ? await client().from(TABLE).update(payload).eq("id", editingId)
         : await client().from(TABLE).insert({ ...payload, position: items.length ? Math.max(...items.map((i) => i.position)) + 1 : 0 });
       if (result.error) throw result.error;
       setDraft("");
+      setDraftReactionContext("");
       setEditingId(null);
       await reload();
       toast.success(editingId ? "Texto atualizado." : "Texto salvo no cofre.");
@@ -298,6 +342,19 @@ export function WhatsAppFinalizationActions({
     }
   };
 
+  const updateReactionContext = async (itemId: string, newContext: ReactionContext | "") => {
+    setBusy(true);
+    try {
+      const { error } = await client().from(TABLE).update({ reaction_context: newContext || null }).eq("id", itemId);
+      if (error) throw error;
+      await reload();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Falha ao atualizar contexto.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const uploadMedia = async (file: File | null) => {
     if (!file) return;
     if (items.length >= MAX_ITEMS) return toast.error("Limite de 30 itens no cofre.");
@@ -328,6 +385,7 @@ export function WhatsAppFinalizationActions({
         file_name: uploadFile.name,
         media_url: result.url,
         duration_seconds: durationSeconds,
+        reaction_context: draftReactionContext || null,
       });
       if (error) throw error;
       await reload();
@@ -370,12 +428,15 @@ export function WhatsAppFinalizationActions({
     } finally { setBusy(false); }
   };
 
-  const send = async () => {
+  const send = async (filterContext?: ReactionContext | "" | "all") => {
     if (sendingRef.current) return;
     sendingRef.current = true;
     setSending(true);
     try {
       let latest = await readVault();
+      if (filterContext && filterContext !== "all") {
+        latest = latest.filter(item => (item.reaction_context || "") === filterContext);
+      }
       latest = await Promise.all(latest.map(async (item) => {
         if (item.kind !== "audio" || (Number(item.duration_seconds) > 0) || !item.media_url) return item;
         const duration_seconds = await readAudioDurationFromUrl(item.media_url);
@@ -383,11 +444,16 @@ export function WhatsAppFinalizationActions({
         if (error) throw new Error("Não consegui salvar a duração de um áudio do cofre.");
         return { ...item, duration_seconds };
       }));
-      if (!latest.length) throw new Error("Adicione textos, áudios ou fotos ao cofre antes de enviar.");
+      if (!latest.length) throw new Error(filterContext && filterContext !== "all"
+        ? "Nenhum item encontrado para este contexto de reação."
+        : "Adicione textos, áudios ou fotos ao cofre antes de enviar.");
       if (latest.length > MAX_ITEMS) throw new Error("O cofre ultrapassou 30 itens.");
       const seconds = latest.reduce((sum, item) => sum + getFinalizationDelaySeconds(item), 0);
+      const contextLabel = filterContext && filterContext !== "all"
+        ? REACTION_CONTEXT_OPTIONS.find(o => o.value === filterContext)?.label || filterContext
+        : "todos os itens";
       if (!window.confirm(
-        `Enviar ${latest.length} ${latest.length === 1 ? "mensagem" : "mensagens"} de finalização para ${contactName}?\n\n` +
+        `Enviar ${latest.length} ${latest.length === 1 ? "mensagem" : "mensagens"} (${contextLabel}) para ${contactName}?\n\n` +
         `A sequência levará pelo menos ${seconds}s: 5s por texto, a duração real de cada áudio e 3s por foto. Depois de confirmar, a fila continua mesmo se fechar esta tela.`
       )) return;
       const request = requestRef.current?.chatId === conversationId
@@ -398,6 +464,9 @@ export function WhatsAppFinalizationActions({
         to: providerId,
         conversationId,
         requestId: request,
+        context: filterContext && filterContext !== "all" ? filterContext : undefined,
+        contactName,
+        raffleId: activeRaffle?.id,
       });
 
       if (onQueueFinalization) {
@@ -441,7 +510,7 @@ export function WhatsAppFinalizationActions({
               : isImage
               ? "📷 Foto"
               : isRaffle
-              ? (item.body || "10 números livres da rifa")
+              ? ("🎰 Sorteando 10 números da sorte...")
               : (item.body || "");
             return {
               id: `fin-${request}-${String(index + 1).padStart(2, "0")}`,
@@ -496,27 +565,42 @@ export function WhatsAppFinalizationActions({
             <span className="ml-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-emerald-500/20 px-1.5 text-[10px] font-bold text-emerald-400 tabular-nums">{items.length}</span>
           )}
         </button>
-        <button type="button" disabled={sending || !items.length} onClick={() => void send()}
-          className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-[13px] font-bold text-white shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/30 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.97] disabled:opacity-40 disabled:shadow-none transition-all duration-200"
-          aria-label="Enviar mensagens de finalização">
-          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          Enviar
-        </button>
+        <div className="relative group/send">
+          <button type="button" disabled={sending || !items.length} onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; if (el) el.classList.toggle("hidden"); }}
+            className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-[13px] font-bold text-white shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/30 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.97] disabled:opacity-40 disabled:shadow-none transition-all duration-200"
+            aria-label="Enviar mensagens de finalização">
+            {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            Enviar
+          </button>
+          <div className="hidden absolute bottom-full left-0 mb-2 z-50 w-56 rounded-xl border border-white/10 bg-[#111b21] p-1.5 shadow-2xl shadow-black/50">
+            <p className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Filtrar por reação</p>
+            <button type="button" onClick={(e) => { e.stopPropagation(); void send("all"); const el = e.currentTarget.closest(".group\\/send")?.querySelector("div:last-child"); if (el) el.classList.add("hidden"); }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-white/80 hover:bg-white/10 transition-colors">
+              <span>📦</span><span>Todos os itens</span>
+            </button>
+            {REACTION_CONTEXT_OPTIONS.filter(o => o.value !== "").map((opt) => (
+              <button key={opt.value} type="button" onClick={(e) => { e.stopPropagation(); void send(opt.value as ReactionContext); const el = e.currentTarget.closest(".group\\/send")?.querySelector("div:last-child"); if (el) el.classList.add("hidden"); }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-white/70 hover:bg-white/10 transition-colors">
+                <span>{opt.emoji}</span><span>{opt.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
       {open && createPortal(
         <div className="fixed inset-0 z-[13000] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4" role="presentation" onClick={() => setOpen(false)}>
           <section role="dialog" aria-modal="true" aria-label="Cofre de finalização"
             onClick={(e) => e.stopPropagation()}
-            className="flex h-[92dvh] sm:h-[min(90dvh,820px)] w-full sm:max-w-lg flex-col overflow-hidden rounded-t-3xl sm:rounded-3xl bg-[#0c1117]/95 backdrop-blur-2xl text-white shadow-2xl shadow-black/50 border border-white/[0.06]">
-            <header className="relative flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
+            className="flex h-[92dvh] sm:h-[min(90dvh,820px)] w-full sm:max-w-xl flex-col overflow-hidden rounded-t-3xl sm:rounded-3xl bg-[#0b1118]/[0.98] backdrop-blur-2xl text-white shadow-2xl shadow-black/50 border border-white/[0.08]">
+            <header className="relative flex items-center justify-between px-4 sm:px-5 pt-4 sm:pt-5 pb-4 shrink-0">
               <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/20">
-                  <FolderOpen size={18} className="text-emerald-400" />
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400/20 to-teal-500/10 border border-emerald-300/20 shadow-inner shadow-emerald-300/5">
+                  <FolderOpen size={19} className="text-emerald-300" />
                 </div>
                 <div>
-                  <h2 className="text-[17px] font-bold tracking-tight">Cofre de Finalização</h2>
-                  <p className="text-[12px] text-white/40 font-medium">{items.length} de {MAX_ITEMS} itens · Biblioteca compartilhada</p>
+                  <h2 className="text-[17px] font-bold tracking-tight">Cofre de finalização</h2>
+                  <p className="mt-0.5 text-[12px] text-white/45">Monte e revise a sequência antes de enviar</p>
                 </div>
               </div>
               <button type="button" aria-label="Fechar cofre" onClick={() => setOpen(false)}
@@ -524,22 +608,29 @@ export function WhatsAppFinalizationActions({
                 <X size={16} className="text-white/60" />
               </button>
             </header>
-            <div className="flex-1 overflow-y-auto px-5 pb-4">
+            <div className="flex-1 overflow-y-auto px-4 sm:px-5 pb-4">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-[13px] font-semibold text-white/85">Adicionar à sequência</h3>
+                <span className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-white/45 tabular-nums">{items.length}/{MAX_ITEMS} itens</span>
+              </div>
               <div className="mb-5 grid grid-cols-3 gap-2">
                 <button disabled={busy} type="button" onClick={() => startUpload("audio")}
-                  className="flex flex-col items-center gap-1.5 rounded-2xl border border-white/[0.06] bg-white/[0.03] py-3 text-[11px] font-medium text-white/60 hover:bg-white/[0.06] hover:text-white/80 active:scale-[0.97] disabled:opacity-30 transition-all">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-500/15"><FileAudio2 size={15} className="text-violet-400" /></div>
-                  Áudio
+                  aria-label="Adicionar áudio à sequência"
+                  className="group flex flex-col items-center gap-2 rounded-2xl border border-violet-400/15 bg-gradient-to-b from-violet-400/[0.08] to-white/[0.02] py-3.5 text-[11px] font-semibold text-white/75 hover:border-violet-300/30 hover:from-violet-400/[0.13] hover:text-white active:scale-[0.98] disabled:opacity-30 transition-all">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-400/15 ring-1 ring-violet-300/10 group-hover:bg-violet-400/20"><FileAudio2 size={16} className="text-violet-300" /></div>
+                  Adicionar áudio
                 </button>
                 <button disabled={busy} type="button" onClick={() => startUpload("image")}
-                  className="flex flex-col items-center gap-1.5 rounded-2xl border border-white/[0.06] bg-white/[0.03] py-3 text-[11px] font-medium text-white/60 hover:bg-white/[0.06] hover:text-white/80 active:scale-[0.97] disabled:opacity-30 transition-all">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-pink-500/15"><ImageIcon size={15} className="text-pink-400" /></div>
-                  Foto
+                  aria-label="Adicionar foto à sequência"
+                  className="group flex flex-col items-center gap-2 rounded-2xl border border-pink-400/15 bg-gradient-to-b from-pink-400/[0.08] to-white/[0.02] py-3.5 text-[11px] font-semibold text-white/75 hover:border-pink-300/30 hover:from-pink-400/[0.13] hover:text-white active:scale-[0.98] disabled:opacity-30 transition-all">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-pink-400/15 ring-1 ring-pink-300/10 group-hover:bg-pink-400/20"><ImageIcon size={16} className="text-pink-300" /></div>
+                  Adicionar foto
                 </button>
                 <button disabled={busy || items.some((item) => item.kind === "raffle_numbers")} type="button" onClick={() => void addRaffleNumbers()}
-                  className="flex flex-col items-center gap-1.5 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.04] py-3 text-[11px] font-medium text-emerald-400/70 hover:bg-emerald-500/[0.08] hover:text-emerald-300 active:scale-[0.97] disabled:opacity-30 transition-all">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/15"><Ticket size={15} className="text-emerald-400" /></div>
-                  Rifa
+                  aria-label={items.some((item) => item.kind === "raffle_numbers") ? "Rifa já adicionada" : "Adicionar números da rifa à sequência"}
+                  className="group flex flex-col items-center gap-2 rounded-2xl border border-emerald-400/15 bg-gradient-to-b from-emerald-400/[0.07] to-white/[0.02] py-3.5 text-[11px] font-semibold text-emerald-200/80 hover:border-emerald-300/30 hover:from-emerald-400/[0.12] hover:text-emerald-100 active:scale-[0.98] disabled:opacity-60 transition-all">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-400/15 ring-1 ring-emerald-300/10 group-hover:bg-emerald-400/20"><Ticket size={16} className="text-emerald-300" /></div>
+                  {items.some((item) => item.kind === "raffle_numbers") ? "Rifa adicionada" : "Adicionar rifa"}
                 </button>
               </div>
               <input ref={fileInput} type="file" className="hidden" onChange={(event) => {
@@ -547,28 +638,82 @@ export function WhatsAppFinalizationActions({
                 event.currentTarget.value = "";
                 void uploadMedia(file);
               }} />
-              <div className="mb-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
-                <label htmlFor="finalization-text" className="mb-2 block text-[13px] font-semibold text-white/70">Mensagem de texto</label>
+              <div className="mb-6 rounded-2xl border border-white/[0.08] bg-gradient-to-br from-white/[0.045] to-white/[0.015] p-3.5 sm:p-4 shadow-sm shadow-black/20">
+                <div className="mb-2.5 flex items-center justify-between gap-3">
+                  <label htmlFor="finalization-text" className="block text-[13px] font-semibold text-white/85">Mensagem escrita</label>
+                  <span className="text-[10px] text-white/35">Opcional</span>
+                </div>
                 <textarea id="finalization-text" rows={3} maxLength={4000} value={draft} onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Digite uma mensagem para salvar na sequência..."
-                  className="w-full resize-none rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-[13px] text-white/90 placeholder:text-white/25 outline-none focus:border-emerald-500/30 focus:bg-white/[0.04] transition-all" />
+                  placeholder="Escreva uma mensagem para incluir na sequência..."
+                  className="w-full resize-none rounded-xl border border-white/[0.08] bg-[#070c12]/60 p-3.5 text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 outline-none focus:border-emerald-400/40 focus:bg-[#070c12]/80 transition-all" />
+                {activeRaffle && (
+                  <div className="mt-2.5 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-3">
+                    <div className="mb-2 flex items-center gap-2">
+                      <Ticket size={13} className="text-emerald-400" />
+                      <span className="text-[11px] font-semibold text-emerald-300">{activeRaffle.title}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="rounded-lg bg-white/[0.04] px-2.5 py-1.5">
+                        <span className="block text-white/40">Valor/número</span>
+                        <span className="font-semibold text-white/90">R$ {activeRaffle.pricePerNumber.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                      </div>
+                      <div className="rounded-lg bg-white/[0.04] px-2.5 py-1.5">
+                        <span className="block text-white/40">Total números</span>
+                        <span className="font-semibold text-white/90">{activeRaffle.totalNumbers}</span>
+                      </div>
+                    </div>
+                    {activeRaffle.description && (
+                      <p className="mt-2 line-clamp-2 text-[10px] text-white/50">{activeRaffle.description}</p>
+                    )}
+                  </div>
+                )}
+                <div className="mt-2.5">
+                  <label className="mb-1 block text-[11px] font-medium text-white/40">Contexto de reação (para IA)</label>
+                  <div className="relative">
+                    <button type="button" onClick={() => setReactionDropdownOpen(!reactionDropdownOpen)}
+                      className="flex w-full items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-[12px] text-white/80 outline-none hover:bg-white/[0.05] focus:border-emerald-500/30 transition-all cursor-pointer">
+                      <span>{REACTION_CONTEXT_OPTIONS.find(o => o.value === draftReactionContext)?.emoji} {REACTION_CONTEXT_OPTIONS.find(o => o.value === draftReactionContext)?.label || "Selecionar..."}</span>
+                      <ChevronDown size={14} className={`text-white/40 transition-transform ${reactionDropdownOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    {reactionDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setReactionDropdownOpen(false)} />
+                        <div className="absolute left-0 right-0 top-full mt-1 z-50 max-h-60 overflow-auto rounded-xl border border-white/10 bg-[#111b21] p-1 shadow-2xl shadow-black/50">
+                          {REACTION_CONTEXT_OPTIONS.map((opt) => (
+                            <button key={opt.value} type="button"
+                              onClick={() => { setDraftReactionContext(opt.value as ReactionContext | ""); setReactionDropdownOpen(false); }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] transition-colors ${
+                                draftReactionContext === opt.value
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : "text-white/80 hover:bg-white/10"
+                              }`}>
+                              <span>{opt.emoji}</span>
+                              <span>{opt.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
                 <div className="mt-2.5 flex items-center gap-2">
                   <button disabled={busy || !draft.trim()} type="button" onClick={() => void saveText()}
                     className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/20 px-3.5 py-2 text-[12px] font-semibold text-emerald-400 hover:bg-emerald-500/20 active:scale-[0.97] disabled:opacity-30 transition-all">
                     <Plus size={13} /> {editingId ? "Salvar alteração" : "Adicionar texto"}
                   </button>
                   {editingId && (
-                    <button type="button" onClick={() => { setEditingId(null); setDraft(""); }}
+                    <button type="button" onClick={() => { setEditingId(null); setDraft(""); setDraftReactionContext(""); }}
                       className="text-[12px] text-white/35 hover:text-white/60 transition-colors">Cancelar</button>
                   )}
                   <span className="ml-auto text-[11px] text-white/20 tabular-nums">{draft.length}/4000</span>
                 </div>
               </div>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-[14px] font-bold text-white/80">Ordem de envio</h3>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-[14px] font-bold text-white/90">Sua sequência</h3>
+                <span className="text-[11px] font-medium text-white/40">{items.length} {items.length === 1 ? "item" : "itens"}</span>
               </div>
-              <p className="mb-4 text-[11px] leading-relaxed text-white/30">
-                Cada texto aguarda 5s, cada foto 3s. Áudios saem como voz gravada com duração real. Os 10 números da rifa são sorteados no envio.
+              <p className="mb-4 text-[11px] leading-relaxed text-white/45">
+                Use as setas para mudar a ordem. Textos aguardam 5s, fotos 3s e áudios são enviados como mensagem de voz.
               </p>
               {loading && (
                 <div className="flex items-center justify-center py-12">
@@ -580,59 +725,82 @@ export function WhatsAppFinalizationActions({
                   <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.03]">
                     <FolderOpen size={20} className="text-white/15" />
                   </div>
-                  <p className="text-[13px] font-medium text-white/25">Cofre vazio</p>
-                  <p className="mt-1 text-[11px] text-white/15">Adicione o primeiro item acima</p>
+                  <p className="text-[13px] font-semibold text-white/60">Sua sequência está vazia</p>
+                  <p className="mt-1 max-w-[230px] text-[11px] leading-relaxed text-white/40">Adicione um áudio, uma foto, uma mensagem escrita ou os números da rifa.</p>
                 </div>
               )}
               <ol className="space-y-2.5">
                 {items.map((item, index) => (
                   <li key={item.id}
-                    className={"group relative flex items-start gap-3 rounded-2xl border p-3.5 transition-all duration-200 hover:brightness-110 " + kindColor(item.kind)}>
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-[11px] font-bold text-white/50 tabular-nums mt-0.5">
+                    className={"group relative grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-2.5 rounded-2xl border p-3 transition-all duration-200 hover:brightness-110 " + kindColor(item.kind)}>
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-black/20 text-[11px] font-bold text-white/75 tabular-nums ring-1 ring-white/[0.08]">
                       {index + 1}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <span className="text-sm">{kindEmoji(item.kind)}</span>
-                        <span className={"rounded-md px-1.5 py-0.5 text-[10px] font-semibold " + kindBadge(item.kind)}>{label[item.kind]}</span>
-                        <span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 text-[10px] font-medium text-white/30 tabular-nums">{getFinalizationDelaySeconds(item)}s</span>
+                      <div className="flex min-w-0 items-start justify-between gap-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <span aria-hidden="true" className="mr-0.5 text-sm">{kindEmoji(item.kind)}</span>
+                          <span className={"rounded-full px-2 py-1 text-[10px] font-semibold " + kindBadge(item.kind)}>{label[item.kind]}</span>
+                          <div className="relative group/ctx">
+                            <button type="button" disabled={busy}
+                              onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; if (el) el.classList.toggle("hidden"); }}
+                              className={"max-w-[155px] truncate rounded-full px-2 py-1 text-[10px] font-semibold cursor-pointer hover:brightness-125 transition-all " + (reactionContextBadge(item.reaction_context) || "bg-white/[0.10] text-white/65")}>
+                              {reactionContextLabel(item.reaction_context) || "Sem contexto"}
+                            </button>
+                            <div className="hidden absolute left-0 top-full mt-1 z-50 w-48 rounded-xl border border-white/10 bg-[#111b21] p-1 shadow-2xl shadow-black/50">
+                              {REACTION_CONTEXT_OPTIONS.map((opt) => (
+                                <button key={opt.value} type="button"
+                                  onClick={(e) => { e.stopPropagation(); void updateReactionContext(item.id, opt.value as ReactionContext | ""); const el = e.currentTarget.closest(".group\\/ctx")?.querySelector("div:last-child"); if (el) el.classList.add("hidden"); }}
+                                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-colors ${
+                                    (item.reaction_context || "") === opt.value
+                                      ? "bg-emerald-500/20 text-emerald-300"
+                                      : "text-white/70 hover:bg-white/10"
+                                  }`}>
+                                  <span>{opt.emoji}</span>
+                                  <span>{opt.label}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-white/[0.08] px-2 py-1 text-[10px] font-semibold text-white/55 tabular-nums">{getFinalizationDelaySeconds(item)}s</span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button disabled={busy || index === 0} type="button" aria-label="Mover para cima" title="Mover para cima" onClick={() => void move(index, -1)}
+                            className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/[0.07] bg-black/15 text-white/60 hover:border-white/15 hover:bg-white/[0.08] hover:text-white disabled:opacity-25 transition-all">
+                            <ArrowUp size={14} />
+                          </button>
+                          <button disabled={busy || index === items.length - 1} type="button" aria-label="Mover para baixo" title="Mover para baixo" onClick={() => void move(index, 1)}
+                            className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/[0.07] bg-black/15 text-white/60 hover:border-white/15 hover:bg-white/[0.08] hover:text-white disabled:opacity-25 transition-all">
+                            <ArrowDown size={14} />
+                          </button>
+                          {item.kind === "text" && (
+                            <button disabled={busy} type="button" title="Editar texto" aria-label="Editar texto" onClick={() => { setEditingId(item.id); setDraft(item.body || ""); setDraftReactionContext(item.reaction_context || ""); }}
+                              className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/[0.07] bg-black/15 text-white/60 hover:border-blue-300/25 hover:bg-blue-400/10 hover:text-blue-200 disabled:opacity-30 transition-all">
+                              <Pencil size={14} />
+                            </button>
+                          )}
+                          <button disabled={busy} type="button" title="Excluir item" aria-label="Excluir item" onClick={() => void remove(item.id)}
+                            className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/[0.07] bg-black/15 text-white/60 hover:border-red-300/25 hover:bg-red-400/10 hover:text-red-200 disabled:opacity-30 transition-all">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </div>
                       {item.kind === "text"
-                        ? <p className="break-words text-[11px] leading-snug text-white/45 line-clamp-2">{item.body}</p>
+                        ? <p className="mt-2 rounded-xl border border-white/[0.05] bg-black/15 px-3 py-2 break-words text-[12px] leading-relaxed text-white/70 line-clamp-2">{item.body}</p>
                         : item.kind === "raffle_numbers"
-                          ? <p className="text-[11px] leading-snug text-emerald-400/60 line-clamp-2">10 números sorteados entre os disponíveis na rifa ativa.</p>
-                          : <div>
+                          ? <p className="mt-2 rounded-xl border border-emerald-400/10 bg-emerald-400/[0.04] px-3 py-2 text-[11px] leading-relaxed text-emerald-200/70">10 números sorteados entre os disponíveis na rifa ativa.</p>
+                          : <div className="min-w-0">
                             {item.kind === "image" && item.media_url
                               // eslint-disable-next-line @next/next/no-img-element
-                                ? <img src={item.media_url} alt="Foto da finalização" className="mt-1 max-h-24 rounded-xl object-contain border border-white/[0.06]" />
+                                ? <div className="mt-2 inline-flex overflow-hidden rounded-xl border border-white/[0.10] bg-black/20 p-1.5"><img src={item.media_url} alt="Foto da finalização" className="max-h-24 max-w-32 rounded-lg object-contain" /></div>
                                 : item.media_url ? <VaultAudioPlayer src={item.media_url} fileName={item.file_name} /> : null}
                           </div>}
-                    </div>
-                    <div className="flex flex-col items-center gap-0.5 shrink-0">
-                      <button disabled={busy || index === 0} type="button" aria-label="Mover para cima" onClick={() => void move(index, -1)}
-                        className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-white/[0.06] hover:text-white/50 disabled:opacity-15 transition-all">
-                        <ArrowUp size={13} />
-                      </button>
-                      <button disabled={busy || index === items.length - 1} type="button" aria-label="Mover para baixo" onClick={() => void move(index, 1)}
-                        className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-white/[0.06] hover:text-white/50 disabled:opacity-15 transition-all">
-                        <ArrowDown size={13} />
-                      </button>
-                      {item.kind === "text" && (
-                        <button disabled={busy} type="button" title="Editar texto" onClick={() => { setEditingId(item.id); setDraft(item.body || ""); }}
-                          className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-white/[0.06] hover:text-blue-400/70 transition-all">
-                          <Pencil size={12} />
-                        </button>
-                      )}
-                      <button disabled={busy} type="button" title="Excluir" aria-label="Excluir item" onClick={() => void remove(item.id)}
-                        className="flex h-6 w-6 items-center justify-center rounded-lg text-white/20 hover:bg-red-500/10 hover:text-red-400/70 transition-all">
-                        <Trash2 size={12} />
-                      </button>
                     </div>
                   </li>
                 ))}
               </ol>
             </div>
-            <footer className="relative border-t border-white/[0.06] px-5 py-4 shrink-0">
+            <footer className="relative border-t border-white/[0.08] bg-[#0b1118]/95 px-4 sm:px-5 py-3.5 sm:py-4 shrink-0 backdrop-blur-xl">
               <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
               {busy && (
                 <p className="mb-3 flex items-center gap-2 text-[12px] text-white/35">

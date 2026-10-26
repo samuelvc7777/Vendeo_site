@@ -118,7 +118,7 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
         const { data, error } = await client
           .from("instagram_conversations")
           .select(
-            "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, created_at, updated_at"
+            "id, username, full_name, avatar, last_message, last_message_at, last_direction, last_status, seen_at, unread, status, is_restricted, auto_close_test_enabled, created_at, updated_at"
           )
           .neq("status", "vault")
           .neq("status", "system")
@@ -147,6 +147,7 @@ export class SupabaseInstagramRepository implements IInstagramRepository {
         unread: Boolean(item.unread),
         status: item.status || "active",
         isRestricted: Boolean(item.is_restricted),
+        autoCloseTestEnabled: Boolean(item.auto_close_test_enabled),
         createdAt: item.created_at,
         updatedAt: item.updated_at,
       }));

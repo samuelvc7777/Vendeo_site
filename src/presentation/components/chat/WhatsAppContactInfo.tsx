@@ -1,4 +1,5 @@
 "use client";
+import { useWhatsApp2Client } from "@/presentation/components/chat/WhatsAppAccountContext";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
@@ -17,7 +18,7 @@ import {
   User,
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
-import { resolveWhatsApp2PhoneNumbers, saveWhatsApp2Contact, whatsappProviderIdFromConversationId } from "./whatsapp2-client";
+import { whatsappProviderIdFromConversationId } from "./whatsapp2-client";
 import type { ChatStage, StageObjective } from "@/domain/entities/ChatStage";
 import type { ChatStageDetail } from "@/application/use-cases/ManageChatProgressUseCase";
 
@@ -116,6 +117,9 @@ export function WhatsAppContactInfo({
   onToggleAi,
   onContactSaved,
 }: WhatsAppContactInfoProps) {
+  const whatsappClient = useWhatsApp2Client();
+  const { resolveWhatsApp2PhoneNumbers, saveWhatsApp2Contact } = whatsappClient;
+
   const prefersReducedMotion = useReducedMotion();
   const mediaRef = useRef<HTMLDivElement | null>(null);
   const [dbRow, setDbRow] = useState<any>(null);

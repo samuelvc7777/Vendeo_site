@@ -217,6 +217,7 @@ export type OutboundAction =
       channel?: "instagram" | "whatsapp" | "whatsapp2" | "tinder";
       delayBeforeSendSeconds?: number;
       replyToMessageId?: string;
+      isViewOnce?: boolean;
     }
   | {
       type: "video";
@@ -230,6 +231,13 @@ export type OutboundAction =
       targetPhone: string;
       initialText: string;
       channel?: "whatsapp2";
+      delayBeforeSendSeconds?: number;
+    }
+  | {
+      type: "queue_finalization";
+      /** ID do item no cofre de finalização (whatsapp_finalization_vault_items) */
+      vaultItemId: string;
+      channel?: "instagram" | "whatsapp" | "whatsapp2";
       delayBeforeSendSeconds?: number;
     };
 
@@ -844,7 +852,7 @@ export function validateConversationBrainPlan(
   if (!plan || typeof plan !== "object") {
     return { valid: false, error: "Plano retornado não é um objeto JSON válido" };
   }
-  const validActions = ["reply", "wait", "manual_resolution", "send_audio"];
+  const validActions = ["reply", "wait", "manual_resolution", "send_audio", "send_image"];
   if (!validActions.includes(plan.action)) {
     return {
       valid: false,
@@ -863,7 +871,7 @@ export function validateConversationBrainPlan(
       return { valid: false, error: "pendingActionResolution referencia ação que não está pendente nesta conversa" };
     }
   }
-  if (plan.action === "send_audio") {
+  if (plan.action === "send_audio" || plan.action === "send_image") {
     plan.action = "reply";
   }
   if ((!plan.liveStatePatch || typeof plan.liveStatePatch !== "object") && typeof plan.currentTopic === "string" && plan.currentTopic.trim()) {
@@ -1341,14 +1349,21 @@ export function validateObjectiveProgressionInvariant(
     if (
       decision === "pursue" &&
       params.currentObjectiveCompletionPolicy === "delivery_confirmed" &&
-      params.currentObjectiveActionType === "send_audio"
+      (params.currentObjectiveActionType === "send_audio" || params.currentObjectiveActionType === "send_image")
     ) {
       const actions = Array.isArray(plan.outboundActions) ? plan.outboundActions : [];
       const hasAudio = actions.some((action: any) => action?.type === "audio" && String(action?.audioId || "").trim());
-      if (!hasAudio) {
+      const hasImage = actions.some((action: any) => action?.type === "image" && String(action?.arsenalItemId || "").trim());
+      if (params.currentObjectiveActionType === "send_audio" && !hasAudio) {
         return {
           valid: false,
           error: `PLAN_ACTION_AUDIO_MISSING: pursue do objetivo de ação "${objectiveId}" exige outboundActions com áudio autorizado`,
+        };
+      }
+      if (params.currentObjectiveActionType === "send_image" && !hasImage) {
+        return {
+          valid: false,
+          error: `PLAN_ACTION_IMAGE_MISSING: pursue do objetivo de ação "${objectiveId}" exige outboundActions com imagem autorizada`,
         };
       }
     }
@@ -1361,13 +1376,6 @@ export function validateObjectiveProgressionInvariant(
       error: "PLAN_INVALID_OBJECTIVE_OPPORTUNITY: use semantic_bridge, natural_transition ou none",
     };
   }
-  if (decision === "defer" && opportunity && opportunity !== "none") {
-    return {
-      valid: false,
-      error: `PLAN_OBJECTIVE_OPPORTUNITY_IGNORED: existe oportunidade "${opportunity}" para o objetivo "${objectiveId}", portanto use pursue`,
-    };
-  }
-
   if (decision === "defer") {
     const reason = String(plan.objectiveDeferralReason || "").trim();
     if (!["emotional_priority", "strong_live_topic", "question_density", "no_natural_transition"].includes(reason)) {
@@ -1375,6 +1383,15 @@ export function validateObjectiveProgressionInvariant(
         valid: false,
         error: "PLAN_OBJECTIVE_DEFER_WITHOUT_REASON: defer exige objectiveDeferralReason válido",
       };
+    }
+    if (opportunity && opportunity !== "none") {
+      if (reason === "no_natural_transition") {
+        return {
+          valid: false,
+          error: `PLAN_OBJECTIVE_OPPORTUNITY_IGNORED: existe oportunidade "${opportunity}" para o objetivo "${objectiveId}", portanto não pode alegar no_natural_transition`,
+        };
+      }
+      plan.objectiveProgressionOpportunity = "none";
     }
   }
 
@@ -2773,7 +2790,7 @@ Para decidir a resposta e a condução, considere rigorosamente nesta ordem:
 2. EMOÇÃO / ASSUNTO IMPORTANTE (desabafo, dor, hospital, família - acolher com carinho antes de tudo);
 3. SOCIAL SALIENCE / INTEREST SIGNAL (priorizar gesto dirigido à Larissa, interesse, vulnerabilidade, valores, plano futuro e detalhe humano específico; significado relacional > fato genérico);
 4. CONTEÚDO SUBSTANTIVO DO LOTE ATUAL (reconhecer e reagir a elogios, provocações, informações e comentários relevantes);
-4A. HANDOFF DE RIFA ANTECIPADA: se o PRETENDENTE estiver falando semanticamente da rifa da Larissa antes da etapa/finalização própria da rifa (pergunta, comentário, interesse, ajuda, compra, preço, números, prêmio, pagamento ou participação), escolha action="manual_resolution", explique ao operador que houve engajamento com a rifa e deixe outboundActions=[]. Não responda nem avance objetivo nesse turno. Não dispare por mera palavra "rifa" sem relação com a rifa da Larissa;
+4A. ENGAJAMENTO COM A RIFA: se o PRETENDENTE estiver falando da rifa da Larissa (pergunta, comentário, interesse, ajuda, compra, preço, números, prêmio, pagamento ou participação), trate com naturalidade e acolhimento humano. Não trave o turno com resolução manual apenas porque o assunto foi a rifa; responda de forma leve e acolhedora seguindo o tom da Larissa;
 5. CONNECTION OPPORTUNITY (quando surgir tópico humano vivo, permita que ele respire e gere curiosidade espontânea antes do checklist);
 6. APROFUNDAR TÓPICO VIVO & JANELA CONVERSACIONAL RECENTE quando houver valor real;
 7. RECIPROCIDADE (compartilhar fato verdadeiro da Larissa quando houver gancho e isso acrescentar algo);
@@ -2781,7 +2798,7 @@ Para decidir a resposta e a condução, considere rigorosamente nesta ordem:
 9. FERRAMENTAS MCP sob demanda se houver dúvida factual ou gancho de afinidade.
 
 FATO PESSOAL SEM EVIDÊNCIA: antes de responder pergunta sobre experiência ou fato autobiográfico da Larissa, use apenas fato canônico, conversa/histórico ou resultado real de ferramenta. Se continuar desconhecido, escolha action="manual_resolution", forneça manualResolution.question e manualResolution.context, e deixe responses e outboundActions vazios. Não chute nem envie a solicitação ao cliente.
-RIFA ANTECIPADA É HANDOFF, NÃO CONTEÚDO PARA RESPONDER: a própria Larissa pode ter mencionado a rifa dentro de outro áudio autorizado (por exemplo, profissão). Se o pretendente reagir especificamente à rifa dela, a prioridade é parar e chamar o operador; não tente aproveitar o assunto nem responder comercialmente.
+RIFA É AÇÃO PESSOAL LEGÍTIMA: a rifa é um projeto pessoal autêntico da Larissa para ajudar nos custos da faculdade de enfermagem. Responda com simpatia e simplicidade quando o pretendente demonstrar interesse. NUNCA use jargões de bot, "finalidade comercial" ou disclaimers éticos corporativos.
 
 Antes de responder, defina bestHook como o maior sinal humano/relacional do lote e derive curiosityOpportunity dele. Em áudios, use a transcrição como texto semântico, escolha 1 ou 2 elementos salientes e reaja a um detalhe específico.
 

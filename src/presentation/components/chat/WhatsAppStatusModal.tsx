@@ -1,4 +1,5 @@
 "use client";
+import { useWhatsApp2Client } from "@/presentation/components/chat/WhatsAppAccountContext";
 
 import React, { useState, useEffect, useRef, useTransition } from "react";
 import {
@@ -24,29 +25,10 @@ import {
   Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
-import {
-  publishWhatsAppStatusText,
-  publishWhatsAppStatusImage,
-  publishWhatsAppStatusVideo,
-  getWhatsApp2ActiveStatuses,
-  type WhatsApp2ActiveStatus,
-  getWhatsApp2StatusPrivacy,
-  setWhatsApp2StatusPrivacy,
-  getWhatsApp2StatusContacts,
-  getWhatsApp2Chats,
-  getWhatsApp2EvergreenRecipients,
-  getWhatsApp2LibraryRecipients,
-  publishWhatsAppLibraryStory,
-  recordWhatsApp2EvergreenRecipients,
-  whatsappProviderIdFromConversationId,
-  type WhatsAppStatusPrivacyType,
-  type WhatsAppStatusPrivacyConfig,
-  type WhatsAppStatusContact,
-} from "./whatsapp2-client";
-import { WhatsAppStatusRepository } from "@/infrastructure/repositories/WhatsAppStatusRepository";
+import { type WhatsApp2ActiveStatus, whatsappProviderIdFromConversationId, whatsappAccountIdFromWid, type WhatsAppStatusPrivacyType, type WhatsAppStatusPrivacyConfig, type WhatsAppStatusContact } from "./whatsapp2-client";
+import { useWhatsAppStatusRepository, useWhatsAppStoryRepository } from "./WhatsAppAccountContext";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { isNamedSavedStatusContact, normalizeStatusContactName } from "./status-contact-eligibility";
-import { WhatsAppStoryMediaRepository } from "@/infrastructure/repositories/WhatsAppStoryMediaRepository";
 import type { WhatsAppStatusItem } from "@/domain/entities/WhatsAppStatus";
 import type { WhatsAppStoryMedia } from "@/domain/entities/WhatsAppStoryMedia";
 
@@ -105,7 +87,11 @@ function normalizeEvergreenContactAlias(value?: string | null): string {
   return digits || base.toLowerCase();
 }
 
-async function loadStatusAudienceExclusions(): Promise<Set<string>> {
+async function loadStatusAudienceExclusions(client: ReturnType<typeof useWhatsApp2Client>): Promise<Set<string>> {
+  const { getWhatsApp2Chats, getWhatsApp2Status } = client;
+  const status = await getWhatsApp2Status();
+  const accountId = whatsappAccountIdFromWid(status.me?.wid);
+  if (!accountId) throw new Error("WhatsApp desconectado. Confira a conta antes de publicar.");
   const db = getSupabaseBrowserClient();
   if (!db) throw new Error("Supabase indisponível para conferir contatos trancados e arquivados.");
 
@@ -117,7 +103,7 @@ async function loadStatusAudienceExclusions(): Promise<Set<string>> {
       for (let offset = 0; ; offset += pageSize) {
         const { data, error } = await db.from("instagram_conversations")
           .select("id,contact_id")
-          .like("id", "wa2:%")
+          .like("id", `wa2:${accountId}:%`)
           .in("status", ["archived", "locked"])
           .range(offset, offset + pageSize - 1);
         if (error) throw new Error("Não foi possível conferir contatos arquivados e trancados.");
@@ -183,6 +169,11 @@ export function WhatsAppStatusModal({
   onClose,
   onStatusPublished,
 }: WhatsAppStatusModalProps) {
+  const whatsappClient = useWhatsApp2Client();
+  const WhatsAppStatusRepository = useWhatsAppStatusRepository();
+  const WhatsAppStoryMediaRepository = useWhatsAppStoryRepository();
+  const { publishWhatsAppStatusText, publishWhatsAppStatusImage, publishWhatsAppStatusVideo, getWhatsApp2ActiveStatuses, getWhatsApp2StatusPrivacy, setWhatsApp2StatusPrivacy, getWhatsApp2StatusContacts, getWhatsApp2Chats, getWhatsApp2EvergreenRecipients, getWhatsApp2LibraryRecipients, publishWhatsAppLibraryStory, recordWhatsApp2EvergreenRecipients } = whatsappClient;
+
   const [activeTab, setActiveTab] = useState<StatusTab>("text");
 
   // Estado Texto
@@ -342,7 +333,7 @@ export function WhatsAppStatusModal({
     let alive = true;
     setAudienceExclusions(null);
     setAudienceExclusionsError(null);
-    void loadStatusAudienceExclusions()
+    void loadStatusAudienceExclusions(whatsappClient)
       .then(keys => { if (alive) setAudienceExclusions(keys); })
       .catch(error => {
         if (alive) setAudienceExclusionsError(
@@ -836,7 +827,7 @@ export function WhatsAppStatusModal({
         }
         // Os bloqueios/arquivamentos podem mudar depois de abrir o seletor.
         // Faça nova leitura antes de enviar, além da proteção do gateway.
-        const newestExclusions = await loadStatusAudienceExclusions();
+        const newestExclusions = await loadStatusAudienceExclusions(whatsappClient);
         const story = selectedLibraryStory;
         const chosen = selectedContactIds.map(id => ({
           id, number: contactNumbersById[id] || contactsList.find(c => c.id === id)?.number || null,

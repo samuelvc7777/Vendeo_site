@@ -213,12 +213,12 @@ test("alinhamento de contrato de vídeo entre gateway e whatsapp2-client", () =>
   // Client frontend deve expor publishWhatsAppStatusVideo
   assert.match(
     clientCode,
-    /export async function publishWhatsAppStatusVideo/,
+    /export const \{[^}]*publishWhatsAppStatusVideo/,
     "whatsapp2-client.ts deve exportar publishWhatsAppStatusVideo",
   );
   assert.match(
     clientCode,
-    /request<WhatsApp2StatusVideoPublishResult>\("\/status\/video"/,
-    "publishWhatsAppStatusVideo deve chamar /status/video",
+    /request<WhatsApp2StatusVideoJob>\("\/status\/video\/submit"/,
+    "publishWhatsAppStatusVideo deve iniciar um job rastreável sem repetir a publicação",
   );
 });

@@ -5,6 +5,7 @@
 export type StageObjectiveKind = "fact" | "conversation_state" | "action";
 export type StageActionType =
   | "send_audio"
+  | "send_image"
   | "send_raffle_details"
   | "send_raffle_numbers"
   | "operator_handoff";
@@ -76,6 +77,36 @@ export interface AudioDeliveryHistory {
   id: string;
   conversationId: string;
   audioId: string;
+  sentAt: string;
+  providerMessageId?: string;
+}
+
+/**
+ * Imagem da Persona (Biblioteca Visual da Larissa no Cofre).
+ */
+export interface PersonaImageAsset {
+  id: string;
+  objectiveId?: string;
+  title: string;
+  imageUrl: string;
+  whatsappImageUrl?: string;
+  description?: string;
+  usageInstruction: string;
+  isViewOnce?: boolean;
+  allowedTimeStart?: string | null;
+  allowedTimeEnd?: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Histórico de Entrega de Imagem na Conversa.
+ */
+export interface ImageDeliveryHistory {
+  id: string;
+  conversationId: string;
+  imageId: string;
   sentAt: string;
   providerMessageId?: string;
 }

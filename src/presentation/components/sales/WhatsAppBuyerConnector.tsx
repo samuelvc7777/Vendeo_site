@@ -15,6 +15,28 @@ interface WhatsAppBuyerConnectorProps {
   onClearSelection: () => void;
 }
 
+// Translitera cirílico, remove caracteres invisíveis e normaliza acentos
+function normalizeSearchText(value?: string): string {
+  if (!value) return "";
+  const cleaned = String(value)
+    .replace(/[\u200B-\u200D\uFEFF\u3164\uFFA0]/g, "")
+    .toLowerCase();
+
+  const cyrillicToLatin: Record<string, string> = {
+    а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
+    з: "z", и: "i", й: "y", к: "c", л: "l", м: "m", н: "n", о: "o",
+    п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts",
+    ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+  };
+
+  let translated = "";
+  for (const char of cleaned) {
+    translated += cyrillicToLatin[char] ?? char;
+  }
+
+  return translated.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 function normalizePhoneSearch(value?: string) {
   return String(value || "").replace(/\D+/g, "");
 }
@@ -48,13 +70,23 @@ export function WhatsAppBuyerConnector({
   const totalPrice = selectedNumbers.length * raffle.pricePerNumber;
 
   const filteredContacts = useMemo(() => {
-    const raw = searchTerm.trim().toLowerCase();
+    const raw = searchTerm.trim();
     if (!raw) return whatsappContacts;
+    const normSearch = normalizeSearchText(raw);
     const digits = normalizePhoneSearch(raw);
+
     return whatsappContacts.filter((contact) => {
-      const name = String(contact.name || "").toLowerCase();
+      const rawName = String(contact.name || "");
+      const normName = normalizeSearchText(rawName);
       const phone = normalizePhoneSearch(contact.phone);
-      return name.includes(raw) || Boolean(digits && phone.includes(digits));
+
+      const matchesName =
+        rawName.toLowerCase().includes(raw.toLowerCase()) ||
+        normName.includes(normSearch);
+
+      const matchesPhone = Boolean(digits && phone.includes(digits));
+
+      return matchesName || matchesPhone;
     });
   }, [searchTerm, whatsappContacts]);
 

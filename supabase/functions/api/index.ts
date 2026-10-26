@@ -3594,7 +3594,115 @@ serve(async (req: Request) => {
           } catch (staleErr) {
             console.error("[Cloud AutoPilot] Falha fechada na recuperação atômica de ciclos stale:", staleErr);
           }
+
+          // Recuperação de conversas órfãs: estado in_queue sem job na fila durável.
+          // Quando o Brain retorna global_capacity_busy, o worker re-agenda o job,
+          // mas se esse job for completado/removido enquanto o estado fica travado
+          // em in_queue, a conversa nunca mais será re-tentada. Esta recuperação
+          // detecta e reseta essas conversas órfãs para idle, permitindo que o
+          // próximo inbound as reative normalmente.
+          try {
+            const orphanedThreshold = new Date(Date.now() - 60_000).toISOString(); // 1 minuto atrás
+            const { data: orphanedConvs, error: orphanedError } = await supabase
+              .from("autopilot_chat_states")
+              .select("conversation_id")
+              .eq("status", "in_queue")
+              .lt("state_updated_at", orphanedThreshold)
+              .limit(20);
+
+            if (orphanedError) {
+              console.warn("[Cloud AutoPilot] Erro ao buscar conversas órfãs:", orphanedError);
+            } else if (orphanedConvs && orphanedConvs.length > 0) {
+              // Verifica quais NÃO têm job correspondente na fila durável
+              const orphanedIds = orphanedConvs.map((c: any) => c.conversation_id);
+              const { data: jobsExist, error: jobsError } = await supabase
+                .from("autopilot_inbound_jobs")
+                .select("conversation_id")
+                .in("conversation_id", orphanedIds);
+
+              if (!jobsError && jobsExist) {
+                const withJobs = new Set(jobsExist.map((j: any) => j.conversation_id));
+                const trulyOrphaned = orphanedIds.filter((id: string) => !withJobs.has(id));
+
+                if (trulyOrphaned.length > 0) {
+                  // Reseta conversas órfãs para idle via RPC atômica (cuida do state JSONB)
+                  for (const convId of trulyOrphaned) {
+                    await supabase.rpc("set_autopilot_runtime_state_atomic", {
+                      p_conversation_id: convId,
+                      p_status: "idle",
+                      p_reason: "orphaned_queue_recovery",
+                      p_cancel_current_cycle: false,
+                      p_clear_cancel_current_cycle: true,
+                    });
+                  }
+
+                  console.log(`[Cloud AutoPilot] Recuperadas ${trulyOrphaned.length} conversas órfãs de in_queue:`, trulyOrphaned);
+                }
+              }
+            }
+          } catch (orphanedErr) {
+            console.warn("[Cloud AutoPilot] Falha na recuperação de conversas órfãs:", orphanedErr);
+          }
         }
+
+    // --- GHOST CHECK OTIMIZADO: Apenas verifica agendamentos vencidos ---
+    try {
+      const nowIso = new Date().toISOString();
+      // Consulta pontual usando índice: custa quase zero se não houver ninguém agendado
+      const { data: dueGhostChecks, error: ghostCheckError } = await supabase
+        .from("instagram_conversations")
+        .select("id")
+        .lt("next_ghost_check_at", nowIso)
+        .not("next_ghost_check_at", "is", null)
+        .eq("ai_auto_respond", true)
+        .limit(1); // Processa 1 por tick para espalhar carga
+
+      if (!ghostCheckError && dueGhostChecks && dueGhostChecks.length > 0) {
+        const convId = dueGhostChecks[0].id;
+
+        // Verifica se realmente houve silêncio (double check rápido)
+        const { data: convState } = await supabase
+          .from("instagram_conversations")
+          .select("last_message_at, last_raffle_pitch_at, auto_close_test_enabled")
+          .eq("id", convId)
+          .single();
+
+        // Gate de teste: só dispara ghost se a flag de teste estiver ativada para este chat
+        if (!convState?.auto_close_test_enabled) {
+          await supabase.from("instagram_conversations").update({ next_ghost_check_at: null }).eq("id", convId);
+        } else {
+        const pitchTime = new Date(convState.last_raffle_pitch_at).getTime();
+        const msgTime = new Date(convState.last_message_at || 0).getTime();
+
+        // Se o cliente não respondeu após o pitch (msgTime <= pitchTime), dispara o ghost
+        if (msgTime <= pitchTime) {
+           const syntheticMessage = {
+            id: `ghost_check_${Date.now()}`,
+            text: "[SYSTEM_EVENT: GHOST_SCHEDULED] O tempo de espera do pitch expirou sem resposta. Use finalization_vault_search com reaction_context='raffle_ghost_reminder'.",
+            timestamp: nowIso,
+            sender: "system",
+            isSystemEvent: true,
+          };
+
+          // Dispara em background
+          const ghostPromise = runBrainOrchestration({ supabase, conversationId: convId, newMessage: syntheticMessage })
+            .then(() => supabase.from("instagram_conversations").update({ next_ghost_check_at: null }).eq("id", convId))
+            .catch(err => console.error("[Ghost Check] Falha:", err));
+
+          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+            (globalThis as any).EdgeRuntime.waitUntil(ghostPromise);
+          } else {
+            void ghostPromise;
+          }
+        } else {
+          // Cliente respondeu, cancela o check
+          await supabase.from("instagram_conversations").update({ next_ghost_check_at: null }).eq("id", convId);
+        }
+        } // fim do gate auto_close_test_enabled
+      }
+    } catch (ghostCheckErr) {
+      console.warn("[Ghost Check] Erro:", ghostCheckErr);
+    }
 
         // A fila durável é a autoridade de novas inbounds. O scanner legado só
         // roda se a infraestrutura da fila estiver indisponível durante o rollout.
@@ -4092,6 +4200,33 @@ serve(async (req: Request) => {
           }
         }
 
+        if (retryMessageId) {
+          try {
+            const { data: convRow } = await supabase
+              .from("instagram_conversations")
+              .select("stage_completed_rules")
+              .eq("id", conversationId)
+              .single();
+            const rules = convRow?.stage_completed_rules || {};
+            const orch = rules.orchestration || {};
+            if (orch.messageLedger && orch.messageLedger[retryMessageId]) {
+              delete orch.messageLedger[retryMessageId];
+              orch.lastProcessedMessageId = null;
+              await supabase
+                .from("instagram_conversations")
+                .update({
+                  stage_completed_rules: {
+                    ...rules,
+                    orchestration: orch,
+                  },
+                })
+                .eq("id", conversationId);
+            }
+          } catch (ledgerCleanErr) {
+            console.warn("[Autopilot Restart] Falha ao limpar ledger da mensagem:", ledgerCleanErr);
+          }
+        }
+
         const nowIso = new Date().toISOString();
         await publishAutoPilotState(supabase, conversationId, {
           isEnabled: true,
@@ -4111,6 +4246,7 @@ serve(async (req: Request) => {
               ),
           scheduledResponseAt: null,
           pendingAction: null,
+          pendingOutboundMessages: [],
         });
 
         return new Response(JSON.stringify({
@@ -4236,6 +4372,33 @@ serve(async (req: Request) => {
             });
           }
 
+          // Guarda anti-travamento: se o chat está preso em "starting" há mais de 5 minutos
+          // sem cycle token ativo, reseta para idle antes de reativar — evita travamento permanente.
+          try {
+            const { data: staleCheck } = await supabase
+              .from("autopilot_chat_states")
+              .select("status, state_updated_at, state")
+              .eq("conversation_id", conversationId)
+              .maybeSingle();
+            if (staleCheck?.status === "starting") {
+              const staleMs = Date.now() - new Date(staleCheck.state_updated_at).getTime();
+              const activeToken = staleCheck.state?.activeCycleToken || staleCheck.state?.cycleId;
+              if (staleMs > 5 * 60 * 1000 && !activeToken) {
+                console.warn(`[Autopilot] Chat ${conversationId} travado em starting há ${Math.round(staleMs / 1000)}s — resetando para idle.`);
+                await supabase
+                  .from("autopilot_chat_states")
+                  .update({
+                    status: "idle",
+                    state: { ...staleCheck.state, activity: null, scheduledResponseAt: null },
+                    state_updated_at: new Date().toISOString(),
+                  })
+                  .eq("conversation_id", conversationId);
+              }
+            }
+          } catch (staleErr) {
+            console.warn(`[Autopilot] stale-check falhou para conv=${conversationId}:`, staleErr);
+          }
+
           // Ativação atômica via RPC: busca a última mensagem sob lock FOR UPDATE e grava o watermark + ai_auto_respond = true sem janela de race!
           const { data: armResult, error: armErr } = await supabase.rpc(
             "arm_autopilot_with_watermark_atomic",
@@ -4268,11 +4431,81 @@ serve(async (req: Request) => {
 
             if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
               const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+              const lastText = String(lastMsg.text || "");
+              const hasAudioTranscript = String(lastMsg.audio_transcript || "").trim().length > 0;
+
+              // CORREÇÃO: se a última mensagem é áudio sem transcrição válida,
+              // verificar se existe job de transcrição falhado e re-enfileirá-lo
+              // automaticamente ao ativar a IA. Isso resolve o caso onde o áudio
+              // falha na transcrição (ex: Groq retorna vazio) e o job morre sem
+              // liberar o Brain, mesmo que a mensagem permaneça pendente.
+              if (lastMediaType === "audio" && !hasAudioTranscript) {
+                try {
+                  const { data: failedJob } = await supabase
+                    .from("whatsapp2_transcription_jobs")
+                    .select("message_id, status, media_url")
+                    .eq("message_id", lastMsg.id)
+                    .eq("status", "failed")
+                    .maybeSingle();
+
+                  if (failedJob?.media_url) {
+                    const { data: retryResult, error: retryError } = await supabase.rpc(
+                      "enqueue_whatsapp2_transcription_job",
+                      {
+                        p_message_id: lastMsg.id,
+                        p_conversation_id: conversationId,
+                        p_media_url: failedJob.media_url,
+                        p_release_brain: true,
+                        p_due_at: new Date().toISOString(),
+                      },
+                    );
+
+                    if (!retryError && retryResult?.success === true && retryResult?.retried === true) {
+                      console.log(`[Autopilot] Transcrição falhada re-enfileirada ao ativar IA: conv=${conversationId} msg=${lastMsg.id}`);
+                      immediateResult = { started: true, reason: "transcription_retry_queued" };
+                      await publishAutoPilotState(supabase, conversationId, {
+                        status: "starting",
+                        activity: activity(
+                          "starting",
+                          "Retentando transcrição",
+                          "Áudio com transcrição falhada foi recolocado na fila automaticamente.",
+                          { event: "transcription_retry_on_activate", messageId: lastMsg.id },
+                        ),
+                        scheduledResponseAt: null,
+                      });
+                      // Pula o restante do fluxo — o worker de transcrição vai
+                      // processar e liberar o Brain quando terminar.
+                      return new Response(JSON.stringify({
+                        success: true,
+                        conversationId,
+                        isEnabled: true,
+                        status: "starting",
+                        retryMessageId: null,
+                        queued: false,
+                        queueReason: null,
+                        stateUpdatedAt: new Date().toISOString(),
+                        detail: "IA ativada. Áudio com transcrição falhada foi recolocado na fila e será processado automaticamente.",
+                        transcriptionRetry: true,
+                      }), {
+                        headers: { ...corsHeaders, "Content-Type": "application/json" },
+                      });
+                    }
+                  }
+                } catch (retryErr) {
+                  console.warn(`[Autopilot] Falha ao tentar re-enfileirar transcrição: conv=${conversationId}`, retryErr);
+                  // Não bloqueia o fluxo — continua com o comportamento padrão
+                }
+              }
+
+              // Áudio já transcrito vai direto ao Brain como texto; só enfileira no worker
+              // se a transcrição ainda não chegou (evita timeout do worker em áudios prontos).
               const needsMediaWorker =
                 lastMediaType === "image" ||
                 lastMediaType === "video" ||
-                String(lastMsg.text || "").startsWith("[image:") ||
-                String(lastMsg.text || "").startsWith("[video:");
+                (lastMediaType === "audio" && !hasAudioTranscript) ||
+                lastText.startsWith("[image:") ||
+                lastText.startsWith("[video:") ||
+                (lastText.startsWith("[audio:") && !hasAudioTranscript);
 
               if (needsMediaWorker) {
                 const { data: queueResult, error: queueError } = await supabase.rpc(
@@ -4423,6 +4656,281 @@ serve(async (req: Request) => {
         });
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no toggle-chat" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Rota para ativar/desativar o modo de teste "Finalizar Sozinha" (Auto-Close) por conversa
+    if ((path === "/autopilot/toggle-auto-close" || path === "/api/autopilot/toggle-auto-close") && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationId = body?.conversationId;
+        const isEnabled = Boolean(body?.isEnabled);
+        if (!conversationId) {
+          return new Response(JSON.stringify({ error: "conversationId é obrigatório." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const { error: updateError } = await supabase
+          .from("instagram_conversations")
+          .update({ auto_close_test_enabled: isEnabled })
+          .eq("id", conversationId);
+        if (updateError) throw updateError;
+        return new Response(JSON.stringify({ success: true, isEnabled }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err?.message || "Falha ao atualizar flag de teste." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Rota batch para ATIVAR o Piloto Automático em múltiplos chats de uma vez
+    if ((path === "/autopilot/bulk-toggle-chat" || path === "/api/autopilot/bulk-toggle-chat") && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const conversationIds: string[] = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+        const mode = String(body?.mode || "wait_next");
+        const triggerImmediate = mode === "immediate";
+
+        if (conversationIds.length === 0) {
+          return new Response(JSON.stringify({ error: "conversationIds é obrigatório e não pode ser vazio." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        if (conversationIds.length > 50) {
+          return new Response(JSON.stringify({ error: "Limite máximo de 50 conversas por requisição." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // Verificação global única para todo o lote
+        const { data: globalConfigRow, error: globalConfigError } = await supabase
+          .from("autopilot_settings")
+          .select("config")
+          .eq("id", "global")
+          .maybeSingle();
+        if (globalConfigError) throw globalConfigError;
+        if (globalConfigRow?.config?.isEnabledGlobally === false) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: "global_autopilot_disabled",
+            detail: "Ative o Piloto Automático globalmente antes de ativar a IA em massa.",
+          }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const results: Array<{ conversationId: string; success: boolean; immediateTriggered?: boolean; reason?: string; error?: string }> = [];
+
+        for (const conversationId of conversationIds) {
+          try {
+            // Verifica cronograma individual
+            const { data: scheduleRow, error: scheduleErr } = await supabase
+              .from("instagram_conversations")
+              .select("stage_completed_rules")
+              .eq("id", conversationId)
+              .maybeSingle();
+            if (scheduleErr) throw scheduleErr;
+            if (["ready_for_transition", "completed_waiting_manual"].includes(
+              String(scheduleRow?.stage_completed_rules?.schedule_status || ""),
+            )) {
+              results.push({ conversationId, success: false, error: "schedule_completed_waiting_manual" });
+              continue;
+            }
+
+            // Guarda anti-travamento (bulk): se o chat está preso em "starting" há mais de 5 minutos
+            // sem cycle token ativo, reseta para idle antes de reativar.
+            try {
+              const { data: staleCheck } = await supabase
+                .from("autopilot_chat_states")
+                .select("status, state_updated_at, state")
+                .eq("conversation_id", conversationId)
+                .maybeSingle();
+              if (staleCheck?.status === "starting") {
+                const staleMs = Date.now() - new Date(staleCheck.state_updated_at).getTime();
+                const activeToken = staleCheck.state?.activeCycleToken || staleCheck.state?.cycleId;
+                if (staleMs > 5 * 60 * 1000 && !activeToken) {
+                  console.warn(`[Bulk] Chat ${conversationId} travado em starting há ${Math.round(staleMs / 1000)}s — resetando para idle.`);
+                  await supabase
+                    .from("autopilot_chat_states")
+                    .update({
+                      status: "idle",
+                      state: { ...staleCheck.state, activity: null, scheduledResponseAt: null },
+                      state_updated_at: new Date().toISOString(),
+                    })
+                    .eq("conversation_id", conversationId);
+                }
+              }
+            } catch (staleErr) {
+              console.warn(`[Bulk] stale-check falhou para conv=${conversationId}:`, staleErr);
+            }
+            // Arma atomicamente
+            const { data: armResult, error: armErr } = await supabase.rpc(
+              "arm_autopilot_with_watermark_atomic",
+              { p_conversation_id: conversationId },
+            );
+            if (armErr || !armResult?.success) {
+              results.push({ conversationId, success: false, error: armErr?.message || "activation_failed" });
+              continue;
+            }
+
+            let immediateTriggered = false;
+            let reason: string | undefined;
+
+            if (triggerImmediate) {
+              if (await hasWaitingManualBrainTurn(supabase, conversationId)) {
+                reason = "waiting_manual";
+              } else {
+                const { data: lastMsgs } = await supabase
+                  .from("instagram_messages")
+                  .select("id, text, timestamp, sender_id, is_mine, media_type, media_url, audio_transcript")
+                  .eq("conversation_id", conversationId)
+                  .order("timestamp", { ascending: false })
+                  .limit(1);
+                const lastMsg = lastMsgs?.[0];
+
+                if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
+                  const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+                  const lastTextBulk = String(lastMsg.text || "");
+                  const hasAudioTranscriptBulk = String(lastMsg.audio_transcript || "").trim().length > 0;
+                  const needsMediaWorker =
+                    lastMediaType === "image" ||
+                    lastMediaType === "video" ||
+                    (lastMediaType === "audio" && !hasAudioTranscriptBulk) ||
+                    lastTextBulk.startsWith("[image:") ||
+                    lastTextBulk.startsWith("[video:") ||
+                    (lastTextBulk.startsWith("[audio:") && !hasAudioTranscriptBulk);
+
+                  if (needsMediaWorker) {
+                    const { data: queueResult, error: queueError } = await supabase.rpc(
+                      "enqueue_autopilot_inbound_job",
+                      { p_conversation_id: conversationId, p_message_id: lastMsg.id, p_due_at: new Date().toISOString() },
+                    );
+                    if (queueError || queueResult?.success !== true) {
+                      reason = queueError?.message || queueResult?.reason || "media_queue_failed";
+                    } else {
+                      immediateTriggered = true;
+                      reason = "media_queued";
+                      await publishAutoPilotState(supabase, conversationId, {
+                        status: "starting",
+                        activity: activity(
+                          "starting",
+                          lastMediaType === "video" ? "Preparando observação" : "Analisando foto",
+                          lastMediaType === "video"
+                            ? "Vídeo encaminhado para observação humana antes do Brain."
+                            : "Foto encaminhada para descrição visual antes do Brain.",
+                          { event: "media_worker_queued", mediaType: lastMediaType, messageId: lastMsg.id },
+                        ),
+                        scheduledResponseAt: null,
+                      });
+                    }
+                  } else {
+                    const proposedCycleId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                    const { data: authResult } = await supabase.rpc("authorize_send_now_atomic", {
+                      p_conversation_id: conversationId,
+                      p_new_cycle_token: proposedCycleId,
+                      p_stale_seconds: 300,
+                    });
+                    if (authResult?.success) {
+                      const cycleId = authResult.cycleToken || proposedCycleId;
+                      const resolvedAudio = await resolveInboundAudioMessage(supabase, lastMsg);
+                      await publishAutoPilotState(supabase, conversationId, {
+                        cycleId,
+                        status: "starting",
+                        activity: activity("starting", "Iniciando...", "Ciclo iniciado imediatamente via bulk.", { cycleId, event: "bulk_immediate_started" }),
+                        scheduledResponseAt: null,
+                      });
+                      const brainPromise = runBrainOrchestration({
+                        supabase,
+                        conversationId,
+                        correlationId: cycleId,
+                        preClaimedCycleToken: cycleId,
+                        newMessage: {
+                          id: lastMsg.id,
+                          text: resolvedAudio.text,
+                          timestamp: lastMsg.timestamp,
+                          sender: lastMsg.sender_id || "them",
+                          mediaType: resolvedAudio.isAudio ? "audio" : (lastMsg.media_type || undefined),
+                          audioTranscript: resolvedAudio.hasValidTranscript ? resolvedAudio.transcript : (lastMsg.audio_transcript || undefined),
+                        },
+                      });
+                      if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
+                        (globalThis as any).EdgeRuntime.waitUntil(brainPromise);
+                      } else {
+                        void brainPromise;
+                      }
+                      immediateTriggered = true;
+                    } else if (authResult?.reason === "already_processing") {
+                      immediateTriggered = true;
+                      reason = "already_processing";
+                    } else {
+                      reason = authResult?.reason || "auth_failed";
+                    }
+                  }
+                } else {
+                  reason = "nothing_to_answer";
+                }
+              }
+            }
+
+            // Projeta estado canônico
+            const nowIso = new Date().toISOString();
+            const { data: canonicalRow } = await supabase
+              .from("instagram_conversations")
+              .select("ai_auto_respond, updated_at")
+              .eq("id", conversationId)
+              .maybeSingle();
+            if (canonicalRow) {
+              await patchAutoPilotProjectionState(supabase, conversationId, {
+                isEnabled: true,
+                status: immediateTriggered ? "processing" : "idle",
+                pauseReason: undefined,
+                pausedAt: undefined,
+                enabledAt: canonicalRow.updated_at,
+                activity: null,
+                scheduledResponseAt: null,
+                updatedAt: canonicalRow.updated_at,
+                stateUpdatedAt: canonicalRow.updated_at,
+              }).catch((err) => console.warn(`[Bulk] patch projection falhou conv=${conversationId}`, err));
+            }
+
+            results.push({ conversationId, success: true, immediateTriggered, reason });
+          } catch (perChatErr) {
+            results.push({ conversationId, success: false, error: perChatErr instanceof Error ? perChatErr.message : "unknown_error" });
+          }
+        }
+
+        const succeeded = results.filter((r) => r.success).length;
+        const failed = results.length - succeeded;
+
+        // Broadcast único para sincronizar abas
+        try {
+          const rt = supabase.channel("vendeo_realtime_chat");
+          await rt.send({
+            type: "broadcast",
+            event: "autopilot_bulk_update",
+            payload: { succeeded, failed, timestamp: new Date().toISOString() },
+          });
+        } catch (_) { /* best-effort */ }
+
+        return new Response(JSON.stringify({
+          success: true,
+          results,
+          summary: { total: results.length, succeeded, failed },
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err: unknown) {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : "Erro no bulk-toggle-chat" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -4588,11 +5096,15 @@ serve(async (req: Request) => {
           const lastMsg = lastMsgs?.[0];
           if (lastMsg && !lastMsg.is_mine && lastMsg.sender_id !== "me") {
             const lastMediaType = String(lastMsg.media_type || "").toLowerCase();
+            const lastTextSendNow = String(lastMsg.text || "");
+            const hasAudioTranscriptSendNow = String(lastMsg.audio_transcript || "").trim().length > 0;
             const needsMediaWorker =
               lastMediaType === "image" ||
               lastMediaType === "video" ||
-              String(lastMsg.text || "").startsWith("[image:") ||
-              String(lastMsg.text || "").startsWith("[video:");
+              (lastMediaType === "audio" && !hasAudioTranscriptSendNow) ||
+              lastTextSendNow.startsWith("[image:") ||
+              lastTextSendNow.startsWith("[video:") ||
+              (lastTextSendNow.startsWith("[audio:") && !hasAudioTranscriptSendNow);
 
             if (needsMediaWorker) {
               await releaseExperimentalCycleAtomic({
@@ -4806,17 +5318,25 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: waitingTurn, error: turnError } = await supabase
+        let { data: waitingTurn, error: turnError } = await supabase
           .from("brain_turns")
           .select("id, conversation_id, session_id, status, inbound_message_ids")
           .eq("id", turnId)
           .maybeSingle();
 
-        if (turnError || !waitingTurn?.id || waitingTurn.status !== "waiting_manual") {
-          return new Response(JSON.stringify({ success: false, error: "Este turno não está aguardando o operador." }), {
-            status: 409,
+        if (turnError || !waitingTurn?.id) {
+          return new Response(JSON.stringify({ success: false, error: "Turno não encontrado para a consulta." }), {
+            status: 404,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
+        }
+
+        if (waitingTurn.status !== "waiting_manual") {
+          await supabase.from("brain_turns").update({
+            status: "waiting_manual",
+            updated_at: new Date().toISOString(),
+          }).eq("id", turnId);
+          waitingTurn.status = "waiting_manual";
         }
 
         const conversationId = String(waitingTurn.conversation_id || "");
@@ -4923,7 +5443,7 @@ serve(async (req: Request) => {
           "- CASO A — pedido de FOTO / PERFIL / REDE SOCIAL sem mencionar Instagram: convide para adicionar no Facebook de forma leve ('me adiciona lá kkk') e envie https://www.facebook.com/larissa.resende.90813 . NÃO mencione Instagram nem chip.",
           "- CASO B — pedido EXPLÍCITO de INSTAGRAM / @ / ARROBA / 'passa o insta': explique que não tem mais Instagram (perdeu o acesso, chip antigo) e envie https://www.facebook.com/larissa.resende.90813 em seguida.",
           "- Em ambos os casos outboundActions DEVE conter literalmente a URL do Facebook; proibido responder só em texto.",
-          "- Instagram da loja: @lari_modasr.",
+          "- Instagram da loja: @lari_modasr (loja de moda masculina / roupas masculinas, NUNCA feminina).",
           "- Nunca diga que faltam dados ao operador e nunca mande procurar link ou perfil na bio.",
           "",
           `PEDIDO QUE BLOQUEOU O TURNO: ${manualQuestion}`,
@@ -5082,19 +5602,62 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: waitingTurn, error: turnError } = await supabase.from("brain_turns")
-          .select("id, inbound_message_ids").eq("conversation_id", conversationId)
-          .eq("status", "waiting_manual").order("updated_at", { ascending: false }).limit(1).maybeSingle();
-        if (turnError || !waitingTurn?.id || !Array.isArray(waitingTurn.inbound_message_ids) || waitingTurn.inbound_message_ids.length === 0) {
-          return new Response(JSON.stringify({ success: false, error: "Não há uma resolução manual aguardando nesta conversa." }), {
+        // 1. Localizar o turno aguardando ou o mais recente da conversa
+        let { data: waitingTurn, error: turnError } = await supabase.from("brain_turns")
+          .select("id, conversation_id, session_id, status, inbound_message_ids")
+          .eq("conversation_id", conversationId)
+          .eq("status", "waiting_manual")
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!waitingTurn?.id) {
+          const { data: latestTurn } = await supabase.from("brain_turns")
+            .select("id, conversation_id, session_id, status, inbound_message_ids")
+            .eq("conversation_id", conversationId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (latestTurn?.id) {
+            waitingTurn = latestTurn;
+          }
+        }
+
+        if (!waitingTurn?.id) {
+          return new Response(JSON.stringify({ success: false, error: "Não há um turno para esta conversa." }), {
             status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
+        }
+
+        if (waitingTurn.status !== "waiting_manual") {
+          await supabase.from("brain_turns").update({
+            status: "waiting_manual",
+            updated_at: new Date().toISOString(),
+          }).eq("id", waitingTurn.id);
+          waitingTurn.status = "waiting_manual";
+        }
+
+        if (!Array.isArray(waitingTurn.inbound_message_ids) || waitingTurn.inbound_message_ids.length === 0) {
+          const { data: latestInboundMsg } = await supabase.from("instagram_messages")
+            .select("id")
+            .eq("conversation_id", conversationId)
+            .eq("is_mine", false)
+            .order("timestamp", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (latestInboundMsg?.id) {
+            waitingTurn.inbound_message_ids = [latestInboundMsg.id];
+            await supabase.from("brain_turns").update({
+              inbound_message_ids: waitingTurn.inbound_message_ids,
+              updated_at: new Date().toISOString(),
+            }).eq("id", waitingTurn.id);
+          }
         }
 
         const { data: inbound } = await supabase.from("instagram_messages")
           .select("id, text, sender_id, created_at, timestamp")
           .eq("conversation_id", conversationId)
-          .eq("id", waitingTurn.inbound_message_ids[waitingTurn.inbound_message_ids.length - 1])
+          .eq("id", waitingTurn.inbound_message_ids ? waitingTurn.inbound_message_ids[waitingTurn.inbound_message_ids.length - 1] : null)
           .maybeSingle();
         if (!inbound?.id) {
           return new Response(JSON.stringify({ success: false, error: "As mensagens do turno aguardando não estão disponíveis." }), {
@@ -5102,11 +5665,41 @@ serve(async (req: Request) => {
           });
         }
 
-        const { data: manualDecision } = await supabase.from("brain_decisions")
-          .select("payload").eq("turn_id", waitingTurn.id).eq("decision_type", "manual_resolution")
-          .order("version", { ascending: false }).limit(1).maybeSingle();
-        const manualRequest = manualDecision?.payload?.manualResolution || {};
-        const memoryKey = `manual_resolution_${String(manualRequest.question || "fato").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 90)}`;
+        let { data: manualDecision } = await supabase.from("brain_decisions")
+          .select("payload")
+          .eq("turn_id", waitingTurn.id)
+          .eq("decision_type", "manual_resolution")
+          .order("version", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        let manualQuestion = String(manualDecision?.payload?.manualResolution?.question || body?.question || "").replace(/^brain_manual_resolution\|?/, "").trim();
+        if (!manualQuestion) {
+          const { data: convData } = await supabase.from("instagram_conversations").select("stage_completed_rules").eq("id", conversationId).maybeSingle();
+          const pauseReason = String(convData?.stage_completed_rules?.pause_reason || "");
+          manualQuestion = pauseReason.replace(/^brain_manual_resolution\|?/, "").trim() || "Informação solicitada pelo Brain";
+        }
+
+        if (!manualDecision?.payload) {
+          await supabase.from("brain_decisions").upsert({
+            id: `brain_decision_manual_${waitingTurn.id}`,
+            conversation_id: conversationId,
+            turn_id: waitingTurn.id,
+            decision_type: "manual_resolution",
+            payload: {
+              manualResolution: {
+                question: manualQuestion,
+                context: "Resolução manual informada pelo operador",
+              },
+            },
+            version: 1,
+            created_at: new Date().toISOString(),
+          }, { onConflict: "id" });
+        }
+
+        const memoryKey = `manual_resolution_${manualQuestion.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 90)}`;
+
+        let preparedResult = null;
         const { data: prepared, error: prepareError } = await supabase.rpc("prepare_brain_manual_resolution", {
           p_conversation_id: conversationId,
           p_turn_id: waitingTurn.id,
@@ -5114,10 +5707,77 @@ serve(async (req: Request) => {
           p_save_for_future: saveForFuture,
           p_memory_key: memoryKey,
         });
+
         if (prepareError || prepared?.success !== true) {
-          return new Response(JSON.stringify({ success: false, error: prepareError?.message || prepared?.error || "Falha ao preparar a retomada do Brain." }), {
-            status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          console.warn("[Brain] prepare_brain_manual_resolution RPC falhou, executando fallback atômico:", prepareError?.message || prepared?.error);
+          const nowIso = new Date().toISOString();
+          const factId = `manual_fact_${Date.now()}`;
+          await supabase.from("brain_manual_facts").insert({
+            id: factId,
+            conversation_id: conversationId,
+            session_id: waitingTurn.session_id,
+            turn_id: waitingTurn.id,
+            memory_key: memoryKey,
+            question: manualQuestion,
+            fact: answer.trim(),
+            permanent: saveForFuture,
           });
+          if (saveForFuture) {
+            await supabase.from("persona_memory").upsert({
+              persona_id: "larissa",
+              category: "manual_resolution",
+              key: memoryKey,
+              value: { fact: answer.trim(), question: manualQuestion },
+              source_type: "generated",
+              confidence: 1.0,
+              aliases: [manualQuestion],
+              updated_at: nowIso,
+            }, { onConflict: "persona_id,key" });
+          }
+          const { data: convLatest } = await supabase.from("instagram_conversations").select("stage_completed_rules").eq("id", conversationId).single();
+          const rules = convLatest?.stage_completed_rules || {};
+          delete rules.pause_reason;
+          rules.status = "idle";
+          if (rules.orchestration) {
+            rules.orchestration.lastProcessingStatus = "idle";
+            if (rules.orchestration.messageLedger && inbound.id) {
+              rules.orchestration.messageLedger[inbound.id] = "pending";
+            }
+          }
+          await supabase.from("instagram_conversations").update({
+            stage_completed_rules: rules,
+            ai_debounce_until: null,
+            updated_at: nowIso,
+          }).eq("id", conversationId);
+          await supabase.from("brain_turns").update({
+            status: "brain_running",
+            completed_at: null,
+            updated_at: nowIso,
+          }).eq("id", waitingTurn.id);
+
+          preparedResult = {
+            success: true,
+            question: manualQuestion,
+            context: "Fallback atômico de resolução manual",
+            manual_fact_id: factId,
+          };
+        } else {
+          preparedResult = prepared;
+        }
+
+        try {
+          await patchAutoPilotProjectionState(supabase, conversationId, {
+            status: "processing",
+            pauseReason: null,
+            pausedAt: null,
+            activity: activity(
+              "brain",
+              "Brain processando",
+              "Retomando turno com a resposta do operador..."
+            ),
+          });
+        } catch (projErr) {
+          console.warn("[Brain] Aviso ao atualizar projeção do AutoPilot na resolução manual:", projErr);
         }
 
         const resumeCorrelationId = `manual_resolution_${waitingTurn.id}_${Date.now()}`;
@@ -5135,10 +5795,10 @@ serve(async (req: Request) => {
           isManualRetry: true,
           manualResolution: {
             turnId: waitingTurn.id,
-            question: String(prepared.question || body?.question || "Informação solicitada pelo Brain"),
-            context: String(prepared.context || ""),
+            question: String(preparedResult.question || body?.question || "Informação solicitada pelo Brain"),
+            context: String(preparedResult.context || ""),
             answer,
-            factId: String(prepared.manual_fact_id || ""),
+            factId: String(preparedResult.manual_fact_id || ""),
           },
         }).then(async (result) => {
           if (!result.handled || result.error) {

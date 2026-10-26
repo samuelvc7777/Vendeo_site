@@ -1,4 +1,5 @@
 "use client";
+import { useWhatsApp2Client } from "@/presentation/components/chat/WhatsAppAccountContext";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -7,10 +8,7 @@ import {
   Loader2, MoreVertical, Pause, Play, Plus, RefreshCw, UserRound,
   Volume2, VolumeX, X,
 } from "lucide-react";
-import {
-  getWhatsApp2ActiveStatuses, getWhatsApp2MediaUrl, getWhatsApp2Status, getWhatsApp2StatusViews,
-  type WhatsApp2ActiveStatus, type WhatsApp2StatusViews,
-} from "./whatsapp2-client";
+import { type WhatsApp2ActiveStatus, type WhatsApp2StatusViews } from "./whatsapp2-client";
 import styles from "./WhatsAppMyStatusViewer.module.css";
 import { WhatsAppStatusAvatar } from "./WhatsAppStatusAvatar";
 
@@ -36,6 +34,9 @@ function relativeDate(value: string) {
 const PHOTO_DURATION_MS = 6500;
 
 export function WhatsAppMyStatusViewer({ open, onClose, onPublish }: Props) {
+  const whatsappClient = useWhatsApp2Client();
+  const { getWhatsApp2ActiveStatuses, getWhatsApp2MediaUrl, getWhatsApp2Status, getWhatsApp2StatusViews } = whatsappClient;
+
   const [items, setItems] = useState<WhatsApp2ActiveStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);

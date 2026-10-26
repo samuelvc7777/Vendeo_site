@@ -5,6 +5,19 @@ const LOCAL_STORAGE_KEY = "vendeo_whatsapp_status_history";
 const MAX_LOCAL_HISTORY = 40;
 
 export class WhatsAppStatusRepository {
+  protected static accountId = "primary";
+  protected static includeLegacy = false;
+
+  static forAccount(accountId: string, includeLegacy = false): typeof WhatsAppStatusRepository {
+    return class extends WhatsAppStatusRepository {
+      protected static accountId = accountId;
+      protected static includeLegacy = includeLegacy;
+    };
+  }
+
+  private static storageKey() {
+    return this.accountId === "primary" ? LOCAL_STORAGE_KEY : `${LOCAL_STORAGE_KEY}:${this.accountId}`;
+  }
   /**
    * Carrega histórico combinado (localStorage prioritário para velocidade + sync com Supabase)
    */
@@ -13,9 +26,13 @@ export class WhatsAppStatusRepository {
 
     if (typeof window !== "undefined" && window.localStorage) {
       try {
-        const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+        const stored = window.localStorage.getItem(this.storageKey());
         if (stored) {
           localItems = JSON.parse(stored) as WhatsAppStatusItem[];
+        }
+        if (this.includeLegacy && this.accountId !== "primary") {
+          const legacy = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+          if (legacy) localItems = [...localItems, ...JSON.parse(legacy)];
         }
       } catch (err) {
         console.warn("[WhatsAppStatus] Erro ao ler histórico do localStorage:", err);
@@ -31,6 +48,7 @@ export class WhatsAppStatusRepository {
       const { data, error } = await supabase
         .from("whatsapp_status_posts")
         .select("*")
+        .in("gateway_account_id", this.includeLegacy ? [this.accountId, "primary"] : [this.accountId])
         .order("created_at", { ascending: false })
         .limit(30);
 
@@ -99,6 +117,7 @@ export class WhatsAppStatusRepository {
     if (supabase) {
       try {
         await supabase.from("whatsapp_status_posts").insert({
+          gateway_account_id: this.accountId,
           id: item.id.includes("-") && item.id.length === 36 ? item.id : undefined,
           whatsapp_status_id: item.whatsappStatusId || null,
           type: item.type,
@@ -124,7 +143,7 @@ export class WhatsAppStatusRepository {
   private static loadFromLocalStorage(): WhatsAppStatusItem[] {
     if (typeof window === "undefined" || !window.localStorage) return [];
     try {
-      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+      const stored = window.localStorage.getItem(this.storageKey());
       return stored ? (JSON.parse(stored) as WhatsAppStatusItem[]) : [];
     } catch {
       return [];
@@ -134,7 +153,7 @@ export class WhatsAppStatusRepository {
   private static saveToLocalStorage(items: WhatsAppStatusItem[]) {
     if (typeof window === "undefined" || !window.localStorage) return;
     try {
-      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(items.slice(0, MAX_LOCAL_HISTORY)));
+      window.localStorage.setItem(this.storageKey(), JSON.stringify(items.slice(0, MAX_LOCAL_HISTORY)));
     } catch {}
   }
 }

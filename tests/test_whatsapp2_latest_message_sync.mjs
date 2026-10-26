@@ -20,7 +20,7 @@ async function runSyncRoute({ fromMe = false, chatId = "contact@c.us", confirmed
   let response;
   vm.runInNewContext(source.slice(start, end) + "});", {
     http: { createServer(fn) { handler = fn; } },
-    URL, HOST: "127.0.0.1", PORT: 8788,
+    URL, HOST: "127.0.0.1", PORT: 8788, accountManager: null, supabase: {},
     applyCors() {}, isAuthorized: () => true,
     readJson: async () => ({ chatId, conversationId }),
     ensureReady: () => ({ getChatById: async () => ({ fetchMessages: async () => [

@@ -126,8 +126,16 @@ export class SupabaseRaffleRepository implements IRaffleRepository {
             if (cloudPayload.tickets && typeof cloudPayload.tickets === "object") {
               for (const [rId, tList] of Object.entries(cloudPayload.tickets)) {
                 if (Array.isArray(tList)) {
-                  this.inMemoryTickets.set(rId, tList);
-                  this.saveLocalTickets(rId, tList);
+                  // Deduplica protegendo cotas pagas contra sobreposição
+                  const dMap = new Map<number, RaffleTicket>();
+                  for (const t of tList) {
+                    const ex = dMap.get(t.number);
+                    if (ex && ex.status === "paid" && t.status !== "paid") continue;
+                    dMap.set(t.number, t);
+                  }
+                  const sanitizedList = Array.from(dMap.values()).sort((a, b) => a.number - b.number);
+                  this.inMemoryTickets.set(rId, sanitizedList);
+                  this.saveLocalTickets(rId, sanitizedList);
                 }
               }
             }
@@ -308,6 +316,11 @@ export class SupabaseRaffleRepository implements IRaffleRepository {
     const currentTickets = payload.tickets[input.raffleId] || [];
     const ticketsMap = new Map<number, RaffleTicket>();
     for (const t of currentTickets) {
+      const existing = ticketsMap.get(t.number);
+      // Cotas pagas têm prioridade absoluta e nunca são sobrescritas por reservas
+      if (existing && existing.status === "paid" && t.status !== "paid") {
+        continue;
+      }
       ticketsMap.set(t.number, t);
     }
 

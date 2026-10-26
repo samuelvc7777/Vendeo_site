@@ -15,11 +15,11 @@ const gateway = fs.readFileSync(
   "utf8",
 );
 
-test("seletor de rifa usa apenas conversas finalizadas e não arquivadas/trancadas", () => {
+test("seletor de rifa usa conversas finalizadas e exclui registros internos", () => {
   assert.match(hook, /\.eq\("is_converted", true\)/);
   assert.match(hook, /\.not\("workflow_finalized_at", "is", null\)/);
-  assert.match(hook, /\.neq\("status", "locked"\)/);
-  assert.match(hook, /\.neq\("status", "archived"\)/);
+  assert.match(hook, /\.neq\("status", "system"\)/);
+  assert.match(hook, /\.neq\("status", "vault"\)/);
 });
 
 test("seletor não limita quantidade de contatos exibidos", () => {

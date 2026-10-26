@@ -10,10 +10,15 @@ const phone='5511888888888', accountId='account-5511999999999';
 const id=`wa2:${accountId}:${phone}@c.us`,old=`wa2:${accountId}:12345@lid`,foreign=`wa2:account-5521999999999:12345@lid`;
 const previous={[old]:[{id:'older',timestamp:1}],[id]:[{id:'newer',timestamp:2}],[foreign]:[{id:'foreign',timestamp:3}]};
 let result;
-vm.runInNewContext(s.slice(start,end),{setMessages:fn=>result=fn(previous),identityGroups:[{identityKey:`phone:${phone}`,gatewayRows:[],canonicalRows:[{id}]}],mergedByIdentity:new Map([[`phone:${phone}`,{id}]]),accountId,resolvedPhonesByChatId:new Map([['12345@lid',phone]]),getWhatsAppConversationIdentityKey,...account,deduplicateMessages:rows=>Array.from(new Map(rows.map(r=>[r.id,r])).values()),getMessageTimestampMs:n=>Number(n)});
+vm.runInNewContext(s.slice(start,end),{setMessages:fn=>result=fn(previous),visibleIdentityGroups:[{identityKey:`phone:${phone}`,gatewayRows:[],canonicalRows:[{id}]}],mergedByIdentity:new Map([[`phone:${phone}`,{id}]]),accountId,resolvedPhonesByChatId:new Map([['12345@lid',phone]]),getWhatsAppConversationIdentityKey,...account,deduplicateMessages:rows=>Array.from(new Map(rows.map(r=>[r.id,r])).values()),getMessageTimestampMs:n=>Number(n)});
 assert.deepEqual(Array.from(result[id],m=>m.id),['older','newer']);
 assert.equal(result[old],previous[old]);
 assert.equal(result[foreign],previous[foreign]);
-assert.ok(s.includes('[conv.id]: deduplicateMessages([...(previous[conv.id] || []), ...formatted])'));
+// A abertura do chat também mescla entregas agendadas, mantendo o cache anterior.
+const openMerge = s.split('\n').find(line => line.includes('[conv.id]: deduplicateMessages('));
+assert.ok(openMerge);
+let opened;
+vm.runInNewContext(openMerge, { setMessages: fn => opened = fn({ [id]: [{ id: 'cached', timestamp: 1 }] }), conv: { id }, formatted: [{ id: 'new', timestamp: 2 }], mappedQueue: [{ id: 'queued', timestamp: 3 }], deduplicateMessages: rows => Array.from(new Map(rows.map(row => [row.id, row])).values()), getMessageTimestampMs: value => Number(value) });
+assert.deepEqual(Array.from(opened[id], message => message.id), ['cached', 'new', 'queued']);
 assert.ok(s.includes('[conversationId]: deduplicateMessages([...(previous[activeChat.id] || []), ...(previous[conversationId] || [])])'));
 console.log('Histórico preservado entre aliases confirmados; outras contas isoladas.');

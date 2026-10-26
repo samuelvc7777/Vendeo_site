@@ -41,9 +41,10 @@ function remoteStory(row: CloudRow): WhatsAppStoryMedia {
   };
 }
 
-async function gatewayPost<T>(path: string, body: unknown): Promise<T> {
+async function gatewayPost<T>(path: string, body: unknown, connectionId?: string): Promise<T> {
   const gatewayUrl = (await resolveWhatsApp2GatewayUrl()).replace(/\/$/, "");
-  const response = await fetch(`${gatewayUrl}${path}`, {
+  const prefix = connectionId ? `/connections/${encodeURIComponent(connectionId)}` : "";
+  const response = await fetch(`${gatewayUrl}${prefix}${path}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -55,6 +56,11 @@ async function gatewayPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 export class WhatsAppStoryMediaRepository {
+  protected static connectionId: string | undefined;
+  private static storageKey() { return this.connectionId && this.connectionId !== "legacy" ? `${STORAGE_KEY}:${this.connectionId}` : STORAGE_KEY; }
+  static forConnection(connectionId?: string): typeof WhatsAppStoryMediaRepository {
+    return class extends WhatsAppStoryMediaRepository { protected static connectionId = connectionId; };
+  }
   private static remoteCache: WhatsAppStoryMedia[] = [];
   private static remoteLoaded = false;
 
@@ -67,7 +73,7 @@ export class WhatsAppStoryMediaRepository {
     const storage = this.getStorage();
     if (!storage) return [];
     try {
-      const raw = storage.getItem(STORAGE_KEY);
+      const raw = storage.getItem(this.storageKey());
       return raw && Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [];
     } catch {
       return [];
@@ -113,7 +119,7 @@ export class WhatsAppStoryMediaRepository {
     const storage = this.getStorage();
     const local = this.getLocalOnly();
     const updated = [story, ...local.filter((item) => item.id !== story.id)];
-    try { storage?.setItem(STORAGE_KEY, JSON.stringify(updated)); }
+    try { storage?.setItem(this.storageKey(), JSON.stringify(updated)); }
     catch (err) { console.warn("[StoryLibrary] Erro ao gravar cache local:", err); }
     return story;
   }
@@ -161,7 +167,7 @@ export class WhatsAppStoryMediaRepository {
     timesPosted?: number; lastPostedAt?: string; seenContactIds?: string[];
     storyKey?: string;
   }): Promise<WhatsAppStoryMedia> {
-    const result = await gatewayPost<{ ok: true; story: WhatsAppStoryMedia }>("/status/library", input);
+    const result = await gatewayPost<{ ok: true; story: WhatsAppStoryMedia }>("/status/library", input, this.connectionId);
     this.remoteCache = [result.story, ...this.remoteCache.filter((item) => item.id !== result.story.id)];
     return this.save({ ...result.story, seenContactIds: input.seenContactIds || [] });
   }
@@ -193,7 +199,7 @@ export class WhatsAppStoryMediaRepository {
   static delete(id: string): boolean {
     const local = this.getLocalOnly();
     this.remoteCache = this.remoteCache.filter((item) => item.id !== id);
-    try { this.getStorage()?.setItem(STORAGE_KEY, JSON.stringify(local.filter((item) => item.id !== id))); }
+    try { this.getStorage()?.setItem(this.storageKey(), JSON.stringify(local.filter((item) => item.id !== id))); }
     catch (err) { console.warn("[StoryLibrary] Falha ao excluir cache:", err); }
     return local.some((item) => item.id === id);
   }
@@ -202,7 +208,7 @@ export class WhatsAppStoryMediaRepository {
     const story = this.getById(id);
     if (this.remoteCache.some((item) => item.id === id) ||
         /^https?:\/\//i.test(story?.mediaUrl || "")) {
-      await gatewayPost("/status/library/delete", { id });
+      await gatewayPost("/status/library/delete", { id }, this.connectionId);
     }
     this.delete(id);
   }
@@ -211,7 +217,7 @@ export class WhatsAppStoryMediaRepository {
     const story = this.getById(id);
     if (!this.remoteCache.some((item) => item.id === id) &&
         !/^https?:\/\//i.test(story?.mediaUrl || "")) return;
-    await gatewayPost("/status/library/posted", { id });
+    await gatewayPost("/status/library/posted", { id }, this.connectionId);
     this.remoteCache = this.remoteCache.map((story) => story.id === id
       ? { ...story, timesPosted: story.timesPosted + 1, lastPostedAt: new Date().toISOString() }
       : story);

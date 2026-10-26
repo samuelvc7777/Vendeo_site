@@ -44,7 +44,8 @@ export class SupabaseChatStageRepository implements IChatStageRepository {
   }
 
   private mapRowToStage(row: any): ChatStage {
-    const goals: ConversationGoal[] = Array.isArray(row.goals) ? row.goals : [];
+    const rawGoals = Array.isArray(row.goals) ? row.goals : [];
+    const goals: ConversationGoal[] = rawGoals.length === 1 && Array.isArray(rawGoals[0]) ? rawGoals[0] : rawGoals;
     return {
       id: row.id,
       name: row.name,

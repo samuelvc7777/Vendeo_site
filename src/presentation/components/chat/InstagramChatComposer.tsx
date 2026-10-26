@@ -21,9 +21,11 @@ export interface InstagramChatComposerProps {
   onSelectMediaFile: (file: File) => void;
   onStartRecording: () => void;
   onOpenVault: () => void;
+  onOpenImageVault?: () => void;
   onOpenConsole?: () => void;
   onOpenStickers?: () => void;
   variant?: "instagram" | "whatsapp";
+  draftKey?: string;
 }
 
 export const InstagramChatComposer = memo(
@@ -37,13 +39,25 @@ export const InstagramChatComposer = memo(
       onSelectMediaFile,
       onStartRecording,
       onOpenVault,
+      onOpenImageVault,
       onOpenConsole,
       onOpenStickers,
       variant = "instagram",
+      draftKey,
     },
     ref
   ) {
-    const [inputText, setInputText] = useState("");
+    const [inputText, setInputText] = useState(() => {
+      try { return draftKey && typeof sessionStorage !== "undefined" ? sessionStorage.getItem(`vendeo_draft:${draftKey}`) || "" : ""; }
+      catch { return ""; }
+    });
+    useEffect(() => {
+      if (!draftKey) return;
+      try {
+        if (inputText) sessionStorage.setItem(`vendeo_draft:${draftKey}`, inputText);
+        else sessionStorage.removeItem(`vendeo_draft:${draftKey}`);
+      } catch { /* A escrita continua disponível se o navegador bloquear o armazenamento. */ }
+    }, [draftKey, inputText]);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
     const mediaInputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +106,7 @@ export const InstagramChatComposer = memo(
       if (e) e.preventDefault();
       if ((!inputText.trim() && !hasPendingImage) || isUploadingMedia) return;
       const textToSend = inputText.trim();
+      try { if (draftKey) sessionStorage.removeItem(`vendeo_draft:${draftKey}`); } catch {}
       setInputText("");
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -185,6 +200,21 @@ export const InstagramChatComposer = memo(
                     </span>
                     <span className="font-medium">Cofre</span>
                   </button>
+                  {onOpenImageVault && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAttachmentMenuOpen(false);
+                        onOpenImageVault();
+                      }}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-[#111b21] hover:bg-black/[0.05] active:scale-[0.985] dark:text-white dark:hover:bg-white/[0.06]"
+                    >
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-pink-500 text-white">
+                        <Camera className="h-4 w-4" />
+                      </span>
+                      <span className="font-medium">Cofre de Fotos</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

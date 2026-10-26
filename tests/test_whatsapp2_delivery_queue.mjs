@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 
 import { enqueueAndWaitWhatsApp2Delivery } from "../supabase/functions/api/whatsapp2_gateway.ts";
 
+test("envio recusa conta diferente da conversa antes de consultar ou alterar a fila", async () => {
+  const result = await enqueueAndWaitWhatsApp2Delivery({
+    supabase: { from() { assert.fail("conta divergente não pode acessar a fila"); } },
+    queueId: "cross-account", conversationId: "wa2:account-5511999998888:551177776666@c.us",
+    gatewayAccountId: "account-5521999998888", recipientId: "551177776666@c.us", kind: "text", text: "Teste",
+  });
+  assert.equal(result.success, false);
+  assert.equal(result.error, "whatsapp2_delivery_account_mismatch");
+});
+
 test("fila persiste o nome e o pedido de salvar contato sem confundir isso com o resultado da mensagem", async () => {
   let insertedDelivery = null;
   const supabase = {

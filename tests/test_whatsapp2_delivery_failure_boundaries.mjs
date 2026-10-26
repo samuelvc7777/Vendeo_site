@@ -14,7 +14,7 @@ async function runWorker({ mediaError, finalizeError = false, missingProviderId 
     state: { status: 'ready' }, deliveryWorkerRunning: false,
     currentWhatsApp2AccountId: () => 'account-5511999999999',
     WORKER_ID: 'worker', WHATSAPP2_DELIVERY_BATCH_LIMIT: 1, WHATSAPP2_DELIVERY_MAX_ATTEMPTS: 3,
-    supabase: { rpc: async () => ({ data: [{ id: 'job', kind: mediaError ? 'audio' : 'text', attempts: 1, recipient_id: '5511888888888@c.us', text_content: 'Teste' }], error: null }) },
+    supabase: { rpc: async () => ({ data: [{ id: 'job', gateway_account_id: 'account-5511999999999', conversation_id: 'wa2:account-5511999999999:5511888888888@c.us', kind: mediaError ? 'audio' : 'text', attempts: 1, recipient_id: '5511888888888@c.us', text_content: 'Teste' }], error: null }) },
     sendTextInternal: async () => { sends++; if (sendError) throw new Error(sendError); return missingProviderId ? {} : { id: 'provider-confirmed' }; },
     sendMediaInternal: async () => { sends++; throw new Error(mediaError); },
     finalizeDeliveryJob: async (args) => {
