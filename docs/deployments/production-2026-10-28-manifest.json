@@ -1,0 +1,1854 @@
+{
+  "recordedAt": "2026-10-28T14:23:40.097Z",
+  "sourceCommit": "113d373391136c3773411333173e8dbd76358c31",
+  "officialBase": "891486296d783d76ce34dc8ad8d3cbfd1ea92c9e",
+  "remoteMain": "fdca9685fff9fe924ac76c02b51e1972263d5991",
+  "site": {
+    "url": "https://vendeo-e755e.web.app",
+    "version": "a61062ba6dd63f75",
+    "uploadedFiles": 86,
+    "ordinaryFiles": 84,
+    "reservedPaths": [
+      "/__/firebase/init.js",
+      "/__/firebase/init.json"
+    ],
+    "parity": "84/84 após normalizar somente o BUILD_ID aleatório do Next.js",
+    "assets": [
+      {
+        "path": "/__next._tree.txt",
+        "servedSha256": "db74dc36ca9fd75fa99a2033400fb671126f70b90be755797247f89c745182ab",
+        "uploadedGzipSha256": "77a87b30b2b00e365ead561507a35da2f7cada74fdc2bbce1f2cdfb5bb3daeb5"
+      },
+      {
+        "path": "/__/firebase/init.js",
+        "servedSha256": "1f06460b3693d9549e41fdccb81b1b8a5072c65f3a1d34eb8f91b270985f3add",
+        "uploadedGzipSha256": "9d739e5803e7f94024799768db92d445b29066e2b1568c7f0c0cd0699e88aa9b"
+      },
+      {
+        "path": "/__next._full.txt",
+        "servedSha256": "2f2a43217755149fafe45c8cf670300211bdc9a5ebec0b2172ee1d9bddf70afb",
+        "uploadedGzipSha256": "cc7f205c92ac550792454bdb65d4815939b5341ceb10659cd6a76c3ccc701f67"
+      },
+      {
+        "path": "/__next.__PAGE__.txt",
+        "servedSha256": "337221d55aa31cd7f4eac36970d78ed28ceb9df7685de248acbd8c62aeadb3d1",
+        "uploadedGzipSha256": "59dcd681dbbfda2129b0d152f8d6796d93fc2774df207e9033bc652e4c7a4f36"
+      },
+      {
+        "path": "/__/firebase/init.json",
+        "servedSha256": "b718e4c6ade5b0178de21d9aa96cbcb7dad343a7ec91932eeb4c070a205f80e9",
+        "uploadedGzipSha256": "cfe21fb8d1cbe0d2e944d4b76b5fb20302a62311a1a8b8bcf49058c6d0d8956c"
+      },
+      {
+        "path": "/404.html",
+        "servedSha256": "d3c46859344310bdd5b301ac0afbcff10ce9e8ceb2d905b6371548b172a4ff8d",
+        "uploadedGzipSha256": "5347d45f3e992ead646290c89fcb9dc747a408862e38e448a89b7d2b0b2b01fd"
+      },
+      {
+        "path": "/_next/static/c-OzUm0rKGeV7TDKJSUGn/_buildManifest.js",
+        "servedSha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea",
+        "uploadedGzipSha256": "dcbe1c9b9159ca21caea98e1bad364012ae284e9551375ca62b83d2811efac91"
+      },
+      {
+        "path": "/_next/static/c-OzUm0rKGeV7TDKJSUGn/_ssgManifest.js",
+        "servedSha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00",
+        "uploadedGzipSha256": "dc28a4dc92fe352ed5d2201bd3972ce47691bc8e89e0400a68d1541d0567c6d5"
+      },
+      {
+        "path": "/_next/static/chunks/03q_aesg-_6nc.js",
+        "servedSha256": "171e6ab627711a774fc0d452445cb5fc2604d8174b6791f0af3017134b1f612b",
+        "uploadedGzipSha256": "e3cca75e93b95c82f755e5ef07224a64ba5de5cf513ca8f31dc55b8bfcaae869"
+      },
+      {
+        "path": "/_next/static/chunks/0cz1d0mv5g_q7.js",
+        "servedSha256": "0973c1d64c88adc8e3c950410cb58b288f72118d5965b78049438deb8f2f9683",
+        "uploadedGzipSha256": "18e28d3214eda45048d80d3925ea7627b809e69ad2e95f7f98459e9146a61c3d"
+      },
+      {
+        "path": "/_next/static/chunks/07vwp-yql73-h.js",
+        "servedSha256": "4eeb97c69cd0ab5e08c873922e6aa6e383c75f2e2ff6d28af14d3c85a19183ed",
+        "uploadedGzipSha256": "6e0a5e5106a1c6a75f080d0fc20670c8809dd5f213fdda4bb314420c82ba4fd8"
+      },
+      {
+        "path": "/_next/static/c-OzUm0rKGeV7TDKJSUGn/_clientMiddlewareManifest.js",
+        "servedSha256": "5483e3295dc35dfe29ea932efc85341c916f10ff78ff5b0e965e003710893a4a",
+        "uploadedGzipSha256": "5e57f6166b702492ab9551af57e4546546c184673a4c0432f73b96f62820f7eb"
+      },
+      {
+        "path": "/_next/static/chunks/0h2qsuyze9ds1.js",
+        "servedSha256": "48149c53d721866862423503a65dddedeee9671f8c59c7ed60f80bb6008285aa",
+        "uploadedGzipSha256": "92e864fa68d23df9f9c05cbf3c0a6ad6c19b437486e08eba6f82d26d743679ec"
+      },
+      {
+        "path": "/_next/static/chunks/0jvhpaew_uadu.js",
+        "servedSha256": "a10568306b34908511b49eb596785512026fba4f2d605bd6406696b9fd767c74",
+        "uploadedGzipSha256": "f614da4c7b0ceae9a0ee9a8ce3979c54ccab4fcd5738c656751e37528b2e7576"
+      },
+      {
+        "path": "/_next/static/chunks/0y-dctk-kmqss.js",
+        "servedSha256": "719d2c591158bb034fd3952ad1f59d44c3d51c9263ed09e101e06f673a0ced5e",
+        "uploadedGzipSha256": "756b2feb2d29b2d9d365da7f0d349d744d817496a79c2bd7d9b2748af18faf63"
+      },
+      {
+        "path": "/_next/static/chunks/1egpo-txtgh6g.css",
+        "servedSha256": "f578cdcedc951c8e91c4a50f9efe4b16c1e6dd5215744d14805e7470dc7d81e4",
+        "uploadedGzipSha256": "1ab9aa7605f47510bc4dac8c637e7fec18fd9b1ee0ef6f98e9281ea0ce9a9741"
+      },
+      {
+        "path": "/_next/static/chunks/0ns6_h9k3xqfy.js",
+        "servedSha256": "c6ba31468dce4364e366f4e670f3ee19f9273c8656b3215d0808b629811ee878",
+        "uploadedGzipSha256": "e25c9e3aeb2be65d5f15d77d284780c6d7b2c4f5942fcee4390f72cea39a7e7d"
+      },
+      {
+        "path": "/_next/static/chunks/21cvzosu4dvce.js",
+        "servedSha256": "ad3b76caa23e842943dac9ef3b1d940905c9a410c5e4f7f143401229a54fc20d",
+        "uploadedGzipSha256": "48af6a88d51b21f7650d55b84ed1c54d506122dd6988cedd4a66f6d1f4760886"
+      },
+      {
+        "path": "/_next/static/chunks/3d-1vk5hzu5rq.css",
+        "servedSha256": "72203cb8520e39c7027e84a18551ddf8cdbb9fdcf6d68e797768c81d8843e4c7",
+        "uploadedGzipSha256": "173fd7b6136f8667aea5066cc4628ff11ab34f9cb8eff71ad6125dcb39362100"
+      },
+      {
+        "path": "/_next/static/chunks/3atd3z57af1nq.js",
+        "servedSha256": "0dba8e312bd217ac54b6a40e591caa2ed6c94b78588c27fb6dda5a0162be7b0f",
+        "uploadedGzipSha256": "31ad7fd3524a4c5b9dfbdfff54aa802b7e646c318f274d0ccbfea8df9ddb6036"
+      },
+      {
+        "path": "/_next/static/chunks/3b2ejk58gsjg6.js",
+        "servedSha256": "e0dc0c43777719c92dedf9387538bd45bd192c0f4eefc8cf4025eb3bee07ab18",
+        "uploadedGzipSha256": "7f3ae5080e03962cb592734ada12be11bd345c0948de0a59284e573d82bf29a3"
+      },
+      {
+        "path": "/_next/static/chunks/3j6647k7px6xb.js",
+        "servedSha256": "c8f23f0a969861a6060942ff8f46971d92aa5c876960cbd57cdb8370eaeb2397",
+        "uploadedGzipSha256": "78c4f9c838da315248df976b563471d807b912455715d6a616c4bfa00eddd7ba"
+      },
+      {
+        "path": "/_next/static/chunks/21ov0xdg_4phb.css",
+        "servedSha256": "5bed397befb4232e9669a6b4f1c5f5228ef9116544fbb38aabc6c48296ca4058",
+        "uploadedGzipSha256": "36c8d82c643105d6ef43e9f3053c7d79e50cb0a29da50e62fd54a51c7ac06cb4"
+      },
+      {
+        "path": "/_next/static/chunks/2z3sh82dl8glu.js.map",
+        "servedSha256": "a8ae20908e3aa88a005bf3b5cadedd7f1107cf28a6e4db9da80280fe9f54de95",
+        "uploadedGzipSha256": "ba0f58f418590cad245584efbe7d839d03831a0e635ca605bcb89e8d1a8a5919"
+      },
+      {
+        "path": "/_next/static/chunks/turbopack-024pu-jlqsc1p.js",
+        "servedSha256": "88b5a899d8869fef88b86c932467683cb60ba451ad14d58df9639e37796a076a",
+        "uploadedGzipSha256": "51c071dc0b758282e8c130b2bf89bb0fa5614cb67e659c48368a1d9aff0697e9"
+      },
+      {
+        "path": "/_next/static/chunks/turbopack-worker-2ru9m5gbh1na6.js",
+        "servedSha256": "861da5809b4f43b053fab88fe560f16efe31827655a06502ada9274a742852de",
+        "uploadedGzipSha256": "b59ca4dea4c866ff88333b3d63354a757c8726ce582944f3acd66a17cf1bb4c9"
+      },
+      {
+        "path": "/_next/static/media/53b9e256198e5412-s.390ncx5urfkfu.woff2",
+        "servedSha256": "f689f638f29fff460a2d5749edb5d5c38d7bef0389f32032d871f23fc6ebb008",
+        "uploadedGzipSha256": "4e4038e4cb17b1349cc9c717fca51c0e00782a2093bd8a939efc70e5d78bceb7"
+      },
+      {
+        "path": "/_next/static/media/4fa387ec64143e14-s.2tuy5pz7dlieh.woff2",
+        "servedSha256": "75b3bedbebc35f347c0ae3b416aa871941555357e7b0f83767eb5987875589ed",
+        "uploadedGzipSha256": "fbc4b0ae2f6fd54ec1611da4612c306a0b574d138013f467a4e90af735cc97a4"
+      },
+      {
+        "path": "/_next/static/chunks/turbopack-1g12uh3ub2lm4.js",
+        "servedSha256": "7a5cfdadece440b33473a5ae0455126ae0d7ba1293c7fd5ce361794fdd4e3425",
+        "uploadedGzipSha256": "a1ee94d50c9ac3db7ad2f31131d613cf6445457b91a0fd88ace4a977d2d58586"
+      },
+      {
+        "path": "/_next/static/media/5ce348bf30bf5439-s.31988l_ccedte.woff2",
+        "servedSha256": "e27f657e38d52887baa3b6b2f812bef93dfdd356f0810e40edd4ee284cc7e9f6",
+        "uploadedGzipSha256": "03421b339031c94c0ccae52a61151ef819a86c92f3253fc112962cd66a237712"
+      },
+      {
+        "path": "/_next/static/media/797e433ab948586e-s.p.0r6juujl39pe6.woff2",
+        "servedSha256": "5f3d6ad60f29d6cb708414ec6887163d63bf197377ef5417d2483ff31ace6c3b",
+        "uploadedGzipSha256": "17e78e12743a2b7e03c7884282eb91f02614295c7be958eccadf5bae76736f95"
+      },
+      {
+        "path": "/_next/static/media/6306c77e7c8268e4-s.2dbetqa9o8jxf.woff2",
+        "servedSha256": "d67e4a94ba498635f764ddca7d1ec4271f5642f032eb24b426764480f66f8497",
+        "uploadedGzipSha256": "ea578227833360be14c93f3d1deefa6c7b0121157da02c1196802ea37710ef38"
+      },
+      {
+        "path": "/_next/static/media/8a480f0b521d4e75-s.1qq4vpdcun5oj.woff2",
+        "servedSha256": "6129fc8571c3e0cb0a4c41f5160c974a843b055009dc4ad8858bd808e18a2d86",
+        "uploadedGzipSha256": "9e317fb808ec4714d6144f277f4de983b017fe5f3753369936ad5359f06b02e5"
+      },
+      {
+        "path": "/_next/static/media/7d817b4c03b0c5f1-s.1uyisp29ctx0d.woff2",
+        "servedSha256": "16e1d48b6dd29eb240aec5db36184eb182933c082cd43de7f35af686d58087d2",
+        "uploadedGzipSha256": "da5b8e216b8eee28084975264aa5d7f97a5d3f120e08eec863ecd115d25dd71f"
+      },
+      {
+        "path": "/_next/static/media/7178b3e590c64307-s.21jp631_3pja2.woff2",
+        "servedSha256": "58a6b173d5ca1dec92166ea3c6cb1a84a4144556d10928ac14e8e6b40e4787bd",
+        "uploadedGzipSha256": "9db501bf314e8bcbd31ac7f79495753a2a2da4243c362edc5f07928f3c9146a0"
+      },
+      {
+        "path": "/_next/static/media/bbc41e54d2fcbd21-s.1rgnod-3esatf.woff2",
+        "servedSha256": "745994b5cd950ec201b66526375f057d540847cccfc70f4f24f5f571d26d3923",
+        "uploadedGzipSha256": "4dbb7256d9d00e9a17abbebde8158aed37ed52ea1eb5d89ee1bf46c267c6503c"
+      },
+      {
+        "path": "/_next/static/media/caa3a2e1cccd8315-s.p.0wgildi0cnwt9.woff2",
+        "servedSha256": "9b6f5ff45b278c744b5f379a2c4ecbaf858a842b8eaf82ac8d21b699ca16c608",
+        "uploadedGzipSha256": "a1862350cad8975186ec7d95e2c6f6ad548d6bd2219ffaa79420067bbf14ad49"
+      },
+      {
+        "path": "/_next/static/media/fef07dbb0973bf53-s.3p2_lha1f2xer.woff2",
+        "servedSha256": "b7a545bbb08256bd809f11cfe66d88da3e22d169ea4407737b1ef0ec1ed3d791",
+        "uploadedGzipSha256": "4cd714514fc3454c1fdc247cf7be84c91aec7662e952cfe8c11cb8766ef8c3f4"
+      },
+      {
+        "path": "/_next/static/media/favicon.2vob68tjqpejf.ico",
+        "servedSha256": "2b8ad2d33455a8f736fc3a8ebf8f0bdea8848ad4c0db48a2833bd0f9cd775932",
+        "uploadedGzipSha256": "36eaaa9259cda5765c4061fa8b7bf61c74dbda3a2a721a0811c73f5dae61a2e9"
+      },
+      {
+        "path": "/_next/static/media/worker.35blsg0sxlqn3.js",
+        "servedSha256": "feff0ac937ea225e997e1fae997a74f8b8d572423a526da59eb56624b1f3cde7",
+        "uploadedGzipSha256": "1379abf9c9403ab68fda3f1a2a825cc82bfd8db3ea38f65b3f851ae6dd667773"
+      },
+      {
+        "path": "/_not-found.txt",
+        "servedSha256": "6ef39af118fea6bf705d5f324bc1799a7fc8f393c777baa51820420063ad06ab",
+        "uploadedGzipSha256": "749ab36633cce536aea17b208e0b36b147f7c115e8ada970def6765b8e9e015d"
+      },
+      {
+        "path": "/_not-found.html",
+        "servedSha256": "d3c46859344310bdd5b301ac0afbcff10ce9e8ceb2d905b6371548b172a4ff8d",
+        "uploadedGzipSha256": "5347d45f3e992ead646290c89fcb9dc747a408862e38e448a89b7d2b0b2b01fd"
+      },
+      {
+        "path": "/_not-found/__next._full.txt",
+        "servedSha256": "6ef39af118fea6bf705d5f324bc1799a7fc8f393c777baa51820420063ad06ab",
+        "uploadedGzipSha256": "749ab36633cce536aea17b208e0b36b147f7c115e8ada970def6765b8e9e015d"
+      },
+      {
+        "path": "/_not-found/__next._not-found/__PAGE__.txt",
+        "servedSha256": "b7dd5bded7bd176968d493488a980a33d22a828270322a52128cf996674e42c4",
+        "uploadedGzipSha256": "e4d2e0417ae68a593781890aafbf85093d4f0ffdbabf546cc9aa2604b1d5729c"
+      },
+      {
+        "path": "/_not-found/__next._tree.txt",
+        "servedSha256": "bdeccd90d4a4fd696888a7973c70f6d4f8d483a93cf6e4fd98f690ab4b49b4c1",
+        "uploadedGzipSha256": "2a1037fe93c4d33e8cf0ecb3a2360dd43248cd7841b670ae87d388eb165c22f4"
+      },
+      {
+        "path": "/data-deletion.txt",
+        "servedSha256": "c1df05be937d2ed123f3b854776d92ec0db4604d6c9bc5ed1b5aeffe7d009888",
+        "uploadedGzipSha256": "f1a5a2e7cbca1d92ae7f8855d28837de6e5b7b18186b0877c3c012e40e3b1701"
+      },
+      {
+        "path": "/data-deletion/__next._full.txt",
+        "servedSha256": "c1df05be937d2ed123f3b854776d92ec0db4604d6c9bc5ed1b5aeffe7d009888",
+        "uploadedGzipSha256": "f1a5a2e7cbca1d92ae7f8855d28837de6e5b7b18186b0877c3c012e40e3b1701"
+      },
+      {
+        "path": "/data-deletion.html",
+        "servedSha256": "9c81dac9f39476900207004746755c60df608a53f71ff8104cc6948db0966b5e",
+        "uploadedGzipSha256": "0801a16300edead0fb842d40388626e41fdf581e3191a07053b9e6597dd70a49"
+      },
+      {
+        "path": "/data-deletion/__next._tree.txt",
+        "servedSha256": "b4089746076784657332c428570b1b66d8e3ca8e5cd71f6a96db73ea388e10db",
+        "uploadedGzipSha256": "5d5ffc10f225690731701d8a2f681849c8aa71687fb754a32308b4d1103f8df0"
+      },
+      {
+        "path": "/favicon.ico",
+        "servedSha256": "2b8ad2d33455a8f736fc3a8ebf8f0bdea8848ad4c0db48a2833bd0f9cd775932",
+        "uploadedGzipSha256": "36eaaa9259cda5765c4061fa8b7bf61c74dbda3a2a721a0811c73f5dae61a2e9"
+      },
+      {
+        "path": "/file.svg",
+        "servedSha256": "2b67812c325c199a02536cdbeea0c593a72f707d323b72ee3e08dbab06753bd4",
+        "uploadedGzipSha256": "5a09df6187e21aa9a7d05094389385876ac93c818e1dcbb77a26a8fe408bf79c"
+      },
+      {
+        "path": "/data-deletion/__next.data-deletion/__PAGE__.txt",
+        "servedSha256": "4fcc466016bf921d3534673e09e88c2f911af00f4482974754c0c6bb81dfbb79",
+        "uploadedGzipSha256": "6bf08513825a36b6dc71dcf331279cd580571ca20ae8ae8ad6f3848ce00bf30b"
+      },
+      {
+        "path": "/ffmpeg/ffmpeg-core.js",
+        "servedSha256": "b266ab5b952555881dd6310663986994a182acb2b7ff25cf10a25f7a37ac2b21",
+        "uploadedGzipSha256": "ddcc6ac56666de5ad4aa0ecda829029506b65e6e437834c9a0cb0714cf8dfc8f"
+      },
+      {
+        "path": "/ffmpeg/ffmpeg-core.wasm",
+        "servedSha256": "9f57947a5bd530d8f00c5b3f2cb2a3492faa7e5d823315342d6a8656d0a6b7b7",
+        "uploadedGzipSha256": "1767a2d0c6d6b14de37876261443397cecd591f298b162eded99018de4f6355d"
+      },
+      {
+        "path": "/firebase-messaging-sw.js",
+        "servedSha256": "aa702f9ded9a3e6c59bfc7c97e9ad02e8b82d00929252f3bfdfbe9e04bae3758",
+        "uploadedGzipSha256": "5f9acad2a05905f688f537738a339496900202ec01c0fdd01e890eb14c87ef51"
+      },
+      {
+        "path": "/icons/icon-512.png",
+        "servedSha256": "3aaf94d6e033b52fabdef0e30a584078c1138c125935a0e32c34189fadfde708",
+        "uploadedGzipSha256": "ed931b608f978a20be66eed810785355efafb9dff5d651d10183bc12296b14c4"
+      },
+      {
+        "path": "/globe.svg",
+        "servedSha256": "b614b9bf183925957661ac851498fe1d8029fd43a62fbfed86f9e2624a57e7cf",
+        "uploadedGzipSha256": "6502a3e6120bf2d6e8417e7c40bb57fb8a6954de9c86d3f43076a75b60cd23a2"
+      },
+      {
+        "path": "/icons/apple-touch-icon.png",
+        "servedSha256": "92af42032d670754b2d51a3d9e1238db2998d8a85742cc2d4a28ef9af37630aa",
+        "uploadedGzipSha256": "455bc00b266ba55d0357932461fdd2edc8f065e52c5d628e7d0f68b8f14cc54c"
+      },
+      {
+        "path": "/icons/icon-192.png",
+        "servedSha256": "e1df165cdadda99b097910ba6de3395723c406f94a8fc21f4663d66e46893ac9",
+        "uploadedGzipSha256": "4536891cddd754cfdb8036e3377271e9f93932fea512aa7fc4432ce1d7475d1d"
+      },
+      {
+        "path": "/icons/icon-32.png",
+        "servedSha256": "ad981de46874e7ea50c54c52a7810a07126e40290d304976c5b593513a807c5d",
+        "uploadedGzipSha256": "adb9e074d2d8924b5bb4b723c117f6a799c9c66e09b87f83706ffce6513f5a7c"
+      },
+      {
+        "path": "/images/default-avatar.svg",
+        "servedSha256": "30c12d2512672f793e05fa19c51ed02fdc6f7647cfe3c3f159070a9254c76e2f",
+        "uploadedGzipSha256": "f2006a46e35f1d53884b8ebae9ed92d9fc219548ba05d8de3ee1644d75649df8"
+      },
+      {
+        "path": "/index.txt",
+        "servedSha256": "2f2a43217755149fafe45c8cf670300211bdc9a5ebec0b2172ee1d9bddf70afb",
+        "uploadedGzipSha256": "cc7f205c92ac550792454bdb65d4815939b5341ceb10659cd6a76c3ccc701f67"
+      },
+      {
+        "path": "/icons/vendeo-512.webp",
+        "servedSha256": "6f57432fb601256131c4d36ef34e07cdbf24fa7840cf58ea979d8a57d02b08c9",
+        "uploadedGzipSha256": "10f55ab6c13c48ceeeebf0ffd04b52dcf99ce1131d699cdc7daea4f7118d98d9"
+      },
+      {
+        "path": "/index.html",
+        "servedSha256": "189bc74e099b367218b0088cb90be0c061699b738849a812f2292e169ccf2ff3",
+        "uploadedGzipSha256": "109917ce01c35cad4fc3b849e202b9c64719fdae700fd70a0b60b5e3ea8a837a"
+      },
+      {
+        "path": "/icons/icon-maskable-192.png",
+        "servedSha256": "9e1d36bbc531f10a138d002a7fc70de256cb7c562357c02a1a6dc02855f2ff81",
+        "uploadedGzipSha256": "2258c06011374fd372c8b347329de4bcefa83e7652d01b26006b659c6b38dc70"
+      },
+      {
+        "path": "/icons/icon-maskable-512.png",
+        "servedSha256": "337ec915930fa3d11f48fc366d1f146b88650ab7fc3171932aec8d204e7f66b1",
+        "uploadedGzipSha256": "1d375192c819dbef7a1a6b2f987554795bdb9e77bf1f81492cd99e036dd7d527"
+      },
+      {
+        "path": "/manifest.json",
+        "servedSha256": "e888a97619d6c0b64b5448c1f580dd9ed93c55f5909c39cc9beb75d7c531efc0",
+        "uploadedGzipSha256": "5244a4de0e6137518e7dd634040bbbc9f327c19ad20298e60966b10d21edf6e8"
+      },
+      {
+        "path": "/next.svg",
+        "servedSha256": "55995dfad6ecb4945a1e856ddca03c5e16aa5bf13fd21b4df6a74ae79357bcfc",
+        "uploadedGzipSha256": "0665b9ab4493aa9d7e988b57024e28772ae543e804b8cf6b0a3633854b7c3c7f"
+      },
+      {
+        "path": "/operator/__next._tree.txt",
+        "servedSha256": "49abbdb401946f246aad00d3a875117aeb4da1509eadb1e691cc07a6f87d773b",
+        "uploadedGzipSha256": "272259d7249a986327528ca745188f6589137897fb2e81e375bd81e7c274fba5"
+      },
+      {
+        "path": "/operator.txt",
+        "servedSha256": "3bf78217cf18f7b2eb8efbc7de7e90e62faaab43dbe62f28745b4a82a8d201e5",
+        "uploadedGzipSha256": "79c2689ff47f9ff9585c216dd021d58cdddf05382e6945d304ba1ff63de1f029"
+      },
+      {
+        "path": "/operator/__next._full.txt",
+        "servedSha256": "3bf78217cf18f7b2eb8efbc7de7e90e62faaab43dbe62f28745b4a82a8d201e5",
+        "uploadedGzipSha256": "79c2689ff47f9ff9585c216dd021d58cdddf05382e6945d304ba1ff63de1f029"
+      },
+      {
+        "path": "/operator.html",
+        "servedSha256": "ccd455cc228fe4acaf35ee27141b618ce64f7ec8f1891698d57997a1434222b8",
+        "uploadedGzipSha256": "2d88fdc9e06e53e62b2ec1cb841c8686fbd0376c4e51069fcadde57a4628c8b7"
+      },
+      {
+        "path": "/operator/__next.operator/__PAGE__.txt",
+        "servedSha256": "b34fa22fca1ea11fce5a7b6fedb228ca63014627678996f475c9cb762852ca5d",
+        "uploadedGzipSha256": "0321160510c93215a8c7dc445e36d52e94241e658a793883c79b8944bf64dc73"
+      },
+      {
+        "path": "/privacy/__next.privacy/__PAGE__.txt",
+        "servedSha256": "2c165a5325d450b10b2ea37bf2d0ceaa7e2ed3a998b28ab3cb9e9b56436806eb",
+        "uploadedGzipSha256": "c84b4e9de57cabe33584b3cab533ee03855d72eef1c73865882d47a1e2e87aa6"
+      },
+      {
+        "path": "/privacy.txt",
+        "servedSha256": "84afbed4514b62fcbb8e3e3a30011c9a0ab9639f39c0f50610a927ddf9b4d0f8",
+        "uploadedGzipSha256": "21ef6b49e6b7f2429776747791a44f5da00c788320dbebe6c0f4f9707ee0fc65"
+      },
+      {
+        "path": "/privacy/__next._full.txt",
+        "servedSha256": "84afbed4514b62fcbb8e3e3a30011c9a0ab9639f39c0f50610a927ddf9b4d0f8",
+        "uploadedGzipSha256": "21ef6b49e6b7f2429776747791a44f5da00c788320dbebe6c0f4f9707ee0fc65"
+      },
+      {
+        "path": "/privacy/__next._tree.txt",
+        "servedSha256": "aa2e8b7d2e6e540355f45d5cf6c61489ee9de7f876727ac30494b6de0834bcb2",
+        "uploadedGzipSha256": "146cb9a23c509b6ac79f593375e810df0e13169342c8f6a6efd837f488fb3320"
+      },
+      {
+        "path": "/privacy.html",
+        "servedSha256": "e852d9e2ca9ef6439d997e0378a20ae33edce24e8ea3535399e375f8828e9c11",
+        "uploadedGzipSha256": "6256196605393f1a88a2ca4f0105c8bc96d0405d2db869cfcbf843b0b5bc6729"
+      },
+      {
+        "path": "/terms/__next._tree.txt",
+        "servedSha256": "b5b611b12fd805aeee142ea9f1bb134a71d049eb0b67723f9ae55919b079a96a",
+        "uploadedGzipSha256": "5b5620eec670543e17035fe0b9f32ba716e6e1feb593911e0bbc937d27ba83e3"
+      },
+      {
+        "path": "/terms/__next._full.txt",
+        "servedSha256": "1fb9fb4a4543e6db01939a284d518be8d7aa2c86501c11933513b6d610db7c71",
+        "uploadedGzipSha256": "2c9f5326c40e6517a4d1a9560e95e6e3d4448ec58a5e78eb70e3e5ac0ad05774"
+      },
+      {
+        "path": "/terms.txt",
+        "servedSha256": "1fb9fb4a4543e6db01939a284d518be8d7aa2c86501c11933513b6d610db7c71",
+        "uploadedGzipSha256": "2c9f5326c40e6517a4d1a9560e95e6e3d4448ec58a5e78eb70e3e5ac0ad05774"
+      },
+      {
+        "path": "/terms/__next.terms/__PAGE__.txt",
+        "servedSha256": "92a7033cefbd67d1595aaa09c198ef4db90c9ec0920798025721da1aeb30b94b",
+        "uploadedGzipSha256": "7020a7a64f43c8cfcce7eb7da237f2860919c98d16f6329ae1e297cb0aa1b23b"
+      },
+      {
+        "path": "/terms.html",
+        "servedSha256": "4659069f81e24d1e39ef97601d0b85e335684875378ea7f6b9af9921c67be175",
+        "uploadedGzipSha256": "407d66cb89d15cc0586d25607ad4fcf9b84ac8fb9bdc296b4cf973cc71bc70cb"
+      },
+      {
+        "path": "/vercel.svg",
+        "servedSha256": "f081337b2fee635b455b63275406a3e7f39d6a014e25ad90dab5a67e62a12ac4",
+        "uploadedGzipSha256": "529a1a21b4a82475a82db26173c28d7b27e2dc9d4b900eaf1c5329d96eea4ddd"
+      },
+      {
+        "path": "/wa2-config.json",
+        "servedSha256": "33c1a701143f21f82098d38de5931e53cf48e1f93faf9cb7a9c8f260d284540a",
+        "uploadedGzipSha256": "336d19165120490e2e85885791c29b2ccac3e10a59fb8a612f468366b3f7d5f6"
+      },
+      {
+        "path": "/window.svg",
+        "servedSha256": "644768c4aaeb4767bce293344eeb0c125fb804a94d801440424072202d85e3a1",
+        "uploadedGzipSha256": "6bd2003bd35bb32c1c0d99ab3aeac0cc1edaefd79f27df1d954bc87184048d74"
+      }
+    ]
+  },
+  "functions": [
+    {
+      "slug": "api",
+      "version": 635,
+      "status": "ACTIVE",
+      "ezbrSha256": "e9336e076f701463b4dc7664acd926fc523f31fd948448b6ca3ada3e3cfb87e0"
+    },
+    {
+      "slug": "vendeo-brain-mcp",
+      "version": 38,
+      "status": "ACTIVE",
+      "ezbrSha256": "24af8dfdca3584e50b3fe80ba607361790f820dd4e44ee82a88340823f707a4d"
+    },
+    {
+      "slug": "tinder-match-history",
+      "version": 1,
+      "status": "ACTIVE",
+      "ezbrSha256": "824a7a5902f7937b4d74890e18373cd3a452ae383dbfa46334e57c4bd86cbde5"
+    },
+    {
+      "slug": "tinder-unmessaged-matches",
+      "version": 2,
+      "status": "ACTIVE",
+      "ezbrSha256": "bab8d5ddd7be0597a4b8588e911e882e5bdf426528b1d725f401296ebcf04b63"
+    },
+    {
+      "slug": "raffle-draw",
+      "version": 1,
+      "status": "ACTIVE",
+      "ezbrSha256": "dbb632dbf64604eccfd578f6bdbe3121a429e1068940524b57e48764baae58fa"
+    },
+    {
+      "slug": "tinder-pass",
+      "version": 1,
+      "status": "ACTIVE",
+      "ezbrSha256": "13f25f8f3316187f1b3f14bccdf1c6ceffcc8d0d0ec394a80ee547593c31ab1c"
+    }
+  ],
+  "sources": [
+    {
+      "path": "supabase/functions/api/index.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "5eb4b093d1ab0e0c63be7137928775b2b75b67c8b09e8fcb1a4ecaeaa150b019",
+      "localSha256": "93cc348f337a868a0a96894b88b5065b968cddf11a7a6302bbff4f2b1aa5b5ce",
+      "normalizedSha256": "93cc348f337a868a0a96894b88b5065b968cddf11a7a6302bbff4f2b1aa5b5ce",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_orchestrator.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "70077f7f581444c332c41b15c8e2eaca71a66de35081221f7be43ba938116562",
+      "localSha256": "8ccc140553d996daef62d072f062c9160f111cfaa5b1b111f451591d66b34aea",
+      "normalizedSha256": "8ccc140553d996daef62d072f062c9160f111cfaa5b1b111f451591d66b34aea",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_stickers.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "1975a855f49c7c76324c7dd1b71c4fb91e135c29f785d768434f4ec8156bdbdc",
+      "localSha256": "1975a855f49c7c76324c7dd1b71c4fb91e135c29f785d768434f4ec8156bdbdc",
+      "normalizedSha256": "1975a855f49c7c76324c7dd1b71c4fb91e135c29f785d768434f4ec8156bdbdc",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/autopilot_state.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "498816271c639e9cf5531e34312abdb363b728d0bd5feed2134ad4353d682694",
+      "localSha256": "498816271c639e9cf5531e34312abdb363b728d0bd5feed2134ad4353d682694",
+      "normalizedSha256": "498816271c639e9cf5531e34312abdb363b728d0bd5feed2134ad4353d682694",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/web_push.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "2fcc6121c0a76d6a61dcb719d0155b4a3ef44a101f414951e3a0b69f520b992f",
+      "localSha256": "2fcc6121c0a76d6a61dcb719d0155b4a3ef44a101f414951e3a0b69f520b992f",
+      "normalizedSha256": "2fcc6121c0a76d6a61dcb719d0155b4a3ef44a101f414951e3a0b69f520b992f",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/persona_image_access.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "31743fb419802518ea495c02c886697d0fb05e338e1fab93ca7e943eb5523792",
+      "localSha256": "31743fb419802518ea495c02c886697d0fb05e338e1fab93ca7e943eb5523792",
+      "normalizedSha256": "31743fb419802518ea495c02c886697d0fb05e338e1fab93ca7e943eb5523792",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/objective_image_delivery.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "8366bb044c4a40c16a40da69933af88e0247ed0a88bfd19ce454cae4c362b036",
+      "localSha256": "8366bb044c4a40c16a40da69933af88e0247ed0a88bfd19ce454cae4c362b036",
+      "normalizedSha256": "8366bb044c4a40c16a40da69933af88e0247ed0a88bfd19ce454cae4c362b036",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/objective_audio_deadline.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "1abe0cc1dcd7b8b21b2077c1b782150683c4e5fe86b82c49d3e044c7eb5b049f",
+      "localSha256": "1abe0cc1dcd7b8b21b2077c1b782150683c4e5fe86b82c49d3e044c7eb5b049f",
+      "normalizedSha256": "eebdef4ad751a489bd8c8701f9a6346a034de6ba72fca629e234ed2923abbba1",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/whatsapp2_gateway.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "e5a48dd83281a78067c865f3fd761fdbba1c3ce32ec4265afb206ffa1b9d7f28",
+      "localSha256": "e5a48dd83281a78067c865f3fd761fdbba1c3ce32ec4265afb206ffa1b9d7f28",
+      "normalizedSha256": "e5a48dd83281a78067c865f3fd761fdbba1c3ce32ec4265afb206ffa1b9d7f28",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/channel_transfer_service.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "d5c97741faf5bfd9e22a9436e3021e08a91db72f316b43fe5c16dcfc6e628730",
+      "localSha256": "d5c97741faf5bfd9e22a9436e3021e08a91db72f316b43fe5c16dcfc6e628730",
+      "normalizedSha256": "d5c97741faf5bfd9e22a9436e3021e08a91db72f316b43fe5c16dcfc6e628730",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/channel_identity.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "adb093515ce40aa6f716c9a881107cc9ff8bd1551c450c8fdbeafbfc10275ecd",
+      "localSha256": "adb093515ce40aa6f716c9a881107cc9ff8bd1551c450c8fdbeafbfc10275ecd",
+      "normalizedSha256": "adb093515ce40aa6f716c9a881107cc9ff8bd1551c450c8fdbeafbfc10275ecd",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/multichannel_identity_service.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "a233294d4bcc95ab96b8d8ac73b52b7cb42fa4781948aa1539f78d25197b5fdf",
+      "localSha256": "a233294d4bcc95ab96b8d8ac73b52b7cb42fa4781948aa1539f78d25197b5fdf",
+      "normalizedSha256": "a233294d4bcc95ab96b8d8ac73b52b7cb42fa4781948aa1539f78d25197b5fdf",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/channel_transfer_reentry.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "cfb7b4ae3ab1e2c47843f36ee49b66f37d25c9bb02a420b555d9e075360e057c",
+      "localSha256": "cfb7b4ae3ab1e2c47843f36ee49b66f37d25c9bb02a420b555d9e075360e057c",
+      "normalizedSha256": "cfb7b4ae3ab1e2c47843f36ee49b66f37d25c9bb02a420b555d9e075360e057c",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/channel_dispatcher.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "1ccb033c5c079e77b7b424a393552aab7cb31f801907042033322e03e3f72829",
+      "localSha256": "1ccb033c5c079e77b7b424a393552aab7cb31f801907042033322e03e3f72829",
+      "normalizedSha256": "1ccb033c5c079e77b7b424a393552aab7cb31f801907042033322e03e3f72829",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/tinder_match_routes.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "d8bf93eac659f0a62226b8f3514749e06486da134e3c564e5ef978d11f48e28f",
+      "localSha256": "d8bf93eac659f0a62226b8f3514749e06486da134e3c564e5ef978d11f48e28f",
+      "normalizedSha256": "d8bf93eac659f0a62226b8f3514749e06486da134e3c564e5ef978d11f48e28f",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/tinder_account_ai.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "51991fac9e8e32e98b01053dd5ab2e77fc1c493f14a64eb3ccce64d995d5eb01",
+      "localSha256": "a6292f48c8a86a807f8cd21f0a0ecb68aae9619efec5425281d75095ee6bdfcf",
+      "normalizedSha256": "a6292f48c8a86a807f8cd21f0a0ecb68aae9619efec5425281d75095ee6bdfcf",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/tinder_recipient_selection.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "526ec2f349f807e2c2839dbb0584e8b2cc2dacb7fe37850fce16873520f8c460",
+      "localSha256": "526ec2f349f807e2c2839dbb0584e8b2cc2dacb7fe37850fce16873520f8c460",
+      "normalizedSha256": "526ec2f349f807e2c2839dbb0584e8b2cc2dacb7fe37850fce16873520f8c460",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/tinder_approach_runtime.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "b02b7a76425dd57faad4e982366c8aa444dfab902e4f1235055fe89c378a5f2e",
+      "localSha256": "cbb66bae163ba43bf962b351e468534da85ac3cd99ff2d0dde3d7776010fc60a",
+      "normalizedSha256": "cbb66bae163ba43bf962b351e468534da85ac3cd99ff2d0dde3d7776010fc60a",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/tinder_schedule_routes.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "701349e13092f685bc63fb4cf6dc40031ce3d4decf59bfdb97b93157f1afbab8",
+      "localSha256": "c1a2ea98946f077393ee3e9d98deccfbda46c6c874834cbcf6a881447d9d793d",
+      "normalizedSha256": "c1a2ea98946f077393ee3e9d98deccfbda46c6c874834cbcf6a881447d9d793d",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/tinder_approach_console.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "7352e431493190be4867d6f83615ce5de77ab1a95200287568b5abd323facff5",
+      "localSha256": "bdc8679d5f309c081bf6c74a3f238df811a3edfaf8c25b3e30b096fd93c4d004",
+      "normalizedSha256": "bdc8679d5f309c081bf6c74a3f238df811a3edfaf8c25b3e30b096fd93c4d004",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/objective_evidence.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "de4b69135f8eb6ff9bee2d77ccac5deda3012b91cb5b48e2e56cab852c6e06c5",
+      "localSha256": "de4b69135f8eb6ff9bee2d77ccac5deda3012b91cb5b48e2e56cab852c6e06c5",
+      "normalizedSha256": "de4b69135f8eb6ff9bee2d77ccac5deda3012b91cb5b48e2e56cab852c6e06c5",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/greeting_repeat_guard.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "858f253ea97511745434a13ada590445f9dbda44a1aaf8d2392684d56a04b74b",
+      "localSha256": "858f253ea97511745434a13ada590445f9dbda44a1aaf8d2392684d56a04b74b",
+      "normalizedSha256": "858f253ea97511745434a13ada590445f9dbda44a1aaf8d2392684d56a04b74b",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/_shared/stage_authority.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "7265a67c1e91e9308e65bbdcca36b2f57470c3dc1467d1976c39003bb1c7f72e",
+      "localSha256": "7265a67c1e91e9308e65bbdcca36b2f57470c3dc1467d1976c39003bb1c7f72e",
+      "normalizedSha256": "7265a67c1e91e9308e65bbdcca36b2f57470c3dc1467d1976c39003bb1c7f72e",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/autopilot_cycle_safety.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "b0210be2c1988af29c432e93ae9641915f4f16b7b9ad8dd56206c3fd282fdfc4",
+      "localSha256": "b0210be2c1988af29c432e93ae9641915f4f16b7b9ad8dd56206c3fd282fdfc4",
+      "normalizedSha256": "b0210be2c1988af29c432e93ae9641915f4f16b7b9ad8dd56206c3fd282fdfc4",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/openai_usage.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "7fe9fe0e5ce835b3c3fa6f160a320a1a24dc02a08702cf041eb4c2cc74a857be",
+      "localSha256": "7fe9fe0e5ce835b3c3fa6f160a320a1a24dc02a08702cf041eb4c2cc74a857be",
+      "normalizedSha256": "7fe9fe0e5ce835b3c3fa6f160a320a1a24dc02a08702cf041eb4c2cc74a857be",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/conversation_episodic_memory.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "1d893da66621545596252efccc5da98a91f60c4b0193a32be4fc5d3288f3af7e",
+      "localSha256": "1d893da66621545596252efccc5da98a91f60c4b0193a32be4fc5d3288f3af7e",
+      "normalizedSha256": "83f398c32d311a3d3a5d32d2e8a8f6e6c1c5e9384adb233ee6efd4182a3a58de",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/contact_memory.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "2a8bdbef544d8112dbc906990986a3855d480e7778712c3505def44eae2492e8",
+      "localSha256": "2a8bdbef544d8112dbc906990986a3855d480e7778712c3505def44eae2492e8",
+      "normalizedSha256": "2a8bdbef544d8112dbc906990986a3855d480e7778712c3505def44eae2492e8",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/LarissaConversationStyle.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "87b8d97aff39dc017e4d2756236f0bb8f6ef829c34598b0345d1dca8846234b5",
+      "localSha256": "87b8d97aff39dc017e4d2756236f0bb8f6ef829c34598b0345d1dca8846234b5",
+      "normalizedSha256": "87b8d97aff39dc017e4d2756236f0bb8f6ef829c34598b0345d1dca8846234b5",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/LarissaChatStyle.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "ebfbee87e4243df23e035e67d841430f42f4eb0a999b2c180250c0471af546fb",
+      "localSha256": "ebfbee87e4243df23e035e67d841430f42f4eb0a999b2c180250c0471af546fb",
+      "normalizedSha256": "ebfbee87e4243df23e035e67d841430f42f4eb0a999b2c180250c0471af546fb",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/ConversationQualityGate.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "5164510d3eccbba25c4f9d5ee9e026f097e3e068da447f0432513005e5a47300",
+      "localSha256": "5164510d3eccbba25c4f9d5ee9e026f097e3e068da447f0432513005e5a47300",
+      "normalizedSha256": "5164510d3eccbba25c4f9d5ee9e026f097e3e068da447f0432513005e5a47300",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/persona_memory.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "bf1638fa086e08df17691996484ad5477e248134ce531e1777b36c978ee70e92",
+      "localSha256": "bf1638fa086e08df17691996484ad5477e248134ce531e1777b36c978ee70e92",
+      "normalizedSha256": "bf1638fa086e08df17691996484ad5477e248134ce531e1777b36c978ee70e92",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/openai_brain.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "9c5b7d820a893165470764d486fe1b270c4e959df477a1d0d05da489b723a1e5",
+      "localSha256": "9c5b7d820a893165470764d486fe1b270c4e959df477a1d0d05da489b723a1e5",
+      "normalizedSha256": "9c5b7d820a893165470764d486fe1b270c4e959df477a1d0d05da489b723a1e5",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/larissa_interaction_dna.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "7fdcf17dc2de6a56b697c3c8f73df1b930e56f64ab8c7b70d961dd7530f4570d",
+      "localSha256": "7fdcf17dc2de6a56b697c3c8f73df1b930e56f64ab8c7b70d961dd7530f4570d",
+      "normalizedSha256": "7fdcf17dc2de6a56b697c3c8f73df1b930e56f64ab8c7b70d961dd7530f4570d",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_conversation_guidance.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "0ef028a5d03fd3db117d35c71251d3dcc8f943a4a26f6fe2f721e454215ed406",
+      "localSha256": "0ef028a5d03fd3db117d35c71251d3dcc8f943a4a26f6fe2f721e454215ed406",
+      "normalizedSha256": "0ef028a5d03fd3db117d35c71251d3dcc8f943a4a26f6fe2f721e454215ed406",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/_shared/memory_tool_context.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "localSha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "normalizedSha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/openai_agent_instructions.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "ebbf6bb014bebb57f4b6b221ad5949ed1830e8665906da3f1912805bd463ff14",
+      "localSha256": "ebbf6bb014bebb57f4b6b221ad5949ed1830e8665906da3f1912805bd463ff14",
+      "normalizedSha256": "ebbf6bb014bebb57f4b6b221ad5949ed1830e8665906da3f1912805bd463ff14",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/larissa_canonical_prompt.generated.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "e04c749a03663a0f5c78acc34d5207025b42f63d536d97183e047099d783774a",
+      "localSha256": "e04c749a03663a0f5c78acc34d5207025b42f63d536d97183e047099d783774a",
+      "normalizedSha256": "e04c749a03663a0f5c78acc34d5207025b42f63d536d97183e047099d783774a",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/openai_sdk_brain.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "1acd896a2d7adb1ccd3faf6b66370ef0159721f566e7d57c4da9e6ff6383e8b6",
+      "localSha256": "1acd896a2d7adb1ccd3faf6b66370ef0159721f566e7d57c4da9e6ff6383e8b6",
+      "normalizedSha256": "1acd896a2d7adb1ccd3faf6b66370ef0159721f566e7d57c4da9e6ff6383e8b6",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/jev_memory_selector.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "0d75ba2384de4f6ba6600d9f27359164ac9f4765c8fcc016ba015c1a65237044",
+      "localSha256": "0d75ba2384de4f6ba6600d9f27359164ac9f4765c8fcc016ba015c1a65237044",
+      "normalizedSha256": "ebc127bff342253bce14106c32ee1a90f33b4e5c2a4288943cb79b5aeac77e58",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_memory_context.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "b789b8a57829f6689a50d1fc4898428d762d69791955df453645a221d88574a4",
+      "localSha256": "b789b8a57829f6689a50d1fc4898428d762d69791955df453645a221d88574a4",
+      "normalizedSha256": "f78d82c76bb0af3c7fb803c0eb135a358ebe17bdd609ec369c7083bd18f0cbf8",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/persona_memory_repository.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "0344365d0cdf08c6ff3856d99eec6e7286d51262d50402a84187914847f9e9f1",
+      "localSha256": "0344365d0cdf08c6ff3856d99eec6e7286d51262d50402a84187914847f9e9f1",
+      "normalizedSha256": "dad09e12030441ad6627a1e26af38142e6c1068fba04b5548ff6facd74ab2082",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/openai_conversation_runtime.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "e81d3e66c23f9b4b668412d8dd41bc9f1b1d39343077f4476fd466cbb8633a4c",
+      "localSha256": "e81d3e66c23f9b4b668412d8dd41bc9f1b1d39343077f4476fd466cbb8633a4c",
+      "normalizedSha256": "8d38f5fb301e8ea6a0eb0fba55743c431e2b5026d6ba7ecde89afae65c05e152",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/debounce_policy.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "9fc6cfba92557023e9055975d336b57d1445c5e4871d83bf71f011837d29cb71",
+      "localSha256": "9fc6cfba92557023e9055975d336b57d1445c5e4871d83bf71f011837d29cb71",
+      "normalizedSha256": "9fc6cfba92557023e9055975d336b57d1445c5e4871d83bf71f011837d29cb71",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/conversation_schedule_runtime.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "50c846a1e595cd13d381b211884e9163886e71220bb383e2709b62a1f6cccbcc",
+      "localSha256": "50c846a1e595cd13d381b211884e9163886e71220bb383e2709b62a1f6cccbcc",
+      "normalizedSha256": "50c846a1e595cd13d381b211884e9163886e71220bb383e2709b62a1f6cccbcc",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/connection_window_runtime.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "f76b935bcbccfaa8a018dcad261c1f7f473c02c768a4b83c7c04640cb14ee57f",
+      "localSha256": "f76b935bcbccfaa8a018dcad261c1f7f473c02c768a4b83c7c04640cb14ee57f",
+      "normalizedSha256": "f76b935bcbccfaa8a018dcad261c1f7f473c02c768a4b83c7c04640cb14ee57f",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_audio_tool_recovery.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "b7d44b72e0e94c986b2c0af9faa9e4b0aa1eba4c80dec095b64e0d862121406b",
+      "localSha256": "b7d44b72e0e94c986b2c0af9faa9e4b0aa1eba4c80dec095b64e0d862121406b",
+      "normalizedSha256": "b7d44b72e0e94c986b2c0af9faa9e4b0aa1eba4c80dec095b64e0d862121406b",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/audio_transcription.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "5cc76977990b594b63cb9d1afa0685ae8aa81ac7732cb0e70f53009c5a0c1847",
+      "localSha256": "5cc76977990b594b63cb9d1afa0685ae8aa81ac7732cb0e70f53009c5a0c1847",
+      "normalizedSha256": "5cc76977990b594b63cb9d1afa0685ae8aa81ac7732cb0e70f53009c5a0c1847",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/autopilot_projection_route.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "249051e2e4e1fd07b41cf44064d72972493272acf5ffb8db340bfe75750c7b31",
+      "localSha256": "249051e2e4e1fd07b41cf44064d72972493272acf5ffb8db340bfe75750c7b31",
+      "normalizedSha256": "249051e2e4e1fd07b41cf44064d72972493272acf5ffb8db340bfe75750c7b31",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_event_enrichment.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "1bb59f14b511698fe3e75812414141900ab2e6da743f399c394d3592bc8e3507",
+      "localSha256": "1bb59f14b511698fe3e75812414141900ab2e6da743f399c394d3592bc8e3507",
+      "normalizedSha256": "1bb59f14b511698fe3e75812414141900ab2e6da743f399c394d3592bc8e3507",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/image_analysis.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "0ca8d58e2470656b8072c0d75c6eeb9784ce26c03752d75053ca6f18c1f24145",
+      "localSha256": "0ca8d58e2470656b8072c0d75c6eeb9784ce26c03752d75053ca6f18c1f24145",
+      "normalizedSha256": "0ca8d58e2470656b8072c0d75c6eeb9784ce26c03752d75053ca6f18c1f24145",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/operational_authorization.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "213eb1e18bb0c0dcbb1b6b9247b353440713f552b165f8c169daacc537594169",
+      "localSha256": "213eb1e18bb0c0dcbb1b6b9247b353440713f552b165f8c169daacc537594169",
+      "normalizedSha256": "213eb1e18bb0c0dcbb1b6b9247b353440713f552b165f8c169daacc537594169",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_operator_auth.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "b4d83c5e14d6a0f5a6ae6f810571f0f8189953443ef58c449cb65ce669c99a08",
+      "localSha256": "b4d83c5e14d6a0f5a6ae6f810571f0f8189953443ef58c449cb65ce669c99a08",
+      "normalizedSha256": "b4d83c5e14d6a0f5a6ae6f810571f0f8189953443ef58c449cb65ce669c99a08",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/brain_private_chat.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "e228750b3761c265dec6a3cd77842a707877e869bddc14eee39e87798e71dfb4",
+      "localSha256": "e228750b3761c265dec6a3cd77842a707877e869bddc14eee39e87798e71dfb4",
+      "normalizedSha256": "e228750b3761c265dec6a3cd77842a707877e869bddc14eee39e87798e71dfb4",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/operator_chat_progress.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "6b5a5cb3dca7088da2eaa37f1c1fa0eed8eafe5eb5096293817da536c018a998",
+      "localSha256": "6b5a5cb3dca7088da2eaa37f1c1fa0eed8eafe5eb5096293817da536c018a998",
+      "normalizedSha256": "6b5a5cb3dca7088da2eaa37f1c1fa0eed8eafe5eb5096293817da536c018a998",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/autopilot_inbound_queue.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "3689bdf572b2086dd67f0ca53980c5356a43771de66c1cbdeaec36a26de587d1",
+      "localSha256": "3689bdf572b2086dd67f0ca53980c5356a43771de66c1cbdeaec36a26de587d1",
+      "normalizedSha256": "dbbe184ee109a87681491567e96188d9109786fb5a5369d9a0104956984f155f",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/instagram_profile_queue.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "c681f340efd54dc33b57d4d58d992793f14959aeb14fad75f4ac7adde0a65480",
+      "localSha256": "c681f340efd54dc33b57d4d58d992793f14959aeb14fad75f4ac7adde0a65480",
+      "normalizedSha256": "c681f340efd54dc33b57d4d58d992793f14959aeb14fad75f4ac7adde0a65480",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/api/instagram_reactions.ts",
+      "function": "api",
+      "version": 635,
+      "remoteSha256": "5cf29f1bd18882c2efc6e2c3834df89880abef6e6ace3a9277483b4fbde0df7f",
+      "localSha256": "5cf29f1bd18882c2efc6e2c3834df89880abef6e6ace3a9277483b4fbde0df7f",
+      "normalizedSha256": "5cf29f1bd18882c2efc6e2c3834df89880abef6e6ace3a9277483b4fbde0df7f",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/vendeo-brain-mcp/index.ts",
+      "function": "vendeo-brain-mcp",
+      "version": 38,
+      "remoteSha256": "772228b1bdd095c9dfbc677f50e7a0704d73a093ecc5b28ac0a2f110474300ba",
+      "localSha256": "772228b1bdd095c9dfbc677f50e7a0704d73a093ecc5b28ac0a2f110474300ba",
+      "normalizedSha256": "772228b1bdd095c9dfbc677f50e7a0704d73a093ecc5b28ac0a2f110474300ba",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/vendeo-brain-mcp/_shared/persona_memory.ts",
+      "function": "vendeo-brain-mcp",
+      "version": 38,
+      "remoteSha256": "076bc977646f13281bf5054a05c6ebe9c65cb7ee5ca52457d7bf687efa842d6b",
+      "localSha256": "076bc977646f13281bf5054a05c6ebe9c65cb7ee5ca52457d7bf687efa842d6b",
+      "normalizedSha256": "076bc977646f13281bf5054a05c6ebe9c65cb7ee5ca52457d7bf687efa842d6b",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/vendeo-brain-mcp/_shared/mcp_memory_helpers.ts",
+      "function": "vendeo-brain-mcp",
+      "version": 38,
+      "remoteSha256": "813d362b976c2729ac20220689515e4d138e30ba5a9b996d025c5011d04c3a28",
+      "localSha256": "813d362b976c2729ac20220689515e4d138e30ba5a9b996d025c5011d04c3a28",
+      "normalizedSha256": "813d362b976c2729ac20220689515e4d138e30ba5a9b996d025c5011d04c3a28",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/_shared/memory_tool_context.ts",
+      "function": "vendeo-brain-mcp",
+      "version": 38,
+      "remoteSha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "localSha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "normalizedSha256": "dd8b2a56da3df6b8d2097271ca09b45cc07587bc332eba1d11d6256237d0bec6",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/tinder-match-history/index.ts",
+      "function": "tinder-match-history",
+      "version": 1,
+      "remoteSha256": "4bafc0d4f5abb3d794e7b6bcd623d681d8cfaa43510e870f52ab035d3dbb22f0",
+      "localSha256": "4bafc0d4f5abb3d794e7b6bcd623d681d8cfaa43510e870f52ab035d3dbb22f0",
+      "normalizedSha256": "4bafc0d4f5abb3d794e7b6bcd623d681d8cfaa43510e870f52ab035d3dbb22f0",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/tinder-unmessaged-matches/index.ts",
+      "function": "tinder-unmessaged-matches",
+      "version": 2,
+      "remoteSha256": "a0433b0adaffe24ca5756bb22a2359eb8ba32c25b9ed4b5cab10b67413d86127",
+      "localSha256": "a0433b0adaffe24ca5756bb22a2359eb8ba32c25b9ed4b5cab10b67413d86127",
+      "normalizedSha256": "51704874498c936083ab113a012418d3dbad8fbfeb1b252f5a518bbcea6bc052",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/raffle-draw/index.ts",
+      "function": "raffle-draw",
+      "version": 1,
+      "remoteSha256": "1d1353a24a8c564e0d533d9e668e33901be2b8e7e4a81d81d71844afaf9350b6",
+      "localSha256": "1d1353a24a8c564e0d533d9e668e33901be2b8e7e4a81d81d71844afaf9350b6",
+      "normalizedSha256": "a3432fdd670b6d8bf956cca88ce5dffa54cd1c0812b079fca153fb98345c217c",
+      "normalizedMatches": true
+    },
+    {
+      "path": "supabase/functions/tinder-pass/index.ts",
+      "function": "tinder-pass",
+      "version": 1,
+      "remoteSha256": "132639863810083f7fc0fce8f0d1c13908fbfa7b892ebdd030afdb6112e53ade",
+      "localSha256": "132639863810083f7fc0fce8f0d1c13908fbfa7b892ebdd030afdb6112e53ade",
+      "normalizedSha256": "99ee2f6fc549c7caf2f0959a180ec735f5cb131ef2f7cd96d8f625aafc8ed01c",
+      "normalizedMatches": true
+    }
+  ],
+  "migrations": [
+    {
+      "version": "20260917174419",
+      "name": "enable_pg_net_and_cron",
+      "path": "supabase/migrations/20260917174419_enable_pg_net_and_cron.sql"
+    },
+    {
+      "version": "20260917174834",
+      "name": "schedule_autopilot_cron_job",
+      "path": "supabase/migrations/20260917174834_schedule_autopilot_cron_job.sql"
+    },
+    {
+      "version": "20260918105225",
+      "name": "create_claim_outbox_entry_rpc",
+      "path": "supabase/migrations/20260918105225_create_claim_outbox_entry_rpc.sql"
+    },
+    {
+      "version": "20260918175728",
+      "name": "create_ack_experimental_cycle_preemption",
+      "path": "supabase/migrations/20260918175728_create_ack_experimental_cycle_preemption.sql"
+    },
+    {
+      "version": "20260918214448",
+      "name": "create_persona_memory",
+      "path": "supabase/migrations/20260918214448_create_persona_memory.sql"
+    },
+    {
+      "version": "20260919031513",
+      "name": "create_conversation_episodic_memory",
+      "path": "supabase/migrations/20260919031513_create_conversation_episodic_memory.sql"
+    },
+    {
+      "version": "20260919093748",
+      "name": "add_unique_constraint_episodic_memory",
+      "path": "supabase/migrations/20260919093748_add_unique_constraint_episodic_memory.sql"
+    },
+    {
+      "version": "20260919094318",
+      "name": "add_episode_fingerprint_constraint",
+      "path": "supabase/migrations/20260919094318_add_episode_fingerprint_constraint.sql"
+    },
+    {
+      "version": "20260920144958",
+      "name": "create_official_stages_subagents_vault",
+      "path": "supabase/migrations/20260920144958_create_official_stages_subagents_vault.sql"
+    },
+    {
+      "version": "20260921170927",
+      "name": "create_claim_experimental_cycle",
+      "path": "supabase/migrations/20260921170927_create_claim_experimental_cycle.sql"
+    },
+    {
+      "version": "20260921171020",
+      "name": "create_claim_experimental_cycle_messages",
+      "path": "supabase/migrations/20260921171020_create_claim_experimental_cycle_messages.sql"
+    },
+    {
+      "version": "20260921171053",
+      "name": "create_request_experimental_cycle_preemption",
+      "path": "supabase/migrations/20260921171053_create_request_experimental_cycle_preemption.sql"
+    },
+    {
+      "version": "20260921171106",
+      "name": "create_release_experimental_cycle_if_owned",
+      "path": "supabase/migrations/20260921171106_create_release_experimental_cycle_if_owned.sql"
+    },
+    {
+      "version": "20261006050716",
+      "name": "match_tinder_secure_connection",
+      "path": "supabase/migrations/20261006050716_match_tinder_secure_connection.sql"
+    },
+    {
+      "version": "20260921171121",
+      "name": "create_prepare_experimental_outbox_entry",
+      "path": "supabase/migrations/20260921171121_create_prepare_experimental_outbox_entry.sql"
+    },
+    {
+      "version": "20260921171135",
+      "name": "update_claim_outbox_entry_with_ownership",
+      "path": "supabase/migrations/20260921171135_update_claim_outbox_entry_with_ownership.sql"
+    },
+    {
+      "version": "20260921171149",
+      "name": "security_hardening_ack_and_commit_rpcs",
+      "path": "supabase/migrations/20260921171149_security_hardening_ack_and_commit_rpcs.sql"
+    },
+    {
+      "version": "20260921171220",
+      "name": "security_hardening_cycle_rpcs",
+      "path": "supabase/migrations/20260921171220_security_hardening_cycle_rpcs.sql"
+    },
+    {
+      "version": "20260922104752",
+      "name": "contact_and_conversation_memory_00_05",
+      "path": "supabase/migrations/20260922104752_contact_and_conversation_memory_00_05.sql"
+    },
+    {
+      "version": "20260922193849",
+      "name": "drop_subagent_definitions",
+      "path": "supabase/migrations/20260922193849_drop_subagent_definitions.sql"
+    },
+    {
+      "version": "20260923062000",
+      "name": "recover_stale_autopilot_cycles",
+      "path": "supabase/migrations/20260923062000_recover_stale_autopilot_cycles.sql"
+    },
+    {
+      "version": "20260923120000",
+      "name": "idx_conversations_last_message_at",
+      "path": "supabase/migrations/20260923120000_idx_conversations_last_message_at.sql"
+    },
+    {
+      "version": "20260923140000",
+      "name": "authorize_manual_autopilot_retry",
+      "path": "supabase/migrations/20260923140000_authorize_manual_autopilot_retry.sql"
+    },
+    {
+      "version": "20260923150000",
+      "name": "scope_manual_retry_outbox_validation",
+      "path": "supabase/migrations/20260923150000_scope_manual_retry_outbox_validation.sql"
+    },
+    {
+      "version": "20260923160000",
+      "name": null,
+      "path": "supabase/migrations/20260923160000_unique_audio_delivery_history.sql"
+    },
+    {
+      "version": "20260923170000",
+      "name": null,
+      "path": "supabase/migrations/20260923170000_atomic_chat_progress_and_runtime_guard.sql"
+    },
+    {
+      "version": "20260924150525",
+      "name": "durable_outbox_and_activation_watermark",
+      "path": "supabase/migrations/20260924150525_durable_outbox_and_activation_watermark.sql"
+    },
+    {
+      "version": "20260924160503",
+      "name": "fix_guilherme_outbox_replay_idempotency",
+      "path": "supabase/migrations/20260924160503_fix_guilherme_outbox_replay_idempotency.sql"
+    },
+    {
+      "version": "20260924165558",
+      "name": "fix_inbound_timestamp_cast_and_autopilot_arm_status",
+      "path": "supabase/migrations/20260924165558_fix_inbound_timestamp_cast_and_autopilot_arm_status.sql"
+    },
+    {
+      "version": "20260925182415",
+      "name": "atomic_stale_cycle_recovery",
+      "path": "supabase/migrations/20260925182415_atomic_stale_cycle_recovery.sql"
+    },
+    {
+      "version": "20260925193449",
+      "name": "protect_sensitive_inbound_messages",
+      "path": "supabase/migrations/20260925193449_protect_sensitive_inbound_messages.sql"
+    },
+    {
+      "version": "20260925193851",
+      "name": "restrict_manual_review_rpc",
+      "path": "supabase/migrations/20260925193851_restrict_manual_review_rpc.sql"
+    },
+    {
+      "version": "20260925221536",
+      "name": "restrict_single_operator_access",
+      "path": "supabase/migrations/20260925221536_restrict_single_operator_access.sql"
+    },
+    {
+      "version": "20260925221858",
+      "name": "route_privileged_rpc_calls",
+      "path": "supabase/migrations/20260925221858_route_privileged_rpc_calls.sql"
+    },
+    {
+      "version": "20260925222041",
+      "name": "harden_function_paths_and_indexes",
+      "path": "supabase/migrations/20260925222041_harden_function_paths_and_indexes.sql"
+    },
+    {
+      "version": "20260925223542",
+      "name": "restore_anonymous_app_access",
+      "path": "supabase/migrations/20260925223542_restore_anonymous_app_access.sql"
+    },
+    {
+      "version": "20260925233201",
+      "name": "autopilot_cron_vault_auth",
+      "path": "supabase/migrations/20260925233201_autopilot_cron_vault_auth.sql"
+    },
+    {
+      "version": "20260926102044",
+      "name": "20260926100734_restore_pre_refactor_pause_rpc_compatibility",
+      "path": "supabase/migrations/20260926102044_20260926100734_restore_pre_refactor_pause_rpc_compatibility.sql"
+    },
+    {
+      "version": "20260926145923",
+      "name": "fix_stage_completed_rules_default_object",
+      "path": "supabase/migrations/20260926145923_fix_stage_completed_rules_default_object.sql"
+    },
+    {
+      "version": "20260926212713",
+      "name": "brain_decision_outbox_sessions",
+      "path": "supabase/migrations/20260926212713_brain_decision_outbox_sessions.sql"
+    },
+    {
+      "version": "20260926235806",
+      "name": "brain_late_recovery_and_manual_facts",
+      "path": "supabase/migrations/20260926235806_brain_late_recovery_and_manual_facts.sql"
+    },
+    {
+      "version": "20260927005646",
+      "name": "brain_decision_delivery_independence",
+      "path": "supabase/migrations/20260927005646_brain_decision_delivery_independence.sql"
+    },
+    {
+      "version": "20260928233539",
+      "name": "openai_conversation_runtime",
+      "path": "supabase/migrations/20260928233539_openai_conversation_runtime.sql"
+    },
+    {
+      "version": "20260927011238",
+      "name": "brain_action_confirmed_memory_projection",
+      "path": "supabase/migrations/20260927011238_brain_action_confirmed_memory_projection.sql"
+    },
+    {
+      "version": "20260927045446",
+      "name": "restore_canonical_chat_stage_catalog",
+      "path": "supabase/migrations/20260927045446_restore_canonical_chat_stage_catalog.sql"
+    },
+    {
+      "version": "20260927050332",
+      "name": "migrate_legacy_profession_objective_progress",
+      "path": "supabase/migrations/20260927050332_migrate_legacy_profession_objective_progress.sql"
+    },
+    {
+      "version": "20260927113736",
+      "name": "separate_autopilot_runtime_pause_and_projection_patch",
+      "path": "supabase/migrations/20260927113736_separate_autopilot_runtime_pause_and_projection_patch.sql"
+    },
+    {
+      "version": "20260928095847",
+      "name": "cap_autopilot_debounce_window",
+      "path": "supabase/migrations/20260928095847_cap_autopilot_debounce_window.sql"
+    },
+    {
+      "version": "20260928100551",
+      "name": "finalize_brain_architecture_alignment",
+      "path": "supabase/migrations/20260928100551_finalize_brain_architecture_alignment.sql"
+    },
+    {
+      "version": "20260928113937",
+      "name": "migrate_legacy_profession_goal_progress",
+      "path": "supabase/migrations/20260928113937_migrate_legacy_profession_goal_progress.sql"
+    },
+    {
+      "version": "20261002213732",
+      "name": "index_whatsapp2_transcription_conversation",
+      "path": "supabase/migrations/20261002213732_index_whatsapp2_transcription_conversation.sql"
+    },
+    {
+      "version": "20260928173222",
+      "name": "graceful_global_autopilot_shutdown",
+      "path": "supabase/migrations/20260928173222_graceful_global_autopilot_shutdown.sql"
+    },
+    {
+      "version": "20260928173256",
+      "name": "finalize_graceful_global_autopilot_drains",
+      "path": "supabase/migrations/20260928173256_finalize_graceful_global_autopilot_drains.sql"
+    },
+    {
+      "version": "20260928182209",
+      "name": "scale_autopilot_realtime_projection",
+      "path": "supabase/migrations/20260928182209_scale_autopilot_realtime_projection.sql"
+    },
+    {
+      "version": "20260928194450",
+      "name": "reduce_brain_runtime_pressure",
+      "path": "supabase/migrations/20260928194450_reduce_brain_runtime_pressure.sql"
+    },
+    {
+      "version": "20260928194657",
+      "name": "dedupe_autopilot_projection_updates",
+      "path": "supabase/migrations/20260928194657_dedupe_autopilot_projection_updates.sql"
+    },
+    {
+      "version": "20260928200148",
+      "name": "create_canonical_autopilot_settings",
+      "path": "supabase/migrations/20260928200148_create_canonical_autopilot_settings.sql"
+    },
+    {
+      "version": "20260929010026",
+      "name": "pause_waiting_human_scheduler",
+      "path": "supabase/migrations/20260929010026_pause_waiting_human_scheduler.sql"
+    },
+    {
+      "version": "20260929115942",
+      "name": "enforce_authoritative_response_delay",
+      "path": "supabase/migrations/20260929115942_enforce_authoritative_response_delay.sql"
+    },
+    {
+      "version": "20260929124408",
+      "name": "refine_relationship_history_objective",
+      "path": "supabase/migrations/20260929124408_refine_relationship_history_objective.sql"
+    },
+    {
+      "version": "20260929132218",
+      "name": "finalize_workflow_on_last_objective",
+      "path": "supabase/migrations/20260929132218_finalize_workflow_on_last_objective.sql"
+    },
+    {
+      "version": "20260929132600",
+      "name": "backfill_completed_workflows",
+      "path": "supabase/migrations/20260929132600_backfill_completed_workflows.sql"
+    },
+    {
+      "version": "20260929153753",
+      "name": "backfill_completed_intermediate_stage_transitions",
+      "path": "supabase/migrations/20260929153753_backfill_completed_intermediate_stage_transitions.sql"
+    },
+    {
+      "version": "20260929172257",
+      "name": "remote_web_push_critical_alerts",
+      "path": "supabase/migrations/20260929172257_remote_web_push_critical_alerts.sql"
+    },
+    {
+      "version": "20260930022154",
+      "name": "optimize_instagram_webhook_hot_path",
+      "path": "supabase/migrations/20260930022154_optimize_instagram_webhook_hot_path.sql"
+    },
+    {
+      "version": "20260930022209",
+      "name": "queue_autopilot_inbound_work",
+      "path": "supabase/migrations/20260930022209_queue_autopilot_inbound_work.sql"
+    },
+    {
+      "version": "20260930022221",
+      "name": "coalesce_autopilot_projection_updates",
+      "path": "supabase/migrations/20260930022221_coalesce_autopilot_projection_updates.sql"
+    },
+    {
+      "version": "20260930022229",
+      "name": "optimize_autopilot_scheduler_lanes",
+      "path": "supabase/migrations/20260930022229_optimize_autopilot_scheduler_lanes.sql"
+    },
+    {
+      "version": "20260930022239",
+      "name": "queue_instagram_profile_enrichment",
+      "path": "supabase/migrations/20260930022239_queue_instagram_profile_enrichment.sql"
+    },
+    {
+      "version": "20260930022248",
+      "name": "ingest_instagram_inbound_hot_path",
+      "path": "supabase/migrations/20260930022248_ingest_instagram_inbound_hot_path.sql"
+    },
+    {
+      "version": "20260930022258",
+      "name": "optimize_instagram_seen_hot_path",
+      "path": "supabase/migrations/20260930022258_optimize_instagram_seen_hot_path.sql"
+    },
+    {
+      "version": "20260930022321",
+      "name": "ingest_instagram_echo_hot_path",
+      "path": "supabase/migrations/20260930022321_ingest_instagram_echo_hot_path.sql"
+    },
+    {
+      "version": "20260930022752",
+      "name": "harden_autopilot_internal_rpc_grants",
+      "path": "supabase/migrations/20260930022752_harden_autopilot_internal_rpc_grants.sql"
+    },
+    {
+      "version": "20260930034920",
+      "name": "allow_started_outbox_batch_during_new_inbound",
+      "path": "supabase/migrations/20260930034920_allow_started_outbox_batch_during_new_inbound.sql"
+    },
+    {
+      "version": "20260930183821",
+      "name": "instagram_media_understanding_and_observation",
+      "path": "supabase/migrations/20260930183821_instagram_media_understanding_and_observation.sql"
+    },
+    {
+      "version": "20260930192243",
+      "name": "instagram_message_reactions",
+      "path": "supabase/migrations/20260930192243_instagram_message_reactions.sql"
+    },
+    {
+      "version": "20260930200357",
+      "name": "raffle_commercial_status",
+      "path": "supabase/migrations/20260930200357_raffle_commercial_status.sql"
+    },
+    {
+      "version": "20260930203613",
+      "name": "raffle_report_tracking",
+      "path": "supabase/migrations/20260930203613_raffle_report_tracking.sql"
+    },
+    {
+      "version": "20261001022350",
+      "name": "remove_brain_operator_login",
+      "path": "supabase/migrations/20261001022350_remove_brain_operator_login.sql"
+    },
+    {
+      "version": "20261001144628",
+      "name": "prevent_outbox_scheduler_starvation",
+      "path": "supabase/migrations/20261001144628_prevent_outbox_scheduler_starvation.sql"
+    },
+    {
+      "version": "20261001150851",
+      "name": "finalize_raffle_after_audio_delivery",
+      "path": "supabase/migrations/20261001150851_finalize_raffle_after_audio_delivery.sql"
+    },
+    {
+      "version": "20261001190230",
+      "name": "remove_tinder_integration",
+      "path": "supabase/migrations/20261001190230_remove_tinder_integration.sql"
+    },
+    {
+      "version": "20261002024542",
+      "name": "add_whatsapp_channel_support",
+      "path": "supabase/migrations/20261002024542_add_whatsapp_channel_support.sql"
+    },
+    {
+      "version": "20261002030842",
+      "name": "add_whatsapp_audio_variant",
+      "path": "supabase/migrations/20261002030842_add_whatsapp_audio_variant.sql"
+    },
+    {
+      "version": "20261002115009",
+      "name": "whatsapp_sticker_vault",
+      "path": "supabase/migrations/20261002115009_whatsapp_sticker_vault.sql"
+    },
+    {
+      "version": "20261002181850",
+      "name": "add_whatsapp2_channel_support",
+      "path": "supabase/migrations/20261002181850_add_whatsapp2_channel_support.sql"
+    },
+    {
+      "version": "20261002181905",
+      "name": "whatsapp2_delivery_queue",
+      "path": "supabase/migrations/20261002181905_whatsapp2_delivery_queue.sql"
+    },
+    {
+      "version": "20261002212529",
+      "name": "whatsapp2_inbound_queue",
+      "path": "supabase/migrations/20261002212529_whatsapp2_inbound_queue.sql"
+    },
+    {
+      "version": "20261002212548",
+      "name": "whatsapp2_transcription_queue",
+      "path": "supabase/migrations/20261002212548_whatsapp2_transcription_queue.sql"
+    },
+    {
+      "version": "20261002212557",
+      "name": "whatsapp2_backpressure_limits",
+      "path": "supabase/migrations/20261002212557_whatsapp2_backpressure_limits.sql"
+    },
+    {
+      "version": "20261002213139",
+      "name": "fix_whatsapp2_claim_ambiguity",
+      "path": "supabase/migrations/20261002213139_fix_whatsapp2_claim_ambiguity.sql"
+    },
+    {
+      "version": "20261002214022",
+      "name": "whatsapp2_scale_retention",
+      "path": "supabase/migrations/20261002214022_whatsapp2_scale_retention.sql"
+    },
+    {
+      "version": "20261002214849",
+      "name": "harden_whatsapp2_retention",
+      "path": "supabase/migrations/20261002214849_harden_whatsapp2_retention.sql"
+    },
+    {
+      "version": "20261002224255",
+      "name": "whatsapp2_outbound_audio_transcription_trigger",
+      "path": "supabase/migrations/20261002224255_whatsapp2_outbound_audio_transcription_trigger.sql"
+    },
+    {
+      "version": "20261003194541",
+      "name": "whatsapp2_universal_attachment_contract",
+      "path": "supabase/migrations/20261003194541_whatsapp2_universal_attachment_contract.sql"
+    },
+    {
+      "version": "20261003200236",
+      "name": "whatsapp2_native_message_metadata",
+      "path": "supabase/migrations/20261003200236_whatsapp2_native_message_metadata.sql"
+    },
+    {
+      "version": "20261005013711",
+      "name": "whatsapp_status_posts",
+      "path": "supabase/migrations/20261005013711_whatsapp_status_posts.sql"
+    },
+    {
+      "version": "20261005041506",
+      "name": "cleanup_legacy_tinder_badoo_and_whatsapp1",
+      "path": "supabase/migrations/20261005041506_cleanup_legacy_tinder_badoo_and_whatsapp1.sql"
+    },
+    {
+      "version": "20261005152914",
+      "name": "whatsapp_status_evergreen_recipient_history",
+      "path": "supabase/migrations/20261005152914_whatsapp_status_evergreen_recipient_history.sql"
+    },
+    {
+      "version": "20261006022055",
+      "name": "conversation_schedules",
+      "path": "supabase/migrations/20261006022055_conversation_schedules.sql"
+    },
+    {
+      "version": "20261006022723",
+      "name": "index_conversation_schedule_runs_current_stage",
+      "path": "supabase/migrations/20261006022723_index_conversation_schedule_runs_current_stage.sql"
+    },
+    {
+      "version": "20261006030626",
+      "name": "remove_legacy_global_brain_model_and_timing",
+      "path": "supabase/migrations/20261006030626_remove_legacy_global_brain_model_and_timing.sql"
+    },
+    {
+      "version": "20261006033859",
+      "name": "manual_conversation_schedule_switch",
+      "path": "supabase/migrations/20261006033859_manual_conversation_schedule_switch.sql"
+    },
+    {
+      "version": "20261006034038",
+      "name": "fix_manual_schedule_switch_state_projection",
+      "path": "supabase/migrations/20261006034038_fix_manual_schedule_switch_state_projection.sql"
+    },
+    {
+      "version": "20261006052220",
+      "name": "remove_stage_vault_legacy",
+      "path": "supabase/migrations/20261006052220_remove_stage_vault_legacy.sql"
+    },
+    {
+      "version": "20261006052630",
+      "name": "match_tinder_web_session_identity",
+      "path": "supabase/migrations/20261006052630_match_tinder_web_session_identity.sql"
+    },
+    {
+      "version": "20261006052656",
+      "name": "match_tinder_device_identity_and_state",
+      "path": "supabase/migrations/20261006052656_match_tinder_device_identity_and_state.sql"
+    },
+    {
+      "version": "20261006060603",
+      "name": "connection_window_arsenal",
+      "path": "supabase/migrations/20261006060603_connection_window_arsenal.sql"
+    },
+    {
+      "version": "20261006101932",
+      "name": "harden_connection_window_runtime",
+      "path": "supabase/migrations/20261006101932_harden_connection_window_runtime.sql"
+    },
+    {
+      "version": "20261006133505",
+      "name": "manual_only_schedule_completion",
+      "path": "supabase/migrations/20261006133505_manual_only_schedule_completion.sql"
+    },
+    {
+      "version": "20261006164856",
+      "name": "restart_autopilot_runtime_atomic",
+      "path": "supabase/migrations/20261006164856_restart_autopilot_runtime_atomic.sql"
+    },
+    {
+      "version": "20261007024535",
+      "name": "tinder_multichannel_identities",
+      "path": "supabase/migrations/20261007024535_tinder_multichannel_identities.sql"
+    },
+    {
+      "version": "20261007024549",
+      "name": "tinder_background_sync_brain_reentry",
+      "path": "supabase/migrations/20261007024549_tinder_background_sync_brain_reentry.sql"
+    },
+    {
+      "version": "20261007024553",
+      "name": "whatsapp2_delivery_save_contact",
+      "path": "supabase/migrations/20261007024553_whatsapp2_delivery_save_contact.sql"
+    },
+    {
+      "version": "20261007024556",
+      "name": "harden_advisor_rls_security",
+      "path": "supabase/migrations/20261007024556_harden_advisor_rls_security.sql"
+    },
+    {
+      "version": "20261024223000",
+      "name": "add_allowed_hours_to_persona_images",
+      "path": "supabase/migrations/20261024223000_add_allowed_hours_to_persona_images.sql"
+    },
+    {
+      "version": "20261007024600",
+      "name": "harden_tinder_sessions_and_identity_rpc",
+      "path": "supabase/migrations/20261007024600_harden_tinder_sessions_and_identity_rpc.sql"
+    },
+    {
+      "version": "20261007024723",
+      "name": "revoke_public_channel_identity_table_access",
+      "path": "supabase/migrations/20261007024723_revoke_public_channel_identity_table_access.sql"
+    },
+    {
+      "version": "20261007040014",
+      "name": "connection_window_video_assets",
+      "path": "supabase/migrations/20261007040014_connection_window_video_assets.sql"
+    },
+    {
+      "version": "20261007044734",
+      "name": "activate_autopilot_runtime_after_restart",
+      "path": "supabase/migrations/20261007044734_activate_autopilot_runtime_after_restart.sql"
+    },
+    {
+      "version": "20261007112714",
+      "name": "whatsapp2_account_scoped_delivery",
+      "path": "supabase/migrations/20261007112714_whatsapp2_account_scoped_delivery.sql"
+    },
+    {
+      "version": "20261007112720",
+      "name": "whatsapp2_account_scoped_inbound_queue",
+      "path": "supabase/migrations/20261007112720_whatsapp2_account_scoped_inbound_queue.sql"
+    },
+    {
+      "version": "20261007113946",
+      "name": "recover_confirmed_brain_delivery_actions",
+      "path": "supabase/migrations/20261007113946_recover_confirmed_brain_delivery_actions.sql"
+    },
+    {
+      "version": "20261008020018",
+      "name": "harden_whatsapp_delivery_and_scheduler",
+      "path": "supabase/migrations/20261008020018_harden_whatsapp_delivery_and_scheduler.sql"
+    },
+    {
+      "version": "20261008020021",
+      "name": "respect_automation_pause_in_outbox_claim",
+      "path": "supabase/migrations/20261008020021_respect_automation_pause_in_outbox_claim.sql"
+    },
+    {
+      "version": "20261008111042",
+      "name": "restart_clears_scheduling_and_stale_runtime",
+      "path": "supabase/migrations/20261008111042_restart_clears_scheduling_and_stale_runtime.sql"
+    },
+    {
+      "version": "20261025180000",
+      "name": "whatsapp_multi_account_status_scope",
+      "path": "supabase/migrations/20261025180000_whatsapp_multi_account_status_scope.sql"
+    },
+    {
+      "version": "20261021000000",
+      "name": "enable_wallpaper_uploads",
+      "path": "supabase/migrations/20261021000000_enable_wallpaper_uploads.sql"
+    },
+    {
+      "version": "20261021121500",
+      "name": "add_reaction_context_to_finalization_vault",
+      "path": "supabase/migrations/20261021121500_add_reaction_context_to_finalization_vault.sql"
+    },
+    {
+      "version": "20261021123000",
+      "name": "auto_heal_restart_blocks",
+      "path": "supabase/migrations/20261021123000_auto_heal_restart_blocks.sql"
+    },
+    {
+      "version": "20261021123500",
+      "name": "add_raffle_reaction_objective_to_stage",
+      "path": "supabase/migrations/20261021123500_add_raffle_reaction_objective_to_stage.sql"
+    },
+    {
+      "version": "20261021124000",
+      "name": "fix_restart_function_final",
+      "path": "supabase/migrations/20261021124000_fix_restart_function_final.sql"
+    },
+    {
+      "version": "20261021125000",
+      "name": "fix_restart_function_v2",
+      "path": "supabase/migrations/20261021125000_fix_restart_function_v2.sql"
+    },
+    {
+      "version": "20261021172000",
+      "name": "restart_auto_heals_pending_and_ledger",
+      "path": "supabase/migrations/20261021172000_restart_auto_heals_pending_and_ledger.sql"
+    },
+    {
+      "version": "20261021193500",
+      "name": "expand_brain_execution_slots_to_6",
+      "path": "supabase/migrations/20261021193500_expand_brain_execution_slots_to_6.sql"
+    },
+    {
+      "version": "20261022140000",
+      "name": "retry_failed_transcription_on_ai_activate",
+      "path": "supabase/migrations/20261022140000_retry_failed_transcription_on_ai_activate.sql"
+    },
+    {
+      "version": "20261023155700",
+      "name": "restart_clears_activation_watermark",
+      "path": "supabase/migrations/20261023155700_restart_clears_activation_watermark.sql"
+    },
+    {
+      "version": "20261023160000",
+      "name": "create_persona_images_tables",
+      "path": "supabase/migrations/20261023160000_create_persona_images_tables.sql"
+    },
+    {
+      "version": "20261023170000",
+      "name": "add_view_once_to_whatsapp2_delivery_queue",
+      "path": "supabase/migrations/20261023170000_add_view_once_to_whatsapp2_delivery_queue.sql"
+    },
+    {
+      "version": "20261023170500",
+      "name": "add_is_view_once_to_persona_images",
+      "path": "supabase/migrations/20261023170500_add_is_view_once_to_persona_images.sql"
+    },
+    {
+      "version": "20261024163719",
+      "name": "add_auto_close_test_flag",
+      "path": "supabase/migrations/20261024163719_add_auto_close_test_flag.sql"
+    },
+    {
+      "version": "20261024120000",
+      "name": "add_last_raffle_pitch_at",
+      "path": "supabase/migrations/20261024120000_add_last_raffle_pitch_at.sql"
+    },
+    {
+      "version": "20261024130000",
+      "name": "add_auto_close_test_flag",
+      "path": "supabase/migrations/20261024130000_add_auto_close_test_flag.sql"
+    },
+    {
+      "version": "20261026094448",
+      "name": "brain_saved_stickers",
+      "path": "supabase/migrations/20261026094448_brain_saved_stickers.sql"
+    },
+    {
+      "version": "20261026131951",
+      "name": "add_caption_to_persona_images",
+      "path": "supabase/migrations/20261026131951_add_caption_to_persona_images.sql"
+    },
+    {
+      "version": "20261026135858",
+      "name": "persona_image_send_claims",
+      "path": "supabase/migrations/20261026135858_persona_image_send_claims.sql"
+    },
+    {
+      "version": "20261026164509",
+      "name": "tinder_text_conversation_schedules",
+      "path": "supabase/migrations/20261026164509_tinder_text_conversation_schedules.sql"
+    },
+    {
+      "version": "20261026171302",
+      "name": "tinder_account_ai_settings",
+      "path": "supabase/migrations/20261026171302_tinder_account_ai_settings.sql"
+    },
+    {
+      "version": "20261026171837",
+      "name": "inbound_context_channel_identity",
+      "path": "supabase/migrations/20261026171837_inbound_context_channel_identity.sql"
+    },
+    {
+      "version": "20261026174458",
+      "name": "tinder_approach_recipient_selection",
+      "path": "supabase/migrations/20261026174458_tinder_approach_recipient_selection.sql"
+    },
+    {
+      "version": "20261026183811",
+      "name": "tinder_approach_executor",
+      "path": "supabase/migrations/20261026183811_tinder_approach_executor.sql"
+    },
+    {
+      "version": "20261027215317",
+      "name": "add_gpt_6_1_terra_schedule_model",
+      "path": "supabase/migrations/20261027215317_add_gpt_6_1_terra_schedule_model.sql"
+    },
+    {
+      "version": "20261028131229",
+      "name": "enforce_delivery_objective_authority",
+      "path": "supabase/migrations/20261028131229_enforce_delivery_objective_authority.sql"
+    }
+  ],
+  "gateway": {
+    "sourcePath": "services/whatsapp2-gateway/index.cjs",
+    "sha256": "dc496d4fd330458bb75019d15108eaf7cf97108aa7d904d63b7991ef1c82e5ca",
+    "localMatchesReadyProcessSource": true,
+    "processId": 11252,
+    "port": 7153,
+    "observedStatus": "ready",
+    "publicGatewayStatus": "idle",
+    "limitation": "O health não expõe hash de código carregado. O arquivo da linha de comando do processo ready precede a inicialização e corresponde à main; não foi reiniciado para inspeção."
+  },
+  "formatting": "Três linhas vazias sem espaços e quatro finais de arquivo normalizados. Nenhuma instrução de código foi alterada em relação à API remota.",
+  "schemaSnapshotSha256": "f80375eb12254f2fd6dfbf0cfef79ba45a37c4ea9efd6a5a6845d5dd79504e87",
+  "schemaPermissionsSha256": "bdc3256479746a9993873c59f68718bbd8320e4a26bcb5f64eb23eca318cf1fe"
+}
