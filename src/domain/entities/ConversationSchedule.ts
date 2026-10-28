@@ -1,6 +1,6 @@
 export type ScheduleCategory = "sales" | "post_sale" | "relationship" | "reactivation" | "custom";
 export type ScheduleResponseDelayMode = "fixed" | "range";
-export type ScheduleBrainModel = "gpt-6-luna" | "gpt-6-sol" | "gpt-6.1-sol";
+export type ScheduleBrainModel = "gpt-6-luna" | "gpt-6-sol" | "gpt-6.1-sol" | "gpt-6.1-terra";
 export type ScheduleExecutionMode = "goal_driven" | "connection_window";
 
 export interface ScheduleTemporalPhase {
@@ -60,6 +60,7 @@ export const SCHEDULE_BRAIN_MODELS: Array<{ value: ScheduleBrainModel; label: st
   { value: "gpt-6-luna", label: "GPT-6 Luna" },
   { value: "gpt-6-sol", label: "GPT-6 Sol" },
   { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+  { value: "gpt-6.1-terra", label: "GPT-6.1 Terra" },
 ];
 
 export const SCHEDULE_CATEGORIES: Array<{ value: ScheduleCategory; label: string }> = [

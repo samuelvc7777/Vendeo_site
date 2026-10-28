@@ -555,38 +555,12 @@ export function WhatsAppFinalizationActions({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 py-2 border-t border-white/[0.06] bg-transparent backdrop-blur-sm">
-        <button type="button" onClick={() => setOpen(true)}
-          className="group inline-flex items-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-xl px-4 py-2 text-[13px] font-semibold text-white/80 hover:bg-white/[0.08] hover:text-white hover:border-white/[0.12] active:scale-[0.97] transition-all duration-200"
-          aria-label="Abrir cofre de finalização">
-          <FolderOpen size={15} className="text-emerald-400 group-hover:text-emerald-300 transition-colors" />
-          Cofre
-          {items.length > 0 && (
-            <span className="ml-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-emerald-500/20 px-1.5 text-[10px] font-bold text-emerald-400 tabular-nums">{items.length}</span>
-          )}
-        </button>
-        <div className="relative group/send">
-          <button type="button" disabled={sending || !items.length} onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; if (el) el.classList.toggle("hidden"); }}
-            className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-[13px] font-bold text-white shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/30 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.97] disabled:opacity-40 disabled:shadow-none transition-all duration-200"
-            aria-label="Enviar mensagens de finalização">
-            {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            Enviar
-          </button>
-          <div className="hidden absolute bottom-full left-0 mb-2 z-50 w-56 rounded-xl border border-white/10 bg-[#111b21] p-1.5 shadow-2xl shadow-black/50">
-            <p className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Filtrar por reação</p>
-            <button type="button" onClick={(e) => { e.stopPropagation(); void send("all"); const el = e.currentTarget.closest(".group\\/send")?.querySelector("div:last-child"); if (el) el.classList.add("hidden"); }}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-white/80 hover:bg-white/10 transition-colors">
-              <span>📦</span><span>Todos os itens</span>
-            </button>
-            {REACTION_CONTEXT_OPTIONS.filter(o => o.value !== "").map((opt) => (
-              <button key={opt.value} type="button" onClick={(e) => { e.stopPropagation(); void send(opt.value as ReactionContext); const el = e.currentTarget.closest(".group\\/send")?.querySelector("div:last-child"); if (el) el.classList.add("hidden"); }}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-white/70 hover:bg-white/10 transition-colors">
-                <span>{opt.emoji}</span><span>{opt.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      <button type="button" onClick={() => setOpen(true)}
+        className="wa-ios-glass mb-0.5 flex h-10 w-10 md:h-9 md:w-9 shrink-0 items-center justify-center rounded-full text-[#007aff] transition-transform active:scale-90"
+        title="Cofre de vendas"
+        aria-label="Abrir cofre de vendas">
+        <FolderOpen size={20} className="stroke-[1.8]" />
+      </button>
       {open && createPortal(
         <div className="fixed inset-0 z-[13000] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4" role="presentation" onClick={() => setOpen(false)}>
           <section role="dialog" aria-modal="true" aria-label="Cofre de finalização"

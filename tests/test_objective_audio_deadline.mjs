@@ -9,6 +9,7 @@ const sourceRoot = process.env.RAFFLE_TEST_SOURCE_ROOT || fileURLToPath(new URL(
 const apiRoot = path.join(sourceRoot, 'supabase/functions/api');
 const { loadObjectiveAudioDeadline, validateObjectiveAudioDeadline } = await import(pathToFileURL(path.join(apiRoot, 'objective_audio_deadline.ts')).href);
 const validators = await import(pathToFileURL(path.join(apiRoot, 'openai_brain.ts')).href);
+const stickerValidators = await import(pathToFileURL(path.join(apiRoot, 'brain_stickers.ts')).href);
 
 const deadline = { objectiveId: 'raffle', maxTurns: 4, currentTurn: 4, allowTemporalMismatch: true };
 const candidates = [{ objectiveId: 'raffle', candidates: [{ audioId: 'raffle-audio' }] }];
@@ -66,7 +67,7 @@ test('estado do SDK comunica exceção específica e prazo sem depender do hist�
   const source = fs.readFileSync(path.join(apiRoot, 'openai_sdk_brain.ts'), 'utf8');
   const start = source.indexOf('function buildOperationalTurnState(');
   const end = source.indexOf('\nfunction ', start + 1);
-  const context = vm.createContext({});
+  const context = vm.createContext({...stickerValidators});
   vm.runInContext(ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const state = context.buildOperationalTurnState({ currentStageId: 'rifa', objectiveAudioDeadline: deadline });
   assert.match(state, /OBJETIVO_AUDIO_TURNO_NA_ETAPA=4/);
@@ -79,7 +80,7 @@ test('validador real do SDK bloqueia adiamento no prazo e aceita áudio autoriza
   const source = fs.readFileSync(path.join(apiRoot, 'openai_sdk_brain.ts'), 'utf8');
   const start = source.indexOf('function validateAndNormalizeSdkPlan(');
   const end = source.indexOf('\nasync function ', start + 1);
-  const context = vm.createContext({ ...validators, validateObjectiveAudioDeadline });
+  const context = vm.createContext({ ...validators, ...stickerValidators, validateObjectiveAudioDeadline });
   vm.runInContext(ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const params = { currentStageId: 'rifa', objectiveAudioDeadline: deadline, prefetchedAudioCandidateGroups: candidates };
   const telemetry = { sourcesUsed: [], authorizedCandidateAudiosByObjective: candidates, authorizedCandidateAudios: [{ audioId: 'raffle-audio' }] };

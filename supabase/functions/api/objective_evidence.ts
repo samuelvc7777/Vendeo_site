@@ -5,6 +5,29 @@ export interface ObjectiveEvidence {
   id: string;
 }
 
+/** Política automática; não restringe o checklist manual do operador. */
+export function requiresConfirmedDelivery(objective: { completionPolicy?: string } | null | undefined): boolean {
+  return objective?.completionPolicy === "delivery_confirmed";
+}
+
+export function configuredStageObjectives(stage: any): any[] {
+  const goals = Array.isArray(stage?.goals) ? stage.goals : Array.isArray(stage?.objectives) ? stage.objectives : [];
+  return goals.length === 1 && Array.isArray(goals[0]) ? goals[0] : goals;
+}
+
+/** manual_fact é evidência interpretada pela IA, não um clique autorizado no checklist. */
+export async function validateSemanticObjectiveEvidence(params: {
+  supabase: any; conversationId: string; objective: any; evidence: ObjectiveEvidence | null;
+  providerSessionId?: string | null;
+}): Promise<{ valid: boolean; reason?: string }> {
+  if (!params.objective || params.objective.enabled === false) return { valid: false, reason: "invalid_reference" };
+  if (requiresConfirmedDelivery(params.objective)) return { valid: false, reason: "delivery_confirmation_required" };
+  const valid = Boolean(params.evidence && await objectiveEvidenceExists(
+    params.supabase, params.conversationId, params.evidence, params.providerSessionId,
+  ));
+  return valid ? { valid: true } : { valid: false, reason: "invalid_reference" };
+}
+
 const EVIDENCE_TABLES: Record<Exclude<ObjectiveEvidenceType, "manual_fact" | "conversation_history">, string> = {
   message: "instagram_messages",
   contact_fact: "contact_memory_facts",

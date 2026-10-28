@@ -25,6 +25,8 @@ export function AutoPilotConfigManager() {
   const [openAiMaskedKey, setOpenAiMaskedKey] = useState<string | null>(null);
   const [openAiReasoningEffort, setOpenAiReasoningEffort] = useState("low");
   const [openAiVerbosity, setOpenAiVerbosity] = useState("low");
+  const [openAiServiceTier, setOpenAiServiceTier] = useState("flex");
+  const [isOpenAiServiceTierDirty, setIsOpenAiServiceTierDirty] = useState(false);
   const [isOpenAiReasoningDirty, setIsOpenAiReasoningDirty] = useState(false);
   const [isOpenAiVerbosityDirty, setIsOpenAiVerbosityDirty] = useState(false);
   const [isSavingKey, setIsSavingKey] = useState(false);
@@ -38,6 +40,8 @@ export function AutoPilotConfigManager() {
       setOpenAiMaskedKey(data.maskedKey || null);
       if (data.reasoningEffort) setOpenAiReasoningEffort(data.reasoningEffort);
       if (data.verbosity) setOpenAiVerbosity(data.verbosity);
+      setOpenAiServiceTier(data.serviceTier === "default" ? "default" : "flex");
+      setIsOpenAiServiceTierDirty(false);
       setIsOpenAiReasoningDirty(false);
       setIsOpenAiVerbosityDirty(false);
     } catch (e) {
@@ -46,7 +50,7 @@ export function AutoPilotConfigManager() {
   }, []);
 
   const handleSaveOpenAiConfig = async () => {
-    if (!openAiKey.trim() && !isOpenAiReasoningDirty && !isOpenAiVerbosityDirty) return;
+    if (!openAiKey.trim() && !isOpenAiReasoningDirty && !isOpenAiVerbosityDirty && !isOpenAiServiceTierDirty) return;
     setIsSavingKey(true);
     try {
       const payload: Record<string, string | undefined> = {
@@ -54,6 +58,7 @@ export function AutoPilotConfigManager() {
       };
       if (isOpenAiReasoningDirty) payload.reasoningEffort = openAiReasoningEffort;
       if (isOpenAiVerbosityDirty) payload.verbosity = openAiVerbosity;
+      if (isOpenAiServiceTierDirty) payload.serviceTier = openAiServiceTier;
       const response = await fetch(OPENAI_CONFIG_ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -65,6 +70,8 @@ export function AutoPilotConfigManager() {
       setOpenAiMaskedKey(data.maskedKey || openAiMaskedKey);
       setOpenAiReasoningEffort(data.reasoningEffort || openAiReasoningEffort);
       setOpenAiVerbosity(data.verbosity || openAiVerbosity);
+      setOpenAiServiceTier(data.serviceTier === "default" ? "default" : "flex");
+      setIsOpenAiServiceTierDirty(false);
       setIsOpenAiReasoningDirty(false);
       setIsOpenAiVerbosityDirty(false);
       toast.success("Configuração do OpenAI — Brain da Larissa salva com sucesso!");
@@ -243,6 +250,15 @@ export function AutoPilotConfigManager() {
           <span className="text-[10px] text-zinc-500">
             {openAiMaskedKey ? `Chave atual: ${openAiMaskedKey}. Deixe o campo vazio para manter a chave.` : "Nenhuma chave OpenAI configurada."}
           </span>
+        </div>
+
+        <div className="space-y-1.5 pt-1">
+          <label htmlFor="openai-service-tier" className="text-[11px] text-zinc-700 dark:text-zinc-300 font-medium block">Modo de processamento</label>
+          <select id="openai-service-tier" value={openAiServiceTier} onChange={(e) => { setOpenAiServiceTier(e.target.value); setIsOpenAiServiceTierDirty(true); }} className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-950 dark:text-white focus:outline-none focus:border-purple-500">
+            <option value="flex">Flex (padrão)</option>
+            <option value="default">Normal</option>
+          </select>
+          <p className="text-[10px] text-zinc-500">Aplicado aos próximos turnos do Brain após salvar a configuração.</p>
         </div>
 
         <div className="space-y-1.5 pt-1">

@@ -66,6 +66,7 @@ import {
   RealtimeConversationUpdatePayload,
   RealtimeInstagramReactionPayload,
 } from "@/presentation/hooks/useChatRealtime";
+import { SupabasePersonaImageRepository } from "@/infrastructure/repositories/SupabasePersonaImageRepository";
 import { getSupabaseBrowserClient } from "@/infrastructure/supabase/client";
 import { useWhatsAppStatusRepository } from "./WhatsAppAccountContext";
 import { InstagramAudioMessage } from "./InstagramAudioMessage";
@@ -75,7 +76,6 @@ import {
   ensureCompatibleAudioUrl,
 } from "./audio-converter";
 import { prepareWhatsAppVoiceNoteUrl } from "./whatsapp-voice-note";
-import { PersonaVaultModal } from "../vault/PersonaVaultModal";
 import { AutoPilotActivationModal } from "./AutoPilotActivationModal";
 import { activateWhatsApp2Autopilot } from "./whatsapp2-autopilot-activation";
 import { selectWhatsApp2StateOwner } from "@/domain/entities/whatsapp2-state-owner.cjs";
@@ -1738,8 +1738,6 @@ function InstagramDirectInbox({
   const [hasCanonicalInstagramSnapshot, setHasCanonicalInstagramSnapshot] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const isLoadingMessages = loadingConversationId === activeChat?.id;
-  // Estado unificado do Cofre: null = fechado, "photos" | "audios" = aba ativa
-  const [vaultTab, setVaultTab] = useState<"photos" | "audios" | null>(null);
   const [isAutoPilotActivationModalOpen, setIsAutoPilotActivationModalOpen] = useState(false);
   const [isGlobalAutoPilotDisabledModalOpen, setIsGlobalAutoPilotDisabledModalOpen] = useState(false);
   const [isRestartingActiveChatAi, setIsRestartingActiveChatAi] = useState(false);
@@ -5478,7 +5476,7 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
   };
 
   // Envio central de mensagem com rastreamento de status e suporte completo a mídias
-  const sendMessageWithText = async (textToSend: string, options?: { viewOnce?: boolean }): Promise<boolean> => {
+  const sendMessageWithText = async (textToSend: string, options?: { viewOnce?: boolean; personaImageId?: string }): Promise<boolean> => {
     if (!textToSend.trim() || !activeChat) return false;
 
     const messageText = textToSend.trim();
@@ -5491,10 +5489,11 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
     const isImageMsg = messageText.startsWith("[image:");
     const audioUrl = isAudioMsg ? messageText.match(/^\[audio:(https?:\/\/[^\]]+)\]/)?.[1] : undefined;
     const imageUrl = isImageMsg ? messageText.match(/^\[image:(https?:\/\/[^\]]+)\]/)?.[1] : undefined;
+      const imageCaption = imageUrl ? messageText.slice(`[image:${imageUrl}]`.length).trim() : undefined;
     const previewText = isAudioMsg
       ? "🎙️ Mensagem de voz"
       : isImageMsg
-      ? "📷 Foto"
+      ? imageCaption || "📷 Foto"
       : messageText;
 
     const currentReply = replyingToMessage
@@ -5572,6 +5571,7 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
           ? await sendWhatsApp2Media({
               to: providerId,
               mediaUrl: imageUrl,
+                caption: imageCaption || undefined,
               replyToMessageId: currentReply?.id || null,
               viewOnce: options?.viewOnce,
             })
@@ -5581,6 +5581,14 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
               replyToMessageId: currentReply?.id || null,
             });
 
+          if (isImageMsg && options?.personaImageId) {
+            try {
+              await new SupabasePersonaImageRepository().recordDelivery(activeChat.id, options.personaImageId, response.message?.id || undefined);
+            } catch (historyError) {
+              console.warn("[Cofre] Foto enviada, mas o registro do histórico falhou:", historyError);
+              toast.warning("Foto enviada. Não foi possível registrar o histórico de uso.");
+            }
+          }
         const confirmedId = response.message?.id || tempId;
         setMessages((prev) => ({
           ...prev,
@@ -7869,15 +7877,6 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
               />
             )}
 
-            {activeChat.type === "whatsapp2" && (
-              <WhatsAppFinalizationActions
-                conversationId={activeChat.id}
-                providerId={activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id)}
-                contactName={activeChat.fullName || activeChat.username || "este contato"}
-                onQueueFinalization={handleFinalizationQueued}
-              />
-            )}
-
             {/* Barra de Digitação Isolada (Zero Lag / 60 FPS com State Colocation) */}
             <div className={`relative z-10 shrink-0 ${isWhatsAppLikeType(activeChat.type) && whatsappWallpaper ? "bg-transparent" : ""}`}>
             <InstagramChatComposer
@@ -7885,6 +7884,14 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
               draftKey={activeChat.id}
               ref={composerRef}
               variant={activeChat.type === "whatsapp2" ? "whatsapp" : "instagram"}
+              salesVaultAction={activeChat.type === "whatsapp2" ? (
+                <WhatsAppFinalizationActions
+                  conversationId={activeChat.id}
+                  providerId={activeChat.providerId || whatsappProviderIdFromConversationId(activeChat.id)}
+                  contactName={activeChat.fullName || activeChat.username || "este contato"}
+                  onQueueFinalization={handleFinalizationQueued}
+                />
+              ) : undefined}
               isUploadingMedia={isUploadingMedia}
               hasPendingImage={Boolean(pendingImage)}
               replyingToName={
@@ -7903,8 +7910,6 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
                 void handleUploadAndSendMedia(file);
               }}
               onStartRecording={handleStartRecording}
-              onOpenVault={() => setVaultTab("audios")}
-              onOpenImageVault={() => setVaultTab("photos")}
               onOpenConsole={
                 isWhatsAppLikeType(activeChat.type)
                   ? () => {
@@ -7925,38 +7930,6 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
             </div>
           </div>
         )}
-
-        {/* Modal Unificado: Cofre da Larissa (Fotos + Áudios) */}
-        <PersonaVaultModal
-          isOpen={vaultTab !== null}
-          onClose={() => setVaultTab(null)}
-          initialTab={vaultTab ?? "photos"}
-          activeChat={
-            activeChat
-              ? {
-                  id: activeChat.id,
-                  fullName: activeChat.fullName,
-                  username: activeChat.username,
-                }
-              : null
-          }
-          onSendImageToChat={async (image) => {
-            if (!activeChat) return;
-            const imageUrl = activeChat.type === "whatsapp2"
-              ? (image.whatsappImageUrl || image.imageUrl)
-              : image.imageUrl;
-            const sent = await sendMessageWithText(`[image:${imageUrl}]`, { viewOnce: image.isViewOnce });
-            if (sent) toast.success(`Imagem "${image.title}" enviada com sucesso.`);
-          }}
-          onSendAudioToChat={async (audio) => {
-            if (!activeChat) return;
-            const audioUrl = activeChat.type === "whatsapp2"
-              ? (audio.whatsappAudioUrl || audio.audioUrl)
-              : audio.audioUrl;
-            const sent = await sendMessageWithText(`[audio:${audioUrl}]`);
-            if (sent) toast.success(`Áudio "${audio.title}" enviado com sucesso.`);
-          }}
-        />
 
         <AutoPilotActivationModal
           isOpen={isAutoPilotActivationModalOpen}

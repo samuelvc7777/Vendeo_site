@@ -1,7 +1,20 @@
 export function brainOperatorAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
   const apikey = request.headers.get("apikey");
+  const auth = request.headers.get("authorization") || "";
   const expectedAnonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
+  const expectedServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+  // Se a requisição contiver apikey válida ou Bearer token oficial do app
+  if (apikey && (apikey === expectedAnonKey || (expectedServiceKey && apikey === expectedServiceKey))) {
+    return true;
+  }
+  if (auth.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    if (token === expectedAnonKey || (expectedServiceKey && token === expectedServiceKey)) {
+      return true;
+    }
+  }
 
   // A chave anon é pública e não deve liberar uma origem arbitrária.
   // Para chamadas nativas que realmente omitem Origin, só aceitamos a chave
@@ -18,7 +31,6 @@ export function brainOperatorAllowedOrigin(request: Request): boolean {
   const allowed = new Set([
     "https://vendeo-e755e.web.app",
     "https://vendeo-e755e.firebaseapp.com",
-    "https://cigarette-recommends-dip-sage.trycloudflare.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     ...configuredOrigins,
@@ -31,6 +43,10 @@ export function brainOperatorAllowedOrigin(request: Request): boolean {
     const host = url.hostname;
     // Permite loopback e redes privadas locais usadas pelo app.
     if (host === "localhost" || host === "127.0.0.1") return true;
+    // Permite túneis Cloudflare (trycloudflare.com)
+    if (host.endsWith(".trycloudflare.com")) return true;
+    // Permite domínios de hosting oficiais
+    if (host.endsWith(".web.app") || host.endsWith(".firebaseapp.com")) return true;
     // Redes privadas e VPN (Tailscale 100.*, LAN 192.168.*, 10.*, 172.16-31.*)
     if (/^100\.\d+\.\d+\.\d+$/.test(host)) return true;
     if (/^192\.168\.\d+\.\d+$/.test(host)) return true;
@@ -42,4 +58,3 @@ export function brainOperatorAllowedOrigin(request: Request): boolean {
 
   return false;
 }
-

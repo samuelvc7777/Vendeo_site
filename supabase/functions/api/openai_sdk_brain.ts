@@ -1,4 +1,6 @@
-import { webSearchTool, Agent, getDefaultOpenAIClient, run, setDefaultOpenAIKey, system, tool } from "npm:@openai/agents@0.18.0";
+import { imageToolCandidates } from "./persona_image_access.ts";
+import { buildBrainStickerContext, authorizeBrainStickerActions } from "./brain_stickers.ts";
+import { Agent, getDefaultOpenAIClient, run, setDefaultOpenAIKey, system, tool } from "npm:@openai/agents@0.18.0";
 import { z } from "npm:zod@4.6.5";
 import { buildCanonicalAgentInstructions } from "./openai_agent_instructions.ts";
 import { validateObjectiveAudioDeadline } from "./objective_audio_deadline.ts";
@@ -15,6 +17,7 @@ import {
   validateQuestionIntentsInvariant,
   validateResponseGenerationInvariant,
   validateStageProgressionInvariant,
+  validateWebSearchOutputPrivacy,
   type OpenAiBrainTurnResult,
   type RunOpenAiBrainParams,
 } from "./openai_brain.ts";
@@ -43,6 +46,7 @@ function env(name: string): string | undefined {
 function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
   const lines: string[] = [
     "## ESTADO OPERACIONAL AUTORITATIVO DESTE TURNO",
+    buildBrainStickerContext(params.stickerCandidates),
     "Este bloco é estado interno do Vendeo, não é mensagem do pretendente.",
     "A Conversation da OpenAI é a fonte do histórico conversacional vivo. Não peça ao backend o histórico bruto.",
     "Na cronologia, DATA/HORA ORIGINAL vence a ordem de sincronização.",
@@ -294,6 +298,11 @@ function buildOperationalTurnState(params: RunOpenAiBrainParams): string {
     "Nunca avance de etapa enquanto existir objetivo obrigatório pendente. Nunca pule uma etapa configurada. Na ETAPA_FINAL não declare avanço; a finalização é aplicada após a conclusão dos objetivos.",
     "Se a mensagem atual perguntar algo sobre Larissa relacionado a qualquer objective_id configurado da etapa — inclusive um objetivo completed, como uma devolução 'e vc?' após ele responder — consulte cofre_audio_search com o objective_id desse assunto. Outro objetivo estar ativo não bloqueia essa consulta.",
     "Não repita cofre_audio_search para o mesmo objective_id no mesmo turno.",
+    "FOTOS SOB PEDIDO: quando o pretendente pedir uma foto de Larissa e for adequado atender, consulte cofre_image_search. Você reconhece o pedido; o backend não interpreta palavras-chave.",
+    "O catálogo contém somente fotos habilitadas, dentro do horário de Brasília e ainda não enviadas/reservadas para esta conversa, incluindo envios manuais. Compare descrição e instrução com o pedido e escolha um imageId retornado NESTE turno.",
+    "Para enviar a foto escolhida, use outboundActions com {type:'image', arsenalItemId:'imageId retornado pela ferramenta'}. Não invente ID ou URL. O backend usa a legenda cadastrada e visualização única; não duplique a legenda em outro balão.",
+    "Se o catálogo estiver vazio/indisponível ou não houver foto adequada ao pedido, solicite a intervenção do operador com action=manual_resolution, manualResolution.question e manualResolution.context explicando o pedido e a falta de foto elegível. Deixe responses=[] e outboundActions=[]; a solicitação é interna, nunca uma fala ao pretendente. Não reutilize foto anterior, não prometa entrega inexistente e preserve o checklist ativo.",
+    "A ausência de foto é uma pendência de mídia para o operador. Regras de não pedir nova aprovação de áudio e prazos de áudio não proíbem esse encaminhamento por falta de foto. Nunca peça ao operador para burlar horário ou repetição; ele pode cadastrar outra foto elegível ou orientar a resposta.",
   );
   return lines.join("\n");
 }
@@ -431,6 +440,8 @@ function restoreExecutionToolState(
   toolState: Record<string, any> | null | undefined,
 ): void {
   if (!toolState || typeof toolState !== "object") return;
+  if (Array.isArray(toolState.authorizedCandidateImages)) telemetry.authorizedCandidateImages = toolState.authorizedCandidateImages;
+  if (typeof toolState.imageToolNeedsOperator === "boolean") telemetry.imageToolNeedsOperator = toolState.imageToolNeedsOperator;
   if (Array.isArray(toolState.authorizedCandidateAudios)) {
     telemetry.authorizedCandidateAudios = toolState.authorizedCandidateAudios;
   }
@@ -533,6 +544,10 @@ function validateAndNormalizeSdkPlan(
     (params.currentInboundMessages || []).slice(-4).map((message) => message.id),
   );
   const response = validateResponseGenerationInvariant(parsedPlan);
+  const webSearchPrivacy = validateWebSearchOutputPrivacy(
+    parsedPlan,
+    Number(telemetry.webSearchCallCount || 0) > 0 || telemetry.sourcesUsed.includes("web_search"),
+  );
   const progression = validateObjectiveProgressionInvariant(parsedPlan, {
     currentObjectiveId: params.currentObjectiveId,
     currentObjectiveRequired: params.currentObjectiveRequired,
@@ -547,7 +562,8 @@ function validateAndNormalizeSdkPlan(
     isFinalStage: params.isFinalStage,
     stageObjectives: params.stageObjectives,
   });
-  const manualReask = Boolean(params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution");
+  const manualReask = Boolean(params.manualResolutionAnswer && parsedPlan?.action === "manual_resolution" && !telemetry.imageToolNeedsOperator);
+  const imageHandoffMissing = telemetry.imageToolNeedsOperator === true && parsedPlan?.action !== "manual_resolution";
   const audioDeadlineError = validateObjectiveAudioDeadline({
     deadline: params.objectiveAudioDeadline,
     candidates: telemetry.authorizedCandidateAudiosByObjective || params.prefetchedAudioCandidateGroups,
@@ -567,6 +583,7 @@ function validateAndNormalizeSdkPlan(
   const selectedAudioId = Array.isArray(parsedPlan?.outboundActions)
     ? parsedPlan.outboundActions.find((action: any) => action?.type === "audio")?.audioId
     : parsedPlan?.selectedAudioId || parsedPlan?.audioId;
+  const authorizedImageIds = new Set((telemetry.authorizedCandidateImages || []).map(image => image.imageId));
   const arsenalById = new Map((params.arsenalCandidates || []).map((candidate) => [candidate.itemId, candidate]));
   const authorizedAudioIds = new Set([
     ...(telemetry.authorizedCandidateAudios || []).map((candidate) => candidate.audioId),
@@ -585,6 +602,7 @@ function validateAndNormalizeSdkPlan(
       if (action?.type === "image" || action?.type === "video") arsenalActionsAuthorized = false;
       continue;
     }
+    if (action?.type === "image" && authorizedImageIds.has(arsenalItemId)) continue;
     const candidate = arsenalById.get(arsenalItemId);
     if (!candidate) {
       arsenalActionsAuthorized = false;
@@ -618,10 +636,18 @@ function validateAndNormalizeSdkPlan(
     }
   }
 
-  const validationError = !basic.valid
+  const stickerChannel = [...(params.currentInboundMessages || [])].reverse().find((message) => message?.channel)?.channel;
+  const stickersAuthorized = authorizeBrainStickerActions(parsedPlan?.outboundActions || [], params.stickerCandidates || [], stickerChannel);
+  const validationError = imageHandoffMissing
+    ? "image_unavailable_requires_operator_handoff"
+    : !stickersAuthorized
+    ? "sticker_not_authorized_for_this_turn"
+    : !basic.valid
     ? basic.error || "invalid_brain_plan"
     : !response.valid
     ? response.error || "invalid_response_generation"
+    : !webSearchPrivacy.valid
+    ? webSearchPrivacy.error || "web_search_output_leak"
     : !progression.valid
     ? progression.error || "invalid_objective_progression"
     : !stageProgression.valid
@@ -640,6 +666,8 @@ function validateAndNormalizeSdkPlan(
 
   if (!parsedPlan || validationError) {
     const hardContractViolation =
+      imageHandoffMissing ||
+      !webSearchPrivacy.valid ||
       !progression.valid ||
       !stageProgression.valid ||
       (isObjectivePursuit && !questionValidation.valid) ||
@@ -1101,6 +1129,8 @@ async function persistSdkExecutionToolState(
   telemetry: OpenAiBrainTurnResult["telemetry"],
 ): Promise<void> {
   const toolState = {
+    authorizedCandidateImages: telemetry.authorizedCandidateImages || [],
+    imageToolNeedsOperator: telemetry.imageToolNeedsOperator === true,
     authorizedCandidateAudios: telemetry.authorizedCandidateAudios || [],
     authorizedCandidateAudiosByObjective: telemetry.authorizedCandidateAudiosByObjective || [],
   };
@@ -1490,6 +1520,31 @@ export async function runOpenAiSdkBrainTurn(
     },
   });
 
+  let imageToolResult: string | null = null;
+  const imageTool = tool({
+    name: "cofre_image_search",
+    description: "Consulta fotos autorizadas, no horário e ainda não enviadas à conversa. Use quando houver pedido de foto; o Brain escolhe a foto pela descrição. Não envia nada por si só.",
+    parameters: z.object({query: z.string().max(500)}),
+    execute: async ({query}) => {
+      if (imageToolResult !== null) return imageToolResult;
+      telemetry.toolsRequested.push("cofre_image_search");
+      telemetry.toolExecutionsCount++;
+      let status = "unavailable";
+      telemetry.authorizedCandidateImages = [];
+      try {
+        const images = params.searchCofreImages ? await params.searchCofreImages({conversationId: params.conversationId, query}) : [];
+        telemetry.authorizedCandidateImages = imageToolCandidates(images);
+        status = images.length ? "ok" : "no_eligible_image";
+      } catch { status = "unavailable"; }
+      telemetry.imageToolNeedsOperator = status !== "ok";
+      telemetry.memoryToolResults.push({toolName: "cofre_image_search", status, resultCount: telemetry.authorizedCandidateImages.length});
+      if (!telemetry.sourcesUsed.includes("cofre_image")) telemetry.sourcesUsed.push("cofre_image");
+      await persistSdkExecutionToolState(params.supabase, executionKey, executionTurnId, telemetry);
+      imageToolResult = JSON.stringify({status, candidates: telemetry.authorizedCandidateImages, requires_operator: telemetry.imageToolNeedsOperator, instruction: telemetry.imageToolNeedsOperator ? "Solicite o operador com action=manual_resolution e manualResolution={question,context} descrevendo o pedido de foto e a falta de opção elegível. responses=[] e outboundActions=[]; nenhuma mensagem ao pretendente. Preserve horário e não repetição." : "Escolha um imageId listado para outboundActions type=image, arsenalItemId=imageId. Se nenhuma foto servir semanticamente, solicite o operador com manual_resolution e não envie mensagem ao pretendente."});
+      return imageToolResult;
+    },
+  });
+
   const seenAudioObjectives = new Map<string, string>();
   const audioTool = tool({
     name: "cofre_audio_search",
@@ -1524,42 +1579,92 @@ export async function runOpenAiSdkBrainTurn(
   // reuse the large canonical prefix through prompt caching. Turn-specific state
   // is sent separately by buildTurnInput().
   const canonicalInstructions = buildCanonicalAgentInstructions({ persistentMode: true, selectedMemoryMode: memoryContext.useSelectedPrompt });
-  const instructions = canonicalInstructions.includes(BRAIN_WEB_SEARCH_POLICY_MARKER)
-    ? canonicalInstructions
-    : [canonicalInstructions, BRAIN_WEB_SEARCH_POLICY].join("\n\n");
+  const instructions = canonicalInstructions;
   telemetry.agentInstructionChars = instructions.length;
 
   const reasoningEffort = params.reasoningEffort as any;
-  const serviceTier: "auto" | "default" | "flex" = params.serviceTier || "auto";
-  telemetry.serviceTierRequested = serviceTier;
-  const brain = new Agent({
-    name: "Vendeo Brain",
-    instructions,
-    model,
-    modelSettings: {
-      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
-      ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
-      promptCacheOptions: {
-        mode: "implicit",
-        ttl: "30m",
+  const initialServiceTier: "auto" | "default" | "flex" = params.serviceTier || "flex";
+  let activeServiceTier = initialServiceTier;
+  telemetry.serviceTierRequested = activeServiceTier;
+
+  const buildBrainAgent = (tier: "auto" | "default" | "flex") =>
+    new Agent({
+      name: "Vendeo Brain",
+      instructions,
+      model,
+      modelSettings: {
+        ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+        ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
+        promptCacheOptions: {
+          mode: "implicit",
+          ttl: "30m",
+        },
+        providerData: {
+          service_tier: tier,
+        },
       },
-      providerData: {
-        service_tier: serviceTier,
-      },
-    },
-    tools: [...(memoryContext.lookup ? [personaMemoryTool] : []), ...(params.audioPrefetchComplete
-      ? [webSearchTool({ searchContextSize: "low", externalWebAccess: true })]
-      : [audioTool, webSearchTool({ searchContextSize: "low", externalWebAccess: true })])],
-    resetToolChoice: true,
-  });
+      tools: [...(params.searchCofreImages ? [imageTool] : []), ...(memoryContext.lookup ? [personaMemoryTool] : []), ...(params.audioPrefetchComplete
+        ? []
+        : [audioTool])],
+      resetToolChoice: true,
+    });
+
+  let brain = buildBrainAgent(activeServiceTier);
   try {
     const turnInput = buildTurnInput(params);
     telemetry.turnContextChars = typeof turnInput === "string" ? turnInput.length : JSON.stringify(turnInput).length;
-    const result = await run(brain, turnInput as any, {
-      conversationId: link.openAiConversationId,
-      maxTurns: 8,
-      signal: params.signal,
-    });
+    let result: any;
+    let runError: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        result = await run(brain, turnInput as any, {
+          conversationId: link.openAiConversationId,
+          maxTurns: 8,
+          signal: params.signal,
+        });
+        runError = null;
+        break;
+      } catch (err) {
+        runError = err;
+        const errMsg = String((err as Error)?.message || err);
+
+        // Fallback transparente se o tier 'flex' estiver temporariamente sem capacidade na OpenAI (429)
+        if (
+          activeServiceTier === "flex" &&
+          /flex processing is temporarily unavailable/i.test(errMsg)
+        ) {
+          console.warn("[OpenAI SDK Brain] Tier 'flex' indisponível na OpenAI (429). Executando fallback automático para 'auto'...");
+          activeServiceTier = "auto";
+          telemetry.serviceTierRequested = "auto";
+          brain = buildBrainAgent(activeServiceTier);
+          continue;
+        }
+
+        const duplicateMatch = errMsg.match(/Duplicate item found with id (msg_[a-zA-Z0-9_-]+)/);
+        if (duplicateMatch && attempt < 2) {
+          const duplicateId = duplicateMatch[1];
+          console.warn("[OpenAI SDK Brain] Detectado item duplicado na Conversation (" + duplicateId + "). Removendo e retentando (tentativa " + (attempt + 1) + ")...");
+          try {
+            if (client?.conversations?.items?.delete) {
+              await client.conversations.items.delete(duplicateId, { conversation_id: link.openAiConversationId });
+            } else {
+              const apiKey = env.OPENAI_API_KEY || (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_API_KEY") : "");
+              if (apiKey) {
+                await fetch("https://api.openai.com/v1/conversations/" + link.openAiConversationId + "/items/" + duplicateId, {
+                  method: "DELETE",
+                  headers: { Authorization: "Bearer " + apiKey },
+                });
+              }
+            }
+          } catch (delErr) {
+            console.error("[OpenAI SDK Brain] Falha ao deletar item duplicado " + duplicateId + ":", delErr);
+          }
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (runError) throw runError;
 
     const usage = result.runContext.usage;
     telemetry.inputTokens = usage.inputTokens;

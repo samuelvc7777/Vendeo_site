@@ -1,5 +1,8 @@
-import { resolveCanonicalConversationId } from "./multichannel_identity_service.ts";
-import { isTinderLiveSyncEnabled, syncTinderMatchMessages } from "./tinder_sync_service.ts";
+import { handleTinderAccountAi, tinderChatAiRemoved } from "./tinder_account_ai.ts";
+import { handleTinderRecipientSelection } from "./tinder_recipient_selection.ts";
+import { handleTinderApproachConsole } from "./tinder_approach_console.ts";
+import { handleTinderScheduleRoutes } from "./tinder_schedule_routes.ts";
+
 
 const TINDER_API_BASE = "https://api.gotinder.com";
 const REQUEST_TIMEOUT_MS = 15000;
@@ -22,30 +25,6 @@ const BASE_HEADERS: Record<string, string> = {
   Origin: "https://tinder.com",
   Referer: "https://tinder.com/",
 };
-
-function isTinderLiveDispatchConfigured(): boolean {
-  try {
-    if (typeof Deno !== "undefined" && typeof Deno.env?.get === "function") {
-      return Deno.env.get("ENABLE_TINDER_LIVE_DISPATCH") === "true";
-    }
-  } catch {}
-  try {
-    if (typeof process !== "undefined" && process?.env) {
-      return process.env.ENABLE_TINDER_LIVE_DISPATCH === "true";
-    }
-  } catch {}
-  return false;
-}
-
-export function tinderAutomationReadiness() {
-  const syncEnabled = isTinderLiveSyncEnabled();
-  const dispatchEnabled = isTinderLiveDispatchConfigured();
-  return {
-    enabled: syncEnabled && dispatchEnabled,
-    syncEnabled,
-    dispatchEnabled,
-  };
-}
 
 type TinderAction = "like" | "pass" | "superlike";
 
@@ -761,11 +740,6 @@ async function startBoost(token: string) {
     method: "POST",
     body: JSON.stringify({ amount: 1 }),
   });
-  if (payload?.success === false || payload?.error) {
-    const error: any = new Error("O Tinder não confirmou a ativação do Boost.");
-    error.status = 409;
-    throw error;
-  }
 
   return {
     boostId: payload?.boost_id || payload?.data?.boost_id || null,
@@ -784,6 +758,45 @@ async function fetchConfig(supabase: any) {
     .maybeSingle();
   if (error) throw error;
   return data || null;
+}
+
+async function requireTinderApproachAccount(supabase: any, accountId: string) {
+  const config = await fetchConfig(supabase);
+  if (!config?.auth_token || String(config.user_id) !== accountId) throw new Error("TINDER_ACCOUNT_CHANGED");
+  return config;
+}
+
+/** Índice de canais compartilhado só neste tick, sem repetir todas as páginas por mensagem. */
+export function createTinderApproachProvider(supabase: any) {
+  let indexedToken = "";
+  let index: Promise<Map<string, any>> | null = null;
+  const context = async (accountId: string, matchId: string) => {
+    const config = await requireTinderApproachAccount(supabase, accountId);
+    const token = String(config.auth_token);
+    if (!index || token !== indexedToken) {
+      indexedToken = token;
+      index = queryChannels(token).then((channels) => new Map(channels.map((channel) => [String(channel?.channel_id?.reference_id || ""), channel])));
+    }
+    const channel = (await index).get(matchId);
+    if (!channel?.channel_id?.id) throw new Error("TINDER_MATCH_CHANNEL_NOT_FOUND");
+    return { token, channel };
+  };
+  return {
+    async readMessages(accountId: string, matchId: string) {
+      const { token, channel } = await context(accountId, matchId);
+      return fetchChannelMessages(token, matchId, accountId, true, channel);
+    },
+    async sendMessage(accountId: string, matchId: string, text: string) {
+      const { token, channel } = await context(accountId, matchId);
+      await requireTinderApproachAccount(supabase, accountId);
+      const payload = await tinderFetch(token, "/v1/chat/channels/messages?locale=pt", {
+        method: "POST", body: JSON.stringify({ channel_id: channel.channel_id, message: { content: { text: { message: text } } } }),
+      });
+      const id = payload?.message_id?.id || payload?.message?.message_id?.id;
+      if (!id) throw new Error("DELIVERY_RECEIPT_MISSING");
+      return { providerMessageId: String(id) };
+    },
+  };
 }
 
 async function requireSession(
@@ -815,11 +828,6 @@ async function requireSession(
   }
 
   return { config, token: String(config.auth_token) };
-}
-
-/** O toggle compartilhado exige a mesma sessão do Match que as rotas privadas. */
-export async function requireTinderMatchSession(request: Request, supabase: any): Promise<void> {
-  await requireSession(request, supabase);
 }
 
 /** Leitor reutilizado exclusivamente pelo worker server-side de sync. */
@@ -1045,6 +1053,11 @@ export async function handleTinderMatchRoutes({
       );
     }
 
+    if (path === "/match/tinder/schedules" || path.startsWith("/match/tinder/schedules/")) {
+      const { config } = await requireSession(request, supabase);
+      return await handleTinderScheduleRoutes({ request, path, supabase, corsHeaders, accountId: String(config.user_id || "") });
+    }
+
     if (path === "/match/tinder/status" && request.method === "GET") {
       const config = await fetchConfig(supabase);
       if (!config?.auth_token) {
@@ -1183,177 +1196,20 @@ export async function handleTinderMatchRoutes({
       );
     }
 
-    const tinderAiMatch = path.match(/^\/match\/tinder\/ai\/([^/]+)$/);
-    if (tinderAiMatch && request.method === "GET") {
-      await requireSession(request, supabase);
-      const matchId = decodeURIComponent(tinderAiMatch[1]).trim();
-      if (!matchId || matchId.length > 200) {
-        return json({ success: false, error: "Match inválido.", code: "TINDER_MATCH_ID_INVALID" }, 400, corsHeaders);
-      }
-
-      const resolved = await resolveCanonicalConversationId({
-        supabase,
-        channel: "tinder",
-        externalIdentityId: matchId,
-      });
-      const conversationId = resolved.conversationId || `tinder:${matchId}`;
-      const { data: conversation, error: conversationError } = await supabase
-        .from("instagram_conversations")
-        .select("id, ai_auto_respond, channel, current_stage_id, stage_completed_rules")
-        .eq("id", conversationId)
-        .maybeSingle();
-      if (conversationError) throw conversationError;
-
-      let schedule: Record<string, unknown> | null = null;
-      let stage: Record<string, unknown> | null = null;
-      let identities: Array<Record<string, unknown>> = [];
-      let transfer: Record<string, unknown> | null = null;
-      if (conversation) {
-        const { data: activeRun, error: runError } = await supabase
-          .from("conversation_schedule_runs")
-          .select("schedule_id, current_stage_id, status")
-          .eq("conversation_id", conversationId)
-          .eq("status", "active")
-          .maybeSingle();
-        if (runError) throw runError;
-
-        if (activeRun?.schedule_id) {
-          const [{ data: scheduleRow, error: scheduleError }, { data: stageRow, error: stageError }] = await Promise.all([
-            supabase.from("conversation_schedules").select("id, name").eq("id", activeRun.schedule_id).maybeSingle(),
-            supabase.from("chat_stages").select("id, name, stage_order, goals").eq("id", activeRun.current_stage_id || conversation.current_stage_id).maybeSingle(),
-          ]);
-          if (scheduleError) throw scheduleError;
-          if (stageError) throw stageError;
-          schedule = scheduleRow ? { ...scheduleRow } : null;
-          stage = stageRow ? { ...stageRow } : null;
-        }
-
-        const [{ data: identityRows, error: identityError }, { data: transferRows, error: transferError }] = await Promise.all([
-          supabase.from("conversation_channel_identities")
-            .select("channel, external_identity_id, status")
-            .eq("conversation_id", conversationId),
-          supabase.from("conversation_channel_transfers")
-            .select("target_channel, status, provider_message_id, failure_reason, updated_at, idempotency_key")
-            .eq("conversation_id", conversationId)
-            .order("created_at", { ascending: false })
-            .limit(1),
-        ]);
-        if (identityError) throw identityError;
-        if (transferError) throw transferError;
-        identities = Array.isArray(identityRows) ? identityRows : [];
-        const transferRow = Array.isArray(transferRows) ? transferRows[0] || null : null;
-        let contactSaveStatus: string | null = null;
-        if (transferRow?.target_channel === "whatsapp2" && transferRow.idempotency_key) {
-          const { data: deliveryRow, error: deliveryError } = await supabase
-            .from("whatsapp2_delivery_queue")
-            .select("recipient_contact_save_status")
-            .eq("id", transferRow.idempotency_key)
-            .maybeSingle();
-          if (deliveryError) throw deliveryError;
-          contactSaveStatus = deliveryRow?.recipient_contact_save_status || "pending";
-        }
-        if (transferRow) {
-          transfer = {
-            target_channel: transferRow.target_channel,
-            status: transferRow.status,
-            provider_message_id: transferRow.provider_message_id,
-            failure_reason: transferRow.failure_reason,
-            updated_at: transferRow.updated_at,
-            ...(contactSaveStatus ? { contactSaveStatus } : {}),
-          };
-        }
-      }
-
-      return json({
-        success: true,
-        found: Boolean(conversation),
-        conversationId: conversation?.id || null,
-        isEnabled: conversation?.ai_auto_respond === true,
-        channel: conversation?.channel || "tinder",
-        schedule,
-        stage,
-        completedCheckpoints: conversation?.stage_completed_rules || {},
-        identities,
-        latestTransfer: transfer,
-        automation: tinderAutomationReadiness(),
-      }, 200, corsHeaders);
+    const consoleMatch = path.match(/^\/match\/tinder\/ai\/console\/([^/]+)$/);
+    if (consoleMatch) {
+      const { config } = await requireSession(request, supabase);
+      return handleTinderApproachConsole({ request, supabase, accountId: String(config.user_id || ""), matchId: decodeURIComponent(consoleMatch[1]), corsHeaders });
     }
-
-    const prepareTinderAiMatch = path.match(/^\/match\/tinder\/ai\/([^/]+)\/prepare$/);
-    if (prepareTinderAiMatch && request.method === "POST") {
+    if (path === "/match/tinder/ai/recipients") {
       const { config, token } = await requireSession(request, supabase);
-      const matchId = decodeURIComponent(prepareTinderAiMatch[1]).trim();
-      if (!matchId || matchId.length > 200) {
-        return json({ success: false, error: "Match inválido.", code: "TINDER_MATCH_ID_INVALID" }, 400, corsHeaders);
-      }
-
-      const automation = tinderAutomationReadiness();
-      if (!automation.enabled) {
-        return json({
-          success: false,
-          error: "A automação do Tinder ainda está bloqueada pelas flags de leitura e envio.",
-          code: "TINDER_AUTOMATION_DISABLED",
-          automation,
-        }, 409, corsHeaders);
-      }
-
-      const body = await request.json().catch(() => ({}));
-      const matchName = String(body?.name || "Match Tinder").trim().slice(0, 120) || "Match Tinder";
-      let matchAvatar: string | null = null;
-      try {
-        const candidateAvatar = new URL(String(body?.avatar || ""));
-        if (candidateAvatar.protocol === "https:") matchAvatar = candidateAvatar.toString();
-      } catch {}
-
-      const channel = await findChannelForMatch(token, matchId);
-      if (!channel?.channel_id) {
-        return json({ success: false, error: "O canal deste match não está disponível no Tinder.", code: "TINDER_MATCH_CHANNEL_NOT_FOUND" }, 404, corsHeaders);
-      }
-      const rawMessages = await fetchChannelMessages(
-        token,
-        matchId,
-        String(config?.user_id || ""),
-        true,
-        channel,
-      );
-      const syncResult = await syncTinderMatchMessages({
-        supabase,
-        matchId,
-        myUserId: String(config?.user_id || ""),
-        matchName,
-        matchAvatar,
-        rawMessages,
-        autoPilotEnabled: false,
-      });
-      if (!syncResult.success) {
-        return json({ success: false, error: syncResult.error || "Não foi possível preparar o histórico do match.", code: "TINDER_MATCH_PREPARE_FAILED" }, 503, corsHeaders);
-      }
-
-      // Inicializa o mesmo catálogo de cronogramas já usado pelos outros canais.
-      // A ativação ainda acontece pela operação canônica do AutoPilot no frontend.
-      const { data: scheduleResult, error: scheduleError } = await supabase.rpc(
-        "ensure_conversation_schedule_run_atomic",
-        { p_conversation_id: syncResult.conversationId },
-      );
-      if (scheduleError || scheduleResult?.success !== true) {
-        return json({
-          success: false,
-          error: scheduleError?.message || scheduleResult?.reason || "Não há cronograma ativo para este match.",
-          code: "TINDER_SCHEDULE_INITIALIZATION_FAILED",
-        }, 409, corsHeaders);
-      }
-
-      return json({
-        success: true,
-        conversationId: syncResult.conversationId,
-        importedMessages: syncResult.newMessagesCount,
-        schedule: {
-          id: scheduleResult.schedule_id,
-          name: scheduleResult.schedule_name,
-          currentStageId: scheduleResult.current_stage_id,
-        },
-      }, 200, corsHeaders);
+      return await handleTinderRecipientSelection({ request, supabase, accountId: String(config.user_id || ""), corsHeaders, listAccountMatches: () => fetchMatches(token) });
     }
+    if (path === "/match/tinder/ai") {
+      const { config } = await requireSession(request, supabase);
+      return await handleTinderAccountAi({ request, supabase, accountId: String(config.user_id || ""), corsHeaders });
+    }
+    if (path.startsWith("/match/tinder/ai/")) return tinderChatAiRemoved(corsHeaders);
 
     const messagesMatch = path.match(/^\/match\/tinder\/messages\/([^/]+)$/);
     if (messagesMatch && request.method === "GET") {
@@ -1400,15 +1256,6 @@ export async function handleTinderMatchRoutes({
 
     if (path === "/match/tinder/boost" && request.method === "POST") {
       const { token } = await requireSession(request, supabase);
-      const body = await request.json().catch(() => ({}));
-      if (body?.confirm !== true) {
-        return json({ success: false, code: "TINDER_BOOST_CONFIRM_REQUIRED", error: "Confirme o consumo de um Boost." }, 400, corsHeaders);
-      }
-      const account = await fetchAccountState(token);
-      const remaining = Number(account?.boost?.remaining);
-      if (account?.boost?.isBoosting || !Number.isFinite(remaining) || remaining <= 0) {
-        return json({ success: false, code: "TINDER_BOOST_UNAVAILABLE", error: "Boost indisponível ou já ativo nesta conta." }, 409, corsHeaders);
-      }
       const boost = await startBoost(token);
       return json({ success: true, ...boost }, 200, corsHeaders);
     }

@@ -1,10 +1,12 @@
+import { loadBrainStickers, authorizeBrainStickerActions, isBrainStickerStillAuthorized, type BrainSticker } from "./brain_stickers.ts";
 // ============================================================================
 // brain_orchestrator.ts
 // Motor Oficial e Único de Orquestração da Conversa — BRAIN (Clean Architecture)
 // Arquitetura: Backend Determinístico + Agente Único OpenAI + MCP v17
 // ============================================================================
-import { publishAutoPilotState, patchAutoPilotProjectionState, activity } from "./autopilot_state.ts";
-import { outboxActivityLabel } from "./outbox_activity_label.ts";
+import { publishAutoPilotState, activity } from "./autopilot_state.ts";
+import { listAvailablePersonaImages, isPersonaImageTimeAllowed, imageToolCandidates, claimPersonaImageSend, settlePersonaImageSend } from "./persona_image_access.ts";
+import { planObjectiveImageDelivery } from "./objective_image_delivery.ts";
 import { loadObjectiveAudioDeadline } from "./objective_audio_deadline.ts";
 import {
   enqueueAndWaitWhatsApp2Delivery,
@@ -16,7 +18,10 @@ import { executeChannelTransfer } from "./channel_transfer_service.ts";
 import { queueTransferBrainReentry } from "./channel_transfer_reentry.ts";
 import { dispatchOutboundAction } from "./channel_dispatcher.ts";
 import { normalizePhoneNumber } from "./channel_identity.ts";
-import { normalizeObjectiveEvidence, objectiveEvidenceExists, type ObjectiveEvidence } from "./objective_evidence.ts";
+import {
+  normalizeObjectiveEvidence, configuredStageObjectives, requiresConfirmedDelivery,
+  validateSemanticObjectiveEvidence, type ObjectiveEvidence,
+} from "./objective_evidence.ts";
 import {
   detectGreetingRepeat,
   deriveRecentGreetingState,
@@ -185,6 +190,7 @@ export const ALLOWED_OPENAI_BRAIN_MODELS = [
   "gpt-6-luna",
   "gpt-6-sol",
   "gpt-6.1-sol",
+  "gpt-6.1-terra",
 ] as const;
 
 export async function resolveConfiguredOpenAiModel(_supabase: any, requestedModel?: string): Promise<string> {
@@ -850,7 +856,7 @@ export interface OutboxEntry {
   conversationId: string;
   idempotencyKey: string;
   content: string;
-  messageType: "text" | "audio" | "image" | "video" | "transfer_channel";
+  messageType: "text" | "audio" | "image" | "video" | "sticker" | "transfer_channel";
   channel?: "instagram" | "whatsapp" | "whatsapp2" | "tinder" | null;
   status: OutboxStatus;
   attempts: number;
@@ -868,7 +874,7 @@ export interface OutboxEntry {
   vaultAudioId?: string | null;
   replyToMessageId?: string | null;
   payload?: Record<string, unknown>;
-  actionType?: "text" | "audio" | "image" | "video" | "transfer_channel";
+  actionType?: "text" | "audio" | "image" | "video" | "sticker" | "transfer_channel";
   claimedBy?: string | null;
 }
 
@@ -914,23 +920,30 @@ export function createBrainOutboxBatch(params: {
   idempotencyKey: string;
   sourceChannel?: "instagram" | "whatsapp" | "whatsapp2" | "tinder" | null;
   resolvedAudio?: PersonaAudioAsset;
+  stickerCandidates?: BrainSticker[];
   arsenalCandidates?: ConversationScheduleRuntime["arsenalCandidates"];
   sourceMessageIds?: string[];
   nowMs?: number;
 }): OutboxEntry[] {
   const { actions, conversationId, cycleId, idempotencyKey, resolvedAudio, arsenalCandidates = [] } = params;
+  if (!authorizeBrainStickerActions(actions, params.stickerCandidates || [], params.sourceChannel)) {
+    throw new Error("STICKER_NOT_AUTHORIZED");
+  }
   const nowMs = params.nowMs ?? Date.now();
   let accumulatedDelaySeconds = 0;
   return actions.map((action, index) => {
     const isAudio = action.type === "audio";
     const isImage = action.type === "image";
     const isVideo = action.type === "video";
+    const isSticker = action.type === "sticker";
+    const sticker = isSticker ? params.stickerCandidates?.find((item) => item.id === action.stickerId) : undefined;
     const isTransfer = action.type === "transfer_channel";
     const isQueueFinalization = action.type === "queue_finalization";
     const actionChannel = isTransfer
       ? (action as any).channel || "whatsapp2"
       : (action as any).channel || params.sourceChannel || null;
-    const arsenalItemId = "arsenalItemId" in action ? String(action.arsenalItemId || "") : "";
+    if (isSticker && (!sticker || actionChannel !== "whatsapp2")) throw new Error("STICKER_NOT_AUTHORIZED");
+    const arsenalItemId = !isSticker && "arsenalItemId" in action ? String(action.arsenalItemId || "") : "";
     const arsenalCandidate = arsenalItemId
       ? arsenalCandidates.find((candidate) => candidate.itemId === arsenalItemId)
       : undefined;
@@ -947,13 +960,16 @@ export function createBrainOutboxBatch(params: {
     const stepDelay = previousAudioDuration + humanDelay;
     accumulatedDelaySeconds += stepDelay;
     const imageUrl = isImage ? String(arsenalCandidate?.mediaUrl || directMediaUrl || "") : "";
+    const imageCaption = isImage && "caption" in action ? String(action.caption || "").trim() : "";
     const videoUrl = isVideo ? String(arsenalCandidate?.mediaUrl || "") : "";
     const content = isAudio
       ? resolvedAudio?.audioUrl ? `[audio:${resolvedAudio.audioUrl}]` : `[audio:${action.audioId}]`
       : isImage
-      ? `[image:${imageUrl}]`
+      ? `[image:${imageUrl}]${imageCaption ? ` ${imageCaption}` : ""}`
       : isVideo
       ? `[video:${videoUrl}]`
+      : isSticker
+      ? `[sticker:${sticker!.url}]`
       : isTransfer
       ? (action as any).initialText
       : isQueueFinalization
@@ -966,7 +982,7 @@ export function createBrainOutboxBatch(params: {
       conversationId,
       idempotencyKey: actions.length === 1 ? idempotencyKey : `${idempotencyKey}_a${index}`,
       content,
-      messageType: isAudio ? "audio" : isImage ? "image" : isVideo ? "video" : isTransfer ? "transfer_channel" : isQueueFinalization ? "finalization_vault" : "text",
+      messageType: isAudio ? "audio" : isImage ? "image" : isVideo ? "video" : isSticker ? "sticker" : isTransfer ? "transfer_channel" : isQueueFinalization ? "finalization_vault" : "text",
       actionType: action.type,
       channel: actionChannel,
       status: "pending",
@@ -975,17 +991,20 @@ export function createBrainOutboxBatch(params: {
       createdAt: new Date(nowMs).toISOString(),
       actionIndex: index,
       notBefore: new Date(nowMs + accumulatedDelaySeconds * 1000).toISOString(),
-      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : isImage ? (imageUrl || null) : isVideo ? (videoUrl || null) : null,
+      mediaUrl: isAudio ? (resolvedAudio?.audioUrl || null) : isImage ? (imageUrl || null) : isVideo ? (videoUrl || null) : isSticker ? sticker!.url : null,
       audioDurationSeconds: isAudio && Number.isFinite(Number(resolvedAudio?.duration)) ? Number(resolvedAudio?.duration) : null,
       vaultAudioId: isAudio ? (resolvedAudio?.id || (action as any).audioId || null) : null,
       replyToMessageId: (action as any).replyToMessageId || null,
       payload: {
         brainActionId: `brain_action_${cycleId}_${index}`,
-        arsenalItemId: arsenalItemId || null,
+        ...(isSticker ? { stickerId: action.stickerId } : {}),
+        arsenalItemId: isImage && "objectiveId" in action ? null : arsenalItemId || null,
         replyToMessageId: (action as any).replyToMessageId || null,
         channel: actionChannel,
         sourceChannel: params.sourceChannel || null,
         actionType: action.type,
+        ...(isImage && "objectiveId" in action ? { objectiveId: action.objectiveId, imageId: arsenalItemId } : {}),
+        ...(isImage ? { caption: imageCaption } : {}),
        ...(isImage && (action as any).isViewOnce ? { isViewOnce: true } : {}),
         ...(isTransfer ? {
           targetPhone: (action as any).targetPhone,
@@ -2919,6 +2938,7 @@ export function deriveBrainDeliveryStatus(statuses: string[]):
 
 export interface BrainDecisionActionDelivery {
   id: string;
+  conversation_id?: string;
   action_index: number;
   action_type: string;
   payload: Record<string, any>;
@@ -2981,82 +3001,17 @@ function memoryWriteMatchesAction(item: any, actionIndex: number): boolean {
   return index === actionIndex;
 }
 
-async function completeDeliveryObjectiveFromConfirmedAction(params: {
-  supabase: any;
-  conversationId: string;
-  action: BrainDecisionActionDelivery;
+export async function completeDeliveryObjectiveFromConfirmedAction(params: {
+  supabase: any; conversationId: string; action: BrainDecisionActionDelivery;
 }): Promise<boolean> {
-  const objectiveId = String(params.action.payload?.objectiveId || "").trim();
-  if (!objectiveId || params.action.status !== "sent") return false;
-
-  const { data: conversation, error: conversationError } = await params.supabase
-    .from("instagram_conversations")
-    .select("current_stage_id, stage_completed_rules")
-    .eq("id", params.conversationId)
-    .maybeSingle();
-  if (conversationError || !conversation?.current_stage_id) return false;
-
-  const { data: stage, error: stageError } = await params.supabase
-    .from("chat_stages")
-    .select("id, goals")
-    .eq("id", conversation.current_stage_id)
-    .maybeSingle();
-  if (stageError || !stage) return false;
-
-  const objective = (Array.isArray(stage.goals) ? (stage.goals.length === 1 && Array.isArray(stage.goals[0]) ? stage.goals[0] : stage.goals) : [])
-    .find((goal: any) => goal?.id === objectiveId && goal.enabled !== false);
-  if (
-    !objective ||
-    objective.kind !== "action" ||
-    objective.completionPolicy !== "delivery_confirmed"
-  ) return false;
-
-  if (objective.actionType === "send_audio") {
-    const audioId = String(params.action.payload?.audioId || "").trim();
-    if (params.action.action_type !== "audio" || !audioId) return false;
-    const { data: audio, error: audioError } = await params.supabase
-      .from("persona_audios")
-      .select("id, objective_id, enabled")
-      .eq("id", audioId)
-      .maybeSingle();
-    if (audioError || !audio || audio.enabled === false || audio.objective_id !== objectiveId) return false;
-  }
-
-  const rules = conversation.stage_completed_rules && typeof conversation.stage_completed_rules === "object"
-    ? conversation.stage_completed_rules
-    : {};
-  const completedGoalIds = resolveOfficialCompletedGoals(rules, rules.orchestration || {});
-  const objectiveProgress = resolveOfficialObjectiveProgress(rules, rules.orchestration || {});
-  if (completedGoalIds.includes(objectiveId) || objectiveProgress[objectiveId]?.status === "completed") {
-    return true;
-  }
-
-  const nextCompletedGoalIds = [...new Set([...completedGoalIds, objectiveId])];
-  const nextObjectiveProgress = {
-    ...objectiveProgress,
-    [objectiveId]: {
-      conversationId: params.conversationId,
-      stageId: stage.id,
-      objectiveId,
-      status: "completed",
-      value: null,
-      source: "delivery_confirmed",
-      deliveryActionId: params.action.id,
-      providerMessageId: params.action.provider_message_id || null,
-      completedAt: new Date().toISOString(),
-    },
-  };
-
-  const { data: patchResult, error: patchError } = await params.supabase.rpc("patch_chat_progress_atomic", {
-    p_conversation_id: params.conversationId,
-    p_progress_patch: {
-      currentStageId: stage.id,
-      completedGoalIds: nextCompletedGoalIds,
-      objectiveProgress: nextObjectiveProgress,
-    },
+  if (!params.action.id || params.action.status !== "sent"
+      || params.action.conversation_id !== params.conversationId
+      || !params.action.provider_message_id) return false;
+  const { data, error } = await params.supabase.rpc("complete_delivery_objective_atomic", {
+    p_conversation_id: params.conversationId, p_action_id: params.action.id,
   });
-  if (patchError || patchResult?.success !== true) {
-    console.warn("[Brain] Falha ao concluir objetivo de ação por entrega confirmada:", patchError?.message || patchResult?.reason);
+  if (error || data?.success !== true) {
+    console.warn("[Brain] Objetivo de entrega permanece pendente:", error?.message || data?.reason);
     return false;
   }
   return true;
@@ -3935,7 +3890,6 @@ export interface ReleaseExperimentalCycleParams {
   cycleRecord?: any;
   outboxMap?: any;
   clearCancelFlag?: boolean;
-  flexCapacityFailure?: boolean;
 }
 
 export interface ReleaseExperimentalCycleResult {
@@ -3945,9 +3899,6 @@ export interface ReleaseExperimentalCycleResult {
   possibleSend?: boolean;
   retryCount?: number;
   retryExhausted?: boolean;
-  flexRetryScheduled?: boolean;
-  flexRetryAt?: string | null;
-  flexAttempt?: number;
 }
 
 /**
@@ -3970,31 +3921,22 @@ export async function releaseExperimentalCycleAtomic(
     cycleRecord = null,
     outboxMap = null,
     clearCancelFlag = false,
-    flexCapacityFailure = false,
   } = params;
 
   if (typeof supabase?.rpc === "function") {
     try {
-      const releaseArgs: Record<string, unknown> = {
+      const { data, error } = await supabase.rpc("release_experimental_cycle_if_owned", {
         p_conversation_id: conversationId,
         p_cycle_token: cycleToken,
+        p_processing_status: processingStatus,
         p_debounce_until: debounceUntil || null,
         p_revert_message_ids: revertMessageIds && revertMessageIds.length > 0 ? revertMessageIds : null,
         p_mark_processed_ids: markProcessedIds && markProcessedIds.length > 0 ? markProcessedIds : null,
         p_last_error: lastError !== undefined ? lastError : null,
         p_cycle_record: cycleRecord || null,
         p_outbox_map: outboxMap || null,
-      };
-      if (!flexCapacityFailure) {
-        releaseArgs.p_processing_status = processingStatus;
-        releaseArgs.p_clear_cancel_flag = clearCancelFlag === true;
-      }
-      const { data, error } = await supabase.rpc(
-        flexCapacityFailure
-          ? "release_flex_capacity_cycle_if_owned"
-          : "release_experimental_cycle_if_owned",
-        releaseArgs,
-      );
+        p_clear_cancel_flag: clearCancelFlag === true,
+      });
 
       if (!error && data && typeof data === "object") {
         if (data.released === true) {
@@ -4004,9 +3946,6 @@ export async function releaseExperimentalCycleAtomic(
             possibleSend: data.possibleSend === true,
             retryCount: Number(data.retryCount || 0),
             retryExhausted: data.retryExhausted === true,
-            flexRetryScheduled: data.flexRetryScheduled === true,
-            flexRetryAt: typeof data.flexRetryAt === "string" ? data.flexRetryAt : null,
-            flexAttempt: Number(data.flexAttempt || 0),
           };
         }
         return {
@@ -4542,6 +4481,11 @@ export async function dispatchOutboxEntry(
       "instagram";
     outboxEntry.channel = targetChannel;
 
+    if (outboxEntry.messageType === "sticker" && targetChannel !== "whatsapp2") {
+      outboxEntry.status = "failed";
+      outboxEntry.lastError = "sticker_channel_unsupported";
+      return { success: false, error: outboxEntry.lastError };
+    }
     if (targetChannel === "tinder") {
       if (outboxEntry.messageType === "video") {
         outboxEntry.status = "failed";
@@ -4597,6 +4541,14 @@ export async function dispatchOutboxEntry(
             voiceNote = true;
           }
         }
+      } else if (outboxEntry.messageType === "sticker") {
+        kind = "sticker";
+        mediaUrl = outboxEntry.mediaUrl || undefined;
+        if (!await isBrainStickerStillAuthorized(supabase, outboxEntry.payload?.stickerId, mediaUrl)) {
+          outboxEntry.status = "failed";
+          outboxEntry.lastError = "sticker_no_longer_authorized";
+          return { success: false, error: outboxEntry.lastError };
+        }
       } else if (outboxEntry.messageType === "image") {
         kind = "image";
         mediaUrl = outboxEntry.mediaUrl || (
@@ -4624,6 +4576,17 @@ export async function dispatchOutboxEntry(
         recipientId,
         conversation: channelRow,
       });
+      const deliveryImageId = kind === "image" ? String(outboxEntry.payload?.imageId || "").trim() : "";
+      const imageDeliveryKey = outboxEntry.idempotencyKey || outboxEntry.id;
+      if (deliveryImageId) {
+        const claim = await claimPersonaImageSend(supabase, conversationId, deliveryImageId, imageDeliveryKey);
+        if (!claim.allowed) throw new Error(claim.reason || "PERSONA_IMAGE_NOT_ELIGIBLE_AT_DISPATCH");
+        if (claim.alreadySent) {
+          outboxEntry.status = "sent";
+          outboxEntry.providerMessageId = claim.providerMessageId || null;
+          return {success: true, providerMessageId: claim.providerMessageId};
+        }
+      }
       const enqueueDelivery = runtime?.sendWhatsApp2Delivery || enqueueAndWaitWhatsApp2Delivery;
       const delivery = await enqueueDelivery({
         supabase,
@@ -4631,7 +4594,7 @@ export async function dispatchOutboxEntry(
         conversationId,
         recipientId: whatsapp2Recipient,
         kind,
-        text: kind === "text" ? outboxEntry.content : undefined,
+        text: kind === "text" ? outboxEntry.content : kind === "image" ? String(outboxEntry.payload?.caption || "").trim() || undefined : undefined,
         mediaUrl,
         voiceNote,
         replyToMessageId,
@@ -4639,6 +4602,10 @@ export async function dispatchOutboxEntry(
         timeoutMs: 18_000,
       });
 
+      if (deliveryImageId) {
+        try { await settlePersonaImageSend(supabase, conversationId, deliveryImageId, imageDeliveryKey, delivery); }
+        catch (error) { console.error("[Brain] Reserva da foto permanece bloqueada após falha de persistência:", error); }
+      }
       if (!delivery.success) {
         if (delivery.isUncertain) {
           outboxEntry.status = "dispatch_uncertain";
@@ -4657,7 +4624,7 @@ export async function dispatchOutboxEntry(
       outboxEntry.isUncertain = false;
 
       if (outboxEntry.messageType === "image") {
-        const imageId = String(outboxEntry.payload?.arsenalItemId || "").trim();
+        const imageId = String(outboxEntry.payload?.imageId || outboxEntry.payload?.arsenalItemId || "").trim();
         if (imageId) {
           try {
             await supabase.from("image_delivery_history").insert({
@@ -4994,38 +4961,6 @@ export async function runDurableOutboxDispatcher(
     return result;
   }
 
-  // Atualiza exclusivamente o rótulo OPERACIONAL do ciclo que ainda aparece na
-  // projeção. O CAS evita que um dispatch antigo sobrescreva o estado de um
-  // ciclo novo ou os controles de pausa/ativação.
-  const syncOutboxActivity = async (sendingActionId?: string): Promise<void> => {
-    try {
-      const { data: projection, error: projectionError } = await supabase
-        .from("autopilot_chat_states")
-        .select("status, state, state_updated_at")
-        .eq("conversation_id", conversationId)
-        .maybeSingle();
-      if (projectionError || projection?.status !== "idle") return;
-      const projectedCycleId = String(projection.state?.cycleId || "");
-      if (!projectedCycleId) return;
-      const cycleEntries = allEntries.filter((entry) => entry.cycleId === projectedCycleId);
-      if (!cycleEntries.length) return;
-      const statuses = cycleEntries.map((entry) =>
-        sendingActionId && entry.id === sendingActionId ? "sending" : entry.status
-      );
-      const label = outboxActivityLabel(statuses);
-      if (projection.state?.activity?.label === label) return;
-      const isComplete = ["Brain respondeu", "Entrega incerta", "Falha no envio", "Envio cancelado"].includes(label);
-      await patchAutoPilotProjectionState(
-        supabase,
-        conversationId,
-        { activity: activity(isComplete ? "completed" : "sending", label, projection.state?.activity?.detail || "Estado do envio atualizado.") },
-        projection.state_updated_at,
-      );
-    } catch (err: any) {
-      console.warn("[Outbox] Não foi possível atualizar o indicador do envio:", err?.message || err);
-    }
-  };
-
   // Recupera a projeção normalizada quando a outbox já foi confirmada,
   // mas a atualização de brain_decision_actions falhou. Não despacha mensagens.
   try {
@@ -5279,7 +5214,6 @@ export async function runDurableOutboxDispatcher(
         actionId: outboxBrainActionId(claimedEntry),
         status: "sending",
       });
-      await syncOutboxActivity(claimedEntry.id);
 
       if (!claimedEntry.content) {
         if (claimedEntry.actionType === "audio" || claimedEntry.messageType === "audio") {
@@ -5425,7 +5359,7 @@ export async function runDurableOutboxDispatcher(
       cycleId: entry.cycleId || "",
       actionIndex: entry.actionIndex || 0,
       content: entry.content || entry.mediaUrl || "",
-      messageType: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : "text",
+      messageType: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : entry.messageType === "sticker" ? "sticker" : "text",
       mediaUrl: entry.mediaUrl || null,
       deliverAt: entry.notBefore || entry.createdAt || new Date().toISOString(),
       createdAt: entry.createdAt || new Date().toISOString(),
@@ -5436,7 +5370,6 @@ export async function runDurableOutboxDispatcher(
     }))
     .filter((entry) => Boolean(entry.content));
   await publishAutoPilotState(supabase, conversationId, { pendingOutboundMessages });
-  await syncOutboxActivity();
 
   // GAP 5: Se restam ações pendentes com notBefore agendado, agenda o disparo durável preciso em background
   if (result.pendingCount > 0) {
@@ -5965,6 +5898,12 @@ export async function validateAndApplyBrainStageDecision(params: {
     ...resolveOfficialObjectiveProgress(rules, orchestration),
     ...(params.objectiveProgress || {}),
   };
+  const persistedProgress = resolveOfficialObjectiveProgress(rules, orchestration);
+  for (const objective of stages.flatMap(configuredStageObjectives)) {
+    if (!requiresConfirmedDelivery(objective) || !objective?.id) continue;
+    if (Object.hasOwn(persistedProgress, objective.id)) progress[objective.id] = persistedProgress[objective.id];
+    else delete progress[objective.id];
+  }
   const configuredCurrent = stages.find((stage: any) => stage.id === params.currentStageId);
   if (!configuredCurrent) {
     throw new Error(`A etapa atual "${params.currentStageId || params.currentPhase}" não existe em chat_stages.`);
@@ -5974,19 +5913,18 @@ export async function validateAndApplyBrainStageDecision(params: {
   let invalidCompletion = false;
 
   if (completion?.objectiveId) {
-    const owner = stages.find((stage: any) =>
-      (Array.isArray(stage.goals) ? stage.goals : Array.isArray(stage.objectives) ? stage.objectives : [])
-        .some((objective: any) => objective?.id === completion.objectiveId && objective.enabled !== false),
-    );
-    const objective = owner && (Array.isArray(owner.goals) ? owner.goals : owner.objectives || [])
+    const owner = stages.find((stage: any) => configuredStageObjectives(stage)
+      .some((objective: any) => objective?.id === completion.objectiveId && objective.enabled !== false));
+    const objective = owner && configuredStageObjectives(owner)
       .find((item: any) => item?.id === completion.objectiveId && item.enabled !== false);
-    const evidence = completion.evidence || normalizeObjectiveEvidence(null, completion.evidenceMessageId);
+    const evidence = normalizeObjectiveEvidence(completion.evidence, completion.evidenceMessageId);
     const evidenceReferenceMatches = !completion.evidenceMessageId
       || (evidence?.type === "message" && evidence.id === completion.evidenceMessageId);
-    const evidenceExists = evidence
-      ? await objectiveEvidenceExists(params.supabase, params.conversationId, evidence, params.manualFactProviderSessionId)
-      : false;
-    if (objective && evidenceExists && evidenceReferenceMatches) {
+    const validation = await validateSemanticObjectiveEvidence({
+      supabase: params.supabase, conversationId: params.conversationId, objective, evidence,
+      providerSessionId: params.manualFactProviderSessionId,
+    });
+    if (validation.valid && evidenceReferenceMatches) {
       const alreadyCompleted = completed.includes(completion.objectiveId)
         || progress[completion.objectiveId]?.status === "completed";
       if (!completed.includes(completion.objectiveId)) completed.push(completion.objectiveId);
@@ -6004,7 +5942,7 @@ export async function validateAndApplyBrainStageDecision(params: {
       }
     } else {
       invalidCompletion = true;
-      params.currentCycle?.trace?.push(`objective_update_rejected_invalid_reference: ${completion.objectiveId}`);
+      params.currentCycle?.trace?.push(`objective_update_rejected_${validation.reason || "invalid_reference"}: ${completion.objectiveId}`);
     }
   }
 
@@ -6446,6 +6384,7 @@ export async function listEligiblePersonaAudiosForObjectives(params: {
 // Catálogo elegível do Cofre de Fotos da Larissa
 // ----------------------------------------------------------------------------
 export interface PersonaImageAssetBrain {
+  caption?: string;
   id: string;
   title: string;
   imageUrl: string;
@@ -6459,93 +6398,13 @@ export interface PersonaImageAssetBrain {
   allowedTimeEnd?: string;
 }
 
-export function isCurrentTimeAllowedForPersonaImage(
-  startTime?: string | null,
-  endTime?: string | null,
-  now = new Date()
-): boolean {
-  const start = startTime ? startTime.trim() : "";
-  const end = endTime ? endTime.trim() : "";
-  if (!start || !end) return true; // Qualquer horário se não delimitado
-
-  try {
-    const formatter = new Intl.DateTimeFormat("en-GB", {
-      timeZone: LARISSA_TIMEZONE,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-    const currentTime = formatter.format(now); // "HH:MM"
-    if (start <= end) {
-      return currentTime >= start && currentTime <= end;
-    } else {
-      // Cruzamento de meia-noite (ex: 22:00 até 06:00)
-      return currentTime >= start || currentTime <= end;
-    }
-  } catch {
-    return true;
-  }
+export function isCurrentTimeAllowedForPersonaImage(startTime?: string | null, endTime?: string | null, now = new Date()): boolean {
+  return isPersonaImageTimeAllowed(startTime, endTime, now);
 }
 
-export async function listEligiblePersonaImages(params: {
-  supabase: any;
-  conversationId: string;
-  objectiveId?: string;
-}): Promise<PersonaImageAssetBrain[]> {
-  const { supabase, conversationId, objectiveId } = params;
-
-  // 1. Buscar imagens habilitadas
-  let query = supabase.from("persona_images").select("*").eq("enabled", true);
-  if (objectiveId) {
-    query = query.eq("objective_id", objectiveId);
-  }
-  const { data: images, error } = await query.order("title", { ascending: true });
-  if (error || !images) return [];
-
-  // 2. Buscar histórico de envios para esta conversa
-  const sentImageIds = new Set<string>();
-  try {
-    const { data: histRows } = await supabase
-      .from("image_delivery_history")
-      .select("image_id")
-      .eq("conversation_id", conversationId);
-    for (const row of histRows || []) {
-      if (row?.image_id) sentImageIds.add(String(row.image_id));
-    }
-  } catch {}
-
-  // 3. Verificar histórico em stage_completed_rules (se existir)
-  try {
-    const { data: convRow } = await supabase
-      .from("instagram_conversations")
-      .select("stage_completed_rules")
-      .eq("id", conversationId)
-      .maybeSingle();
-    const deliveredImages = convRow?.stage_completed_rules?.orchestration?.deliveredImages || [];
-    if (Array.isArray(deliveredImages)) {
-      deliveredImages.forEach((id: any) => sentImageIds.add(typeof id === "string" ? id : String(id?.id)));
-    }
-  } catch {}
-
-  return images
-    .filter((img: any) => img.enabled !== false)
-    .filter((img: any) => !sentImageIds.has(String(img.id)))
-    .filter((img: any) => isCurrentTimeAllowedForPersonaImage(img.allowed_time_start, img.allowed_time_end))
-    .map((img: any) => ({
-      id: img.id,
-      title: img.title,
-      imageUrl: img.image_url,
-      whatsappImageUrl: img.whatsapp_image_url || undefined,
-      description: img.description || "",
-      usageInstruction: img.usage_instruction || "",
-      objectiveId: img.objective_id || undefined,
-      alreadySentInConversation: false,
-      isViewOnce: Boolean(img.is_view_once),
-      allowedTimeStart: img.allowed_time_start || undefined,
-      allowedTimeEnd: img.allowed_time_end || undefined,
-    }));
+export async function listEligiblePersonaImages(params: {supabase: any; conversationId: string; objectiveId?: string}): Promise<PersonaImageAssetBrain[]> {
+  return listAvailablePersonaImages(params);
 }
-
 
 export async function searchPersonaAudios(params: {
   supabase: any;
@@ -9098,6 +8957,7 @@ export async function runBrainOrchestration(
     let brainUsedContactMemory = Object.keys(contactFacts).length > 0;
     let brainUsedAudio = false;
     let brainAudioCandidates: CofreAudioCandidate[] = [];
+    let brainImageCandidates: ReturnType<typeof imageToolCandidates> = [];
     const brainAudioObjectiveById = new Map<string, string>();
     const tokenMeasurements = new Set<"provider" | "estimated" | "unavailable">();
 
@@ -9167,6 +9027,9 @@ export async function runBrainOrchestration(
     let memorySearchesPerformed = 0;
     let cofreSearchesPerformed = 0;
     const toolResultsHistory: string[] = [];
+    const stickerChannel = resolveOutboxDefaultChannel(canonicalClaimed,
+      conversationId.startsWith("wa2:") ? "whatsapp2" : null);
+    let stickerCandidates = await loadBrainStickers(supabase, conversationId, stickerChannel);
     let brainPlan: ConversationBrainPlan | null = null;
     let brainIterations = 0;
 
@@ -9180,10 +9043,8 @@ export async function runBrainOrchestration(
         .select("id, app_secret")
         .in("id", ["openai_brain_reasoning_effort", "openai_brain_verbosity", "openai_brain_service_tier"]);
       agentSettings = new Map((agentSettingRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
-      const configuredServiceTierRaw = agentSettings.get("openai_brain_service_tier") || "auto";
-      const configuredServiceTier: "auto" | "default" | "flex" = ["auto", "default", "flex"].includes(configuredServiceTierRaw)
-        ? configuredServiceTierRaw as "auto" | "default" | "flex"
-        : "auto";
+      const configuredServiceTierRaw = agentSettings.get("openai_brain_service_tier") || "flex";
+      const configuredServiceTier: "default" | "flex" = configuredServiceTierRaw === "default" ? "default" : "flex";
       const latestRelevantMessage = [...finalRecentMessages]
         .filter((message: any) => message?.createdAt)
         .sort((a: any, b: any) => messageTimestampMs(b) - messageTimestampMs(a))[0];
@@ -9283,7 +9144,7 @@ export async function runBrainOrchestration(
         .map((entry: any) => ({
           actionId: String(entry.payload?.brainActionId || ""),
           actionIndex: Number.isInteger(entry.actionIndex) ? entry.actionIndex : 0,
-          type: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : "text",
+          type: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : entry.messageType === "sticker" ? "sticker" : "text",
           preview: entry.messageType === "audio" ? "[áudio pendente]" : entry.messageType === "image" ? "[foto pendente]" : entry.messageType === "video" ? "[vídeo pendente]" : String(entry.content || entry.payload?.text || ""),
         }))
         .filter((entry) => entry.actionId);
@@ -9567,6 +9428,7 @@ export async function runBrainOrchestration(
         }
 
         const agentTurnParams: Parameters<typeof runOpenAiBrainTurn>[0] = {
+          stickerCandidates,
           supabase,
           conversationId,
           sessionId: brainProviderSessionId,
@@ -9666,6 +9528,7 @@ export async function runBrainOrchestration(
           recentQuestionIntentsSnippet: useSdkConversationRuntime
             ? ""
             : (persistentAgentSessionEnabled ? "" : formatRecentQuestionIntentsSnippet(currentRecentQuestionIntents)),
+          searchCofreImages: () => listAvailablePersonaImages({supabase, conversationId}),
           searchCofreAudios: (p) => searchCofreAudios({
             supabase,
             conversationId: p.conversationId,
@@ -9937,6 +9800,7 @@ export async function runBrainOrchestration(
             }
           }
 
+          brainImageCandidates = openAiBrainTurn.telemetry.authorizedCandidateImages || [];
           if (openAiBrainTurn.telemetry.authorizedCandidateAudios) {
             const objectiveByAudioId = new Map<string, string>();
             for (const group of openAiBrainTurn.telemetry.authorizedCandidateAudiosByObjective || []) {
@@ -10405,7 +10269,7 @@ export async function runBrainOrchestration(
             });
             const formatted = eligibleImages.map((img) => {
               const timeInfo = (img.allowedTimeStart && img.allowedTimeEnd) ? ` | horário_permitido: "${img.allowedTimeStart} às ${img.allowedTimeEnd}"` : "";
-              return `• image_id: "${img.id}" | título: "${img.title}"${timeInfo} | instrução: "${img.usageInstruction}" | descrição: "${img.description || ''}"`;
+              return `• image_id: "${img.id}" | título: "${img.title}"${timeInfo} | instrução: "${img.usageInstruction}" | descrição: "${img.description || ''}" | legenda: ${JSON.stringify(img.caption || "")}`;
             }).join("\n");
             toolResultsHistory.push(`[TOOL: cofre_image_search | objective_id: "${objectiveId}" | catálogo: ${eligibleImages.length}]\n${formatted || "Nenhuma imagem habilitada e ainda não enviada está disponível no Cofre para este objetivo."}`);
           } else {
@@ -10494,20 +10358,14 @@ export async function runBrainOrchestration(
         .from("chat_stages")
         .select("id, goals")
         .eq("schedule_id", scheduleRuntime.scheduleId);
-      const objectiveExists = (configuredStages || []).some((stage: any) =>
-        (Array.isArray(stage.goals) ? stage.goals : Array.isArray(stage.objectives) ? stage.objectives : [])
-          .some((objective: any) => objective?.id === objectiveId && objective.enabled !== false),
-      );
-      const evidenceExists = evidence
-        ? await objectiveEvidenceExists(
-            supabase,
-            conversationId,
-            evidence,
-            resolveCanonicalDecisionSessionId(),
-          )
-        : false;
-      if (!objectiveExists || !evidenceExists) {
-        currentCycle.trace.push(`brain_objective_reference_rejected: ${objectiveId || "missing_objective"}`);
+      const objective = (configuredStages || []).flatMap(configuredStageObjectives)
+        .find((objective: any) => objective?.id === objectiveId && objective.enabled !== false);
+      const validation = await validateSemanticObjectiveEvidence({
+        supabase, conversationId, objective, evidence,
+        providerSessionId: resolveCanonicalDecisionSessionId(),
+      });
+      if (!validation.valid) {
+        currentCycle.trace.push(`brain_objective_reference_rejected: ${validation.reason}:${objectiveId || "missing_objective"}`);
         console.warn(`[Brain] Objetivo não confirmado por evidência inválida; o turno continua sem marcar conclusão. conv=${conversationId} objective=${objectiveId || "missing"}`);
       } else {
         workingCompletedGoalIds = [...new Set([...workingCompletedGoalIds, objectiveId])];
@@ -10677,7 +10535,12 @@ export async function runBrainOrchestration(
             : brainPlan.audioId
               ? [{ type: "audio" as const, audioId: String(brainPlan.audioId) }]
               : [];
+        if (!authorizeBrainStickerActions(rawActions, stickerCandidates, stickerChannel)) {
+          throw new Error("BRAIN_PLAN_INVALID_STICKER_REFERENCE");
+        }
         const authorizedActions = rawActions.map((action: any) => {
+          if (action?.type === "sticker") return action;
+          if (action?.type === "image" && brainImageCandidates.some(image => image.imageId === action.arsenalItemId)) return action;
           if (action?.type === "text" && typeof action.text === "string" && action.text.trim()) return action;
           if (action?.type === "audio" && typeof action.audioId === "string" &&
               brainAudioCandidates.some((candidate: any) => (candidate.audio_id || candidate.audioId) === action.audioId)) return action;
@@ -11013,67 +10876,22 @@ export async function runBrainOrchestration(
     }
 
     // ------------------------------------------------------------------------
-    // EXPANSÃO DE AÇÕES ESPECIAIS (Imagens do Cofre)
-    // Se o objetivo atual for uma ação de imagem, buscamos no cofre e expandimos.
-    // ------------------------------------------------------------------------
+    // Uma ação vinculada ao checklist entrega só a foto, em visualização única.
     const currentObjectiveForExpansion = stageObjectivesForRouter?.currentObjective;
-    if (
-      currentObjectiveForExpansion?.kind === "action" &&
-      currentObjectiveForExpansion.actionType === "send_image"
-    ) {
+    if (currentObjectiveForExpansion?.kind === "action" && currentObjectiveForExpansion.actionType === "send_image" && !canonicalOutboundActions.some(action => action.type === "image" && brainImageCandidates.some(image => image.imageId === action.arsenalItemId))) {
       currentCycle.trace.push("special_action_expansion_triggered=send_image");
+      const eligibleImages = await listEligiblePersonaImages({supabase, conversationId, objectiveId: currentObjectiveForExpansion.id});
+      const imageActions = planObjectiveImageDelivery({action: decision.action, objectiveDecision: brainPlan.objectiveDecision, objectiveId: currentObjectiveForExpansion.id, images: eligibleImages});
+      if (imageActions !== null) {
+        canonicalOutboundActions = imageActions;
+        currentCycle.trace.push(imageActions.length ? "image_vault_selected=" + imageActions[0].arsenalItemId : "image_vault_empty_for_objective");
+      }
+    }
 
-      const eligibleImages = await listEligiblePersonaImages({
-        supabase,
-        conversationId,
-        objectiveId: currentObjectiveForExpansion.id,
-      });
-
-      if (eligibleImages.length > 0) {
-        const selectedImage = eligibleImages[0];
-        currentCycle.trace.push(`image_vault_selected=${selectedImage.id}`);
-
-        // Adiciona a ação de imagem.
-        // Nota: O tipo OutboundAction exige arsenalItemId para imagens nativas no dispatcher atual.
-        // Como não temos arsenalItemId para imagens do cofre dinâmico, vamos usar uma abordagem híbrida:
-        // Se o dispatcher suportar mediaUrl direto no payload sem arsenalItemId, ótimo.
-        // Caso contrário, podemos precisar ajustar o dispatcher ou usar um pseudo-ID.
-        // Por enquanto, vamos tentar injetar com o imageUrl direto se o tipo permitir,
-        // ou fallback para texto com link se falhar na tipagem estrita.
-        // Olhando o tipo OutboundAction em openai_brain.ts:
-        // | { type: "image"; arsenalItemId: string; ... }
-        // Isso é restritivo. Vamos precisar estender o tipo ou usar um workaround.
-        // Workaround seguro: Enviar como texto com markdown de imagem? Não, queremos nativo.
-        // Melhor: Estender o tipo OutboundAction temporariamente aqui ou assumir que o dispatcher
-        // pode ser ajustado depois. Para esta iteração, vou adicionar a ação com um ID especial
-        // que o dispatcher precisará aprender a resolver, OU modificar o dispatcher agora.
-        // Dado o escopo, vou modificar o createBrainOutboxBatch mais abaixo para aceitar imageId/imageUrl
-        // se o arsenalItemId não for encontrado? Não, é complexo.
-
-        // Abordagem Pragmática Imediata:
-        // Vamos adicionar a ação como 'image' mas com o arsenalItemId preenchido com o ID da imagem do cofre
-        // E garantir que o dispatcher (dispatchOutboxEntry) saiba buscar em persona_images se o arsenal falhar.
-        // Isso requer mudança no dispatcher também.
-
-        // Para evitar bloquear agora, vou enviar a URL da imagem como uma mensagem de texto formatada
-        // se não conseguirmos garantir o envio nativo sem mudar o dispatcher profundamente.
-        // MAS o usuário quer "igual ao áudio". O áudio funciona nativo.
-        // Vou tentar injetar a ação de imagem e ver se o build passa. Se o tipo reclamar, ajustamos.
-        // O tipo OutboundAction é importado. Não posso mudá-lo facilmente aqui sem editar openai_brain.ts.
-        // Vou editar openai_brain.ts primeiro para suportar imageId/imageUrl direto?
-        // Sim, é o caminho correto.
-
-        // Por enquanto, neste patch, vou apenas preparar o terreno e assumir que vamos editar o tipo depois.
-        // Vou adicionar a ação com um cast 'as any' para passar o check de tipo agora e resolver o dispatcher depois.
-        (canonicalOutboundActions as any).push({
-          type: "image",
-          arsenalItemId: selectedImage.id, // Usando ID do cofre como pseudo-arsenal
-          mediaUrl: selectedImage.imageUrl // Campo extra para o dispatcher usar
-         ,isViewOnce: Boolean(selectedImage.isViewOnce)
-        });
-      } else {
-        currentCycle.trace.push("image_vault_empty_for_objective");
-        canonicalOutboundActions.push({ type: "text" as const, text: "📷 Eu tinha uma foto para te mostrar, mas ela não está disponível no momento." });
+    if (canonicalOutboundActions.some((action) => action.type === "sticker")) {
+      stickerCandidates = await loadBrainStickers(supabase, conversationId, stickerChannel);
+      if (!authorizeBrainStickerActions(canonicalOutboundActions, stickerCandidates, stickerChannel)) {
+        throw new Error("BRAIN_STICKER_NO_LONGER_ELIGIBLE");
       }
     }
 
@@ -11240,23 +11058,13 @@ export async function runBrainOrchestration(
         const arsenalItemId = String((act as any).arsenalItemId || "").trim();
         const candidate = (scheduleRuntime.arsenalCandidates || []).find((item) => item.itemId === arsenalItemId);
         if (!candidate && arsenalItemId) {
-          try {
-            const { data: imgRow } = await supabase
-              .from("persona_images")
-              .select("id, title, image_url, whatsapp_image_url, is_view_once")
-              .eq("id", arsenalItemId)
-              .maybeSingle();
-            if (imgRow) {
-              const channelIsWa = conversationId.startsWith("wa2:") || conversationId.startsWith("whatsapp:");
-              (act as any).mediaUrl = (channelIsWa && imgRow.whatsapp_image_url) ? imgRow.whatsapp_image_url : imgRow.image_url;
-              if (imgRow.is_view_once) {
-                (act as any).isViewOnce = true;
-              }
-              currentCycle.trace.push(`persona_image_resolved: ${imgRow.id} (viewOnce: ${Boolean(imgRow.is_view_once)})`);
-            }
-          } catch (imgErr) {
-            console.error("[Brain] Erro ao resolver imagem de persona_images:", imgErr);
-          }
+          const eligible = await listAvailablePersonaImages({supabase, conversationId});
+          const image = eligible.find(image => image.id === arsenalItemId);
+          if (!image) throw new Error("PERSONA_IMAGE_NO_LONGER_ELIGIBLE");
+          const checkpointImage = currentObjectiveForExpansion?.kind === "action" && currentObjectiveForExpansion.actionType === "send_image" && currentObjectiveForExpansion.id === image.objectiveId;
+          if (!checkpointImage && !brainImageCandidates.some(candidate => candidate.imageId === image.id)) throw new Error("PERSONA_IMAGE_NOT_AUTHORIZED_BY_TOOL");
+          const channelIsWa = conversationId.startsWith("wa2:") || conversationId.startsWith("whatsapp:");
+          Object.assign(act, {mediaUrl: channelIsWa && image.whatsappImageUrl ? image.whatsappImageUrl : image.imageUrl, caption: image.caption, isViewOnce: true, objectiveId: checkpointImage ? image.objectiveId : null});
         } else if (candidate) {
           (act as any).mediaUrl = (act as any).mediaUrl || candidate.mediaUrl;
         }
@@ -11283,6 +11091,7 @@ export async function runBrainOrchestration(
         const candidate = (scheduleRuntime.arsenalCandidates || []).find((item) => item.itemId === act.arsenalItemId);
         return `[video:${candidate?.mediaUrl || ""}]`;
       }
+      if (act.type === "sticker") return `[sticker:${stickerCandidates.find((item) => item.id === act.stickerId)?.url || ""}]`;
       if (act.type === "transfer_channel") return act.initialText;
       return act.text;
     });
@@ -11339,6 +11148,7 @@ export async function runBrainOrchestration(
             : "instagram",
         ),
         resolvedAudio,
+        stickerCandidates,
         arsenalCandidates: scheduleRuntime.arsenalCandidates || [],
         sourceMessageIds: claimedMessageIds,
       });
@@ -11449,10 +11259,12 @@ export async function runBrainOrchestration(
             payload: {
               text: entry.messageType === "text" ? entry.content : null,
               audioId: entry.vaultAudioId || null,
-              objectiveId: entry.vaultAudioId
-                ? (brainAudioObjectiveById.get(entry.vaultAudioId) || null)
-                : null,
+              imageId: entry.payload?.imageId || null,
+              caption: entry.payload?.caption || null,
+              isViewOnce: Boolean(entry.payload?.isViewOnce),
+              objectiveId: typeof entry.payload?.objectiveId === "string" ? entry.payload.objectiveId : (entry.vaultAudioId ? (brainAudioObjectiveById.get(entry.vaultAudioId) || null) : null),
               mediaUrl: entry.mediaUrl || null,
+              stickerId: entry.payload?.stickerId || null,
               arsenalItemId: typeof entry.payload?.arsenalItemId === "string" ? entry.payload.arsenalItemId : null,
               scheduleRunId: scheduleRuntime.runId || null,
               cycleId: correlationId,
@@ -11556,7 +11368,7 @@ export async function runBrainOrchestration(
           cycleId: entry.cycleId,
           actionIndex: entry.actionIndex || 0,
           content: entry.content,
-          messageType: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : "text",
+          messageType: entry.messageType === "audio" ? "audio" : entry.messageType === "image" ? "image" : entry.messageType === "video" ? "video" : entry.messageType === "sticker" ? "sticker" : "text",
           mediaUrl: entry.mediaUrl || null,
           deliverAt: entry.notBefore || entry.createdAt,
           createdAt: entry.createdAt,
@@ -12206,7 +12018,11 @@ export async function runBrainOrchestration(
             "completed",
             needsHumanReview
               ? "Aguardando sua resposta"
-              : outboxActivityLabel(decisionOutboxStatuses),
+              : hasConfirmedDelivery
+              ? "Brain respondeu"
+              : deliveryStatus === "dispatch_uncertain"
+              ? "Entrega incerta"
+              : "Brain avaliou",
             needsHumanReview ? pauseReason : decision.suggestedResponse || "Turno concluído.",
             needsHumanReview
               ? { brainThought: "Brain solicitou uma informação factual ao operador." }
@@ -12483,10 +12299,6 @@ export async function runBrainOrchestration(
       outbox: outboxMap,
     };
 
-    const flexCapacityFailure = !params.isManualRetry
-      && !possibleSend
-      && retryAllowed
-      && /429[^\n]*Flex processing is temporarily unavailable/i.test(String(err?.message || ""));
     const releaseRes = await releaseExperimentalCycleAtomic({
       supabase,
       conversationId,
@@ -12497,7 +12309,6 @@ export async function runBrainOrchestration(
       outboxMap: fallbackState.outbox || outboxMap,
       revertMessageIds: possibleSend ? null : claimedMessageIds,
       markProcessedIds: possibleSend ? claimedMessageIds : null,
-      flexCapacityFailure,
       debounceUntil: !possibleSend && retryAllowed ? new Date(Date.now() + 60_000).toISOString() : null,
     });
 
@@ -12512,29 +12323,6 @@ export async function runBrainOrchestration(
 
         error: err.message || "Ciclo preemptado",
       };
-    }
-
-    if (releaseRes.flexRetryScheduled && releaseRes.flexRetryAt) {
-      const scheduledAt = releaseRes.flexRetryAt;
-      await publishAutoPilotState(supabase, conversationId, {
-        cycleId: correlationId,
-        status: "scheduled",
-        activity: activity(
-          "scheduled",
-          "Aguardando disponibilidade do Flex",
-          "A capacidade Flex da OpenAI está temporariamente indisponível. Nova tentativa automática agendada, sem custo Standard.",
-          { scheduledAt, flexAttempt: releaseRes.flexAttempt, event: "flex_capacity_retry_scheduled" },
-        ),
-        scheduledResponseAt: scheduledAt,
-        cycleEvent: {
-          phase: "scheduled",
-          event: "flex_capacity_retry_scheduled",
-          label: "Nova tentativa Flex programada",
-          detail: "O lote permanece pendente, com proteção contra envios duplicados.",
-          metadata: { scheduledAt, attempt: releaseRes.flexAttempt },
-        },
-      });
-      return { handled: false, sentToMeta: false, error: `flex_capacity_retry_scheduled:${scheduledAt}` };
     }
 
     if (releaseRes.retryExhausted || params.isManualRetry) {
@@ -12586,7 +12374,7 @@ export async function runBrainOrchestration(
       handled: false,
       sentToMeta: possibleSend,
 
-      error: releaseRes.retryExhausted ? "technical_retry_exhausted" : (err.message || "Erro na orquestração do Brain"),
+      error: err.message || "Erro na orquestração do Brain",
     };
   } finally {
     await revokeCurrentMemoryScope();

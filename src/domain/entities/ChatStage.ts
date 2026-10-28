@@ -90,6 +90,7 @@ export interface PersonaImageAsset {
   title: string;
   imageUrl: string;
   whatsappImageUrl?: string;
+  caption?: string;
   description?: string;
   usageInstruction: string;
   isViewOnce?: boolean;

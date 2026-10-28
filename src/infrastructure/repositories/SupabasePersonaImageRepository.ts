@@ -33,6 +33,7 @@ export class SupabasePersonaImageRepository implements IPersonaImageRepository {
       title: row.title,
       imageUrl: row.image_url,
       whatsappImageUrl: row.whatsapp_image_url || undefined,
+      caption: row.caption || "",
       description: row.description || "",
       usageInstruction: row.usage_instruction || "",
       enabled: row.enabled ?? true,
@@ -141,6 +142,7 @@ export class SupabasePersonaImageRepository implements IPersonaImageRepository {
       title: data.title.trim(),
       image_url: data.imageUrl,
       whatsapp_image_url: data.whatsappImageUrl || null,
+      caption: data.caption?.trim() || "",
       description: data.description || "",
       usage_instruction: data.usageInstruction || "",
       enabled: data.enabled ?? true,
@@ -175,6 +177,7 @@ export class SupabasePersonaImageRepository implements IPersonaImageRepository {
     if (updates.title !== undefined) updatePayload.title = updates.title.trim();
     if (updates.imageUrl !== undefined) updatePayload.image_url = updates.imageUrl;
     if (updates.whatsappImageUrl !== undefined) updatePayload.whatsapp_image_url = updates.whatsappImageUrl || null;
+    if (updates.caption !== undefined) updatePayload.caption = updates.caption.trim();
     if (updates.description !== undefined) updatePayload.description = updates.description;
     if (updates.usageInstruction !== undefined) updatePayload.usage_instruction = updates.usageInstruction;
     if (updates.enabled !== undefined) updatePayload.enabled = Boolean(updates.enabled);

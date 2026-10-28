@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useImperativeHandle, forwardRef, memo } from "react";
-import { MessageSquareText, Paperclip, Loader2, Mic, Send, Plus, Camera, SquareTerminal, Sticker } from "lucide-react";
+import { Paperclip, Loader2, Mic, Send, Plus, Camera, SquareTerminal, Sticker } from "lucide-react";
 import { useVisualViewport } from "@/presentation/hooks/useVisualViewport";
 import { useIsMobile } from "@/presentation/hooks/useIsMobile";
 
@@ -20,10 +20,9 @@ export interface InstagramChatComposerProps {
   onSelectImage: (file: File) => void;
   onSelectMediaFile: (file: File) => void;
   onStartRecording: () => void;
-  onOpenVault: () => void;
-  onOpenImageVault?: () => void;
   onOpenConsole?: () => void;
   onOpenStickers?: () => void;
+  salesVaultAction?: React.ReactNode;
   variant?: "instagram" | "whatsapp";
   draftKey?: string;
 }
@@ -38,10 +37,9 @@ export const InstagramChatComposer = memo(
       onSelectImage,
       onSelectMediaFile,
       onStartRecording,
-      onOpenVault,
-      onOpenImageVault,
       onOpenConsole,
       onOpenStickers,
+      salesVaultAction,
       variant = "instagram",
       draftKey,
     },
@@ -191,34 +189,6 @@ export const InstagramChatComposer = memo(
                     type="button"
                     onClick={() => {
                       setIsAttachmentMenuOpen(false);
-                      onOpenVault();
-                    }}
-                    className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-[#111b21] hover:bg-black/[0.05] active:scale-[0.985] dark:text-white dark:hover:bg-white/[0.06]"
-                  >
-                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#5856d6] text-white">
-                      <MessageSquareText className="h-4 w-4" />
-                    </span>
-                    <span className="font-medium">Cofre</span>
-                  </button>
-                  {onOpenImageVault && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAttachmentMenuOpen(false);
-                        onOpenImageVault();
-                      }}
-                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-[#111b21] hover:bg-black/[0.05] active:scale-[0.985] dark:text-white dark:hover:bg-white/[0.06]"
-                    >
-                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-pink-500 text-white">
-                        <Camera className="h-4 w-4" />
-                      </span>
-                      <span className="font-medium">Cofre de Fotos</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAttachmentMenuOpen(false);
                       imageInputRef.current?.click();
                     }}
                     className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-[#111b21] hover:bg-black/[0.05] active:scale-[0.985] dark:text-white dark:hover:bg-white/[0.06]"
@@ -245,6 +215,8 @@ export const InstagramChatComposer = memo(
               </>
             )}
           </div>
+
+          {salesVaultAction}
 
           <div className="wa-ios-glass flex min-h-10 flex-1 items-end rounded-[20px] px-3 py-[7px]">
             <textarea
@@ -319,18 +291,6 @@ export const InstagramChatComposer = memo(
         }`}
       >
         <div className="flex-1 bg-zinc-100 dark:bg-[#1c1c1e] border border-zinc-200 dark:border-[#262626] rounded-[22px] px-3.5 py-2 flex items-end gap-2.5 min-h-10">
-          {/* Botão de abrir Pastas e Cofre Flutuante de Respostas Rápidas / Mídias */}
-          <button
-            type="button"
-            onClick={onOpenVault}
-            disabled={isUploadingMedia}
-            className="mb-0.5 text-zinc-600 dark:text-[#a8a8a8] hover:text-[#0095f6] active:scale-90 transition-all cursor-pointer p-1 disabled:opacity-40 flex items-center justify-center"
-            title="Abrir Pastas e Respostas Rápidas (Cofre)"
-            aria-label="Abrir cofre de respostas e pastas"
-          >
-            <MessageSquareText className="w-5 h-5 stroke-[1.8]" />
-          </button>
-
           {/* Input invisível de imagem da galeria */}
           <input
             ref={imageInputRef}

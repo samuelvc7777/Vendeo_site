@@ -663,7 +663,7 @@ export function ChatStagesManager({
                                   {/* Tipo / Configuração relevante */}
                                   {goal.kind === "action" ? (
                                     <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px] font-medium border border-amber-200/60 dark:border-amber-500/20">
-                                      Ação: {goal.actionType === "send_audio" ? "enviar áudio" : goal.actionType || "ação"}
+                                      Ação: {goal.actionType === "send_audio" ? "enviar áudio" : goal.actionType === "send_image" ? "enviar foto (visualização única)" : goal.actionType || "ação"}
                                     </span>
                                   ) : goal.kind === "conversation_state" ? (
                                     <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 text-[10px] font-medium border border-purple-200/60 dark:border-purple-500/20">
@@ -976,13 +976,16 @@ export function ChatStagesManager({
                   className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[16px] md:text-sm text-zinc-950 dark:border-white/10 dark:bg-zinc-900 dark:text-white focus:outline-none focus:border-amber-500"
                 >
                   <option value="send_audio">Enviar áudio vinculado ao objetivo</option>
+                  <option value="send_image">Enviar foto vinculada ao objetivo (visualização única)</option>
                   <option value="send_raffle_details" disabled>Enviar foto + detalhes da rifa — estrutura preparada</option>
                   <option value="send_raffle_numbers" disabled>Enviar 10 números livres — estrutura preparada</option>
                   <option value="operator_handoff" disabled>Finalizar e avisar operador — estrutura preparada</option>
                 </select>
               </label>
               <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-                O áudio é vinculado a este objetivo no Cofre de Áudios. O checkpoint só é concluído após a confirmação do envio.
+                {goalActionType === "send_image"
+                  ? "Vincule a foto a este objetivo no Cofre de Fotos. A IA envia somente a foto, com visualização única. O checkpoint só é concluído após a confirmação do envio."
+                  : "O áudio é vinculado a este objetivo no Cofre de Áudios. O checkpoint só é concluído após a confirmação do envio."}
               </p>
             </div>
           ) : (

@@ -1,0 +1,1 @@
+alter table public.conversation_schedules drop constraint conversation_schedules_brain_model_check, add constraint conversation_schedules_brain_model_check check (brain_model in ('gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra'));;

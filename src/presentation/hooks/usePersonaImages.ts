@@ -21,8 +21,13 @@ export function usePersonaImages() {
   }, []);
 
   useEffect(() => {
-    loadImages();
-  }, [loadImages]);
+    let active = true;
+    imageRepository.getImages()
+      .then(data => { if (active) setImages(data); })
+      .catch(error => console.error("Erro ao carregar imagens do cofre:", error))
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, []);
 
   const addImage = async (data: Omit<PersonaImageAsset, "id" | "createdAt" | "updatedAt">) => {
     const newImage = await imageRepository.saveImage(data);

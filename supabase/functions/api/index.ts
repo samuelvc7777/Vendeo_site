@@ -28,6 +28,7 @@ import { getStaleCycleThresholdIso } from "./autopilot_cycle_safety.ts";
 import { isPrivilegedOperationalRequest } from "./operational_authorization.ts";
 import { brainLateRecoveryDisposition, getExistingOpenAiTurn } from "./openai_brain.ts";
 import { brainOperatorAllowedOrigin } from "./brain_operator_auth.ts";
+import { handleBrainPrivateChat } from "./brain_private_chat.ts";
 import { handleOperatorChatProgress } from "./operator_chat_progress.ts";
 import {
   processOpenAiConversationSyncQueue,
@@ -42,8 +43,10 @@ import {
   whatsapp2ProviderIdFromConversationId,
 } from "./whatsapp2_gateway.ts";
 import { readConversationScheduleRuntimeSnapshot } from "./conversation_schedule_runtime.ts";
-import { createTinderBackgroundMessageReader, handleTinderMatchRoutes, requireTinderMatchSession, tinderAutomationReadiness } from "./tinder_match_routes.ts";
-import { processTinderBackgroundSync } from "./tinder_sync_service.ts";
+import { handleTinderMatchRoutes, createTinderApproachProvider } from "./tinder_match_routes.ts";
+import { processTinderApproaches, adaptTinderApproach } from "./tinder_approach_runtime.ts";
+import { tinderChatAiRemoved } from "./tinder_account_ai.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -332,6 +335,7 @@ serve(async (req: Request) => {
     "/operator/brain/manual-resolution": "/autopilot/manual-resolution",
     "/operator/brain/media-observation": "/autopilot/media-observation",
     "/operator/brain/consultation": "/autopilot/brain-consultation",
+    "/operator/brain/private-chat": "/autopilot/brain-private-chat",
     "/operator/brain/retry-once": "/autopilot/retry-once",
   };
   path = operatorRouteAliases[path] || path;
@@ -3112,13 +3116,14 @@ serve(async (req: Request) => {
       const { data: configRows, error: configError } = await supabase
         .from("instagram_config")
         .select("id, app_secret")
-        .in("id", ["openai_api_key", "openai_brain_agent_id"]);
+        .in("id", ["openai_api_key", "openai_brain_agent_id", "openai_brain_service_tier"]);
       if (configError) return new Response(JSON.stringify({ error: configError.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       const configs = new Map((configRows || []).map((row: any) => [row.id, String(row.app_secret || "").trim()]));
       const apiKey = (Deno.env.get("OPENAI_API_KEY") || configs.get("openai_api_key") || "").trim();
       const agentId = (Deno.env.get("OPENAI_BRAIN_AGENT_ID") || configs.get("openai_brain_agent_id") || "agent_aa96ea5a95c04c8895e310e69cb27dd9279dbdf7ea0e4d8482").trim();
+      const serviceTier = configs.get("openai_brain_service_tier") === "default" ? "default" : "flex";
       const mask = (key: string) => key ? `${key.slice(0, 7)}...${key.slice(-4)}` : null;
-      if (!apiKey) return new Response(JSON.stringify({ configured: false, maskedKey: null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      if (!apiKey) return new Response(JSON.stringify({ configured: false, maskedKey: null, serviceTier }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       const agentUrl = `https://api.openai.com/v1/agents/${agentId}`;
       const agentHeaders = { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "agents=v1" };
       const getAgent = () => fetch(agentUrl, { headers: agentHeaders });
@@ -3129,7 +3134,7 @@ serve(async (req: Request) => {
         const agent = await remote.json();
         const reasoningEffort = allowedReasoningEfforts.includes(agent.reasoning?.effort) ? agent.reasoning.effort : null;
         const verbosity = allowedVerbosityLevels.includes(agent.text?.verbosity) ? agent.text.verbosity : null;
-        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), reasoningEffort, verbosity, modelSource: "conversation_schedule" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ configured: true, maskedKey: mask(apiKey), reasoningEffort, verbosity, serviceTier, modelSource: "conversation_schedule" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
       if (req.method === "PUT") {
@@ -3138,7 +3143,9 @@ serve(async (req: Request) => {
         if (hasModel) return new Response(JSON.stringify({ error: "O modelo do Brain é definido no cronograma, não na configuração global." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const hasReasoningEffort = body?.reasoningEffort !== undefined;
         const hasVerbosity = body?.verbosity !== undefined;
-        if (!hasReasoningEffort && !hasVerbosity && typeof body?.apiKey !== "string") return new Response(JSON.stringify({ error: "Nenhuma configuração foi informada." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const hasServiceTier = body?.serviceTier !== undefined;
+        if (hasServiceTier && !["flex", "default"].includes(body.serviceTier)) return new Response(JSON.stringify({ error: "Modo inválido. Escolha Flex ou Normal." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        if (!hasReasoningEffort && !hasVerbosity && !hasServiceTier && typeof body?.apiKey !== "string") return new Response(JSON.stringify({ error: "Nenhuma configuração foi informada." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         const reasoningEffort = hasReasoningEffort ? body.reasoningEffort : undefined;
         const verbosity = hasVerbosity ? body.verbosity : undefined;
         if (hasReasoningEffort && !allowedReasoningEfforts.includes(reasoningEffort)) return new Response(JSON.stringify({ error: "Reasoning effort inválido. Escolha none, low, medium, high, xhigh ou max." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -3172,6 +3179,7 @@ serve(async (req: Request) => {
           if ((hasReasoningEffort && updatedAgent.reasoning?.effort !== reasoningEffort) || (hasVerbosity && updatedAgent.text?.verbosity !== verbosity)) return new Response(JSON.stringify({ error: "O Agent remoto não confirmou toda a configuração selecionada" }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
         const writes = [];
+        if (hasServiceTier) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_service_tier", app_secret: body.serviceTier, updated_at: new Date().toISOString() }));
         if (hasReasoningEffort) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_reasoning_effort", app_secret: reasoningEffort, updated_at: new Date().toISOString() }));
         if (hasVerbosity) writes.push(supabase.from("instagram_config").upsert({ id: "openai_brain_verbosity", app_secret: verbosity, updated_at: new Date().toISOString() }));
         const writeResults = await Promise.all(writes);
@@ -3181,7 +3189,7 @@ serve(async (req: Request) => {
           const keyWrite = await supabase.from("instagram_config").upsert({ id: "openai_api_key", app_secret: suppliedKey, updated_at: new Date().toISOString() });
           if (keyWrite.error) return new Response(JSON.stringify({ error: keyWrite.error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
-        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null, modelSource: "conversation_schedule" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ success: true, configured: true, maskedKey: mask(effectiveKey), reasoningEffort: updatedAgent.reasoning?.effort || targetReasoningEffort || null, verbosity: updatedAgent.text?.verbosity || targetVerbosity || null, serviceTier: hasServiceTier ? body.serviceTier : serviceTier, modelSource: "conversation_schedule" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
     }
 
@@ -3285,34 +3293,20 @@ serve(async (req: Request) => {
           }
         }
 
-        // Sincronização em background do Tinder (sem UI aberta)
-        let runTinderSync = false;
-        try {
-          const { data: tinderLane, error: tinderLaneError } = await supabase.rpc(
-            "claim_autopilot_scheduler_lane",
-            { p_lane: "tinder_background_sync", p_min_interval_seconds: 30 },
-          );
-          if (!tinderLaneError && tinderLane) {
-            runTinderSync = tinderLane.acquired === true || tinderLane.claimed === true;
-          }
-        } catch (_err) {
-          runTinderSync = false;
+        // A fila Tinder tem autorização e progresso próprios, sem Brain WhatsApp.
+        const tinderCronAuth = await supabase.rpc("verify_autopilot_cron_token", { p_token: req.headers.get("x-autopilot-cron-token") || "" });
+        if (!tinderCronAuth.error && tinderCronAuth.data === true) {
+        const tinderProvider = createTinderApproachProvider(supabase);
+        const tinderExecution = processTinderApproaches({
+          supabase,
+          ...tinderProvider,
+          adapt: async (job, messages) => adaptTinderApproach({ job, messages, apiKey: (await getOpenAiApiKey(supabase)) || "" }),
+          limit: 3,
+        }).catch(() => console.error("[Tinder Approach] Falha no processamento da fila."));
+        if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") (globalThis as any).EdgeRuntime.waitUntil(tinderExecution);
+        else await tinderExecution;
         }
 
-        if (runTinderSync) {
-          const readTinderMessages = createTinderBackgroundMessageReader(supabase);
-          const tinderSyncPromise = processTinderBackgroundSync({
-            supabase,
-            fetchMatchMessages: readTinderMessages,
-          }).catch((syncErr) => {
-            console.warn("[Tinder Sync Queue] cron:tick falhou:", syncErr);
-          });
-          if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") {
-            (globalThis as any).EdgeRuntime.waitUntil(tinderSyncPromise);
-          } else {
-            void tinderSyncPromise;
-          }
-        }
 
         // Enriquecimento de perfil é best-effort e de baixa prioridade.
         // Nunca compete com cada tick do inbound/Brain.
@@ -4299,8 +4293,6 @@ serve(async (req: Request) => {
           });
         }
 
-        // Tinder só pode alternar a IA com uma sessão Match válida. O canal
-        // é obtido no servidor; nunca confiar na indicação do cliente.
         const { data: targetConversation, error: targetError } = await supabase
           .from("instagram_conversations")
           .select("channel")
@@ -4308,23 +4300,7 @@ serve(async (req: Request) => {
           .maybeSingle();
         if (targetError) throw targetError;
         if (targetConversation?.channel === "tinder" || String(conversationId).startsWith("tinder:")) {
-          if (!brainOperatorAllowedOrigin(req)) {
-            return new Response(JSON.stringify({ success: false, error: "origin_not_allowed" }), {
-              status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-          try {
-            await requireTinderMatchSession(req, supabase);
-          } catch {
-            return new Response(JSON.stringify({ success: false, error: "Sessão Tinder obrigatória.", code: "MATCH_SESSION_REQUIRED" }), {
-              status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-          if (isEnabled && !tinderAutomationReadiness().enabled) {
-            return new Response(JSON.stringify({ success: false, error: "Automação do Tinder indisponível enquanto leitura ou envio estiver desabilitado.", code: "TINDER_AUTOMATION_DISABLED" }), {
-              status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
+          return tinderChatAiRemoved(corsHeaders);
         }
 
         let immediateResult: { started: boolean; reason?: string; cycleId?: string } | null = null;
@@ -4736,10 +4712,14 @@ serve(async (req: Request) => {
             // Verifica cronograma individual
             const { data: scheduleRow, error: scheduleErr } = await supabase
               .from("instagram_conversations")
-              .select("stage_completed_rules")
+              .select("stage_completed_rules, channel")
               .eq("id", conversationId)
               .maybeSingle();
             if (scheduleErr) throw scheduleErr;
+            if (scheduleRow?.channel === "tinder" || String(conversationId).startsWith("tinder:")) {
+              results.push({ conversationId, success: false, error: "TINDER_CHAT_AI_REMOVED" });
+              continue;
+            }
             if (["ready_for_transition", "completed_waiting_manual"].includes(
               String(scheduleRow?.stage_completed_rules?.schedule_status || ""),
             )) {
@@ -5289,6 +5269,21 @@ serve(async (req: Request) => {
       }
     }
 
+    if ((path === "/autopilot/brain-private-chat" || path === "/api/autopilot/brain-private-chat") && req.method === "POST") {
+      if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !brainOperatorAllowedOrigin(req)) {
+        return new Response(JSON.stringify({ success: false, error: "A conversa privada exige uma sessão autenticada do operador." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+
+      return await handleBrainPrivateChat({
+        request: req,
+        openAiKey: await getOpenAiApiKey(supabase),
+        corsHeaders: { ...corsHeaders, "Cache-Control": "no-store" },
+      });
+    }
+
     if ((path === "/autopilot/brain-consultation" || path === "/api/autopilot/brain-consultation") && req.method === "POST") {
       if (!isPrivilegedOperationalRequest(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) && !brainOperatorAllowedOrigin(req)) {
         return new Response(JSON.stringify({ success: false, error: "A consulta privada exige uma sessão autenticada do operador." }), {
@@ -5440,9 +5435,9 @@ serve(async (req: Request) => {
           "",
           "FATOS CANÔNICOS FIXOS DA LARISSA:",
           "- Larissa NÃO tem mais Instagram (perdeu o acesso, chip antigo). NÃO envie @larissa_resende06 nem @lariresende_0611.",
-          "- CASO A — pedido de FOTO / PERFIL / REDE SOCIAL sem mencionar Instagram: convide para adicionar no Facebook de forma leve ('me adiciona lá kkk') e envie https://www.facebook.com/larissa.resende.90813 . NÃO mencione Instagram nem chip.",
-          "- CASO B — pedido EXPLÍCITO de INSTAGRAM / @ / ARROBA / 'passa o insta': explique que não tem mais Instagram (perdeu o acesso, chip antigo) e envie https://www.facebook.com/larissa.resende.90813 em seguida.",
-          "- Em ambos os casos outboundActions DEVE conter literalmente a URL do Facebook; proibido responder só em texto.",
+          "- PEDIDO DE FOTO: use o cofre e respeite horário e não repetição. Sem foto elegível/adequada, solicite o operador; não ofereça Facebook por pedido de foto, perfil ou rede social genérica.",
+          "- Só envie Facebook em resposta a pedido EXPLÍCITO do Instagram pessoal / @ / arroba: explique que não tem mais Instagram porque perdeu o acesso ao chip antigo, convide para adicionar no Facebook e envie https://www.facebook.com/larissa.resende.90813 .",
+          "- Pedido de foto ou suspeita de perfil fake não autoriza link do Facebook; preserve o atendimento humano quando necessário.",
           "- Instagram da loja: @lari_modasr (loja de moda masculina / roupas masculinas, NUNCA feminina).",
           "- Nunca diga que faltam dados ao operador e nunca mande procurar link ou perfil na bio.",
           "",

@@ -65,10 +65,6 @@ export async function enqueueAndWaitWhatsApp2Delivery(
   if (!supabase || !queueId || !conversationId || !recipientId) {
     return { success: false, error: "whatsapp2_delivery_invalid_params" };
   }
-  const conversationAccountId = /^wa2:(account-\d{8,15}):/.exec(conversationId)?.[1];
-  if (conversationAccountId && conversationAccountId !== gatewayAccountId) {
-    return { success: false, error: "whatsapp2_delivery_account_mismatch" };
-  }
 
   const { data: existing, error: existingError } = await supabase
     .from("whatsapp2_delivery_queue")

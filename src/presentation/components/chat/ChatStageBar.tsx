@@ -87,7 +87,9 @@ export function ChatStageBar({
   const scheduleName = scheduleRuntime?.scheduleName || "Cronograma";
   const stageRequired = scheduleRuntime?.currentStageRequired ?? stage.isRequired !== false;
   const brainModelLabel =
-    scheduleRuntime?.brainModel === "gpt-6.1-sol"
+    scheduleRuntime?.brainModel === "gpt-6.1-terra"
+      ? "GPT-6.1 Terra"
+      : scheduleRuntime?.brainModel === "gpt-6.1-sol"
       ? "GPT-6.1 Sol"
       : scheduleRuntime?.brainModel === "gpt-6-sol"
       ? "GPT-6 Sol"

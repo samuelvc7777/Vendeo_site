@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/copy-ffmpeg-assets.mjs && npx next dev",
-    "build": "node scripts/copy-ffmpeg-assets.mjs && next build",
+    "build": "node scripts/copy-ffmpeg-assets.mjs && node scripts/build-static-export.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "node --test tests/*.mjs",
@@ -39,6 +39,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "@electric-sql/pglite": "0.5.12"
   }
 }

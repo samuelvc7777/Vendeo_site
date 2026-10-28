@@ -291,16 +291,15 @@ async function processClaimedInboundJob(
     const state = context.state || {};
     let message = context.message || {};
 
-    if (config?.isEnabledGlobally === false || config?.mode === "manual") {
-      await rescheduleJob(supabase, workerToken, job, retryAt(60), "autopilot_global_paused");
+    // Mensagens do Tinder pertencem à abordagem por conta, não ao Brain de WhatsApp.
+    // Uma continuação recebida pelo WhatsApp mantém o processamento normal.
+    if ((message.channel || conversation.channel) === "tinder") {
+      await completeJob(supabase, workerToken, job);
       return;
     }
 
-    // Durable Flex capacity cooldown. Incoming revisions can wake a job early,
-    // but may not bypass the provider backoff or create duplicate Brain cycles.
-    const flexUntil = String(conversation.stage_completed_rules?.orchestration?.flexCapacityRetryUntil || "");
-    if (flexUntil && Date.parse(flexUntil) > Date.now()) {
-      await rescheduleJob(supabase, workerToken, job, flexUntil, "flex_capacity_waiting");
+    if (config?.isEnabledGlobally === false || config?.mode === "manual") {
+      await rescheduleJob(supabase, workerToken, job, retryAt(60), "autopilot_global_paused");
       return;
     }
 
@@ -657,15 +656,6 @@ async function processClaimedInboundJob(
     }
 
     const errorCode = String(result?.error || "brain_not_handled");
-    if (errorCode.startsWith("flex_capacity_retry_scheduled:")) {
-      const scheduledAt = errorCode.slice("flex_capacity_retry_scheduled:".length);
-      await rescheduleJob(
-        supabase, workerToken, job,
-        Number.isFinite(Date.parse(scheduledAt)) ? scheduledAt : retryAt(60),
-        "flex_capacity_waiting",
-      );
-      return;
-    }
     if (
       errorCode === "Lock ativo concorrente" ||
       errorCode === "global_capacity_busy" ||

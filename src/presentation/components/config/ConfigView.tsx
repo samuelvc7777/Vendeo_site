@@ -22,6 +22,7 @@ import {
   ChevronLeft,
   MessageCircle,
   Layers,
+  ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { InstagramAccount } from "@/domain/entities/Instagram";
@@ -29,6 +30,7 @@ import { InstagramConnectModal } from "@/presentation/components/instagram/Insta
 import { getApiUrl } from "@/infrastructure/http/network";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
 import { ConversationSchedulesManager } from "./ConversationSchedulesManager";
+import { PersonaVaultModal, type VaultTab } from "../vault/PersonaVaultModal";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { useConversationSchedules } from "@/presentation/hooks/useConversationSchedules";
 import { useTheme } from "@/presentation/context/ThemeContext";
@@ -100,6 +102,38 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
   const isMobile = useIsMobile();
   const [activeSubSection, setActiveSubSection] = useState<SettingsSubSection>(null);
   const isPushedToHistoryRef = useRef(false);
+  const [vaultTab, setVaultTab] = useState<VaultTab | null>(null);
+  const vaultHistoryRef = useRef<string | null>(null);
+
+  const handleOpenVault = (tab: VaultTab) => {
+    if (!vaultHistoryRef.current) {
+      vaultHistoryRef.current = crypto.randomUUID();
+      window.history.pushState({ ...window.history.state, vendeoSettingsVault: vaultHistoryRef.current }, "");
+    }
+    setVaultTab(tab);
+  };
+  const handleCloseVault = useCallback(() => {
+    if (vaultHistoryRef.current && window.history.state?.vendeoSettingsVault === vaultHistoryRef.current) {
+      window.history.back();
+      return;
+    }
+    vaultHistoryRef.current = null;
+    setVaultTab(null);
+  }, []);
+  useEffect(() => {
+    const handleVaultPopState = () => {
+      if (vaultHistoryRef.current && window.history.state?.vendeoSettingsVault !== vaultHistoryRef.current) {
+        vaultHistoryRef.current = null;
+        setVaultTab(null);
+      }
+    };
+    window.addEventListener("popstate", handleVaultPopState);
+    return () => {
+      window.removeEventListener("popstate", handleVaultPopState);
+      if (vaultHistoryRef.current && window.history.state?.vendeoSettingsVault === vaultHistoryRef.current) window.history.back();
+    };
+  }, []);
+
 
   const {
     stages,
@@ -454,6 +488,10 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
   // =========================================================================
   // VISÃO PRINCIPAL MOBILE (LISTA CATEGORIZADA NATIVA COM CHEVRON)
   // =========================================================================
+  const vaultModal = vaultTab ? (
+    <PersonaVaultModal isOpen onClose={handleCloseVault} initialTab={vaultTab} />
+  ) : null;
+
   if (isMobile) {
     return (
       <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[#f6f7fb] dark:bg-[#050506] text-zinc-950 dark:text-white">
@@ -607,6 +645,15 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
             />
           </SettingsGroup>
 
+          <SettingsGroup title="Cofres da IA">
+            <SettingsItemRow icon={<Mic className="h-5 w-5" />} iconBgClassName="bg-sky-500 text-white"
+              title="Cofre de Áudios" subtitle="Gerencie os áudios disponíveis para os objetivos e envios da IA."
+              onClick={() => handleOpenVault("audios")} />
+            <SettingsItemRow icon={<ImageIcon className="h-5 w-5" />} iconBgClassName="bg-pink-500 text-white"
+              title="Cofre de Fotos" subtitle="Gerencie as fotos vinculadas aos objetivos e envios da IA."
+              onClick={() => handleOpenVault("photos")} />
+          </SettingsGroup>
+
           {/* Grupo: SISTEMA */}
           <SettingsGroup title="Sistema">
             <SettingsToggleRow
@@ -620,6 +667,7 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
           </SettingsGroup>
         </div>
 
+        {vaultModal}
         <InstagramConnectModal
           isOpen={isInstagramModalOpen}
           onClose={() => {
@@ -948,6 +996,23 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
             </div>
           </section>
 
+          <section id="config-cofres" className="scroll-mt-16 space-y-3">
+            <SectionHeading eyebrow="Bibliotecas" title="Cofres da IA"
+              description="Gerencie as mídias disponíveis para os objetivos e envios da IA." />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SettingsGroup>
+                <SettingsItemRow icon={<Mic className="h-5 w-5" />} iconBgClassName="bg-sky-500 text-white"
+                  title="Cofre de Áudios" subtitle="Gerencie os áudios disponíveis para os objetivos e envios da IA."
+                  onClick={() => handleOpenVault("audios")} />
+              </SettingsGroup>
+              <SettingsGroup>
+                <SettingsItemRow icon={<ImageIcon className="h-5 w-5" />} iconBgClassName="bg-pink-500 text-white"
+                  title="Cofre de Fotos" subtitle="Gerencie as fotos vinculadas aos objetivos e envios da IA."
+                  onClick={() => handleOpenVault("photos")} />
+              </SettingsGroup>
+            </div>
+          </section>
+
           <section id="config-automacao" className="scroll-mt-16 space-y-3">
             <SectionHeading
               eyebrow="Operação"
@@ -961,6 +1026,7 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
         </main>
       </div>
 
+      {vaultModal}
       <InstagramConnectModal
         isOpen={isInstagramModalOpen}
         onClose={() => {
