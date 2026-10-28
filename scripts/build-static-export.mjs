@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { lstatSync, renameSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,56 +10,42 @@ const apiRoutesBackup = path.join(root, "node_modules", ".vendeo-static-api-rout
 const devTypes = path.join(root, ".next", "dev", "types");
 const devTypesBackup = path.join(root, ".next", "dev", "types-build-backup");
 
-function moveDirWithFallback(src, dst) {
+function pathExists(filename) {
   try {
-    renameSync(src, dst);
+    lstatSync(filename);
     return true;
-  } catch (e) {
-    if (e.code !== "EPERM") throw e;
-    if (process.platform !== "win32") {
-      console.warn(`Aviso: não foi possível mover ${path.basename(src)} (EPERM), continuando sem backup...`);
-      return false;
-    }
-    console.log(`renameSync falhou com EPERM; tentando robocopy /MOVE para ${path.basename(src)}...`);
-    if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
-    const result = spawnSync("robocopy", [src, dst, "/E", "/MOVE", "/R:2", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"], { stdio: "pipe" });
-    if (!existsSync(dst)) {
-      console.warn(`Aviso: robocopy também falhou para ${path.basename(src)}, continuando sem backup...`);
-      return false;
-    }
-    // robocopy pode deixar a origem vazia mas existente; remove se estiver vazia
-    try { rmSync(src, { recursive: true, force: true }); } catch (_) { /* best-effort */ }
-    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
   }
 }
 
-function restoreDirWithFallback(src, dst) {
+function moveDirectory(source, destination, operation) {
+  if (!pathExists(source)) {
+    throw new Error(`${operation}: origem ausente em ${source}. Confira os diretórios antes de continuar.`);
+  }
+  if (pathExists(destination)) {
+    throw new Error(`${operation}: destino já existe em ${destination}. Origem e destino não serão sobrescritos ou excluídos.`);
+  }
   try {
-    renameSync(src, dst);
-  } catch (e) {
-    if (e.code !== "EPERM") throw e;
-    if (process.platform !== "win32") throw e;
-    if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
-    const result = spawnSync("robocopy", [src, dst, "/E", "/MOVE", "/R:2", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"], { stdio: "pipe" });
-    if (!existsSync(dst)) throw new Error(`Falha ao restaurar ${path.basename(dst)} via robocopy`);
-    try { rmSync(src, { recursive: true, force: true }); } catch (_) { /* best-effort */ }
+    renameSync(source, destination);
+  } catch (error) {
+    throw new Error(`${operation}: rename falhou (${error.code || "erro desconhecido"}). Confira ${source} e ${destination}; nenhuma cópia ou exclusão será tentada.`, { cause: error });
   }
 }
 
-if (!existsSync(apiRoutes)) throw new Error("Pasta de rotas src/app/api não encontrada.");
-if (existsSync(apiRoutesBackup) || existsSync(devTypesBackup)) {
-  throw new Error("Já existe um backup temporário do build; confira os arquivos antes de continuar.");
-}
-
-let apiRoutesMoved = false;
-let devTypesMoved = false;
+const preservedDirectories = [];
 let buildExitCode = 1;
 
 try {
-  apiRoutesMoved = moveDirWithFallback(apiRoutes, apiRoutesBackup);
-
-  if (existsSync(devTypes)) {
-    devTypesMoved = moveDirWithFallback(devTypes, devTypesBackup);
+  if (pathExists(apiRoutesBackup) || pathExists(devTypesBackup)) {
+    throw new Error(`Já existe um backup temporário do build em ${apiRoutesBackup} ou ${devTypesBackup}. Confira os arquivos antes de continuar; nada será sobrescrito.`);
+  }
+  moveDirectory(apiRoutes, apiRoutesBackup, "Preservar src/app/api");
+  preservedDirectories.push({ original: apiRoutes, temporary: apiRoutesBackup, label: "src/app/api" });
+  if (pathExists(devTypes)) {
+    moveDirectory(devTypes, devTypesBackup, "Preservar .next/dev/types");
+    preservedDirectories.push({ original: devTypes, temporary: devTypesBackup, label: ".next/dev/types" });
   }
 
   const npmCli = process.env.npm_execpath;
@@ -67,16 +53,22 @@ try {
   const executable = npmCli ? process.execPath : (process.platform === "win32" ? "npm.cmd" : "npm");
   const args = npmCli ? [npmCli, "exec", "next", "build"] : ["exec", "next", "build"];
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", shell: isCmd });
+  if (result.error) throw new Error(`Não foi possível iniciar o build: ${result.error.message}`, { cause: result.error });
   buildExitCode = result.status ?? 1;
+  if (result.signal) console.error(`Build interrompido pelo sinal ${result.signal}.`);
+} catch (error) {
+  console.error(error.message);
+  buildExitCode = 1;
 } finally {
-  const generatedDevTypes = path.join(root, ".next", "dev", "types");
-  if (devTypesMoved && existsSync(devTypesBackup)) {
-    if (existsSync(generatedDevTypes)) rmSync(generatedDevTypes, { recursive: true, force: true });
-    restoreDirWithFallback(devTypesBackup, generatedDevTypes);
-  }
-  if (apiRoutesMoved && existsSync(apiRoutesBackup)) {
-    if (existsSync(apiRoutes)) throw new Error("src/app/api foi recriada durante o build; backup preservado para recuperação.");
-    restoreDirWithFallback(apiRoutesBackup, apiRoutes);
+  // Uma restauração malsucedida não impede a tentativa das demais.
+  // Destinos recriados durante o build e backups ficam intactos para revisão.
+  for (const directory of preservedDirectories.reverse()) {
+    try {
+      moveDirectory(directory.temporary, directory.original, `Restaurar ${directory.label}`);
+    } catch (error) {
+      console.error(error.message);
+      buildExitCode = 1;
+    }
   }
 }
 
