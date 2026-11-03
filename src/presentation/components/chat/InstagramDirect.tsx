@@ -101,6 +101,9 @@ import {
   getMessageCadenceSeconds,
 } from "@/lib/utils";
 import { ChatStageBar } from "./ChatStageBar";
+import { ReciprocityHeaderButton, ReciprocityStageStatus } from "./ReciprocityAnalysisView";
+import { ReciprocityResultDialog } from "./ReciprocityResultDialog";
+import { useReciprocity } from "../reciprocity/useReciprocity";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
 import { useConversationSchedules } from "@/presentation/hooks/useConversationSchedules";
 import {
@@ -1709,6 +1712,8 @@ function InstagramDirectInbox({
     });
   }, []);
   const [messages, setMessages] = useState<Record<string, DirectMessage[]>>({});
+  const reciprocity = useReciprocity(activeChat?.id || null, activeChat ? `${messages[activeChat.id]?.length || 0}:${messages[activeChat.id]?.at(-1)?.id || ""}` : "");
+  const [reciprocityDialogConversationId, setReciprocityDialogConversationId] = useState<string | null>(null);
   const messagesRef = useRef<Record<string, DirectMessage[]>>({});
   const whatsapp2OpenChatEventHandlerRef = useRef<(event: WhatsApp2GatewayEvent) => void>(() => {});
   const whatsapp2EventStreamHealthyRef = useRef(false);
@@ -6778,6 +6783,7 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
             >
               <BrainCircuit className="h-[19px] w-[19px]" />
             </button>
+            <ReciprocityHeaderButton available={Boolean(reciprocity.snapshot?.latestCompleted)} onOpen={() => setReciprocityDialogConversationId(activeChat.id)} />
             {whatsapp2ExternalChatUrl ? (
               <a
                 href={whatsapp2ExternalChatUrl}
@@ -6885,6 +6891,16 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
           />
         )}
 
+        {reciprocityDialogConversationId === activeChat.id && reciprocity.snapshot?.latestCompleted && (
+          <ReciprocityResultDialog
+            key={activeChat.id}
+            conversationId={activeChat.id}
+            attempt={reciprocity.snapshot.latestCompleted}
+            onClose={() => setReciprocityDialogConversationId(null)}
+            onNavigate={jumpToRepliedMessage}
+          />
+        )}
+
         {/* Cronograma / Etapa / Objetivos */}
         <ChatStageBar
           variant="whatsapp-ios"
@@ -6900,6 +6916,15 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
           raffleStatus={normalizeRaffleCommercialStatus(activeChat.raffleStatus)}
           onSetRaffleStatus={handleSetRaffleStatus}
           isUpdatingRaffleStatus={isUpdatingRaffleStatus}
+        />
+
+        <ReciprocityStageStatus
+          hasAccess={reciprocity.hasAccess}
+          snapshot={reciprocity.snapshot}
+          busy={reciprocity.busy}
+          error={reciprocity.error}
+          onRequest={() => void reciprocity.request(reciprocity.snapshot?.state === "failed" ? "retry" : "manual")}
+          onRefresh={() => void reciprocity.refresh()}
         />
 
         {/* Área de Mensagens */}
