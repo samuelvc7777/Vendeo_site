@@ -46,11 +46,13 @@ import { readConversationScheduleRuntimeSnapshot } from "./conversation_schedule
 import { handleTinderMatchRoutes, createTinderApproachProvider } from "./tinder_match_routes.ts";
 import { processTinderApproaches, adaptTinderApproach } from "./tinder_approach_runtime.ts";
 import { tinderChatAiRemoved } from "./tinder_account_ai.ts";
+import { handleReciprocityApi, processReciprocityQueue } from "./reciprocity_runtime.ts";
+import { parseReciprocityScopes } from "./reciprocity_auth.ts";
 
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-match-session",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-match-session, x-reciprocity-key",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
 };
 
@@ -347,6 +349,14 @@ serve(async (req: Request) => {
 
   try {
     const supabase = getSupabaseClient();
+
+    if (path === "/operator/reciprocity" || path.startsWith("/operator/reciprocity/")) {
+      return handleReciprocityApi({request:req,path,supabase,corsHeaders,
+        scopesJson:Deno.env.get("RECIPROCITY_OPERATOR_SCOPES") || "[]",
+        providerOptions:{apiKey:(await getOpenAiApiKey(supabase)) || "",
+          validatedModels:(Deno.env.get("RECIPROCITY_VALIDATED_MODELS") || "").split(",").map(v=>v.trim()).filter(Boolean)},
+      });
+    }
 
     const tinderMatchResponse = await handleTinderMatchRoutes({
       request: req,
@@ -3296,6 +3306,16 @@ serve(async (req: Request) => {
         // A fila Tinder tem autorização e progresso próprios, sem Brain WhatsApp.
         const tinderCronAuth = await supabase.rpc("verify_autopilot_cron_token", { p_token: req.headers.get("x-autopilot-cron-token") || "" });
         if (!tinderCronAuth.error && tinderCronAuth.data === true) {
+        // Fila própria da análise: não modifica mensagens, progresso ou decisões.
+        const reciprocityExecution = (async () => {
+          const scopes=parseReciprocityScopes(Deno.env.get("RECIPROCITY_OPERATOR_SCOPES") || "[]");
+          if(!scopes.length)return;
+          return processReciprocityQueue({supabase,scopes,openAiKey:(await getOpenAiApiKey(supabase)) || "",
+            providerOptions:{validatedModels:(Deno.env.get("RECIPROCITY_VALIDATED_MODELS") || "").split(",").map(v=>v.trim()).filter(Boolean)},
+          });
+        })().catch(()=>console.error("[Reciprocity] Falha no processamento da fila."));
+        if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") (globalThis as any).EdgeRuntime.waitUntil(reciprocityExecution);
+        else await reciprocityExecution;
         const tinderProvider = createTinderApproachProvider(supabase);
         const tinderExecution = processTinderApproaches({
           supabase,
