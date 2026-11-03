@@ -38,3 +38,18 @@ test('resposta incompleta preserva telemetria da chamada faturável sem expor co
     assert.equal(error.usage.inputTokens,100);assert.equal(error.usage.outputTokens,200);assert.doesNotMatch(error.message,/DADOS PRIVADOS/);return true;
   });
 });
+
+test('solicitação ao modelo define o contato como sujeito das duas notas e a Larissa como contexto',async()=>{
+  let body;
+  const provider=new OpenAiReciprocityProvider({apiKey:'fake',validatedModels:['gpt-6-luna'],fetch:async(_,init)=>{
+    body=JSON.parse(init.body);
+    return new Response(JSON.stringify({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(result)}]}],usage:{input_tokens:10,output_tokens:10}}));
+  }});
+  await provider.evaluate([{id:'contact-1',role:'contact',text:'Lembrei do seu curso de cerâmica.',at:'2026-11-03',mediaMissing:false}],configuration);
+  const instructions=body.input.find(item=>item.role==='system').content;
+  assert.match(instructions,/CONTATO, identificado por role contact/);
+  assert.match(instructions,/Larissa é identificada por role larissa e entra apenas como contexto/);
+  assert.match(instructions,/participation mede a participação DO CONTATO/);
+  assert.match(instructions,/curiosity mede a curiosidade DO CONTATO PELA LARISSA/);
+  assert.match(instructions,/Perguntas da Larissa não são evidência de curiosidade do contato/);
+});
