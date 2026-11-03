@@ -26,6 +26,11 @@ export class SupabaseReciprocityStore implements ReciprocityStore {
     if(error)throw new ReciprocityError('Não foi possível consultar a configuração da análise.',503);
     return data||{model:'gpt-6-luna',reasoning:'low'};
   }
+  async saveSettings(scopeId:string,configuration:ReciprocityConfiguration){
+    const {error}=await this.supabase.from('reciprocity_settings').upsert({scope_id:scopeId,...configuration,updated_at:new Date().toISOString()},{onConflict:'scope_id'});
+    if(error)throw new ReciprocityError('Não foi possível salvar a configuração da análise.',503);
+    return configuration;
+  }
   async list(scopeId:string,id:string){
     const results:StoredReciprocityAttempt[]=[];
     for(let from=0;;from+=100){

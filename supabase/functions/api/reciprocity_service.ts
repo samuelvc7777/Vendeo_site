@@ -7,6 +7,7 @@ export interface ReciprocityStore {
   authorize(scope: ReciprocityScope, conversationId: string): Promise<boolean>;
   eligible(conversationId: string): Promise<boolean>;
   settings(scopeId: string): Promise<ReciprocityConfiguration>;
+  saveSettings(scopeId:string,configuration:ReciprocityConfiguration):Promise<ReciprocityConfiguration>;
   list(scopeId: string, conversationId: string): Promise<StoredReciprocityAttempt[]>;
   enqueue(scopeId: string, conversationId: string, reason: ReciprocityReason, configuration: ReciprocityConfiguration): Promise<StoredReciprocityAttempt>;
   claim(): Promise<StoredReciprocityAttempt | null>;
@@ -59,6 +60,18 @@ export class ReciprocityService {
   store: ReciprocityStore;
   provider: ReciprocityProvider;
   constructor(store: ReciprocityStore, provider: ReciprocityProvider) { this.store = store; this.provider = provider; }
+  async getSettings(scope:ReciprocityScope){
+    return this.store.settings(scope.scopeId);
+  }
+  async saveSettings(scope:ReciprocityScope,value:unknown){
+    const input=value as Partial<ReciprocityConfiguration>|null;
+    if(!input||!['gpt-6-luna','gpt-6.1-terra','gpt-6.1-sol'].includes(input.model||'')
+      ||!['low','medium','high'].includes(input.reasoning||''))throw new ReciprocityError('Modelo ou nível de raciocínio inválido.');
+    const configuration:ReciprocityConfiguration={model:input.model!,reasoning:input.reasoning!};
+    // Verificar disponibilidade não valida qualidade e não dispara avaliações.
+    await this.provider.preflight(configuration);
+    return this.store.saveSettings(scope.scopeId,configuration);
+  }
   private async authorized(scope: ReciprocityScope, id: string) {
     if (!id || !await this.store.authorize(scope, id)) throw new ReciprocityError('Conversa fora do escopo autorizado.', 404);
   }

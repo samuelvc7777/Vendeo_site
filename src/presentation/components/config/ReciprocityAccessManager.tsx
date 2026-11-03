@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { KeyRound } from "lucide-react";
 import { saveReciprocityAccess } from "../reciprocity/reciprocity-client";
 import { useReciprocityAccess } from "../reciprocity/useReciprocityAccess";
+import { ReciprocitySettingsManager } from "./ReciprocitySettingsManager";
 export function ReciprocityAccessManager() {
   const [input, setInput] = useState("");
   const configured = Boolean(useReciprocityAccess());
@@ -18,5 +19,6 @@ export function ReciprocityAccessManager() {
       <button type="submit" disabled={!input.trim()} className="rounded-xl bg-sky-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Salvar acesso</button>
       {configured && <button type="button" onClick={() => { saveReciprocityAccess(""); setInput(""); }} className="rounded-xl border border-zinc-300 px-3 py-2 text-xs dark:border-white/20">Remover acesso</button>}
     </form>
+    <ReciprocitySettingsManager />
   </section>;
 }

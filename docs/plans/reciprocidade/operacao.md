@@ -26,6 +26,8 @@ As tabelas `reciprocity_attempts` e `reciprocity_settings` têm RLS e nenhum pri
 
 - `GET /operator/reciprocity?conversationId=...`: estado mais recente, último resultado concluído, tentativas e elegibilidade;
 - `POST /operator/reciprocity`: corpo com `conversationId` e `reason` (`manual`, `retry` ou `reevaluation`); retorna tentativa com HTTP 202;
+- `GET /operator/reciprocity/settings`: configuração do escopo autenticado; padrão Luna/baixo;
+- `PUT /operator/reciprocity/settings`: corpo com `model` e `reasoning`; verifica acesso ao modelo e salva somente para próximas análises do escopo. Não aceita escopo indicado pelo cliente nem modifica tentativas já solicitadas;
 - `GET /operator/reciprocity/evidence?conversationId=...&attemptId=...&messageId=...`: contexto de até duas mensagens antes/depois da mensagem citada, dentro do snapshot de uma tentativa concluída do escopo autorizado.
 
 Os tipos públicos estão no domínio `Reciprocity`. A API nunca devolve o histórico completo capturado, segredos nem lease. Evidências permanecem verificáveis mesmo quando a mensagem antiga ainda não foi carregada na tela. Uma etapa posterior, por si só, não torna o chat elegível: todos os objetivos habilitados da etapa inicial precisam ter conclusão persistida. Objetivos desabilitados não bloqueiam e a categoria de reciprocidade não é derivada de nenhum objetivo histórico.
@@ -39,6 +41,8 @@ O provedor usa Responses API com saída estruturada, sem ferramentas, sessão de
 ## Modelos, qualidade e consumo
 
 Os IDs aceitos são `gpt-6-luna`, `gpt-6.1-terra` e `gpt-6.1-sol`; os níveis são `low`, `medium` e `high`. O padrão é Luna/baixo. Antes de aceitar uma solicitação, `preflight` consulta `GET /v1/models/{id}` com a chave resolvida pelo backend e exige o ID exato. Não há substituição silenciosa.
+
+Em Configurações, abaixo do acesso à análise, o responsável seleciona modelo e raciocínio. O salvamento consulta o modelo real antes de persistir; indisponibilidade deixa a escolha anterior intacta. Seleções valem para todos os chats autorizados do mesmo escopo. Cada análise já solicitada preserva seu próprio snapshot de configuração, inclusive quando o responsável salva outra escolha durante processamento. Alterar configuração não inicia reavaliações nem refaz histórico. A escolha de modelo disponível não contorna a validação de qualidade exigida para o worker.
 
 O worker só avalia modelos presentes em `validatedModels`, uma lista server-side de modelos cuja qualidade foi validada pelos casos da issue #9. Sem essa lista, a tentativa informa pendência de validação em vez de ativar um modelo sem fundamento. Acesso ao catálogo da API não equivale a qualidade validada. O coordenador confirmou acesso aos três IDs com a credencial salva; a variável local de ambiente estava obsoleta. Não incluir qualquer chave em logs, PR, comandos compartilhados ou documentos.
 
