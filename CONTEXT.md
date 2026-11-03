@@ -55,6 +55,15 @@ Quando falta um fato pessoal confiável, o Brain pausa o mesmo turno e pergunta 
 
 ## Observabilidade e interface
 
+**Análise de reciprocidade**
+Avaliação observacional da participação do contato e da curiosidade pela Larissa, tratadas separadamente e sustentadas por evidências da conversa. Não altera o atendimento nem representa previsão de compra ou inferência de sentimentos.
+
+**Conversa analisada**
+Toda a relação disponível na identidade canônica, desde a primeira mensagem disponível, incluindo apenas canais explicitamente vinculados e autorizados. Reinícios técnicos, silêncio e troca de cronograma não criam uma nova relação para essa análise.
+
+**Recorte da análise**
+Conjunto de mensagens da conversa até a última mensagem fixada no início de uma avaliação. Mensagens posteriores pertencem a uma nova avaliação; lacunas no conteúdo disponível devem ser declaradas.
+
 **Eventos do Brain**
 `brain_turn_events`, `brain_turns`, `brain_decisions` e `brain_decision_actions` formam a fonte canônica operacional. UI não deve inferir “enviado” apenas porque o Brain concluiu.
 

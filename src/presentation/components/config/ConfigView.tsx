@@ -29,6 +29,7 @@ import { InstagramAccount } from "@/domain/entities/Instagram";
 import { InstagramConnectModal } from "@/presentation/components/instagram/InstagramConnectModal";
 import { getApiUrl } from "@/infrastructure/http/network";
 import { AutoPilotConfigManager } from "./AutoPilotConfigManager";
+import { ReciprocityAccessManager } from "./ReciprocityAccessManager";
 import { ConversationSchedulesManager } from "./ConversationSchedulesManager";
 import { PersonaVaultModal, type VaultTab } from "../vault/PersonaVaultModal";
 import { useChatStages } from "@/presentation/hooks/useChatStages";
@@ -555,6 +556,8 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
             </div>
           </div>
 
+          <ReciprocityAccessManager />
+
           {/* Grupo: CANAIS & CONEXÕES */}
           <SettingsGroup title="Canais & Conexões">
             <SettingsItemRow
@@ -720,6 +723,7 @@ export function ConfigView({ onDetailOpenChange }: ConfigViewProps = {}) {
 
       <div className="flex-1 overflow-y-auto overscroll-contain scrollbar-none">
         <main className="mx-auto w-full max-w-6xl space-y-8 px-3 pb-28 pt-4 sm:px-5 md:px-6">
+          <ReciprocityAccessManager />
           <section className="relative overflow-hidden rounded-[28px] border border-zinc-200/80 dark:border-white/10 bg-gradient-to-br from-white via-sky-50/80 to-violet-50 dark:from-[#121218] dark:via-[#0d0d12] dark:to-[#171222] p-4 shadow-[0_18px_60px_-28px_rgba(59,130,246,0.45)] sm:p-5">
             <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-violet-400/15 blur-3xl dark:bg-violet-500/10" />
             <div className="pointer-events-none absolute -bottom-16 -left-12 h-36 w-36 rounded-full bg-sky-400/15 blur-3xl dark:bg-sky-500/10" />
