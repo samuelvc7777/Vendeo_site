@@ -2,7 +2,7 @@
 
 Origem: [especificação #3](https://github.com/samuelvc7777/Vendeo_site/issues/3) e [ticket #4](https://github.com/samuelvc7777/Vendeo_site/issues/4).
 
-Estado: investigação registrada; definição do início da interação aguarda decisão do usuário. Este documento não conclui o ticket #4 e não autoriza execução dos tickets dependentes.
+Estado: investigação e regra de recorte concluídas para o ticket #4. Em 03/11/2026, após a explicação da opção de usar toda a conversa desde a primeira mensagem, o usuário escolheu explicitamente “toda cv”. A implementação dos tickets dependentes deve seguir o contrato abaixo; a issue #4 permanece aberta até a integração do PR.
 
 ## Fontes e limites
 
@@ -41,7 +41,7 @@ O contrato do código também distingue os modos. A migração `supabase/migrati
 - `supabase/functions/api/brain_orchestrator.ts:1191` documenta `stage_completed_rules.completed_goals` como autoridade primária e `orchestration.completedGoalIds` como espelho/fallback. O repositório frontend usa outra prioridade em `src/infrastructure/repositories/SupabaseChatStageRepository.ts:385`; o disparo backend precisa partir do estado persistido confirmado, não de uma contagem visual em memória.
 - A antiga associação entre checklist e pasta do Cofre foi removida por `supabase/migrations/20261006052220_remove_stage_vault_legacy.sql`. O ADR antigo sobre checklist de pastas não descreve o contrato atual.
 
-## Não há início inequívoco da interação atual
+## Investigação dos marcos técnicos existentes
 
 A pesquisa no código oficial por `interaction_id`, `interactionId`, `interaction_started`, `interactionStarted`, `interaction_start` e `interactionStart`, em `src`, funções e migrações, não retornou ocorrências. A consulta do coordenador ao `information_schema` de `public` também não retornou colunas com `interaction` no nome. Isso não prova ausência de todo campo JSON possível, mas não foi encontrado contrato persistido inequívoco que delimite a interação semântica atual.
 
@@ -61,18 +61,22 @@ Não adotar silêncio, ativação da IA, criação de run ou reinício do Brain 
 
 `docs/adr/0004-canonical-conversation-across-channels.md` estabelece a conversa canônica estável em `instagram_conversations`, com vínculos explícitos entre canais e sem junção por telefone coincidente. A migração `supabase/migrations/20261007024535_tinder_multichannel_identities.sql:26` cria as identidades de canal; a partir da linha 56 registra transferências. A função de associação recusa vínculo existente com outra conversa, inclusive nas linhas 198–210.
 
-A identidade e o início de uma interação deverão continuar vinculados à conversa canônica durante transferências autorizadas. Reinícios técnicos não devem gerar nova interação nem reiniciar a deduplicação da análise.
+Para este recurso, a identidade da interação é a própria conversa canônica. Transferências autorizadas preservam essa identidade e incorporam apenas os canais explicitamente vinculados e autorizados. Reinícios técnicos não geram nova interação nem reiniciam a deduplicação da análise.
 
-## Decisão pendente e proposta para aprovação
+## Decisão aprovada: toda a conversa disponível
 
-A especificação #3 exige propor uma regra ao usuário quando não houver marco inequívoco. A proposta a decidir é criar uma identidade persistente de interação por conversa canônica, com mensagem inicial identificada. Reinício técnico, reativação da IA, troca de cronograma e transferência autorizada de canal preservariam essa identidade. Uma nova interação dependeria de uma ação explícita do operador.
+Em 03/11/2026, o usuário respondeu **“toda cv”** à opção explicada como toda a conversa desde a primeira mensagem. Para a análise de reciprocidade, a interação corresponde à relação/conversa canônica inteira disponível no escopo autorizado.
 
-Para chats antigos, a proposta é confirmar manualmente a mensagem inicial antes da primeira análise, em vez de inventar um corte ou usar todo o histórico automaticamente. Ainda é necessário decidir quem pode confirmar ou abrir uma nova interação e como isso se relaciona ao checklist anteriormente concluído, preservando o atendimento.
+O recorte começa na primeira mensagem disponível dessa conversa e inclui as falas dos dois lados. Não há segmentação por silêncio, ativação da IA, cronograma, reinício técnico ou sessão do Brain, nem ação de abertura de uma nova interação para este recurso. Chats antigos não precisam de seleção ou confirmação manual de uma mensagem inicial.
 
-Esta proposta ainda não é decisão aprovada. A resposta do usuário deverá ser registrada antes de executar os tickets #5–#9.
+No início de cada execução, fixar a última mensagem incluída e manter esse limite estável. Mensagens recebidas depois entram somente em outra avaliação. Persistir os identificadores e o intervalo efetivamente analisados, informar lacunas e indisponibilidade de conteúdo e não truncar histórico silenciosamente.
 
-## Elegibilidade e validação a implementar após a decisão
+A identidade usada para a deduplicação por interação é a conversa canônica, junto ao marco confirmado do checklist para a execução automática. Transferência autorizada não reinicia essa identidade. Somente mensagens dos canais explicitamente vinculados à conversa e pertencentes ao escopo autorizado podem participar do histórico; coincidência de telefone não autoriza incorporar outra pessoa ou conversa.
 
-Um chat antigo precisa de escopo autorizado, identidade canônica resolvida, interação delimitada pela regra aprovada e comprovação persistida da conclusão do checklist alvo. Uma etapa posterior sozinha não comprova que todos os objetivos foram concluídos. A primeira análise desses chats será manual, sem backfill automático em massa.
+Não é necessário criar um marcador de início semântico para liberar os tickets dependentes. A proposta anterior de início explícito pelo operador e confirmação manual de início em chats antigos foi substituída pela decisão de analisar toda a conversa disponível.
 
-O teste do fluxo deverá verificar conclusão parcial e completa, eventos repetidos, reinício técnico, transferência autorizada, chegada de mensagens durante execução e isolamento entre contas. Nenhum desses testes foi implementado ou executado nesta investigação documental; não houve alteração do comportamento da aplicação nem publicação.
+## Elegibilidade e validação
+
+Um chat antigo precisa de escopo autorizado, identidade canônica resolvida e comprovação persistida da conclusão do checklist alvo. A etapa `stage_1_conexao` tem cinco objetivos habilitados no retrato acima, mas a implementação deve obter dinamicamente os objetivos habilitados da configuração canônica. Uma etapa posterior sozinha não comprova que todos os objetivos foram concluídos. A primeira análise desses chats será solicitada manualmente, sem seleção de mensagem inicial e sem backfill automático em massa.
+
+O teste do fluxo deverá verificar conclusão parcial e completa, eventos repetidos, reinício técnico, transferência autorizada, chegada de mensagens durante execução, inclusão de toda a conversa disponível desde a primeira mensagem e isolamento entre contas. Nenhum desses testes foi implementado ou executado nesta investigação documental; não houve alteração do comportamento da aplicação nem publicação.
