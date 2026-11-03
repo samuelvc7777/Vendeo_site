@@ -48,6 +48,7 @@ import { processTinderApproaches, adaptTinderApproach } from "./tinder_approach_
 import { tinderChatAiRemoved } from "./tinder_account_ai.ts";
 import { handleReciprocityApi, processReciprocityQueue } from "./reciprocity_runtime.ts";
 import { parseReciprocityScopes } from "./reciprocity_auth.ts";
+import { processReciprocityAutomaticEvents } from "./reciprocity_automatic.ts";
 
 
 const corsHeaders = {
@@ -3310,9 +3311,10 @@ serve(async (req: Request) => {
         const reciprocityExecution = (async () => {
           const scopes=parseReciprocityScopes(Deno.env.get("RECIPROCITY_OPERATOR_SCOPES") || "[]");
           if(!scopes.length)return;
-          return processReciprocityQueue({supabase,scopes,openAiKey:(await getOpenAiApiKey(supabase)) || "",
-            providerOptions:{validatedModels:(Deno.env.get("RECIPROCITY_VALIDATED_MODELS") || "").split(",").map(v=>v.trim()).filter(Boolean)},
-          });
+          const openAiKey=(await getOpenAiApiKey(supabase)) || "";
+          const providerOptions={validatedModels:(Deno.env.get("RECIPROCITY_VALIDATED_MODELS") || "").split(",").map(v=>v.trim()).filter(Boolean)};
+          await processReciprocityAutomaticEvents({supabase,scopes,openAiKey,providerOptions});
+          return processReciprocityQueue({supabase,scopes,openAiKey,providerOptions});
         })().catch(()=>console.error("[Reciprocity] Falha no processamento da fila."));
         if (typeof (globalThis as any).EdgeRuntime?.waitUntil === "function") (globalThis as any).EdgeRuntime.waitUntil(reciprocityExecution);
         else await reciprocityExecution;
