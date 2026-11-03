@@ -50,3 +50,19 @@ test('análise exibe categorias separadas, cobertura e evidências que podem ser
   assert.match(html,/pouca oportunidade/);
   assert.doesNotMatch(html,/<script>/);
 });
+
+test('tela permite escolher avaliações anteriores e reavaliar mesmo sem mensagens novas',()=>{
+  const filename = new URL('../src/presentation/components/chat/ReciprocityResultDialog.tsx', import.meta.url);
+  const source=fs.readFileSync(filename,'utf8');
+  const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true,target:ts.ScriptTarget.ES2022}}).outputText;
+  const module={exports:{}};
+  new Function('require','module','exports',code)(name=>name.includes('reciprocity-client')?{reciprocityJson:async()=>({messages:[]})}:require(name),module,module.exports);
+  const result={participation:'alta',curiosity:'moderada',summary:'Resultado mais recente.',reasons:[],evolution:'estavel',limitations:[],evidence:[]};
+  const first={id:'old',createdAt:'2026-11-01T10:00:00Z',state:'completed',configuration:{model:'gpt-6-luna',reasoning:'low'},coverage:{from:'2026-11-01T09:00:00Z',to:'2026-11-01T10:00:00Z',messageCount:2,lastMessageId:'m2'},result:{...result,summary:'Resultado anterior.'}};
+  const latest={...first,id:'latest',createdAt:'2026-11-03T10:00:00Z',result};
+  const html=renderToStaticMarkup(React.createElement(module.exports.ReciprocityResultDialog,{attempt:latest,attempts:[latest,first],conversationId:'chat-a',state:'completed',onClose(){},onNavigate(){},onReevaluate(){}}));
+  assert.match(html,/Histórico de avaliações/);
+  assert.match(html,/value="old"/);
+  assert.match(html,/Reavaliar conversa/);
+  assert.match(html,/Resultado mais recente/);
+});

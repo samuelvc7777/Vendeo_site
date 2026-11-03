@@ -6896,6 +6896,12 @@ const [isBulkSyncingWa2, setIsBulkSyncingWa2] = useState(false);
             key={activeChat.id}
             conversationId={activeChat.id}
             attempt={reciprocity.snapshot.latestCompleted}
+            attempts={reciprocity.snapshot.attempts}
+            state={reciprocity.snapshot.state}
+            busy={reciprocity.busy}
+            requestError={reciprocity.error}
+            onReevaluate={() => void reciprocity.request("reevaluation")}
+            onRefresh={() => void reciprocity.refresh()}
             onClose={() => setReciprocityDialogConversationId(null)}
             onNavigate={jumpToRepliedMessage}
           />

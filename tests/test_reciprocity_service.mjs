@@ -96,3 +96,25 @@ test('evidência abre contexto do snapshot somente do resultado autorizado', asy
   await assert.rejects(service.evidence({scopeId:'b'},'chat-a','1','m1'),{status:404});
   await assert.rejects(service.evidence(scope,'chat-a','1','other'),{status:404});
 });
+
+test('reavaliação explícita sem novas mensagens preserva as duas avaliações e deduplica somente chamadas concorrentes', async()=>{
+  const store=new MemoryStore();
+  const service=new ReciprocityService(store,provider);
+  const first=await service.request(scope,'chat-a','manual');
+  await service.processOne([scope]);
+  const repeated=await Promise.all([
+    service.request(scope,'chat-a','reevaluation'),
+    service.request(scope,'chat-a','reevaluation'),
+  ]);
+  assert.notEqual(repeated[0].attempt.id,first.attempt.id);
+  assert.equal(repeated[0].attempt.id,repeated[1].attempt.id);
+  const processingView=await service.view(scope,'chat-a');
+  assert.equal(processingView.latestCompleted.id,first.attempt.id);
+  await service.processOne([scope]);
+  const completedView=await service.view(scope,'chat-a');
+  assert.equal(completedView.latestCompleted.id,repeated[0].attempt.id);
+  assert.equal(completedView.attempts.filter(a=>a.state==='completed').length,2);
+  assert.deepEqual(completedView.attempts[0].configuration,completedView.attempts[1].configuration);
+  assert.equal(completedView.attempts[0].coverage.lastMessageId,completedView.attempts[1].coverage.lastMessageId);
+  assert.equal((await service.evidence(scope,'chat-a',first.attempt.id,'m1')).messages[0].text,'E você, gosta de praia?');
+});
