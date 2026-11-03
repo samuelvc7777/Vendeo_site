@@ -1,12 +1,12 @@
 # Validação integrada de reciprocidade
 
-Verificação em 03/11/2026, antes da incorporação da avaliação sintética do ticket #9.
+Verificação em 03/11/2026, após incorporação da revisão e do runner sintético do ticket #9.
 
 - Base oficial consultada: origin/main aa90524bcddb2b7e188c222224a19fda81d4a2dd.
 - Build integrado: npm run build aprovado, incluindo TypeScript e exportação estática.
 - Módulos backend: tsc --noEmit com allowImportingTsExtensions aprovado.
-- Suíte específica: 40 testes aprovados, zero falhas, incluindo SQL real em PGlite.
-- Suíte geral: 639 testes, 619 aprovados, 20 falhas. A main antes do recurso tinha 599 testes, 579 aprovados e as mesmas 20 falhas.
+- Suíte específica: 46 testes aprovados, zero falhas, incluindo SQL real em PGlite.
+- Suíte geral: 645 testes, 625 aprovados, 20 falhas. A main antes do recurso tinha 599 testes, 579 aprovados e as mesmas 20 falhas.
 - PGlite não comprova concorrência entre sessões remotas. Interface foi verificada por renderização SSR e build; não foi exercido um fluxo completo com navegador conectado ao backend migrado.
 - Nenhuma migração foi aplicada ao ambiente remoto; não houve deploy, envio a contatos ou limpeza de conversas.
 

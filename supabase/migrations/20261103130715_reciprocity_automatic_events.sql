@@ -95,6 +95,3 @@ revoke all on function public.record_reciprocity_checklist_milestone(),
 grant execute on function public.record_reciprocity_checklist_milestone(),
   public.pending_reciprocity_automatic_events(text,integer,jsonb),public.enqueue_reciprocity_automatic_event(text,text,jsonb,text)
   to service_role;
-
-
-

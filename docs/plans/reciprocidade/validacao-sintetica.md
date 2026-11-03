@@ -61,3 +61,17 @@ A rodada inicial, realizada pelo coordenador em 03/11/2026 com Luna/baixo, concl
 A inspeção do relatório encontrou um erro semântico grave: em respostas longas sem curiosidade o resultado classificou a participação da Larissa e a curiosidade dela, atribuindo curiosidade alta; no caso de comentários sem perguntas também avaliou a curiosidade da Larissa pelo contato. Portanto, nove respostas válidas em JSON não aprovaram a qualidade.
 
 O prompt candidato foi corrigido para definir explicitamente o CONTATO (`role contact`) como sujeito de participação, curiosidade, síntese, motivos e evolução. A Larissa (`role larissa`) serve de contexto e de evidência da oportunidade oferecida; perguntas dela não contam como curiosidade do contato. A versão candidata `reciprocity-contact-2026-11-03` fica registrada nos relatórios seguintes. Um teste verifica essas instruções na requisição efetivamente enviada ao provedor simulado; ele não comprova que o modelo obedecerá semanticamente. A rodada corrigida precisa ser executada e revisada antes de qualquer conclusão sobre qualidade. O worker continua sem liberação automática do modelo.
+
+## Rodada corrigida executada
+
+O [relatório da segunda rodada](avaliacao-luna-baixo-rodada2.json), com conversas fictícias e saídas verificáveis, registra nove casos executados: oito concluídos e um rejeitado pelo validador por ausência de evidências verificáveis no caso de mídia inacessível. Foram 9.994 tokens de entrada, 3.735 de saída, 44.782 ms somados e custo estimado de US$ 0,0028669.
+
+A correção do sujeito resolveu os exemplos inspecionados de respostas longas sem curiosidade (curiosidade baixa) e comentários sem perguntas (curiosidade alta). Isso não comprova qualidade suficiente no conjunto: o caso de mídia falhou e a saudação isolada recebeu participação baixa, embora o pouco contexto possa justificar evidência insuficiente. Não se considera Luna/baixo aprovado. Nenhum modelo foi habilitado em RECIPROCITY_VALIDATED_MODELS.
+
+A revisão humana permanece pendente, identificada no JSON. O relatório é um resultado concreto para avaliação, não uma aprovação automática nem uma medida de acurácia calibrada. O PR deve permanecer em rascunho enquanto a qualidade não for resolvida.
+
+## Candidato final para revisão
+
+A instrução foi refinada para tratar saudações isoladas e mídias sem conteúdo textual como evidência insuficiente, sem inventar citações. A [terceira rodada integral](avaliacao-luna-baixo.json) concluiu nove de nove casos sem rejeições estruturais ou de referência: 10.840 tokens de entrada, 3.570 de saída, 56.571 ms somados e US$ 0,002869 estimados. Respostas longas sem curiosidade receberam curiosidade baixa; comentários atentos sem perguntas receberam alta; pouco contexto e mídia inacessível receberam evidência insuficiente nas duas categorias.
+
+Esses resultados são um candidato para revisão humana, não aprovação de qualidade nem comprovação estatística. Os campos de aprovação no JSON continuam vazios e a liberação do modelo no servidor permanece desativada. O PR fica em rascunho até a revisão dos resultados e a decisão de liberação; não houve deploy ou aplicação remota de migrações.
