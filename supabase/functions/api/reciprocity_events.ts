@@ -19,6 +19,7 @@ export async function handleReciprocityEvents({ request, authorize, subscribe, c
   }
 
   let closed = false;
+  let cancelled = false;
   let unsubscribe: (() => void) | undefined;
   let stop = () => {};
   const encoder = new TextEncoder();
@@ -29,7 +30,7 @@ export async function handleReciprocityEvents({ request, authorize, subscribe, c
         closed = true;
         request.signal.removeEventListener("abort", stop);
         unsubscribe?.();
-        controller.close();
+        if (!cancelled) controller.close();
       };
       const emit = (event: string) => {
         if (!closed) controller.enqueue(encoder.encode(`event: ${event}\ndata: {}\n\n`));
@@ -48,7 +49,7 @@ export async function handleReciprocityEvents({ request, authorize, subscribe, c
         stop();
       }
     },
-    cancel() { stop(); },
+    cancel() { cancelled = true; stop(); },
   });
   return new Response(stream, { headers: {
     ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no",

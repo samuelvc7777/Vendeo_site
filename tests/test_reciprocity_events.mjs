@@ -34,3 +34,17 @@ test('eventos autorizados notificam mudança sem expor resultado e liberam assin
   assert.equal((await reader.read()).done, true);
   assert.equal(unsubscribed, true);
 });
+
+test('cancelar o leitor libera a assinatura sem erro de fechamento duplo', async () => {
+  let released = false;
+  const response = await handleReciprocityEvents({
+    request: new Request('https://example.test/operator/reciprocity/events?conversationId=chat'),
+    authorize: async () => true,
+    subscribe: async () => () => { released = true; },
+    corsHeaders: {},
+  });
+  const reader = response.body.getReader();
+  await reader.read();
+  await reader.cancel();
+  assert.equal(released, true);
+});
