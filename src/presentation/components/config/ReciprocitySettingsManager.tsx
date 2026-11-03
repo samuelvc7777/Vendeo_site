@@ -2,20 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import type { ReciprocityConfiguration } from "@/domain/entities/Reciprocity";
+import { RECIPROCITY_MODELS, RECIPROCITY_REASONING_LEVELS } from "@/domain/entities/Reciprocity";
 import { reciprocityJson } from "../reciprocity/reciprocity-client";
 import { useReciprocityAccess } from "../reciprocity/useReciprocityAccess";
 
 const INITIAL: ReciprocityConfiguration = { model: "gpt-6-luna", reasoning: "low" };
-const MODELS: Array<{ value: ReciprocityConfiguration["model"]; label: string }> = [
-  { value: "gpt-6-luna", label: "Luna" },
-  { value: "gpt-6.1-terra", label: "Terra" },
-  { value: "gpt-6.1-sol", label: "Sol" },
-];
-const LEVELS: Array<{ value: ReciprocityConfiguration["reasoning"]; label: string }> = [
-  { value: "low", label: "Baixo" },
-  { value: "medium", label: "Médio" },
-  { value: "high", label: "Alto" },
-];
 
 export function ReciprocitySettingsManager() {
   const access = useReciprocityAccess();
@@ -98,12 +89,12 @@ export function ReciprocitySettingsManager() {
       <fieldset disabled={saving || !saved} className="grid gap-3 sm:grid-cols-2 disabled:opacity-60">
         <label className="space-y-1 text-xs font-medium">Modelo
           <select aria-label="Modelo da análise de reciprocidade" value={configuration.model} onChange={event => { setConfiguration(current => ({ ...current, model: event.target.value as ReciprocityConfiguration["model"] })); setMessage(""); }} className="block w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-950 dark:border-white/20 dark:bg-zinc-950 dark:text-white">
-            {MODELS.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+            {RECIPROCITY_MODELS.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
           </select>
         </label>
         <label className="space-y-1 text-xs font-medium">Raciocínio
           <select aria-label="Raciocínio da análise de reciprocidade" value={configuration.reasoning} onChange={event => { setConfiguration(current => ({ ...current, reasoning: event.target.value as ReciprocityConfiguration["reasoning"] })); setMessage(""); }} className="block w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-950 dark:border-white/20 dark:bg-zinc-950 dark:text-white">
-            {LEVELS.map(level => <option key={level.value} value={level.value}>{level.label}</option>)}
+            {RECIPROCITY_REASONING_LEVELS.map(level => <option key={level.value} value={level.value}>{level.label}</option>)}
           </select>
         </label>
       </fieldset>

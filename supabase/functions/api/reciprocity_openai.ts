@@ -1,4 +1,5 @@
 import type {ReciprocityConfiguration, ReciprocityResult} from '../../../src/domain/entities/Reciprocity.ts';
+import {isReciprocityConfiguration} from '../../../src/domain/entities/Reciprocity.ts';
 import {ReciprocityError, type ReciprocityMessage, type ReciprocityProvider, validateReciprocityResult} from './reciprocity_service.ts';
 
 const categories=['baixa','moderada','alta','evidencia_insuficiente'];
@@ -44,7 +45,7 @@ export class OpenAiReciprocityProvider implements ReciprocityProvider {
     return response.json();
   }
   async preflight(configuration:ReciprocityConfiguration){
-    if(!['gpt-6-luna','gpt-6.1-terra','gpt-6.1-sol'].includes(configuration.model)||!['low','medium','high'].includes(configuration.reasoning))
+    if(!isReciprocityConfiguration(configuration))
       throw new ReciprocityError('Modelo ou nível de raciocínio inválido.');
     const model=await this.call(`/models/${encodeURIComponent(configuration.model)}`);
     if(model.id!==configuration.model) throw new ReciprocityError('OpenAI não confirmou o modelo solicitado.',503);

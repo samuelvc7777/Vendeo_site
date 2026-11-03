@@ -1,4 +1,5 @@
 import type { ReciprocityAttempt, ReciprocityConfiguration, ReciprocityReason, ReciprocityResult, ReciprocityView } from '../../../src/domain/entities/Reciprocity.ts';
+import { isReciprocityConfiguration } from '../../../src/domain/entities/Reciprocity.ts';
 
 export type ReciprocityScope = { scopeId: string; conversationIds?: string[]; accountIds?: string[]; allConversations?: boolean };
 export type ReciprocityMessage = { id: string; role: 'contact' | 'larissa'; text: string; at: string; mediaMissing: boolean };
@@ -64,10 +65,8 @@ export class ReciprocityService {
     return this.store.settings(scope.scopeId);
   }
   async saveSettings(scope:ReciprocityScope,value:unknown){
-    const input=value as Partial<ReciprocityConfiguration>|null;
-    if(!input||!['gpt-6-luna','gpt-6.1-terra','gpt-6.1-sol'].includes(input.model||'')
-      ||!['low','medium','high'].includes(input.reasoning||''))throw new ReciprocityError('Modelo ou nível de raciocínio inválido.');
-    const configuration:ReciprocityConfiguration={model:input.model!,reasoning:input.reasoning!};
+    if(!isReciprocityConfiguration(value))throw new ReciprocityError('Modelo ou nível de raciocínio inválido.');
+    const configuration:ReciprocityConfiguration={model:value.model,reasoning:value.reasoning};
     // Verificar disponibilidade não valida qualidade e não dispara avaliações.
     await this.provider.preflight(configuration);
     return this.store.saveSettings(scope.scopeId,configuration);

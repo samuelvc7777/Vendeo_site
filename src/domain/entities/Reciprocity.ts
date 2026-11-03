@@ -1,9 +1,25 @@
 export type ReciprocityCategory = 'baixa' | 'moderada' | 'alta' | 'evidencia_insuficiente';
 export type ReciprocityState = 'queued' | 'processing' | 'completed' | 'failed';
 export type ReciprocityReason = 'manual' | 'retry' | 'reevaluation' | 'automatic';
+export const RECIPROCITY_MODELS = [
+  { value: 'gpt-6-luna', label: 'Luna' },
+  { value: 'gpt-6.1-terra', label: 'Terra' },
+  { value: 'gpt-6.1-sol', label: 'Sol' },
+] as const;
+export const RECIPROCITY_REASONING_LEVELS = [
+  { value: 'low', label: 'Baixo' },
+  { value: 'medium', label: 'Médio' },
+  { value: 'high', label: 'Alto' },
+] as const;
 export interface ReciprocityConfiguration {
-  model: 'gpt-6-luna' | 'gpt-6.1-terra' | 'gpt-6.1-sol';
-  reasoning: 'low' | 'medium' | 'high';
+  model: typeof RECIPROCITY_MODELS[number]['value'];
+  reasoning: typeof RECIPROCITY_REASONING_LEVELS[number]['value'];
+}
+export function isReciprocityConfiguration(value: unknown): value is ReciprocityConfiguration {
+  if (!value || typeof value !== 'object') return false;
+  const configuration = value as Partial<ReciprocityConfiguration>;
+  return RECIPROCITY_MODELS.some(model => model.value === configuration.model)
+    && RECIPROCITY_REASONING_LEVELS.some(level => level.value === configuration.reasoning);
 }
 export interface ReciprocityResult {
   participation: ReciprocityCategory;
