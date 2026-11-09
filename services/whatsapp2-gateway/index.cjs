@@ -382,6 +382,7 @@ function serializeMessage(message) {
     type: message.type || null,
     timestamp: message.timestamp || null,
     fromMe: Boolean(message.fromMe),
+    isStarred: Boolean(message.isStarred),
     hasMedia: Boolean(message.hasMedia),
     hasQuotedMsg: Boolean(message.hasQuotedMsg),
     ack: message.ack ?? null,
@@ -1007,7 +1008,7 @@ async function getWhatsApp2ExternalChatLink(chatId) {
   };
 }
 
-async function setWhatsApp2ChatBlockState(chatId, blocked) {
+async function setWhatsApp2ChatBlockState(chatId, blocked, verifyAccount = () => {}) {
   const normalizedChatId = String(chatId || "").trim();
   if (!normalizedChatId) throw new Error("chatId obrigatório");
 
@@ -1030,6 +1031,7 @@ async function setWhatsApp2ChatBlockState(chatId, blocked) {
     };
   }
 
+  verifyAccount();
   const result = nextBlocked
     ? await contact.block()
     : await contact.unblock();
@@ -4124,6 +4126,8 @@ async function confirmAccountIdentity(accountId) {
   });
 }
 
+const { contactProfile } = require("./contact-profile.cjs");
+
 const server = http.createServer(async (req, res) => {
   applyCors(req, res);
   if (req.method === "OPTIONS") { res.statusCode = 204; res.end(); return; }
@@ -4133,7 +4137,9 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, { ok: true, service: "vendeo-whatsapp2-gateway", status: state.status });
     return;
   }
-  if (!isAuthorized(req)) { json(res, 401, { ok: false, error: "unauthorized" }); return; }
+  const managedProfile = accountManager &&
+    /^\/connections\/[A-Za-z0-9_-]+\/chat\/(?:contact-profile|profile-session)$/.test(url.pathname);
+  if (!managedProfile && !isAuthorized(req)) { json(res, 401, { ok: false, error: "unauthorized" }); return; }
 
   try {
     if (accountManager) {
@@ -4414,6 +4420,32 @@ const server = http.createServer(async (req, res) => {
       );
       json(res, 200, { ok: true, ...result });
       return;
+    }
+    if (url.pathname === "/chat/contact-profile") {
+      if (!managedProfile && !API_TOKEN) {
+        json(res, 401, { ok: false, error: "unauthorized" }); return;
+      }
+      if (!["GET", "POST"].includes(req.method)) {
+        json(res, 405, { ok: false, error: "Método não permitido." }); return;
+      }
+      const input = req.method === "POST"
+        ? await readJson(req, 4096)
+        : Object.fromEntries(url.searchParams);
+      const profileAccount = req.headers["x-vendeo-profile-account"];
+      if (profileAccount && profileAccount !== "account-" + input?.phone) {
+        json(res, 409, { ok: false, error: "A conta do WhatsApp mudou." }); return;
+      }
+      if (req.method === "POST" && typeof input?.action !== "string") {
+        json(res, 400, { ok: false, error: "Ação inválida." }); return;
+      }
+      const result = await contactProfile({
+        input, action: req.method === "POST" ? input.action : null, ensureReady,
+        identity: () => String(state.me?.wid || "").split("@")[0].split(":")[0],
+        blockedIds: getWhatsApp2BlockedChatIds, setBlocked: setWhatsApp2ChatBlockState,
+        prepare: ensureWaJsReady,
+      });
+      if (req.method === "POST") invalidateChatSnapshot();
+      json(res, 200, { ok: true, ...result }); return;
     }
     if (req.method === "GET" && url.pathname === "/chat/profile") {
       const chatId = String(url.searchParams.get("chatId") || "");

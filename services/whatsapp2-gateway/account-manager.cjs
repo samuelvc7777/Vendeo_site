@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { fork } = require("node:child_process");
-const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
+const { createHmac, randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { whatsappAccountIdFromWid } = require("../../src/domain/entities/whatsapp2-account-scope.cjs");
 
 function failure(message, statusCode = 409) {
@@ -109,6 +109,18 @@ function createAccountManager({ directory, entry, legacyStatus, readJson, json, 
     return true;
   }
 
+  function profileSignature(row, nonce) {
+    return createHmac("sha256", managerToken)
+      .update(JSON.stringify(["vendeo-contact-profile-v1", row.id, row.accountId, nonce]))
+      .digest();
+  }
+
+  function allowsProfile(req, row) {
+    const match = /^Bearer vcp1\.([a-f0-9]{32})\.([a-f0-9]{64})$/.exec(req.headers.authorization || "");
+    return Boolean(managerToken && row.accountId && match &&
+      timingSafeEqual(profileSignature(row, match[1]), Buffer.from(match[2], "hex")));
+  }
+
   async function refreshLegacy() {
     if (!external) return;
     try {
@@ -210,8 +222,28 @@ function createAccountManager({ directory, entry, legacyStatus, readJson, json, 
     const match = /^\/connections\/([^/]+)(\/.*)$/.exec(url.pathname) ||
       (external ? [url.pathname, "legacy", url.pathname] : null);
     if (!match) return false;
+    const profileSession = match[2] === "/chat/profile-session";
+    if (profileSession && !authorizeManagement(req, res)) return true;
     if (match[2] === "/configuration" && req.method === "POST" && !authorizeManagement(req, res)) return true;
     const row = registry.get(match[1]);
+    if (match[2] === "/chat/contact-profile") {
+      if (!allowsProfile(req, row) && !authorizeManagement(req, res)) return true;
+      if (row.accountId) req.headers["x-vendeo-profile-account"] = row.accountId;
+      else delete req.headers["x-vendeo-profile-account"];
+    }
+    if (profileSession) {
+      if (req.method !== "POST") throw failure("Método não permitido.", 405);
+      if (row.id === "legacy" && external) await refreshLegacy();
+      if (!row.enabled || !row.accountId) throw failure("Conecte o WhatsApp antes de autorizar este aparelho.");
+      const input = await readJson(req, 4096);
+      if (typeof input?.phone !== "string" || row.accountId !== "account-" + input.phone) {
+        throw failure("A conta do WhatsApp mudou.");
+      }
+      const nonce = randomBytes(16).toString("hex");
+      res.setHeader("Cache-Control", "no-store");
+      json(res, 200, { ok: true, accessToken: `vcp1.${nonce}.${profileSignature(row, nonce).toString("hex")}` });
+      return true;
+    }
     if (match[2] === "/configuration" && req.method === "POST") {
       const body = await readJson(req, 4096);
       const patch = {};

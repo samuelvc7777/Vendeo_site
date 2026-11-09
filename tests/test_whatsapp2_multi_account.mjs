@@ -136,9 +136,33 @@ test("criar e alterar contas exige a chave de gerenciamento", async t => {
   assert.equal(createWithoutKey.status, 401);
   const configureWithoutKey = await fetch(`${base}/connections/legacy/configuration`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Intrusa" }) });
   assert.equal(configureWithoutKey.status, 401);
+  const profilePath = base + "/connections/legacy/chat/contact-profile";
+  assert.equal((await fetch(profilePath)).status, 401);
+  assert.equal((await fetch(profilePath, { method: "POST" })).status, 401);
+  assert.equal((await fetch(profilePath, { headers: { authorization: "Bearer secret-management-key" } })).status, 404,
+    "a chave válida permite que o gerenciador encaminhe a rota ao gateway");
   const configureWithKey = await fetch(`${base}/connections/legacy/configuration`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer secret-management-key" }, body: JSON.stringify({ name: "Conta principal" }) });
   assert.equal(configureWithKey.status, 200);
   assert.equal(new AccountRegistry(directory).get("legacy").name, "Conta principal");
+  manager.registry.bind("legacy", "account-5511999990000");
+  const sessionPath = base + "/connections/legacy/chat/profile-session";
+  const sessionOptions = {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "5511999990000" }),
+  };
+  assert.equal((await fetch(sessionPath, sessionOptions)).status, 401);
+  sessionOptions.headers.authorization = "Bearer secret-management-key";
+  const session = await fetch(sessionPath, sessionOptions);
+  assert.equal(session.status, 200);
+  const { accessToken } = await session.json();
+  const device = { authorization: "Bearer " + accessToken };
+  assert.equal((await fetch(profilePath, { headers: device })).status, 404);
+  assert.equal((await fetch(sessionPath, {
+    ...sessionOptions, headers: { ...sessionOptions.headers, ...device },
+  })).status, 401);
+  const other = manager.registry.create("Outra conta");
+  manager.registry.bind(other.id, "account-5511999990001");
+  assert.equal((await fetch(`${base}/connections/${other.id}/chat/contact-profile`, { headers: device })).status, 401);
 });
 
 test("gerenciador adota gateway existente sem assumir sessão e bloqueia troca de identidade", async t => {
